@@ -10,6 +10,8 @@ import { back, forwardEnd, forwardWord } from "./word";
 //   | { type: "charAfter" }
 //   | { type: "charBefore" };
 
+// {type:"pos", pos:Pos} | {type:"range", range:Range} | {type:"none"} (ftFT)
+
 const actions: Record<string, Action<Pos, Pos>> = {
   h: (editor, _env, p: Pos) => left(editor, p),
   l: (editor, _env, p: Pos) => right(editor, p),
