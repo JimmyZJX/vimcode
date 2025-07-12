@@ -37,3 +37,42 @@ export function simpleKeys<Input, Output>(
     ),
   };
 }
+
+export function testKeys<Input, Output>({
+  editor,
+  keys,
+  chords,
+  getInput,
+  onOutput,
+  env,
+}: {
+  editor: Editor;
+  keys: string[];
+  chords: Chords<Input, Output>;
+  getInput: () => Input;
+  onOutput: (output: Output) => void;
+  env: Env;
+}): void {
+  let cur = chords;
+  for (const k of keys) {
+    const entry = cur[k];
+    if (entry === undefined) {
+      throw new Error("Chords not found: " + keys.join(" "));
+    }
+    if (entry.type === "menu") {
+      cur = entry.chords;
+    } else {
+      const oldFlash = env.flash;
+      const output = entry.action(editor, env, getInput());
+      if (env.flash === oldFlash) {
+        env.flash = {};
+      }
+      onOutput(output);
+      cur = chords;
+    }
+  }
+
+  if (cur !== chords) {
+    throw new Error("Chords not fully applied: " + keys.join(" "));
+  }
+}

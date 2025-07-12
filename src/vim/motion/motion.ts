@@ -1,5 +1,5 @@
 import { Editor, Pos } from "../../editorInterface";
-import { Action, Chords, Env, simpleKeys } from "../common";
+import { Action, Chords, Env, testKeys, simpleKeys } from "../common";
 import { left, right, upDown } from "./basic";
 import { back, forwardEnd, forwardWord } from "./word";
 
@@ -31,30 +31,12 @@ const actions: Record<string, Action<Pos, Pos>> = {
 export const motions: Chords<Pos, Pos> = simpleKeys(actions);
 
 export function runKeysInTest(editor: Editor, keys: string[], env?: Env): void {
-  // TODO normal mode, single cursor for now
-  env ??= { options: {}, flash: {} };
-
-  let cur = motions;
-  for (const k of keys) {
-    const entry = cur[k];
-    if (entry === undefined) {
-      throw new Error("Chords not found: " + keys.join(" "));
-    }
-    if (entry.type === "menu") {
-      cur = entry.chords;
-    } else {
-      const sel = editor.selections[0];
-      const oldFlash = env.flash;
-      const pos = entry.action(editor, env, sel.active);
-      if (env.flash === oldFlash) {
-        env.flash = {};
-      }
-      editor.selections = [{ anchor: pos, active: pos }];
-      cur = motions;
-    }
-  }
-
-  if (cur !== motions) {
-    throw new Error("Chords not fully applied: " + keys.join(" "));
-  }
+  testKeys({
+    editor,
+    keys,
+    chords: motions,
+    getInput: () => editor.selections[0].active,
+    onOutput: (pos) => (editor.selections = [{ anchor: pos, active: pos }]),
+    env: env ?? { options: {}, flash: {} },
+  });
 }
