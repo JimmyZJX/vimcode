@@ -30,7 +30,11 @@ const actions: Record<string, Action<Pos, Pos>> = {
 
 export const motions: Chords<Pos, Pos> = simpleKeys(actions);
 
-export function runKeysInTest(editor: Editor, keys: string[], env?: Env): void {
+export function testMotionKeys(
+  editor: Editor,
+  keys: string[],
+  env?: Env
+): void {
   testKeys({
     editor,
     keys,

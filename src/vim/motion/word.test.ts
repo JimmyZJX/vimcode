@@ -1,41 +1,41 @@
 import { withEditor } from "../../testUtils";
-import { runKeysInTest } from "./motion";
+import { testMotionKeys } from "./motion";
 
 it("motion basic", () => {
   withEditor(__filename, "ab cdef\ngh.-=! ** 8w8\n\n", (editor, writeState) => {
     editor.cursor = { type: "block" };
     writeState("init");
     for (let i = 0; i < 8; i++) {
-      runKeysInTest(editor, ["w"]);
+      testMotionKeys(editor, ["w"]);
       writeState("w");
     }
 
     editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
     writeState("reset");
     for (let i = 0; i < 7; i++) {
-      runKeysInTest(editor, ["W"]);
+      testMotionKeys(editor, ["W"]);
       writeState("W");
     }
 
     editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
     writeState("reset");
     for (let i = 0; i < 7; i++) {
-      runKeysInTest(editor, ["e"]);
+      testMotionKeys(editor, ["e"]);
       writeState("e");
     }
 
     for (let i = 0; i < 7; i++) {
-      runKeysInTest(editor, ["b"]);
+      testMotionKeys(editor, ["b"]);
       writeState("b");
     }
 
     for (let i = 0; i < 6; i++) {
-      runKeysInTest(editor, ["E"]);
+      testMotionKeys(editor, ["E"]);
       writeState("E");
     }
 
     for (let i = 0; i < 7; i++) {
-      runKeysInTest(editor, ["B"]);
+      testMotionKeys(editor, ["B"]);
       writeState("B");
     }
   });
