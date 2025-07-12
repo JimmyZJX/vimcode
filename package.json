@@ -1,0 +1,19 @@
+{
+  "name": "vimcode",
+  "version": "1.0.0",
+  "description": "A TypeScript project for terminal output (web environment ready)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "build:watch": "tsc --watch",
+    "test:watch": "jest --watchAll"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "@types/jest": "^29.0.0"
+  }
+}
