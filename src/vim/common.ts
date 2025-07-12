@@ -2,9 +2,18 @@ import { Editor } from "../editorInterface";
 
 export type Options = {};
 
+export type Flash = {
+  preferredColumn?: number;
+};
+
+export type Env = {
+  options: Options;
+  flash: Flash;
+};
+
 export type Action<Input, Output> = (
   editor: Editor,
-  options: {},
+  env: Env,
   input: Input
 ) => Output;
 

@@ -34,6 +34,7 @@ export interface Editor {
   getLine: (l: number) => string;
   getText: (selection?: Selection) => string;
 
+  /** This takes care of code folding */
   getSiblingLine: (l: number, offset: number) => number;
 
   editText: (range: Selection, text: string) => void;
