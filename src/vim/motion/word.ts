@@ -24,6 +24,19 @@ function* iterChar(editor: Editor, p: Pos) {
   }
 }
 
+function* iterCharBack(editor: Editor, p: Pos) {
+  for (let l = p.l; l >= 0; l--) {
+    const line = editor.getLine(l);
+    if (l !== p.l) {
+      yield { char: "\n", pos: { l, c: line.length } };
+    }
+    let startC = l === p.l ? p.c : line.length - 1;
+    for (let c = startC; c >= 0; c--) {
+      yield { char: line[c], pos: { l, c } };
+    }
+  }
+}
+
 function editorLastPos(editor: Editor): Pos {
   const lastLine = editor.getLines() - 1;
   return { l: lastLine, c: Math.max(0, editor.getLine(lastLine).length - 1) };
@@ -72,4 +85,32 @@ export function forwardEnd(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
     lastPos = pos;
   }
   return editorLastPos(editor);
+}
+
+export function back(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
+  let charType: CharType | null = null;
+  let lastPos: Pos = { l: p.l, c: p.c };
+  let skipFirst = true;
+  for (const { char, pos } of iterCharBack(editor, p)) {
+    if (skipFirst) {
+      skipFirst = false;
+    } else {
+      if (char === "\n" && pos.c === 0) {
+        // empty new line
+        return pos;
+      }
+      const t = getCharType(char);
+      if (charType !== null) {
+        const isDifferentType = whiteSpaceOnly
+          ? (charType === "white") !== (t === "white")
+          : charType !== t;
+        if (isDifferentType && charType !== "white") {
+          return lastPos;
+        }
+      }
+      charType = t;
+    }
+    lastPos = pos;
+  }
+  return { l: 0, c: 0 };
 }

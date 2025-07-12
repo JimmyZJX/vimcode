@@ -1,7 +1,7 @@
 import { Editor, Pos } from "../../editorInterface";
 import { Action, Chords, Env, Options } from "../common";
 import { left, right, upDown } from "./basic";
-import { forwardEnd, forwardWord } from "./word";
+import { back, forwardEnd, forwardWord } from "./word";
 
 const actions: Record<string, Action<Pos, Pos>> = {
   h: (editor, _env, p: Pos) => left(editor, p),
@@ -15,6 +15,8 @@ const actions: Record<string, Action<Pos, Pos>> = {
   W: (editor, _env, p: Pos) => forwardWord(editor, p, true),
   e: (editor, _env, p: Pos) => forwardEnd(editor, p, false),
   E: (editor, _env, p: Pos) => forwardEnd(editor, p, true),
+  b: (editor, _env, p: Pos) => back(editor, p, false),
+  B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
 export const motions: Chords<Pos, Pos> = {

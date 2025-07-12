@@ -24,11 +24,19 @@ it("motion basic", () => {
       writeState("e");
     }
 
-    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
-    writeState("reset");
+    for (let i = 0; i < 7; i++) {
+      runKeysInTest(editor, ["b"]);
+      writeState("b");
+    }
+
     for (let i = 0; i < 6; i++) {
       runKeysInTest(editor, ["E"]);
       writeState("E");
+    }
+
+    for (let i = 0; i < 7; i++) {
+      runKeysInTest(editor, ["B"]);
+      writeState("B");
     }
   });
 });
