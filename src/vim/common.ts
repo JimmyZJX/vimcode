@@ -24,3 +24,16 @@ export type ChordEntry<Input, Output> =
 // | { type: "callback"; callback: Action<Input, ChordEntry<Input, Output>> };
 
 export type Chords<Input, Output> = Record<string, ChordEntry<Input, Output>>;
+
+export function simpleKeys<Input, Output>(
+  actions: Record<string, Action<Input, Output>>
+): Chords<Input, Output> {
+  return {
+    ...Object.fromEntries(
+      Object.entries(actions).map(([k, action]) => [
+        k,
+        { type: "action", action },
+      ])
+    ),
+  };
+}

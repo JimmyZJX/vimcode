@@ -1,5 +1,5 @@
 import { Editor, Pos } from "../../editorInterface";
-import { Action, Chords, Env } from "../common";
+import { Action, Chords, Env, simpleKeys } from "../common";
 import { left, right, upDown } from "./basic";
 import { back, forwardEnd, forwardWord } from "./word";
 
@@ -28,14 +28,7 @@ const actions: Record<string, Action<Pos, Pos>> = {
   B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
-export const motions: Chords<Pos, Pos> = {
-  ...Object.fromEntries(
-    Object.entries(actions).map(([k, action]) => [
-      k,
-      { type: "action", action },
-    ])
-  ),
-};
+export const motions: Chords<Pos, Pos> = simpleKeys(actions);
 
 export function runKeysInTest(editor: Editor, keys: string[], env?: Env): void {
   // TODO normal mode, single cursor for now
