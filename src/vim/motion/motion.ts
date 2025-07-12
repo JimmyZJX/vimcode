@@ -3,6 +3,13 @@ import { Action, Chords, Env } from "../common";
 import { left, right, upDown } from "./basic";
 import { back, forwardEnd, forwardWord } from "./word";
 
+// TODO motion has a "preferred interpretation"
+// type Interpretation =
+//   | { type: "line" }
+//   | { type: "char" }
+//   | { type: "charAfter" }
+//   | { type: "charBefore" };
+
 const actions: Record<string, Action<Pos, Pos>> = {
   h: (editor, _env, p: Pos) => left(editor, p),
   l: (editor, _env, p: Pos) => right(editor, p),
