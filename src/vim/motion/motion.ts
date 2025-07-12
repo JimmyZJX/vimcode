@@ -1,5 +1,5 @@
-import { Editor, Pos } from "../editorInterface";
-import { Chords } from "./common";
+import { Editor, Pos } from "../../editorInterface";
+import { Chords } from "../common";
 
 type CharType = "word" | "white" | "other";
 
@@ -63,8 +63,6 @@ export const motions: Chords<Pos, Pos> = {
   W: {
     type: "action",
     action: (editor, _options, p: Pos) => {
-      // vscodevim default behavior: go to next different type (word, non-word, white) of
-      // character, and stop on non-white
       return forwardWord(editor, p, true);
     },
   },

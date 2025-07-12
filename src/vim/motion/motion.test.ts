@@ -1,6 +1,6 @@
-import { Editor, Pos } from "../editorInterface";
-import { withEditor } from "../testUtils";
-import { Chords, Options } from "./common";
+import { Editor, Pos } from "../../editorInterface";
+import { withEditor } from "../../testUtils";
+import { Chords, Options } from "../common";
 import { motions } from "./motion";
 
 function runKeys(editor: Editor, keys: string[]) {
