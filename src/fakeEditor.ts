@@ -1,4 +1,10 @@
-import { Editor, Selection, Cursor, Pos } from "./editorInterface";
+import {
+  Editor,
+  Selection,
+  Cursor,
+  Pos,
+  rangeOfSelection,
+} from "./editorInterface";
 
 export class FakeEditor implements Editor {
   private lines: string[];
@@ -42,17 +48,7 @@ export class FakeEditor implements Editor {
     if (!selection) {
       return this.lines.join("\n");
     }
-    const { anchor, active } = selection;
-    if (anchor.l === active.l) {
-      const l = anchor.l;
-      const start = Math.min(anchor.c, active.c);
-      const end = Math.max(anchor.c, active.c);
-      return this.lines[l]?.slice(start, end) ?? "";
-    }
-    // Multi-line selection
-    const [start, end] = [anchor, active].sort((a, b) =>
-      a.l === b.l ? a.c - b.c : a.l - b.l
-    );
+    const { start, end } = rangeOfSelection(selection);
     const lines = [
       this.lines[start.l]?.slice(start.c) ?? "",
       ...this.lines.slice(start.l + 1, end.l),
@@ -68,27 +64,11 @@ export class FakeEditor implements Editor {
     return sibling;
   }
 
-  editText(selection: Selection, text: string) {
-    const { anchor, active } = selection;
-    if (anchor.l === active.l) {
-      const l = anchor.l;
-      const start = Math.min(anchor.c, active.c);
-      const end = Math.max(anchor.c, active.c);
-      this.lines[l] =
-        this.lines[l].slice(0, start) + text + this.lines[l].slice(end);
-    } else {
-      // Multi-line replace
-      const [start, end] = [anchor, active].sort((a, b) =>
-        a.l === b.l ? a.c - b.c : a.l - b.l
-      );
-      const first = this.lines[start.l].slice(0, start.c) + text;
-      const last = this.lines[end.l].slice(end.c);
-      this.lines.splice(start.l, end.l - start.l + 1, first + last);
-    }
-  }
-
-  private static comparePos(a: Pos, b: Pos): number {
-    return a.l === b.l ? a.c - b.c : a.l - b.l;
+  editText(range: Selection, text: string) {
+    const { start, end } = rangeOfSelection(range);
+    const first = this.lines[start.l].slice(0, start.c) + text;
+    const last = this.lines[end.l].slice(end.c);
+    this.lines.splice(start.l, end.l - start.l + 1, first + last);
   }
 
   private static withTableBorder(lines: string[]): string {
@@ -108,7 +88,7 @@ export class FakeEditor implements Editor {
     // First, mark selections (so cursor can overwrite if needed)
     const cursorMarkers: { [l: number]: { [c: number]: string } } = {};
     for (const sel of this._selections) {
-      const [start, end] = [sel.anchor, sel.active].sort(FakeEditor.comparePos);
+      const { start, end } = rangeOfSelection(sel);
       for (let l = start.l; l <= end.l; l++) {
         let from = l === start.l ? start.c : 0;
         let to = l === end.l ? end.c : this.lines[l]?.length ?? 0;

@@ -8,6 +8,19 @@ export type Selection = {
   active: Pos;
 };
 
+export type Range = {
+  start: Pos;
+  end: Pos;
+};
+
+export function rangeOfSelection(sel: Selection) {
+  function comparePos(a: Pos, b: Pos): number {
+    return a.l === b.l ? a.c - b.c : a.l - b.l;
+  }
+  const [start, end] = [sel.anchor, sel.active].sort(comparePos);
+  return { start, end };
+}
+
 export type Cursor =
   | { type: "line" }
   | { type: "block" }
@@ -23,7 +36,7 @@ export interface Editor {
 
   getSiblingLine: (l: number, offset: number) => number;
 
-  editText: (selection: Selection, text: string) => void;
+  editText: (range: Selection, text: string) => void;
 
   // TODO visible lines
 }
