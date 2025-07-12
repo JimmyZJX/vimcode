@@ -6,7 +6,7 @@ const insert: Record<string, Action<Pos, Pos>> = {
   I: (editor, _env, p) => {
     const line = editor.getLine(p.l);
     const leadingWhiteChars = line.length - line.trimStart().length;
-    return { l: p.l, c: leadingWhiteChars + 1 };
+    return { l: p.l, c: leadingWhiteChars };
   },
   a: (editor, _env, p) => {
     const line = editor.getLine(p.l);

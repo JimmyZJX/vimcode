@@ -1,0 +1,50 @@
+import { Editor } from "../../editorInterface";
+import { withEditor } from "../../testUtils";
+import { Env, testKeys } from "../common";
+import { inserts } from "./insert";
+
+export function testInsertKeys(
+  editor: Editor,
+  keys: string[],
+  env?: Env
+): void {
+  testKeys({
+    editor,
+    keys,
+    chords: inserts,
+    getInput: () => editor.selections[0].active,
+    onOutput: (pos) => {
+      editor.cursor = { type: "line" };
+      editor.selections = [{ anchor: pos, active: pos }];
+    },
+    env: env ?? { options: {}, flash: {} },
+  });
+}
+
+it("insert", () => {
+  withEditor(__filename, "abc\n  def\nghi\n", (editor, writeState) => {
+    editor.selections = [{ anchor: { l: 1, c: 3 }, active: { l: 1, c: 3 } }];
+    editor.cursor = { type: "block" };
+    writeState("init");
+
+    testInsertKeys(editor, ["i"]);
+    writeState("i");
+
+    editor.selections = [{ anchor: { l: 1, c: 3 }, active: { l: 1, c: 3 } }];
+    editor.cursor = { type: "block" };
+    testInsertKeys(editor, ["a"]);
+    writeState("a");
+
+    testInsertKeys(editor, ["I"]);
+    writeState("I");
+
+    testInsertKeys(editor, ["A"]);
+    writeState("A");
+
+    editor.selections = [{ anchor: { l: 3, c: 0 }, active: { l: 3, c: 0 } }];
+    editor.cursor = { type: "block" };
+    writeState("move to line 4");
+    testInsertKeys(editor, ["a"]);
+    writeState("a");
+  });
+});
