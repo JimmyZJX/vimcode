@@ -63,7 +63,11 @@ export class FakeEditor implements Editor {
     const { start, end } = rangeOfSelection(range);
     const first = this.lines[start.l].slice(0, start.c) + text;
     const last = this.lines[end.l].slice(end.c);
-    this.lines.splice(start.l, end.l - start.l + 1, first + last);
+    this.lines.splice(
+      start.l,
+      end.l - start.l + 1,
+      ...(first + last).split("\n")
+    );
   }
 
   private static withTableBorder(lines: string[]): string {
