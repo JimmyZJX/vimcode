@@ -1,5 +1,5 @@
 import { Editor, Pos } from "../../editorInterface";
-import { Action, Chords, Env, Options } from "../common";
+import { Action, Chords, Env } from "../common";
 import { left, right, upDown } from "./basic";
 import { back, forwardEnd, forwardWord } from "./word";
 

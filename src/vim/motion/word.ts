@@ -42,6 +42,8 @@ function editorLastPos(editor: Editor): Pos {
   return { l: lastLine, c: Math.max(0, editor.getLine(lastLine).length - 1) };
 }
 
+// TODO I think the "w" motion should stop before the next word
+// TODO and the "w" normal key is the current implementation
 export function forwardWord(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
   let charType: CharType | null = null;
   for (const { char, pos } of iterChar(editor, p)) {
