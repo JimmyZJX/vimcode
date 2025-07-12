@@ -24,13 +24,16 @@ function* iterChar(editor: Editor, p: Pos) {
   }
 }
 
+function editorLastPos(editor: Editor): Pos {
+  const lastLine = editor.getLines() - 1;
+  return { l: lastLine, c: Math.max(0, editor.getLine(lastLine).length - 1) };
+}
+
 export function forwardWord(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
   let charType: CharType | null = null;
   for (const { char, pos } of iterChar(editor, p)) {
     const t = getCharType(char);
-    if (charType === null) {
-      charType = t;
-    } else {
+    if (charType !== null) {
       if (char === "\n" && pos.c === 0) {
         // empty new line
         return pos;
@@ -38,14 +41,35 @@ export function forwardWord(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
       const isDifferentType = whiteSpaceOnly
         ? (charType === "white") !== (t === "white")
         : charType !== t;
-      if (isDifferentType) {
-        if (t !== "white") {
-          return pos;
-        } else {
-          charType = "white";
-        }
+      if (isDifferentType && t !== "white") {
+        return pos;
       }
     }
+    charType = t;
   }
-  return { l: editor.getLines() - 1, c: 0 };
+  return editorLastPos(editor);
+}
+
+export function forwardEnd(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
+  let charType: CharType | null = null;
+  let lastPos: Pos = { l: p.l, c: p.c };
+  let skipFirst = true;
+  for (const { char, pos } of iterChar(editor, p)) {
+    if (skipFirst) {
+      skipFirst = false;
+    } else {
+      const t = getCharType(char);
+      if (charType !== null) {
+        const isDifferentType = whiteSpaceOnly
+          ? (charType === "white") !== (t === "white")
+          : charType !== t;
+        if (isDifferentType && charType !== "white") {
+          return lastPos;
+        }
+      }
+      charType = t;
+    }
+    lastPos = pos;
+  }
+  return editorLastPos(editor);
 }

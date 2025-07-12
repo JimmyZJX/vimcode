@@ -1,7 +1,7 @@
 import { Editor, Pos } from "../../editorInterface";
 import { Action, Chords, Env, Options } from "../common";
 import { left, right, upDown } from "./basic";
-import { forwardWord } from "./word";
+import { forwardEnd, forwardWord } from "./word";
 
 const actions: Record<string, Action<Pos, Pos>> = {
   h: (editor, _env, p: Pos) => left(editor, p),
@@ -9,12 +9,12 @@ const actions: Record<string, Action<Pos, Pos>> = {
   k: (editor, env, p: Pos) => upDown(editor, env, p, "up"),
   j: (editor, env, p: Pos) => upDown(editor, env, p, "down"),
 
-  w: (editor, _env, p: Pos) => {
-    // vscodevim default behavior: go to next different type (word, non-word, white)
-    // of character, and stop on non-white
-    return forwardWord(editor, p, false);
-  },
+  // vscodevim default behavior: go to next different type (word, non-word, white)
+  // of character, and stop on non-white
+  w: (editor, _env, p: Pos) => forwardWord(editor, p, false),
   W: (editor, _env, p: Pos) => forwardWord(editor, p, true),
+  e: (editor, _env, p: Pos) => forwardEnd(editor, p, false),
+  E: (editor, _env, p: Pos) => forwardEnd(editor, p, true),
 };
 
 export const motions: Chords<Pos, Pos> = {
