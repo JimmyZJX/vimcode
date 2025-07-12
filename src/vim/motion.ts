@@ -25,32 +25,47 @@ function* iterChar(editor: Editor, p: Pos) {
   }
 }
 
+function forwardWord(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
+  let charType: CharType | null = null;
+  for (const { char, pos } of iterChar(editor, p)) {
+    const t = getCharType(char);
+    if (charType === null) {
+      charType = t;
+    } else {
+      if (char === "\n" && pos.c === 0) {
+        // empty new line
+        return pos;
+      }
+      const isDifferentType = whiteSpaceOnly
+        ? (charType === "white") !== (t === "white")
+        : charType !== t;
+      if (isDifferentType) {
+        if (t !== "white") {
+          return pos;
+        } else {
+          charType = "white";
+        }
+      }
+    }
+  }
+  return { l: editor.getLines() - 1, c: 0 };
+}
+
 export const motions: Chords<Pos, Pos> = {
   w: {
     type: "action",
     action: (editor, _options, p: Pos) => {
       // vscodevim default behavior: go to next different type (word, non-word, white) of
       // character, and stop on non-white
-      let charType: CharType | null = null;
-      for (const { char, pos } of iterChar(editor, p)) {
-        const t = getCharType(char);
-        if (charType === null) {
-          charType = t;
-        } else {
-          if (char === "\n" && pos.c === 0) {
-            // empty new line
-            return pos;
-          }
-          if (charType !== t) {
-            if (t !== "white") {
-              return pos;
-            } else {
-              charType = "white";
-            }
-          }
-        }
-      }
-      return { l: editor.getLines() - 1, c: 0 };
+      return forwardWord(editor, p, false);
+    },
+  },
+  W: {
+    type: "action",
+    action: (editor, _options, p: Pos) => {
+      // vscodevim default behavior: go to next different type (word, non-word, white) of
+      // character, and stop on non-white
+      return forwardWord(editor, p, true);
     },
   },
 };

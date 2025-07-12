@@ -33,5 +33,11 @@ it("motion basic", () => {
       runKeys(editor, ["w"]);
       writeState("w");
     }
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("reset");
+    for (let i = 0; i < 7; i++) {
+      runKeys(editor, ["W"]);
+      writeState("W");
+    }
   });
 });
