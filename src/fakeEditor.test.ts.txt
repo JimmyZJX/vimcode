@@ -1,62 +1,62 @@
 Initial: The editor is created with two lines: 'hello' and 'world'.
 ┌──────┐
-│hello │
+│hello⏎│
 │▏     │
-│world │
+│world⏎│
 └──────┘
 
 The cursor is moved to line 1, column 3, and 'wor' in 'world' is selected.
 ┌──────┐
-│hello │
-│world │
+│hello⏎│
+│world⏎│
 │▅▂▂▏  │
 └──────┘
 
 Multi selections
 ┌──────┐
-│hello │
+│hello⏎│
 │ ▅▂▂▏ │
-│world │
+│world⏎│
 │▅▂▂▏  │
 └──────┘
 
 After edit: The selected 'wor' is replaced with 'abc'.
 ┌──────┐
-│hello │
+│hello⏎│
 │ ▅▂▂▏ │
-│abcld │
+│abcld⏎│
 │▅▂▂▏  │
 └──────┘
 
 Selection changed to multi-line from after 'he' in 'hello' to 'wo' in 'world' is replaced with 'XY'.
 ┌──────┐
-│hello │
+│hello⏎│
 │  ▅▂▂ │
-│abcld │
+│abcld⏎│
 │▂▂▏   │
 └──────┘
 
 After multiline edit: selection is replaced with 'XY'.
 ┌────────┐
-│heXYcld │
+│heXYcld⏎│
 │  ▅▂▂▂▂ │
 └────────┘
 
 Fix selection manually
 ┌────────┐
-│heXYcld │
+│heXYcld⏎│
 │  ▏     │
 └────────┘
 
 Select to the end of line
 ┌────────┐
-│heXYcld │
+│heXYcld⏎│
 │  ▅▂▂▂▂▏│
 └────────┘
 
 Block selection
 ┌────────┐
-│heXYcld │
+│heXYcld⏎│
 │  ▅▂▂█  │
 └────────┘
 

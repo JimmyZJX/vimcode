@@ -20,6 +20,7 @@ export class FakeEditor implements Editor {
     return this._selections;
   }
   set selections(val: Selection[]) {
+    if (val.length === 0) throw new Error("selections being set to empty!");
     this._selections = val;
   }
 
@@ -123,7 +124,7 @@ export class FakeEditor implements Editor {
       } else {
         markerLine = "";
       }
-      linesWithMarkers.push(line);
+      linesWithMarkers.push(line + "⏎");
       if (markerLine.trim()) {
         linesWithMarkers.push(markerLine);
       }
