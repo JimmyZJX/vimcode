@@ -7,6 +7,7 @@ import {
   Env,
   getKey,
 } from "./common";
+import { fixNormalCursor } from "./modeUtil";
 import { motions } from "./motion/motion";
 import { deletes } from "./normal/cutDelete";
 import { inserts } from "./normal/insert";
@@ -88,11 +89,14 @@ export class Vim {
           this.state.pending = false;
           this.state.menu = undefined;
           const { pos, toMode } = runKeyResult.output;
-          this.editor.selections = [{ anchor: pos, active: pos }];
 
           if (toMode === "normal") {
+            // TODO global fix to hook, also when mode is changed TO normal
+            const fixed = fixNormalCursor(this.editor, pos);
+            this.editor.selections = [{ anchor: fixed, active: fixed }];
             return { processed: true, mode: "normal" };
           } else {
+            this.editor.selections = [{ anchor: pos, active: pos }];
             this.state = { mode: "insert" };
             this.editor.cursor = { type: "line" };
             return { processed: true, mode: "insert" };
@@ -106,10 +110,21 @@ export class Vim {
       case "insert": {
         if (key === "<escape>") {
           this.editor.cursor = { type: "block" };
+          const fixed = fixNormalCursor(
+            this.editor,
+            this.editor.selections[0].active
+          );
+          this.editor.selections = [{ anchor: fixed, active: fixed }];
           this.state = { mode: "normal", pending: false, menu: undefined };
           return { processed: true, mode: "normal" };
+        } else {
+          // TODO in fact we don't need to handle these in the real VSCode environment
+          const sel = this.editor.selections[0];
+          this.editor.editText(sel, key);
+          const newPos = { l: sel.active.l, c: sel.active.c + 1 };
+          this.editor.selections = [{ anchor: newPos, active: newPos }];
+          return { processed: false, mode: "insert" };
         }
-        return { processed: false, mode: "insert" };
       }
       default: {
         const _: never = this.state;
