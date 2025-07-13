@@ -6,6 +6,7 @@ import {
   Selection,
 } from "../../editorInterface";
 import {
+  Action,
   ChordEntry,
   Chords,
   Env,
@@ -23,13 +24,8 @@ function delWithMotion(
   motionEnd: Pos
 ): Pos {
   // TODO use suggested region
-  const compare = comparePos(normalCursorPos, motionEnd);
-  if (compare === 0) {
-    // no text removed
-    return { l: motionEnd.l, c: motionEnd.c };
-  }
   const region: Selection =
-    compare > 0
+    comparePos(normalCursorPos, motionEnd) > 0
       ? /* backward */
         {
           anchor: motionEnd,
@@ -65,7 +61,7 @@ function delMotionW(e: "e" | "E", w: "w" | "W") {
   };
 }
 
-function delCurrentLine(editor: Editor, env: Env, p: Pos) {
+function cutCurrentLine(editor: Editor, env: Env, p: Pos) {
   const line = editor.getLine(p.l);
   const prefix = getLineWhitePrefix(editor, p.l);
   delWithMotion(editor, env, { l: p.l, c: 0 }, { l: p.l, c: line.length });
@@ -76,15 +72,53 @@ function delCurrentLine(editor: Editor, env: Env, p: Pos) {
   return { l: p.l, c: prefix.length };
 }
 
-function cutOrDelete(key: "c" | "d"): ChordEntry<Pos, Pos> {
+function deleteCurrentLine(editor: Editor, env: Env, p: Pos) {
+  const lines = editor.getLines();
+  const curLine = editor.getLine(p.l);
+  if (p.l >= lines - 1) {
+    if (p.l === 0) {
+      // only one line
+      editor.editText(
+        {
+          anchor: { l: 0, c: 0 },
+          active: { l: 0, c: editor.getLine(0).length },
+        },
+        ""
+      );
+      return { l: 0, c: 0 };
+    } else {
+      // remove last line
+      const lastLine = editor.getLine(p.l - 1);
+      editor.editText(
+        {
+          anchor: { l: p.l - 1, c: lastLine.length },
+          active: { l: p.l, c: curLine.length },
+        },
+        ""
+      );
+      return { l: p.l - 1, c: getLineWhitePrefix(editor, p.l - 1).length };
+    }
+  } else {
+    // remove current line
+    editor.editText(
+      { anchor: { l: p.l, c: 0 }, active: { l: p.l + 1, c: 0 } },
+      ""
+    );
+    return { l: p.l, c: getLineWhitePrefix(editor, p.l).length };
+  }
+}
+
+function cutOrDelete(
+  actions: Record<string, Action<Pos, Pos> | undefined>
+): ChordEntry<Pos, Pos> {
   return {
     type: "menu",
     chords: simpleKeys({
-      [key]: delCurrentLine,
       // TODO instead, implement motion with different modes (as context)
       /* c{w,W} is c{e,E} when cursor is not on whitespace */
       w: delMotionW("e", "w"),
       W: delMotionW("E", "W"),
+      ...actions,
     }),
     fallback: runChordWithCallback({
       chords: motions,
@@ -102,27 +136,31 @@ export const cuts: Chords<Pos, Pos> = {
     s: (editor, env, p) => {
       return delWithMotion(editor, env, p, fixPos(editor, p, 1));
     },
-    S: delCurrentLine,
+    S: cutCurrentLine,
     C: (editor, env, p) => {
       const line = editor.getLine(p.l);
       return delWithMotion(editor, env, p, { l: p.l, c: line.length });
     },
   }),
-  c: cutOrDelete("c"),
+  c: cutOrDelete({ c: cutCurrentLine }),
 };
 
 export const deletes: Chords<Pos, Pos> = {
   ...simpleKeys({
     x: (editor, env, p) => {
-      return delWithMotion(editor, env, p, fixPos(editor, p, 1));
+      return delWithMotion(editor, env, p, p);
     },
     X: (editor, env, p) => {
-      return delWithMotion(editor, env, fixPos(editor, p, -1), p);
+      if (p.c === 0) return p;
+      const left = fixPos(editor, p, -1);
+      return delWithMotion(editor, env, left, left);
     },
     D: (editor, env, p) => {
       const line = editor.getLine(p.l);
       return delWithMotion(editor, env, p, { l: p.l, c: line.length });
     },
   }),
-  d: cutOrDelete("d"),
+  d: cutOrDelete({
+    d: deleteCurrentLine,
+  }),
 };

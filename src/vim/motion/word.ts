@@ -30,7 +30,17 @@ function* iterCharBack(editor: Editor, p: Pos) {
     if (l !== p.l) {
       yield { char: "\n", pos: { l, c: line.length } };
     }
-    let startC = l === p.l ? p.c : line.length - 1;
+    let startC: number;
+    if (l === p.l) {
+      if (line.length === 0) {
+        yield { char: "\n", pos: { l, c: 0 } };
+        startC = -1;
+      } else {
+        startC = Math.min(line.length - 1, p.c);
+      }
+    } else {
+      startC = line.length - 1;
+    }
     for (let c = startC; c >= 0; c--) {
       yield { char: line[c], pos: { l, c } };
     }

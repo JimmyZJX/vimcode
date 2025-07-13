@@ -1,7 +1,7 @@
 import { withEditor } from "../../testUtils";
 import { testInsertKeys } from "./insert.test";
 
-it("insert", () => {
+it("cut", () => {
   withEditor(
     __filename,
     "abcde\n  fghij klmnopqrst\n",
@@ -17,7 +17,7 @@ it("insert", () => {
       editor.cursor = { type: "block" };
       writeState("reset");
       testInsertKeys(editor, ["c", "c"]);
-      writeState("C");
+      writeState("cc");
 
       editor.selections = [{ anchor: { l: 1, c: 4 }, active: { l: 1, c: 4 } }];
       editor.cursor = { type: "block" };
