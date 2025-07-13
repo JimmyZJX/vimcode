@@ -1,15 +1,12 @@
-import { Editor, Pos } from "../../editorInterface";
+import { Editor, fixPos, Pos } from "../../editorInterface";
 import { Env } from "../common";
 
-export function left(_: Editor, p: Pos) {
-  if (p.c <= 0) return { l: p.l, c: 0 };
-  return { l: p.l, c: p.c - 1 };
+export function left(editor: Editor, p: Pos) {
+  return fixPos(editor, p, -1);
 }
 
 export function right(editor: Editor, p: Pos) {
-  const len = editor.getLine(p.l).length;
-  if (p.c + 1 >= len) return { l: p.l, c: len - 1 };
-  return { l: p.l, c: p.c + 1 };
+  return fixPos(editor, p, 1);
 }
 
 export function upDown(editor: Editor, env: Env, p: Pos, mode: "up" | "down") {
@@ -30,10 +27,10 @@ export function upDown(editor: Editor, env: Env, p: Pos, mode: "up" | "down") {
     env.flash = { preferredColumn: tc };
     return { l, c: 0 };
   } else {
-    const c = Math.min(len - 1, tc);
-    if (c < tc) {
+    const pos = fixPos(editor, { l, c: tc });
+    if (pos.c < tc) {
       env.flash = { preferredColumn: tc };
     }
-    return { l, c };
+    return pos;
   }
 }
