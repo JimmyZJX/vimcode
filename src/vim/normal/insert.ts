@@ -31,7 +31,7 @@ const insert: Record<string, Action<Pos, Pos>> = {
   },
 };
 
-export const inserts: Chords<Pos, Pos> = {
+export const inserts: Chords<Pos, Pos>["keys"] = {
   ...simpleKeys(insert),
   ...cuts,
 };

@@ -9,7 +9,7 @@ function lineNonWhiteStart(editor: Editor, l: number) {
   return { l, c: Math.max(0, Math.min(line.length - 1, whiteLength)) };
 }
 
-const lineStartEnd: Chords<Pos, Pos> = simpleKeys({
+const lineStartEnd: Chords<Pos, Pos>["keys"] = simpleKeys({
   "0": (_editor, _env, p) => {
     return { l: p.l, c: 0 };
   },
@@ -21,19 +21,21 @@ const lineStartEnd: Chords<Pos, Pos> = simpleKeys({
   },
 });
 
-export const lineMotions: Chords<Pos, Pos> = {
+export const lineMotions: Chords<Pos, Pos>["keys"] = {
   g: {
     type: "menu",
     chords: {
-      ...lineStartEnd,
-      ...simpleKeys({
-        g: (editor, _env, _p) => {
-          return lineNonWhiteStart(editor, 0);
-        },
-        _: (editor, _env, p) => {
-          return { l: p.l, c: Math.max(0, editor.getLine(p.l).length - 1) };
-        },
-      }),
+      keys: {
+        ...lineStartEnd,
+        ...simpleKeys({
+          g: (editor, _env, _p) => {
+            return lineNonWhiteStart(editor, 0);
+          },
+          _: (editor, _env, p) => {
+            return { l: p.l, c: Math.max(0, editor.getLine(p.l).length - 1) };
+          },
+        }),
+      },
     },
   },
   ...lineStartEnd,

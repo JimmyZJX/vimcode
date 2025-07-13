@@ -113,25 +113,26 @@ function cutOrDelete(
 ): ChordEntry<Pos, Pos> {
   return {
     type: "menu",
-    chords: simpleKeys({
-      // TODO instead, implement motion with different modes (as context)
-      /* c{w,W} is c{e,E} when cursor is not on whitespace */
-      w: delMotionW("e", "w"),
-      W: delMotionW("E", "W"),
-      ...actions,
-    }),
-    fallback: runChordWithCallback({
-      chords: motions,
-      fallback: undefined,
-      callback: (editor, env, { input, output }) => {
-        // TODO use suggested region
-        return delWithMotion(editor, env, input, output);
-      },
-    }),
+    chords: {
+      keys: simpleKeys({
+        // TODO instead, implement motion with different modes (as context)
+        /* c{w,W} is c{e,E} when cursor is not on whitespace */
+        w: delMotionW("e", "w"),
+        W: delMotionW("E", "W"),
+        ...actions,
+      }),
+      fallback: runChordWithCallback({
+        chords: { keys: motions },
+        callback: (editor, env, { input, output }) => {
+          // TODO use suggested region
+          return delWithMotion(editor, env, input, output);
+        },
+      }),
+    },
   };
 }
 
-export const cuts: Chords<Pos, Pos> = {
+export const cuts: Chords<Pos, Pos>["keys"] = {
   ...simpleKeys({
     s: (editor, env, p) => {
       return delWithMotion(editor, env, p, fixPos(editor, p, 1));
@@ -145,7 +146,7 @@ export const cuts: Chords<Pos, Pos> = {
   c: cutOrDelete({ c: cutCurrentLine }),
 };
 
-export const deletes: Chords<Pos, Pos> = {
+export const deletes: Chords<Pos, Pos>["keys"] = {
   ...simpleKeys({
     x: (editor, env, p) => {
       return delWithMotion(editor, env, p, p);
@@ -165,20 +166,25 @@ export const deletes: Chords<Pos, Pos> = {
   }),
   r: {
     type: "menu",
-    chords: {},
-    // TODO better design? returning output directly if is "action"?
-    fallback: (_editor, _env, { key, input: _ }) => {
-      if (key.length > 1) return undefined;
-      return {
-        type: "action",
-        action: (editor, _env, p) => {
-          const line = editor.getLine(p.l);
-          if (p.c < line.length) {
-            editor.editText({ anchor: p, active: { l: p.l, c: p.c + 1 } }, key);
-          }
-          return { l: p.l, c: p.c };
-        },
-      };
+    chords: {
+      keys: {},
+      // TODO better design? returning output directly if is "action"?
+      fallback: (_editor, _env, { key, input: _ }) => {
+        if (key.length > 1) return undefined;
+        return {
+          type: "action",
+          action: (editor, _env, p) => {
+            const line = editor.getLine(p.l);
+            if (p.c < line.length) {
+              editor.editText(
+                { anchor: p, active: { l: p.l, c: p.c + 1 } },
+                key
+              );
+            }
+            return { l: p.l, c: p.c };
+          },
+        };
+      },
     },
   },
 };

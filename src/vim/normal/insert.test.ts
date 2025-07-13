@@ -11,7 +11,7 @@ export function testInsertKeys(
   testKeys({
     editor,
     keys,
-    chords: inserts,
+    chords: { keys: inserts },
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "line" };

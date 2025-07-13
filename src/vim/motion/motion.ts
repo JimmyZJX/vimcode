@@ -29,7 +29,7 @@ const actions: Record<string, Action<Pos, Pos>> = {
   B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
-export const motions: Chords<Pos, Pos> = {
+export const motions: Chords<Pos, Pos>["keys"] = {
   ...simpleKeys(actions),
   ...lineMotions,
 };
@@ -42,7 +42,7 @@ export function testMotionKeys(
   testKeys({
     editor,
     keys,
-    chords: motions,
+    chords: { keys: motions },
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => (editor.selections = [{ anchor: pos, active: pos }]),
     env: env ?? emptyEnv(),
