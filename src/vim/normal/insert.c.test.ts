@@ -31,6 +31,12 @@ it("insert", () => {
       editor.selections = [{ anchor: { l: 1, c: 7 }, active: { l: 1, c: 7 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
+      testInsertKeys(editor, ["s"]);
+      writeState("s");
+
+      editor.selections = [{ anchor: { l: 1, c: 7 }, active: { l: 1, c: 7 } }];
+      editor.cursor = { type: "block" };
+      writeState("move to line 2");
       testInsertKeys(editor, ["c", "b"]);
       writeState("cb");
 

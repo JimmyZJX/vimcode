@@ -98,33 +98,33 @@ function cutMotionW(e: "e" | "E", w: "w" | "W") {
   };
 }
 
+function cutCurrentLine(editor: Editor, env: Env, p: Pos) {
+  const line = editor.getLine(p.l);
+  const prefix = getLineWhitePrefix(editor, p.l);
+  cutWithMotion(editor, env, { l: p.l, c: 0 }, { l: p.l, c: line.length });
+  editor.editText(
+    { anchor: { l: p.l, c: 0 }, active: { l: p.l, c: 0 } },
+    prefix
+  );
+  return { l: p.l, c: prefix.length };
+}
+
 export const inserts: Chords<Pos, Pos> = {
   ...simpleKeys(insert),
-  C: {
-    type: "action",
-    action: (editor, env, p) => {
+  ...simpleKeys({
+    s: (editor, env, p) => {
+      return cutWithMotion(editor, env, p, fixPos(editor, p, 1));
+    },
+    S: cutCurrentLine,
+    C: (editor, env, p) => {
       const line = editor.getLine(p.l);
       return cutWithMotion(editor, env, p, { l: p.l, c: line.length });
     },
-  },
+  }),
   c: {
     type: "menu",
     chords: simpleKeys({
-      c: (editor, env, p) => {
-        const line = editor.getLine(p.l);
-        const prefix = getLineWhitePrefix(editor, p.l);
-        cutWithMotion(
-          editor,
-          env,
-          { l: p.l, c: 0 },
-          { l: p.l, c: line.length }
-        );
-        editor.editText(
-          { anchor: { l: p.l, c: 0 }, active: { l: p.l, c: 0 } },
-          prefix
-        );
-        return { l: p.l, c: prefix.length };
-      },
+      c: cutCurrentLine,
       // TODO instead, implement motion with different modes (as context)
       /* c{w,W} is c{e,E} when cursor is not on whitespace */
       w: cutMotionW("e", "w"),
