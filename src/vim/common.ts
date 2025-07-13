@@ -18,26 +18,79 @@ export type Action<Input, Output> = (
 ) => Output;
 
 export type ChordEntry<Input, Output> =
-  | { type: "menu"; chords: Chords<Input, Output> }
+  | {
+      type: "menu";
+      chords: Chords<Input, Output>;
+      fallback?: Action<
+        { key: string; input: Input },
+        ChordEntry<Input, Output> | undefined
+      >;
+    }
   | { type: "action"; action: Action<Input, Output> };
-// TODO extend to functions
-// | { type: "callback"; callback: Action<Input, ChordEntry<Input, Output>> };
 
-export type Chords<Input, Output> = Record<string, ChordEntry<Input, Output>>;
+export type Chords<Input, Output> = Record<
+  string,
+  ChordEntry<Input, Output> | undefined
+>;
 
 export function simpleKeys<Input, Output>(
-  actions: Record<string, Action<Input, Output>>
+  actions: Record<string, Action<Input, Output> | undefined>
 ): Chords<Input, Output> {
   return {
     ...Object.fromEntries(
       Object.entries(actions).map(([k, action]) => [
         k,
-        { type: "action", action },
+        action && { type: "action", action },
       ])
     ),
   };
 }
 
+export function runChordWithCallback<Input, Output, Output2>({
+  chords,
+  fallback,
+  callback,
+}: {
+  chords: Chords<Input, Output>;
+  fallback:
+    | Action<
+        { key: string; input: Input },
+        ChordEntry<Input, Output> | undefined
+      >
+    | undefined;
+  callback: Action<{ input: Input; output: Output }, Output2>;
+}): Action<
+  { key: string; input: Input },
+  ChordEntry<Input, Output2> | undefined
+> {
+  return (editor, env, { key, input }) => {
+    const entry: ChordEntry<Input, Output> | undefined =
+      chords[key] || (fallback && fallback(editor, env, { key, input }));
+    if (entry === undefined) return undefined;
+
+    if (entry.type === "menu") {
+      return {
+        type: "menu",
+        chords: {},
+        fallback: runChordWithCallback({
+          chords: entry.chords,
+          fallback: entry.fallback,
+          callback,
+        }),
+      };
+    } else {
+      return {
+        type: "action",
+        action: (editor, env, input) => {
+          const output = entry.action(editor, env, input);
+          return callback(editor, env, { input, output });
+        },
+      };
+    }
+  };
+}
+
+/** `getInput` should be fast */
 export function testKeys<Input, Output>({
   editor,
   keys,
@@ -54,13 +107,23 @@ export function testKeys<Input, Output>({
   env: Env;
 }): void {
   let cur = chords;
+  let fallback:
+    | Action<
+        { key: string; input: Input },
+        ChordEntry<Input, Output> | undefined
+      >
+    | undefined = undefined;
+
   for (const k of keys) {
-    const entry = cur[k];
+    const entry: ChordEntry<Input, Output> | undefined =
+      cur[k] ||
+      (fallback && fallback(editor, env, { key: k, input: getInput() }));
     if (entry === undefined) {
       throw new Error("Chords not found: " + keys.join(" "));
     }
     if (entry.type === "menu") {
       cur = entry.chords;
+      fallback = entry.fallback;
     } else {
       const oldFlash = env.flash;
       const output = entry.action(editor, env, getInput());
@@ -68,7 +131,9 @@ export function testKeys<Input, Output>({
         env.flash = {};
       }
       onOutput(output);
+
       cur = chords;
+      fallback = undefined;
     }
   }
 

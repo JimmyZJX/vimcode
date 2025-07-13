@@ -13,12 +13,24 @@ export type Range = {
   end: Pos;
 };
 
+export function comparePos(a: Pos, b: Pos): number {
+  return a.l === b.l ? a.c - b.c : a.l - b.l;
+}
+
 export function rangeOfSelection(sel: Selection) {
   function comparePos(a: Pos, b: Pos): number {
     return a.l === b.l ? a.c - b.c : a.l - b.l;
   }
   const [start, end] = [sel.anchor, sel.active].sort(comparePos);
   return { start, end };
+}
+
+// TODO two versions: accept end or not, also depending on if the line is empty
+export function fixPos(editor: Editor, p: Pos, offset?: number) {
+  return {
+    l: p.l,
+    c: Math.min(Math.max(0, editor.getLine(p.l).length), p.c + (offset ?? 0)),
+  };
 }
 
 export type Cursor =

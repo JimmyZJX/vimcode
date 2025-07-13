@@ -4,7 +4,7 @@ type CharType = "word" | "white" | "other";
 
 const RE_IS_WORD = /\w/;
 const RE_IS_WHITE = /\s/;
-function getCharType(char: string): CharType {
+export function getCharType(char: string): CharType {
   if (RE_IS_WORD.test(char[0])) return "word";
   if (RE_IS_WHITE.test(char[0])) return "white";
   return "other";

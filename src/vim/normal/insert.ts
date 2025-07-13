@@ -1,5 +1,19 @@
-import { Pos } from "../../editorInterface";
-import { Action, Chords, simpleKeys } from "../common";
+import {
+  comparePos,
+  Editor,
+  fixPos,
+  Pos,
+  Selection,
+} from "../../editorInterface";
+import {
+  Action,
+  Chords,
+  Env,
+  runChordWithCallback,
+  simpleKeys,
+} from "../common";
+import { motions } from "../motion/motion";
+import { getCharType } from "../motion/word";
 
 const insert: Record<string, Action<Pos, Pos>> = {
   i: (_editor, _env, p) => p,
@@ -32,6 +46,80 @@ const insert: Record<string, Action<Pos, Pos>> = {
     editor.editText({ anchor: lineStart, active: lineStart }, prefix + "\n");
     return { l: p.l, c: prefix.length };
   },
+  C: (editor, _env, p) => {
+    const line = editor.getLine(p.l);
+    editor.editText({ anchor: p, active: { l: p.l, c: line.length } }, "");
+    return { l: p.l, c: p.c };
+  },
 };
 
-export const inserts: Chords<Pos, Pos> = simpleKeys(insert);
+function cutWithMotion(
+  editor: Editor,
+  _env: Env,
+  normalCursorPos: Pos,
+  motionEnd: Pos
+): Pos {
+  // TODO use suggested region
+  const compare = comparePos(normalCursorPos, motionEnd);
+  if (compare === 0) {
+    // no text removed
+    return { l: motionEnd.l, c: motionEnd.c };
+  }
+  const region: Selection =
+    compare > 0
+      ? /* backward */
+        {
+          anchor: motionEnd,
+          active: normalCursorPos,
+        }
+      : /* forward */
+        {
+          anchor: normalCursorPos,
+          active: fixPos(editor, motionEnd, 1),
+        };
+  editor.editText(region, "");
+  return region.anchor;
+}
+
+function cutMotionW(e: "e" | "E", w: "w" | "W") {
+  const motionE = motions[e];
+  const motionW = motions[w];
+  if (motionE?.type !== "action" || motionW?.type !== "action")
+    return undefined;
+  return (editor: Editor, env: Env, p: Pos) => {
+    const motionEnd =
+      getCharType(editor.getLine(p.l)[p.c]) === "white"
+        ? motionW.action(editor, env, p)
+        : motionE.action(editor, env, p);
+    return cutWithMotion(editor, env, p, motionEnd);
+  };
+}
+
+export const inserts: Chords<Pos, Pos> = {
+  ...simpleKeys(insert),
+  c: {
+    type: "menu",
+    chords: simpleKeys({
+      c: (editor, _env, p) => {
+        const line = editor.getLine(p.l);
+        editor.editText(
+          { anchor: { l: p.l, c: 0 }, active: { l: p.l, c: line.length } },
+          ""
+        );
+        return { l: p.l, c: 0 };
+      },
+      // TODO instead, implement motion with different modes (as context)
+      /* c{w,W} is c{e,E} when cursor is not on whitespace */
+      w: cutMotionW("e", "w"),
+      W: cutMotionW("E", "W"),
+    }),
+    fallback: runChordWithCallback({
+      chords: motions,
+      fallback: undefined,
+      callback: (editor, env, { input, output }) => {
+        // TODO use suggested region
+        return cutWithMotion(editor, env, input, output);
+      },
+    }),
+  },
+};
