@@ -1,5 +1,5 @@
 import fs from "fs";
-import FakeEditor from "./fakeEditor";
+import FakeEditor from "./fakeEditor/fakeEditor";
 
 export function withEditor(
   filename: string,

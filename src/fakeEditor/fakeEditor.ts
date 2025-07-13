@@ -1,4 +1,9 @@
-import { Editor, Selection, Cursor, rangeOfSelection } from "./editorInterface";
+import {
+  Cursor,
+  Editor,
+  rangeOfSelection,
+  Selection,
+} from "../editorInterface";
 
 export class FakeEditor implements Editor {
   private lines: string[];
