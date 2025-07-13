@@ -46,6 +46,8 @@ export function simpleKeys<Input, Output>(
   };
 }
 
+// TODO set mode to operator-pending (or should we set it globally whenever a sequence
+// is pending?)
 export function runChordWithCallback<Input, Output, Output2>({
   chords,
   fallback,
