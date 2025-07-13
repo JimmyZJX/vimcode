@@ -15,12 +15,16 @@ import {
 import { motions } from "../motion/motion";
 import { getCharType } from "../motion/word";
 
+function getLineWhitePrefix(editor: Editor, l: number) {
+  const line = editor.getLine(l);
+  const leadingWhiteChars = line.length - line.trimStart().length;
+  return line.slice(0, leadingWhiteChars);
+}
+
 const insert: Record<string, Action<Pos, Pos>> = {
   i: (_editor, _env, p) => p,
   I: (editor, _env, p) => {
-    const line = editor.getLine(p.l);
-    const leadingWhiteChars = line.length - line.trimStart().length;
-    return { l: p.l, c: leadingWhiteChars };
+    return { l: p.l, c: getLineWhitePrefix(editor, p.l).length };
   },
   a: (editor, _env, p) => {
     const line = editor.getLine(p.l);
@@ -32,24 +36,16 @@ const insert: Record<string, Action<Pos, Pos>> = {
   },
   o: (editor, _env, p) => {
     const line = editor.getLine(p.l);
-    const leadingWhiteChars = line.length - line.trimStart().length;
-    const prefix = line.slice(0, leadingWhiteChars);
+    const prefix = getLineWhitePrefix(editor, p.l);
     const lineEnd = { l: p.l, c: line.length };
     editor.editText({ anchor: lineEnd, active: lineEnd }, "\n" + prefix);
     return { l: p.l + 1, c: prefix.length };
   },
   O: (editor, _env, p) => {
-    const line = editor.getLine(p.l);
-    const leadingWhiteChars = line.length - line.trimStart().length;
-    const prefix = line.slice(0, leadingWhiteChars);
+    const prefix = getLineWhitePrefix(editor, p.l);
     const lineStart = { l: p.l, c: 0 };
     editor.editText({ anchor: lineStart, active: lineStart }, prefix + "\n");
     return { l: p.l, c: prefix.length };
-  },
-  C: (editor, _env, p) => {
-    const line = editor.getLine(p.l);
-    editor.editText({ anchor: p, active: { l: p.l, c: line.length } }, "");
-    return { l: p.l, c: p.c };
   },
 };
 
@@ -78,6 +74,7 @@ function cutWithMotion(
           active: fixPos(editor, motionEnd, 1),
         };
 
+  // TODO show register diff in tests
   env.globalState.textRegister[""] = {
     fullLine: false, // TODO implement
     content: editor.getText(region),
@@ -103,16 +100,30 @@ function cutMotionW(e: "e" | "E", w: "w" | "W") {
 
 export const inserts: Chords<Pos, Pos> = {
   ...simpleKeys(insert),
+  C: {
+    type: "action",
+    action: (editor, env, p) => {
+      const line = editor.getLine(p.l);
+      return cutWithMotion(editor, env, p, { l: p.l, c: line.length });
+    },
+  },
   c: {
     type: "menu",
     chords: simpleKeys({
-      c: (editor, _env, p) => {
+      c: (editor, env, p) => {
         const line = editor.getLine(p.l);
-        editor.editText(
-          { anchor: { l: p.l, c: 0 }, active: { l: p.l, c: line.length } },
-          ""
+        const prefix = getLineWhitePrefix(editor, p.l);
+        cutWithMotion(
+          editor,
+          env,
+          { l: p.l, c: 0 },
+          { l: p.l, c: line.length }
         );
-        return { l: p.l, c: 0 };
+        editor.editText(
+          { anchor: { l: p.l, c: 0 }, active: { l: p.l, c: 0 } },
+          prefix
+        );
+        return { l: p.l, c: prefix.length };
       },
       // TODO instead, implement motion with different modes (as context)
       /* c{w,W} is c{e,E} when cursor is not on whitespace */
