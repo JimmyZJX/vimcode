@@ -1,6 +1,7 @@
 import { Editor, Pos } from "../../editorInterface";
-import { Action, Chords, Env, testKeys, simpleKeys, emptyEnv } from "../common";
+import { Action, Chords, emptyEnv, Env, simpleKeys, testKeys } from "../common";
 import { left, right, upDown } from "./basic";
+import { lineMotions } from "./line";
 import { back, forwardEnd, forwardWord } from "./word";
 
 // TODO motion has a "preferred interpretation"
@@ -28,7 +29,10 @@ const actions: Record<string, Action<Pos, Pos>> = {
   B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
-export const motions: Chords<Pos, Pos> = simpleKeys(actions);
+export const motions: Chords<Pos, Pos> = {
+  ...simpleKeys(actions),
+  ...lineMotions,
+};
 
 export function testMotionKeys(
   editor: Editor,
