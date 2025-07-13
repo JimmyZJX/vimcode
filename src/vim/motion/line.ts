@@ -2,7 +2,7 @@ import { Editor, Pos } from "../../editorInterface";
 import { Chords, simpleKeys } from "../common";
 import { getLineWhitePrefix } from "../lineUtil";
 
-// TODO all calls to `getLineWhitePrefix` might be wrong if the line is all white spaces
+/** suitable for normal mode */
 function lineNonWhiteStart(editor: Editor, l: number) {
   const line = editor.getLine(l);
   const whiteLength = getLineWhitePrefix(editor, l).length;
