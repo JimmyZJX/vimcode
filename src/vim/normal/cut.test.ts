@@ -1,7 +1,4 @@
-import { Editor } from "../../editorInterface";
 import { withEditor } from "../../testUtils";
-import { Env, testKeys } from "../common";
-import { inserts } from "./insert";
 import { testInsertKeys } from "./insert.test";
 
 it("insert", () => {
