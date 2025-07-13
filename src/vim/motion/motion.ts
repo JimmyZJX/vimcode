@@ -1,5 +1,5 @@
 import { Editor, Pos } from "../../editorInterface";
-import { Action, Chords, Env, testKeys, simpleKeys } from "../common";
+import { Action, Chords, Env, testKeys, simpleKeys, emptyEnv } from "../common";
 import { left, right, upDown } from "./basic";
 import { back, forwardEnd, forwardWord } from "./word";
 
@@ -41,6 +41,6 @@ export function testMotionKeys(
     chords: motions,
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => (editor.selections = [{ anchor: pos, active: pos }]),
-    env: env ?? { options: {}, flash: {} },
+    env: env ?? emptyEnv(),
   });
 }

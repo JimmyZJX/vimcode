@@ -1,5 +1,5 @@
 import { withEditor } from "../../testUtils";
-import { Env } from "../common";
+import { emptyEnv, Env } from "../common";
 import { testMotionKeys } from "./motion";
 
 it("motion basic", () => {
@@ -7,7 +7,7 @@ it("motion basic", () => {
     editor.cursor = { type: "block" };
     writeState("init");
 
-    let env: Env = { options: {}, flash: {} };
+    let env = emptyEnv();
 
     testMotionKeys(editor, ["l", "l", "l", "l"], env);
     writeState("l * 4");

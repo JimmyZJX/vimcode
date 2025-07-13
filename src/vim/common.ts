@@ -2,14 +2,28 @@ import { Editor } from "../editorInterface";
 
 export type Options = {};
 
+export type GlobalState = {
+  // TODO this should be a class
+  textRegister: Record<string, { fullLine: boolean; content: string }>;
+};
+
 export type Flash = {
   preferredColumn?: number;
 };
 
 export type Env = {
   options: Options;
+  globalState: GlobalState;
   flash: Flash;
 };
+
+export function emptyEnv(): Env {
+  return {
+    options: {},
+    globalState: { textRegister: {} },
+    flash: {},
+  };
+}
 
 export type Action<Input, Output> = (
   editor: Editor,

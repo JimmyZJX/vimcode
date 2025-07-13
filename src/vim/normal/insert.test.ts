@@ -1,6 +1,6 @@
 import { Editor } from "../../editorInterface";
 import { withEditor } from "../../testUtils";
-import { Env, testKeys } from "../common";
+import { emptyEnv, Env, testKeys } from "../common";
 import { inserts } from "./insert";
 
 export function testInsertKeys(
@@ -17,7 +17,7 @@ export function testInsertKeys(
       editor.cursor = { type: "line" };
       editor.selections = [{ anchor: pos, active: pos }];
     },
-    env: env ?? { options: {}, flash: {} },
+    env: env ?? emptyEnv(),
   });
 }
 

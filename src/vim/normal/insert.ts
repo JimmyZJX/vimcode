@@ -55,7 +55,7 @@ const insert: Record<string, Action<Pos, Pos>> = {
 
 function cutWithMotion(
   editor: Editor,
-  _env: Env,
+  env: Env,
   normalCursorPos: Pos,
   motionEnd: Pos
 ): Pos {
@@ -77,6 +77,12 @@ function cutWithMotion(
           anchor: normalCursorPos,
           active: fixPos(editor, motionEnd, 1),
         };
+
+  env.globalState.textRegister[""] = {
+    fullLine: false, // TODO implement
+    content: editor.getText(region),
+  };
+
   editor.editText(region, "");
   return region.anchor;
 }
