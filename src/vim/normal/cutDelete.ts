@@ -163,4 +163,22 @@ export const deletes: Chords<Pos, Pos> = {
   d: cutOrDelete({
     d: deleteCurrentLine,
   }),
+  r: {
+    type: "menu",
+    chords: {},
+    // TODO better design? returning output directly if is "action"?
+    fallback: (_editor, _env, { key, input: _ }) => {
+      if (key.length > 1) return undefined;
+      return {
+        type: "action",
+        action: (editor, _env, p) => {
+          const line = editor.getLine(p.l);
+          if (p.c < line.length) {
+            editor.editText({ anchor: p, active: { l: p.l, c: p.c + 1 } }, key);
+          }
+          return { l: p.l, c: p.c };
+        },
+      };
+    },
+  },
 };

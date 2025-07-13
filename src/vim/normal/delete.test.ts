@@ -38,6 +38,10 @@ it("delete", () => {
       editor.selections = [{ anchor: { l: 0, c: 1 }, active: { l: 0, c: 1 } }];
       editor.cursor = { type: "block" };
       writeState("reset");
+
+      testDeleteKeys(editor, ["r", "d"]);
+      writeState("rd");
+
       testDeleteKeys(editor, ["d", "d"]);
       writeState("dd");
 
@@ -78,6 +82,9 @@ it("delete", () => {
         testDeleteKeys(editor, ["d", "d"]);
         writeState("dd");
       }
+
+      testDeleteKeys(editor, ["r", "a"]);
+      writeState("ra");
     }
   );
 });
