@@ -1,12 +1,5 @@
 import { Editor, Pos } from "../editorInterface";
-import {
-  ChordMenuMapper,
-  collapse,
-  CollapsedChordEntry,
-  createMenuWithMap,
-  Env,
-  getKey,
-} from "./common";
+import { ChordMenu, Env, followKey, mapChordMenu } from "./common";
 import { fixNormalCursor } from "./modeUtil";
 import { motions } from "./motion/motion";
 import { deletes } from "./normal/cutDelete";
@@ -20,72 +13,74 @@ type State =
   | {
       mode: "normal";
       pending: boolean;
-      menu: ChordMenuMapper<Pos, NormalModeResult> | undefined;
+      menu: ChordMenu<Pos, NormalModeResult> | undefined;
     }
   | { mode: "insert" }; // TODO insert chords
-
-type RunKeyResult<I, O> =
-  | { type: "done"; output: O }
-  | { type: "menu"; menu: ChordMenuMapper<I, O> }
-  | undefined;
 
 export class Vim {
   constructor(readonly editor: Editor, readonly env: Env) {}
 
-  private runKey<I, O>(
-    menu: ChordMenuMapper<I, O>,
-    key: string,
-    getInput: () => I
-  ): RunKeyResult<I, O> {
-    return menu((map, chords) => {
-      const entry = getKey(chords, key, this.editor, this.env, getInput());
-      if (entry === undefined) return undefined;
-      const r: CollapsedChordEntry<I, O> = collapse((k) => k(map, entry));
+  private state: State = { mode: "normal", pending: false, menu: undefined };
 
-      if (r.type === "menu") return r;
+  private static normalMenus: ChordMenu<Pos, NormalModeResult> = {
+    type: "multi",
+    menus: [
+      mapChordMenu(
+        (i) => i,
+        {
+          type: "impl",
+          impl: { type: "keys", keys: { ...motions, ...deletes } },
+        },
+        (_editor, _env, { input: _, output }) => ({
+          pos: output,
+          toMode: "normal",
+        })
+      ),
+      mapChordMenu(
+        (i) => i,
+        { type: "impl", impl: { type: "keys", keys: inserts } },
+        (_editor, _env, { input: _, output }) => ({
+          pos: output,
+          toMode: "insert",
+        })
+      ),
+    ],
+  };
 
+  private runKey<I, O>(menu: ChordMenu<I, O>, getInput: () => I, key: string) {
+    const r = followKey(menu, getInput(), key, this.editor, this.env);
+    if (r === undefined) return undefined;
+    if (r.type === "menu") return r;
+    if (r.type === "action") {
+      // clear flash on top-level chords
       const oldFlash = this.env.flash;
       const output = r.action(this.editor, this.env, getInput());
       if (this.env.flash === oldFlash) {
         this.env.flash = {};
       }
-      return { type: "done", output };
-    });
-  }
-
-  private pickRun<I, O>(
-    menus: ChordMenuMapper<I, O>[],
-    key: string,
-    getInput: () => I
-  ): RunKeyResult<I, O> {
-    for (const menu of menus) {
-      const r = this.runKey(menu, key, getInput);
-      if (r !== undefined) return r;
+      return { type: "output" as const, output };
     }
   }
-
-  private state: State = { mode: "normal", pending: false, menu: undefined };
-
-  private static normalMenus: ChordMenuMapper<Pos, NormalModeResult>[] = [
-    createMenuWithMap({ keys: motions }, (pos) => ({ pos, toMode: "normal" })),
-    createMenuWithMap({ keys: deletes }, (pos) => ({ pos, toMode: "normal" })),
-    createMenuWithMap({ keys: inserts }, (pos) => ({ pos, toMode: "insert" })),
-  ];
 
   public onKey(key: string): { processed: boolean; mode: Mode } {
     switch (this.state.mode) {
       case "normal": {
         const getInput = () => this.editor.selections[0].active;
-        const runKeyResult =
-          this.state.menu === undefined
-            ? this.pickRun(Vim.normalMenus, key, getInput)
-            : this.runKey(this.state.menu, key, getInput);
+        const runKeyResult = this.runKey(
+          this.state.menu ?? Vim.normalMenus,
+          getInput,
+          key
+        );
         if (runKeyResult === undefined) {
           // TODO LOG key not found
           this.state.pending = false;
           this.state.menu = undefined;
           return { processed: true, mode: "normal" };
-        } else if (runKeyResult.type === "done") {
+        } else if (runKeyResult.type === "menu") {
+          this.state.pending = true;
+          this.state.menu = runKeyResult.menu;
+          return { processed: true, mode: "operator-pending" };
+        } else {
           this.state.pending = false;
           this.state.menu = undefined;
           const { pos, toMode } = runKeyResult.output;
@@ -101,10 +96,6 @@ export class Vim {
             this.editor.cursor = { type: "line" };
             return { processed: true, mode: "insert" };
           }
-        } else {
-          this.state.pending = true;
-          this.state.menu = runKeyResult.menu;
-          return { processed: true, mode: "operator-pending" };
         }
       }
       case "insert": {

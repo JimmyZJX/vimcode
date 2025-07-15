@@ -12,7 +12,7 @@ export function testDeleteKeys(
   testKeys({
     editor,
     keys,
-    chords: { keys: deletes },
+    chords: { type: "impl", impl: { type: "keys", keys: deletes } },
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "block" };

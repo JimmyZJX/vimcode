@@ -1,5 +1,5 @@
 import { Pos } from "../../editorInterface";
-import { Action, Chords, simpleKeys } from "../common";
+import { Action, ChordKeys, simpleKeys } from "../common";
 import { getLineWhitePrefix } from "../lineUtil";
 import { cuts } from "./cutDelete";
 
@@ -31,7 +31,7 @@ const insert: Record<string, Action<Pos, Pos>> = {
   },
 };
 
-export const inserts: Chords<Pos, Pos>["keys"] = {
+export const inserts: ChordKeys<Pos, Pos> = {
   ...simpleKeys(insert),
   ...cuts,
 };

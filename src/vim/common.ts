@@ -27,33 +27,122 @@ export function emptyEnv(): Env {
 
 export type Action<I, O> = (editor: Editor, env: Env, input: I) => O;
 
-type ChordMapper<I, O> = <R>(
-  k: <Inner>(map: (inner: Inner) => O, inner: ChordEntry<I, Inner>) => R
+export type ChordEntry<I, O> =
+  | { type: "menu"; menu: ChordMenu<I, O> }
+  | { type: "action"; action: Action<I, O> };
+
+export type ChordKeys<I, O> = Record<string, ChordEntry<I, O> | undefined>;
+
+// TODO use `null` to immediately fail
+export type ChordMenuImpl<I, O> =
+  | { type: "keys"; keys: Record<string, ChordEntry<I, O> | undefined> }
+  | {
+      type: "fn";
+      fn: Action<{ key: string; input: I }, ChordEntry<I, O> | undefined>;
+    };
+
+export type ChordMenu<I, O> =
+  | { type: "map"; mapper: ChordMenuMapper<I, O> }
+  | { type: "impl"; impl: ChordMenuImpl<I, O> }
+  | { type: "multi"; menus: ChordMenu<I, O>[] };
+
+type ChordMenuMapper<I, O> = <R>(
+  k: <I_, O_>(
+    mapInput: (input: I) => I_,
+    inner: ChordMenu<I_, O_>,
+    mapOutput: Action<{ input: I; output: O_ }, O>
+  ) => R
 ) => R;
 
-export type ChordEntry<I, O> =
-  | { type: "menu"; chords: Chords<I, O> }
-  | { type: "action"; action: Action<I, O> }
-  | { type: "map"; mapper: ChordMapper<I, O> };
-
-export type Chords<I, O> = {
-  keys: Record<string, ChordEntry<I, O> | undefined>;
-  fallback?: Action<{ key: string; input: I }, ChordEntry<I, O> | undefined>;
-};
-
-export function getKey<I, O>(
-  { keys, fallback }: Chords<I, O>,
-  key: string,
-  editor: Editor,
-  env: Env,
-  input: I
-): ChordEntry<I, O> | undefined {
-  return keys[key] || (fallback && fallback(editor, env, { key, input }));
+export function mapChordMenu<I, I_, O_, O>(
+  mapInput: (input: I) => I_,
+  inner: ChordMenu<I_, O_>,
+  mapOutput: Action<{ input: I; output: O_ }, O>
+): ChordMenu<I, O> {
+  return { type: "map", mapper: (k) => k(mapInput, inner, mapOutput) };
 }
 
-export type ChordMenuMapper<I, O> = <R>(
-  k: <Inner>(map: (inner: Inner) => O, chords: Chords<I, Inner>) => R
-) => R;
+function followKeyGeneric<I, I_, O_, O>(
+  menu: ChordMenu<I_, O_>,
+  input: I,
+  mapInput: (input: I) => I_,
+  mapOutput: Action<{ input: I; output: O_ }, O>,
+  key: string,
+  editor: Editor,
+  env: Env
+): ChordEntry<I, O> | undefined {
+  if (menu.type === "map") {
+    return menu.mapper((mapInput_, inner, mapOutput_) => {
+      const mapInp = (input: I) => mapInput_(mapInput(input));
+      return followKeyGeneric(
+        inner,
+        input,
+        mapInp,
+        (editor, env, { input, output }) =>
+          mapOutput(editor, env, {
+            input: input,
+            output: mapOutput_(editor, env, { input: mapInput(input), output }),
+          }),
+        key,
+        editor,
+        env
+      );
+    });
+  } else if (menu.type === "multi") {
+    for (const m of menu.menus) {
+      const entry = followKeyGeneric(
+        m,
+        input,
+        mapInput,
+        mapOutput,
+        key,
+        editor,
+        env
+      );
+      if (entry !== undefined) return entry;
+    }
+    return undefined;
+  } else {
+    const impl = menu.impl;
+    const entry =
+      impl.type === "keys"
+        ? impl.keys[key]
+        : impl.fn(editor, env, { key, input: mapInput(input) });
+    if (entry === undefined) {
+      return undefined;
+    }
+    if (entry.type === "action")
+      return {
+        type: "action",
+        action: (editor, env, input) => {
+          const rawOutput = entry.action(editor, env, mapInput(input));
+          return mapOutput(editor, env, { input, output: rawOutput });
+        },
+      };
+    return {
+      type: "menu",
+      menu: mapChordMenu(mapInput, entry.menu, mapOutput),
+    };
+  }
+}
+
+export function followKey<I, O>(
+  chordMenu: ChordMenu<I, O>,
+  input: I,
+  key: string,
+  editor: Editor,
+  env: Env
+): ChordEntry<I, O> | undefined {
+  return followKeyGeneric(
+    chordMenu,
+    input,
+    (i) => i,
+    (_editor, _env, { input: _, output }) => output,
+    key,
+    editor,
+    env
+  );
+}
 
 export type CollapsedChordEntry<I, O> =
   | { type: "menu"; menu: ChordMenuMapper<I, O> }
@@ -61,87 +150,13 @@ export type CollapsedChordEntry<I, O> =
 
 export function simpleKeys<I, O>(
   actions: Record<string, Action<I, O> | undefined>
-): Record<string, ChordEntry<I, O> | undefined> {
+): ChordKeys<I, O> {
   return Object.fromEntries(
     Object.entries(actions).map(([k, action]) => [
       k,
       action && { type: "action", action },
     ])
   );
-}
-
-// TODO set mode to operator-pending (or should we set it globally whenever a sequence
-// is pending?)
-// TODO free-monad-like type definition to help?
-// TODO fix and refactor this
-export function runChordWithCallback<I, O, Output2>({
-  chords,
-  callback,
-}: {
-  chords: Chords<I, O>;
-  callback: Action<{ input: I; output: O }, Output2>;
-}): Action<{ key: string; input: I }, ChordEntry<I, Output2> | undefined> {
-  return (editor, env, { key, input }) => {
-    const entry = getKey(chords, key, editor, env, input);
-    if (entry === undefined) return undefined;
-
-    if (entry.type === "menu") {
-      return {
-        type: "menu",
-        chords: {
-          keys: {},
-          fallback: runChordWithCallback({
-            chords: entry.chords,
-            callback,
-          }),
-        },
-      };
-    } else if (entry.type === "action") {
-      return {
-        type: "action",
-        action: (editor, env, input) => {
-          const output = entry.action(editor, env, input);
-          return callback(editor, env, { input, output });
-        },
-      };
-    } else {
-      // TODO
-      throw new Error("unimplemented");
-    }
-  };
-}
-
-export function collapse<I, O>(
-  mapper: ChordMapper<I, O>
-): CollapsedChordEntry<I, O> {
-  return mapper((map, inner) => {
-    if (inner.type === "map") {
-      return inner.mapper((map_, inner_) => {
-        return collapse((k) => k((x) => map(map_(x)), inner_));
-      });
-    } else if (inner.type === "action") {
-      return {
-        type: "action",
-        action: (editor, env, input) => map(inner.action(editor, env, input)),
-      };
-    } else {
-      return {
-        type: "menu",
-        menu: (k) => k(map, inner.chords),
-      };
-    }
-  });
-}
-
-export function createMenuWithMap<I, Inner, O>(
-  chords: Chords<I, Inner>,
-  map: (inner: Inner) => O
-): ChordMenuMapper<I, O> {
-  return (k) => k(map, chords);
-}
-
-export function createMenu<I, O>(chords: Chords<I, O>): ChordMenuMapper<I, O> {
-  return createMenuWithMap(chords, (x) => x);
 }
 
 /** `getInput` should be fast */
@@ -155,51 +170,39 @@ export function testKeys<I, O>({
 }: {
   editor: Editor;
   keys: string[];
-  chords: Chords<I, O>;
+  chords: ChordMenu<I, O>;
   getInput: () => I;
   onOutput: (output: O) => void;
   env: Env;
 }): void {
-  const init: ChordMenuMapper<I, O> = (k) => k((x) => x, chords);
+  const init = chords;
   let cur = init;
 
   for (const key of keys) {
-    const r:
-      | { type: "none" }
-      | { type: "processed"; state: ChordMenuMapper<I, O> }
-      | { type: "output"; output: O } = cur((map, chords) => {
-      let entry = getKey(chords, key, editor, env, getInput());
-
-      if (entry === undefined) return { type: "none" };
-      const collapsed: CollapsedChordEntry<I, O> = collapse((k) =>
-        k(map, entry)
-      );
-      if (collapsed.type === "menu") {
-        return {
-          type: "processed",
-          state: collapsed.menu,
-        };
-      } else {
-        const oldFlash = env.flash;
-        const output = collapsed.action(editor, env, getInput());
-        if (env.flash === oldFlash) {
-          env.flash = {};
-        }
-        return { type: "output", output };
-      }
-    });
-
-    if (r.type === "none") {
+    const r = followKey(cur, getInput(), key, editor, env);
+    if (r === undefined) {
       throw new Error(`Chord not found: ${keys.join(" ")}`);
-    } else if (r.type === "processed") {
-      cur = r.state;
+    }
+    if (r.type === "menu") {
+      cur = r.menu;
     } else {
-      onOutput(r.output);
+      // In test, every key chord triggers a flash
+      const oldFlash = env.flash;
+      const output = r.action(editor, env, getInput());
+      if (env.flash === oldFlash) {
+        env.flash = {};
+      }
+      onOutput(output);
       cur = init;
     }
   }
 
   if (cur !== init) {
-    throw new Error("Chords not fully applied: " + keys.join(" "));
+    throw new Error(
+      "Chords not fully applied: " +
+        keys.join(" ") +
+        "\nJSON\n====\n" +
+        JSON.stringify(cur)
+    );
   }
 }

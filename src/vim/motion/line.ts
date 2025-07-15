@@ -1,5 +1,5 @@
 import { Editor, Pos } from "../../editorInterface";
-import { Chords, simpleKeys } from "../common";
+import { ChordKeys, simpleKeys } from "../common";
 import { getLineWhitePrefix } from "../lineUtil";
 
 /** suitable for normal mode */
@@ -9,7 +9,7 @@ function lineNonWhiteStart(editor: Editor, l: number) {
   return { l, c: Math.max(0, Math.min(line.length - 1, whiteLength)) };
 }
 
-const lineStartEnd: Chords<Pos, Pos>["keys"] = simpleKeys({
+const lineStartEnd: ChordKeys<Pos, Pos> = simpleKeys({
   "0": (_editor, _env, p) => {
     return { l: p.l, c: 0 };
   },
@@ -21,20 +21,24 @@ const lineStartEnd: Chords<Pos, Pos>["keys"] = simpleKeys({
   },
 });
 
-export const lineMotions: Chords<Pos, Pos>["keys"] = {
+export const lineMotions: ChordKeys<Pos, Pos> = {
   g: {
     type: "menu",
-    chords: {
-      keys: {
-        ...lineStartEnd,
-        ...simpleKeys({
-          g: (editor, _env, _p) => {
-            return lineNonWhiteStart(editor, 0);
-          },
-          _: (editor, _env, p) => {
-            return { l: p.l, c: Math.max(0, editor.getLine(p.l).length - 1) };
-          },
-        }),
+    menu: {
+      type: "impl",
+      impl: {
+        type: "keys",
+        keys: {
+          ...lineStartEnd,
+          ...simpleKeys({
+            g: (editor, _env, _p) => {
+              return lineNonWhiteStart(editor, 0);
+            },
+            _: (editor, _env, p) => {
+              return { l: p.l, c: Math.max(0, editor.getLine(p.l).length - 1) };
+            },
+          }),
+        },
       },
     },
   },

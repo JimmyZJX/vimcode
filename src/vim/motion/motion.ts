@@ -1,5 +1,12 @@
 import { Editor, Pos } from "../../editorInterface";
-import { Action, Chords, emptyEnv, Env, simpleKeys, testKeys } from "../common";
+import {
+  Action,
+  ChordKeys,
+  emptyEnv,
+  Env,
+  simpleKeys,
+  testKeys,
+} from "../common";
 import { left, right, upDown } from "./basic";
 import { lineMotions } from "./line";
 import { back, forwardEnd, forwardWord } from "./word";
@@ -29,7 +36,7 @@ const actions: Record<string, Action<Pos, Pos>> = {
   B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
-export const motions: Chords<Pos, Pos>["keys"] = {
+export const motions: ChordKeys<Pos, Pos> = {
   ...simpleKeys(actions),
   ...lineMotions,
 };
@@ -42,7 +49,7 @@ export function testMotionKeys(
   testKeys({
     editor,
     keys,
-    chords: { keys: motions },
+    chords: { type: "impl", impl: { type: "keys", keys: motions } },
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => (editor.selections = [{ anchor: pos, active: pos }]),
     env: env ?? emptyEnv(),

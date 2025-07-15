@@ -7,17 +7,17 @@ import {
 } from "../../editorInterface";
 import {
   Action,
-  ChordEntry,
-  Chords,
+  ChordKeys,
+  ChordMenu,
   Env,
-  runChordWithCallback,
+  mapChordMenu,
   simpleKeys,
 } from "../common";
 import { getLineWhitePrefix } from "../lineUtil";
 import { motions } from "../motion/motion";
 import { getCharType } from "../motion/word";
 
-function delWithMotion(
+export function delWithMotion(
   editor: Editor,
   env: Env,
   normalCursorPos: Pos,
@@ -110,29 +110,35 @@ function deleteCurrentLine(editor: Editor, env: Env, p: Pos) {
 
 function cutOrDelete(
   actions: Record<string, Action<Pos, Pos> | undefined>
-): ChordEntry<Pos, Pos> {
+): ChordMenu<Pos, Pos> {
   return {
-    type: "menu",
-    chords: {
-      keys: simpleKeys({
-        // TODO instead, implement motion with different modes (as context)
-        /* c{w,W} is c{e,E} when cursor is not on whitespace */
-        w: delMotionW("e", "w"),
-        W: delMotionW("E", "W"),
-        ...actions,
-      }),
-      fallback: runChordWithCallback({
-        chords: { keys: motions },
-        callback: (editor, env, { input, output }) => {
-          // TODO use suggested region
-          return delWithMotion(editor, env, input, output);
+    type: "multi",
+    menus: [
+      {
+        type: "impl",
+        impl: {
+          type: "keys",
+          keys: simpleKeys({
+            // TODO instead, implement motion with different modes (as context)
+            /* c{w,W} is c{e,E} when cursor is not on whitespace */
+            w: delMotionW("e", "w"),
+            W: delMotionW("E", "W"),
+            ...actions,
+          }),
         },
-      }),
-    },
+      },
+      mapChordMenu(
+        (i) => i,
+        { type: "impl", impl: { type: "keys", keys: motions } },
+        (editor, env, { input, output }) => {
+          return delWithMotion(editor, env, input, output);
+        }
+      ),
+    ],
   };
 }
 
-export const cuts: Chords<Pos, Pos>["keys"] = {
+export const cuts: ChordKeys<Pos, Pos> = {
   ...simpleKeys({
     s: (editor, env, p) => {
       return delWithMotion(editor, env, p, fixPos(editor, p, 1));
@@ -143,10 +149,10 @@ export const cuts: Chords<Pos, Pos>["keys"] = {
       return delWithMotion(editor, env, p, { l: p.l, c: line.length });
     },
   }),
-  c: cutOrDelete({ c: cutCurrentLine }),
+  c: { type: "menu", menu: cutOrDelete({ c: cutCurrentLine }) },
 };
 
-export const deletes: Chords<Pos, Pos>["keys"] = {
+export const deletes: ChordKeys<Pos, Pos> = {
   ...simpleKeys({
     x: (editor, env, p) => {
       return delWithMotion(editor, env, p, p);
@@ -161,29 +167,34 @@ export const deletes: Chords<Pos, Pos>["keys"] = {
       return delWithMotion(editor, env, p, { l: p.l, c: line.length });
     },
   }),
-  d: cutOrDelete({
-    d: deleteCurrentLine,
-  }),
+  d: {
+    type: "menu",
+    menu: cutOrDelete({
+      d: deleteCurrentLine,
+    }),
+  },
   r: {
     type: "menu",
-    chords: {
-      keys: {},
-      // TODO better design? returning output directly if is "action"?
-      fallback: (_editor, _env, { key, input: _ }) => {
-        if (key.length > 1) return undefined;
-        return {
-          type: "action",
-          action: (editor, _env, p) => {
-            const line = editor.getLine(p.l);
-            if (p.c < line.length) {
-              editor.editText(
-                { anchor: p, active: { l: p.l, c: p.c + 1 } },
-                key
-              );
-            }
-            return { l: p.l, c: p.c };
-          },
-        };
+    menu: {
+      type: "impl",
+      impl: {
+        type: "fn",
+        fn: (_editor, _env, { key, input: _ }) => {
+          if (key.length > 1) return undefined;
+          return {
+            type: "action",
+            action: (editor, _env, p) => {
+              const line = editor.getLine(p.l);
+              if (p.c < line.length) {
+                editor.editText(
+                  { anchor: p, active: { l: p.l, c: p.c + 1 } },
+                  key
+                );
+              }
+              return { l: p.l, c: p.c };
+            },
+          };
+        },
       },
     },
   },
