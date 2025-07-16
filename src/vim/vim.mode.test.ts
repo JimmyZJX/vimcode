@@ -24,5 +24,11 @@ it("insert", () => {
     type("cw");
     type("abc");
     type(["<escape>"]);
+
+    type("hv");
+    type("ll");
+    type("l");
+    type("hhh");
+    type("d");
   });
 });

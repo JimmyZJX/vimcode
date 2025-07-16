@@ -36,6 +36,7 @@ export function fixPos(editor: Editor, p: Pos, offset?: number) {
 export type Cursor =
   | { type: "line" }
   | { type: "block" }
+  // | { type: "blockBefore" }
   | { type: "halfBlock" };
 
 export interface Editor {
