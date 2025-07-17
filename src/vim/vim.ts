@@ -17,6 +17,7 @@ type VisualModeResult = { active: Pos; toMode: "visual" | "normal" | "insert" };
 type State =
   | {
       mode: "normal";
+      // TODO duplicated info? [menu === undefined] <=> pending
       pending: boolean;
       menu: ChordMenu<Pos, NormalModeResult> | undefined;
     }
@@ -26,6 +27,11 @@ type State =
       menu: ChordMenu<Selection, VisualModeResult> | undefined;
     }
   | { mode: "insert" }; // TODO insert chords
+
+function isStatePending(state: State) {
+  if (state.mode === "insert") return false;
+  return state.pending;
+}
 
 export class Vim {
   constructor(readonly editor: Editor, readonly env: Env) {}
@@ -137,103 +143,112 @@ export class Vim {
     }
   }
 
+  private runVisual(
+    key: string,
+    state: Extract<State, { mode: "visual" }>
+  ): State {
+    const visualSelection = visualFromEditor(
+      this.editor,
+      this.editor.selections[0]
+    );
+    const getInput = () => visualSelection;
+    const runKeyResult = this.runKey(
+      state.menu ?? Vim.visualMenus,
+      getInput,
+      key
+    );
+    if (runKeyResult === undefined) {
+      // TODO LOG key not found
+      return { mode: "visual", pending: false, menu: undefined };
+    }
+    if (runKeyResult.type === "menu") {
+      return { mode: "visual", pending: true, menu: runKeyResult.menu };
+    }
+    const { active, toMode } = runKeyResult.output;
+    if (toMode === "normal") {
+      // TODO global fix to hook, also when mode is changed TO normal
+      const fixed = fixNormalCursor(this.editor, active);
+      this.editor.cursor = { type: "block" };
+      this.editor.selections = [{ anchor: fixed, active: fixed }];
+      return { mode: "normal", pending: false, menu: undefined };
+    } else if (toMode === "visual") {
+      this.editor.selections = [
+        visualToEditor(this.editor, {
+          anchor: visualSelection.anchor,
+          active,
+        }),
+      ];
+      // TODO "blockBefore" cursor type (non-blinking)
+      // TODO depending on the order of anchor/active!
+      this.editor.cursor = { type: "line" };
+      return { mode: "visual", pending: false, menu: undefined };
+    } else {
+      // toMode === "insert"
+      this.editor.selections = [{ anchor: active, active }];
+      this.editor.cursor = { type: "line" };
+      return { mode: "insert" };
+    }
+  }
+
+  private runNormal(
+    key: string,
+    state: Extract<State, { mode: "normal" }>
+  ): State {
+    const getInput = () => this.editor.selections[0].active;
+    const runKeyResult = this.runKey(
+      state.menu ?? Vim.normalMenus,
+      getInput,
+      key
+    );
+    if (runKeyResult === undefined) {
+      // TODO LOG key not found
+      return { mode: "normal", pending: false, menu: undefined };
+    }
+    if (runKeyResult.type === "menu") {
+      return { mode: "normal", pending: true, menu: runKeyResult.menu };
+    }
+    const { pos, toMode } = runKeyResult.output;
+    if (toMode === "normal") {
+      // TODO global fix to hook, also when mode is changed TO normal
+      const fixed = fixNormalCursor(this.editor, pos);
+      this.editor.selections = [{ anchor: fixed, active: fixed }];
+      return { mode: "normal", pending: false, menu: undefined };
+    } else if (toMode === "visual") {
+      // only possible via "v" for now
+      this.editor.selections = [
+        { anchor: pos, active: fixPos(this.editor, pos, 1) },
+      ];
+      // TODO "blockBefore" cursor type (non-blinking)
+      // TODO depending on the order of anchor/active!
+      this.editor.cursor = { type: "line" };
+      return { mode: "visual", pending: false, menu: undefined };
+    } else {
+      this.editor.selections = [{ anchor: pos, active: pos }];
+      this.editor.cursor = { type: "line" };
+      return { mode: "insert" };
+    }
+  }
+
   public onKey(key: string): { processed: boolean; mode: Mode } {
     switch (this.state.mode) {
       case "visual": {
         // check if selection is forward or backward
-        const visualSelection = visualFromEditor(
-          this.editor,
-          this.editor.selections[0]
-        );
-        const getInput = () => visualSelection;
-        const runKeyResult = this.runKey(
-          this.state.menu ?? Vim.visualMenus,
-          getInput,
-          key
-        );
-        if (runKeyResult === undefined) {
-          // TODO LOG key not found
-          this.state.pending = false;
-          this.state.menu = undefined;
-          return { processed: true, mode: "visual" };
-        } else if (runKeyResult.type === "menu") {
-          this.state.pending = true;
-          this.state.menu = runKeyResult.menu;
-          return { processed: true, mode: "operator-pending" };
-        } else {
-          this.state.pending = false;
-          this.state.menu = undefined;
-          const { active, toMode } = runKeyResult.output;
-
-          if (toMode === "normal") {
-            // TODO global fix to hook, also when mode is changed TO normal
-            const fixed = fixNormalCursor(this.editor, active);
-            this.editor.cursor = { type: "block" };
-            this.editor.selections = [{ anchor: fixed, active: fixed }];
-            return { processed: true, mode: "normal" };
-          } else if (toMode === "visual") {
-            this.editor.selections = [
-              visualToEditor(this.editor, {
-                anchor: visualSelection.anchor,
-                active,
-              }),
-            ];
-            // TODO "blockBefore" cursor type (non-blinking)
-            // TODO depending on the order of anchor/active!
-            this.editor.cursor = { type: "line" };
-            return { processed: true, mode: "visual" };
-          } else {
-            // toMode === "insert"
-            this.editor.selections = [{ anchor: active, active }];
-            this.state = { mode: "insert" };
-            this.editor.cursor = { type: "line" };
-            return { processed: true, mode: "insert" };
-          }
-        }
+        this.state = this.runVisual(key, this.state);
+        return {
+          processed: true,
+          mode: isStatePending(this.state)
+            ? "operator-pending"
+            : this.state.mode,
+        };
       }
       case "normal": {
-        const getInput = () => this.editor.selections[0].active;
-        const runKeyResult = this.runKey(
-          this.state.menu ?? Vim.normalMenus,
-          getInput,
-          key
-        );
-        if (runKeyResult === undefined) {
-          // TODO LOG key not found
-          this.state.pending = false;
-          this.state.menu = undefined;
-          return { processed: true, mode: "normal" };
-        } else if (runKeyResult.type === "menu") {
-          this.state.pending = true;
-          this.state.menu = runKeyResult.menu;
-          return { processed: true, mode: "operator-pending" };
-        } else {
-          this.state.pending = false;
-          this.state.menu = undefined;
-          const { pos, toMode } = runKeyResult.output;
-
-          if (toMode === "normal") {
-            // TODO global fix to hook, also when mode is changed TO normal
-            const fixed = fixNormalCursor(this.editor, pos);
-            this.editor.selections = [{ anchor: fixed, active: fixed }];
-            return { processed: true, mode: "normal" };
-          } else if (toMode === "visual") {
-            // only possible via "v" for now
-            this.editor.selections = [
-              { anchor: pos, active: fixPos(this.editor, pos, 1) },
-            ];
-            // TODO "blockBefore" cursor type (non-blinking)
-            // TODO depending on the order of anchor/active!
-            this.editor.cursor = { type: "line" };
-            this.state = { mode: "visual", pending: false, menu: undefined };
-            return { processed: true, mode: "visual" };
-          } else {
-            this.editor.selections = [{ anchor: pos, active: pos }];
-            this.state = { mode: "insert" };
-            this.editor.cursor = { type: "line" };
-            return { processed: true, mode: "insert" };
-          }
-        }
+        this.state = this.runNormal(key, this.state);
+        return {
+          processed: true,
+          mode: isStatePending(this.state)
+            ? "operator-pending"
+            : this.state.mode,
+        };
       }
       case "insert": {
         if (key === "<escape>") {
