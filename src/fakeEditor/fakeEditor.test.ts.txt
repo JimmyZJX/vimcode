@@ -31,7 +31,7 @@ After edit: The selected 'wor' is replaced with 'abc'.
 Selection changed to multi-line from after 'he' in 'hello' to 'wo' in 'world' is replaced with 'XY'.
 ┌──────┐
 │hello⏎│
-│  ▅▂▂ │
+│  ▅▂▂▂│
 │abcld⏎│
 │▂▂▏   │
 └──────┘
@@ -39,7 +39,7 @@ Selection changed to multi-line from after 'he' in 'hello' to 'wo' in 'world' is
 After multiline edit: selection is replaced with 'XY'.
 ┌────────┐
 │heXYcld⏎│
-│  ▅▂▂▂▂ │
+│  ▅▂▂▂▂▂│
 └────────┘
 
 Fix selection manually

@@ -102,10 +102,10 @@ export class FakeEditor implements Editor {
         let to = l === end.l ? end.c : this.lines[l]?.length ?? 0;
         if (from === to) continue;
         cursorMarkers[l] = cursorMarkers[l] || {};
-        for (let c = from; c < to; c++) {
+        for (let c = from; c <= to; c++) {
           if (l === sel.anchor.l && c === sel.anchor.c) {
             cursorMarkers[l][c] = "▅";
-          } else {
+          } else if (l !== sel.active.l || c !== sel.active.c) {
             cursorMarkers[l][c] = "▂";
           }
         }
