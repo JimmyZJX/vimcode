@@ -49,12 +49,16 @@ export class FakeEditor implements Editor {
       return this.lines.join("\n");
     }
     const { start, end } = rangeOfSelection(selection);
-    const lines = [
-      this.lines[start.l]?.slice(start.c) ?? "",
-      ...this.lines.slice(start.l + 1, end.l),
-      this.lines[end.l]?.slice(0, end.c) ?? "",
-    ];
-    return lines.join("\n");
+    if (start.l === end.l) {
+      return this.lines[start.l].slice(start.c, end.c);
+    } else {
+      const lines = [
+        this.lines[start.l]?.slice(start.c) ?? "",
+        ...this.lines.slice(start.l + 1, end.l),
+        this.lines[end.l]?.slice(0, end.c) ?? "",
+      ];
+      return lines.join("\n");
+    }
   }
 
   getSiblingLine(l: number, offset: number) {

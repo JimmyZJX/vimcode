@@ -1,9 +1,13 @@
-import { Editor, fixPos, Pos } from "../editorInterface";
+import { Editor, fixPos, Pos, Selection } from "../editorInterface";
 import { ChordMenu, Env, followKey, mapChordMenu } from "./common";
 import { fixNormalCursor, visualFromEditor, visualToEditor } from "./modeUtil";
 import { motions } from "./motion/motion";
 import { deletes } from "./normal/cutDelete";
 import { inserts } from "./normal/insert";
+import { visualDelete } from "./visual/delete";
+
+// TODO for VSCode: click cursor should be corrected to block cursor instead of line
+// cursor
 
 export type Mode = "normal" | "insert" | "visual" | "operator-pending";
 
@@ -19,7 +23,7 @@ type State =
   | {
       mode: "visual";
       pending: boolean;
-      menu: ChordMenu<Pos, VisualModeResult> | undefined;
+      menu: ChordMenu<Selection, VisualModeResult> | undefined;
     }
   | { mode: "insert" }; // TODO insert chords
 
@@ -65,11 +69,11 @@ export class Vim {
     ],
   };
 
-  private static visualMenus: ChordMenu<Pos, VisualModeResult> = {
+  private static visualMenus: ChordMenu<Selection, VisualModeResult> = {
     type: "multi",
     menus: [
       mapChordMenu(
-        (i) => i,
+        ({ anchor: _, active }) => active,
         {
           type: "impl",
           impl: { type: "keys", keys: motions },
@@ -83,7 +87,7 @@ export class Vim {
         (i) => i,
         {
           type: "impl",
-          impl: { type: "keys", keys: deletes },
+          impl: { type: "keys", keys: visualDelete },
           // TODO keys like "xX" behaves very differently
         },
         (_editor, _env, { input: _, output }) => ({
@@ -91,15 +95,15 @@ export class Vim {
           toMode: "normal",
         })
       ),
-      mapChordMenu(
-        (i) => i,
-        { type: "impl", impl: { type: "keys", keys: inserts } },
-        (_editor, _env, { input: _, output }) => ({
-          active: output,
-          toMode: "insert",
-          // TODO keys like "sSiaIA" behaves very differently
-        })
-      ),
+      // mapChordMenu(
+      //   (i) => i,
+      //   { type: "impl", impl: { type: "keys", keys: inserts } },
+      //   (_editor, _env, { input: _, output }) => ({
+      //     active: output,
+      //     toMode: "insert",
+      //     // TODO keys like "sSiaIA" behaves very differently
+      //   })
+      // ),
       {
         type: "impl",
         impl: {
@@ -107,7 +111,10 @@ export class Vim {
           keys: {
             "<escape>": {
               type: "action",
-              action: (_editor, _env, p) => ({ active: p, toMode: "normal" }),
+              action: (_editor, _env, { anchor: _, active }) => ({
+                active,
+                toMode: "normal",
+              }),
             },
           },
         },
@@ -134,11 +141,11 @@ export class Vim {
     switch (this.state.mode) {
       case "visual": {
         // check if selection is forward or backward
-        const { anchor, active } = visualFromEditor(
+        const visualSelection = visualFromEditor(
           this.editor,
           this.editor.selections[0]
         );
-        const getInput = () => active;
+        const getInput = () => visualSelection;
         const runKeyResult = this.runKey(
           this.state.menu ?? Vim.visualMenus,
           getInput,
@@ -161,11 +168,15 @@ export class Vim {
           if (toMode === "normal") {
             // TODO global fix to hook, also when mode is changed TO normal
             const fixed = fixNormalCursor(this.editor, active);
+            this.editor.cursor = { type: "block" };
             this.editor.selections = [{ anchor: fixed, active: fixed }];
             return { processed: true, mode: "normal" };
           } else if (toMode === "visual") {
             this.editor.selections = [
-              visualToEditor(this.editor, { anchor, active }),
+              visualToEditor(this.editor, {
+                anchor: visualSelection.anchor,
+                active,
+              }),
             ];
             // TODO "blockBefore" cursor type (non-blinking)
             // TODO depending on the order of anchor/active!

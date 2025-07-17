@@ -11,7 +11,7 @@ function debugVim(vim: Vim, writeState: (description: string) => void) {
   };
 }
 
-it("insert", () => {
+it("vim mode", () => {
   withEditor(__filename, "abc\n  def\nghi\n", (editor, writeState) => {
     const env = emptyEnv();
     editor.cursor = { type: "block" };
