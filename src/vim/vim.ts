@@ -31,7 +31,9 @@ export function isStatePending(state: State) {
 }
 
 export class Vim {
-  constructor(readonly editor: Editor, readonly env: Env) { }
+  constructor(readonly editor: Editor, readonly env: Env) {
+    editor.cursor = { "type": "block" };
+  }
 
   private state: State = { mode: "normal", menu: undefined };
 
