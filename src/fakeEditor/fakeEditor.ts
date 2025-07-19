@@ -96,9 +96,8 @@ export class FakeEditor implements Editor {
     return out;
   }
 
+  /** Render lines with cursor(s) and selection(s) */
   dump(): string {
-    // Render lines with cursor(s) and selection(s)
-    let out = "";
     // First, mark selections (so cursor can overwrite if needed)
     const cursorMarkers: { [l: number]: { [c: number]: string } } = {};
     for (const sel of this._selections) {

@@ -25,7 +25,7 @@ type State =
   }
   | { mode: "insert" }; // TODO insert chords
 
-function isStatePending(state: State) {
+export function isStatePending(state: State) {
   if (state.mode === "insert") return false;
   return state.menu !== undefined;
 }
@@ -141,8 +141,9 @@ export class Vim {
   private runKey<I, O>(menu: ChordMenu<I, O>, getInput: () => I, key: string) {
     const r = followKey(menu, getInput(), key, this.editor, this.env);
     if (r === undefined) return undefined;
-    if (r.type === "menu") return r;
-    if (r.type === "action") {
+    if (r.type === "menu") { return r; }
+    else {
+      // r.type === "action"
       // clear flash on top-level chords
       const oldFlash = this.env.flash;
       const output = r.action(this.editor, this.env, getInput());
@@ -277,8 +278,8 @@ export class Vim {
         }
       }
       default: {
-        const _: never = this.state;
-        throw new Error(`Unexpected state ${(this.state as any).mode}`);
+        const state: never = this.state;
+        throw new Error(`Unexpected state ${(state as any).mode}`);
       }
     }
   }
