@@ -17,7 +17,7 @@ const lineStartEnd: ChordKeys<Pos, Pos> = simpleKeys({
     return lineNonWhiteStart(editor, p.l);
   },
   $: (editor, _env, p) => {
-    return { l: p.l, c: editor.getLine(p.l).length };
+    return { l: p.l, c: editor.getLineLength(p.l) };
   },
 });
 
@@ -35,7 +35,7 @@ export const lineMotions: ChordKeys<Pos, Pos> = {
               return lineNonWhiteStart(editor, 0);
             },
             _: (editor, _env, p) => {
-              return { l: p.l, c: Math.max(0, editor.getLine(p.l).length - 1) };
+              return { l: p.l, c: Math.max(0, editor.getLineLength(p.l) - 1) };
             },
           }),
         },

@@ -49,7 +49,7 @@ function* iterCharBack(editor: Editor, p: Pos) {
 
 function editorLastPos(editor: Editor): Pos {
   const lastLine = editor.getLines() - 1;
-  return { l: lastLine, c: Math.max(0, editor.getLine(lastLine).length - 1) };
+  return { l: lastLine, c: Math.max(0, editor.getLineLength(lastLine) - 1) };
 }
 
 // TODO "w" and "W" motion region should stop at newline

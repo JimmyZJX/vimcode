@@ -19,7 +19,7 @@ export function visualFromEditor(editor: Editor, sel: Selection) {
         return { l: 0, c: 0 };
       } else {
         const l = pos.l - 1;
-        return { l, c: editor.getLine(l).length };
+        return { l, c: editor.getLineLength(l) };
       }
     } else {
       return { l: pos.l, c: pos.c - 1 };
@@ -45,7 +45,7 @@ export function visualFromEditor(editor: Editor, sel: Selection) {
 
 export function visualToEditor(editor: Editor, sel: Selection) {
   function forward(pos: Pos) {
-    const l = editor.getLine(pos.l).length;
+    const l = editor.getLineLength(pos.l);
     if (pos.c >= l) {
       if (pos.l >= editor.getLines() - 1) {
         return { l: pos.l, c: pos.c };

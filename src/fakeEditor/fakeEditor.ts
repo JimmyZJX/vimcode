@@ -44,6 +44,10 @@ export class FakeEditor implements Editor {
     return this.lines[l] ?? "";
   }
 
+  getLineLength(l: number) {
+    return (this.lines[l] ?? "").length;
+  }
+
   getText(selection?: Selection) {
     if (!selection) {
       return this.lines.join("\n");
@@ -116,8 +120,8 @@ export class FakeEditor implements Editor {
       this._cursor.type === "line"
         ? "▏"
         : this._cursor.type === "block"
-        ? "█"
-        : "▄";
+          ? "█"
+          : "▄";
     for (const {
       anchor: _,
       active: { l, c },

@@ -27,15 +27,15 @@ export function delWithMotion(
   const region: Selection =
     comparePos(normalCursorPos, motionEnd) > 0
       ? /* backward */
-        {
-          anchor: motionEnd,
-          active: normalCursorPos,
-        }
+      {
+        anchor: motionEnd,
+        active: normalCursorPos,
+      }
       : /* forward */
-        {
-          anchor: normalCursorPos,
-          active: fixPos(editor, motionEnd, 1),
-        };
+      {
+        anchor: normalCursorPos,
+        active: fixPos(editor, motionEnd, 1),
+      };
 
   // TODO show register diff in tests
   env.globalState.textRegister[""] = {
@@ -81,7 +81,7 @@ function deleteCurrentLine(editor: Editor, env: Env, p: Pos) {
       editor.editText(
         {
           anchor: { l: 0, c: 0 },
-          active: { l: 0, c: editor.getLine(0).length },
+          active: { l: 0, c: editor.getLineLength(0) },
         },
         ""
       );

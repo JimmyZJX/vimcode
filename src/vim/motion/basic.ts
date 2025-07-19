@@ -12,7 +12,7 @@ export function right(editor: Editor, p: Pos) {
 export function upDown(editor: Editor, env: Env, p: Pos, mode: "up" | "down") {
   let tc = p.c;
   if (env.flash.preferredColumn !== undefined) {
-    const lenL = editor.getLine(p.l).length;
+    const lenL = editor.getLineLength(p.l);
     if (p.c >= lenL - 1) {
       tc = env.flash.preferredColumn;
     }
@@ -22,7 +22,7 @@ export function upDown(editor: Editor, env: Env, p: Pos, mode: "up" | "down") {
   if (p.l === l) {
     return { l: p.l, c: tc };
   }
-  const len = editor.getLine(l).length;
+  const len = editor.getLineLength(l);
   if (len === 0) {
     env.flash = { preferredColumn: tc };
     return { l, c: 0 };

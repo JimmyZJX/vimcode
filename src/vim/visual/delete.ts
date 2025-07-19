@@ -34,7 +34,7 @@ function deleteLine(editor: Editor, _env: Env, sel: Selection) {
   const { start, end } = rangeOfSelection(sel);
   const endOfLine =
     end.l + 1 >= editor.getLines()
-      ? { l: end.l, c: editor.getLine(end.l).length }
+      ? { l: end.l, c: editor.getLineLength(end.l) }
       : { l: end.l + 1, c: 0 };
   const deleteRange = { anchor: { l: start.l, c: 0 }, active: endOfLine };
   editor.editText(deleteRange, "");

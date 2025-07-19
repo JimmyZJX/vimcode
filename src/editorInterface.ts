@@ -29,7 +29,7 @@ export function rangeOfSelection(sel: Selection) {
 export function fixPos(editor: Editor, p: Pos, offset?: number) {
   return {
     l: p.l,
-    c: Math.min(Math.max(0, editor.getLine(p.l).length), p.c + (offset ?? 0)),
+    c: Math.min(Math.max(0, editor.getLineLength(p.l)), p.c + (offset ?? 0)),
   };
 }
 
@@ -45,6 +45,7 @@ export interface Editor {
 
   getLines: () => number;
   getLine: (l: number) => string;
+  getLineLength: (l: number) => number;
   getText: (selection?: Selection) => string;
 
   /** This takes care of code folding */
