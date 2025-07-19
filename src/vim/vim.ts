@@ -16,16 +16,16 @@ type VisualModeResult = { active: Pos; toMode: "visual" | "normal" | "insert" };
 
 type State =
   | {
-      mode: "normal";
-      // TODO duplicated info? [menu === undefined] <=> pending
-      pending: boolean;
-      menu: ChordMenu<Pos, NormalModeResult> | undefined;
-    }
+    mode: "normal";
+    // TODO duplicated info? [menu === undefined] <=> pending
+    pending: boolean;
+    menu: ChordMenu<Pos, NormalModeResult> | undefined;
+  }
   | {
-      mode: "visual";
-      pending: boolean;
-      menu: ChordMenu<Selection, VisualModeResult> | undefined;
-    }
+    mode: "visual";
+    pending: boolean;
+    menu: ChordMenu<Selection, VisualModeResult> | undefined;
+  }
   | { mode: "insert" }; // TODO insert chords
 
 function isStatePending(state: State) {
@@ -34,9 +34,22 @@ function isStatePending(state: State) {
 }
 
 export class Vim {
-  constructor(readonly editor: Editor, readonly env: Env) {}
+  constructor(readonly editor: Editor, readonly env: Env) { }
 
   private state: State = { mode: "normal", pending: false, menu: undefined };
+
+  public fixState() {
+    // insert is still insert, even if there's selection
+    if (this.state.mode === "insert") return;
+
+    if (this.state.mode === "normal") {
+      const { anchor, active } = this.editor.selections[0];
+      if (anchor.l !== active.l || anchor.c !== active.c) {
+        // normal -> visual
+        this.state = { mode: "visual", pending: false, menu: undefined };
+      }
+    }
+  }
 
   private static normalMenus: ChordMenu<Pos, NormalModeResult> = {
     type: "multi",
