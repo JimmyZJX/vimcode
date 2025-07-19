@@ -9,7 +9,7 @@ import { visualDelete } from "./visual/delete";
 // TODO for VSCode: click cursor should be corrected to block cursor instead of line
 // cursor
 
-export type Mode = "normal" | "insert" | "visual" | "operator-pending";
+export type Mode = "normal" | "insert" | "visual" | "normal+" | "visual+";
 
 type NormalModeResult = { pos: Pos; toMode: "normal" | "insert" | "visual" };
 type VisualModeResult = { active: Pos; toMode: "visual" | "normal" | "insert" };
@@ -156,7 +156,7 @@ export class Vim {
   private runVisual(
     key: string,
     state: Extract<State, { mode: "visual" }>
-  ): State {
+  ): State & { processed: boolean } {
     const visualSelection = visualFromEditor(
       this.editor,
       this.editor.selections[0]
@@ -169,10 +169,11 @@ export class Vim {
     );
     if (runKeyResult === undefined) {
       // TODO LOG key not found
-      return { mode: "visual", menu: undefined };
+      return { processed: false, mode: "visual", menu: undefined };
     }
+    const processed = true;
     if (runKeyResult.type === "menu") {
-      return { mode: "visual", menu: runKeyResult.menu };
+      return { processed, mode: "visual", menu: runKeyResult.menu };
     }
     const { active, toMode } = runKeyResult.output;
     if (toMode === "normal") {
@@ -180,7 +181,7 @@ export class Vim {
       const fixed = fixNormalCursor(this.editor, active);
       this.editor.cursor = { type: "block" };
       this.editor.selections = [{ anchor: fixed, active: fixed }];
-      return { mode: "normal", menu: undefined };
+      return { processed, mode: "normal", menu: undefined };
     } else if (toMode === "visual") {
       this.editor.selections = [
         visualToEditor(this.editor, {
@@ -191,19 +192,19 @@ export class Vim {
       // TODO "blockBefore" cursor type (non-blinking)
       // TODO depending on the order of anchor/active!
       this.editor.cursor = { type: "line" };
-      return { mode: "visual", menu: undefined };
+      return { processed, mode: "visual", menu: undefined };
     } else {
       // toMode === "insert"
       this.editor.selections = [{ anchor: active, active }];
       this.editor.cursor = { type: "line" };
-      return { mode: "insert" };
+      return { processed, mode: "insert" };
     }
   }
 
   private runNormal(
     key: string,
     state: Extract<State, { mode: "normal" }>
-  ): State {
+  ): State & { processed: boolean } {
     const getInput = () => this.editor.selections[0].active;
     const runKeyResult = this.runKey(
       state.menu ?? Vim.normalMenus,
@@ -212,17 +213,18 @@ export class Vim {
     );
     if (runKeyResult === undefined) {
       // TODO LOG key not found
-      return { mode: "normal", menu: undefined };
+      return { processed: false, mode: "normal", menu: undefined };
     }
+    const processed = true;
     if (runKeyResult.type === "menu") {
-      return { mode: "normal", menu: runKeyResult.menu };
+      return { processed, mode: "normal", menu: runKeyResult.menu };
     }
     const { pos, toMode } = runKeyResult.output;
     if (toMode === "normal") {
       // TODO global fix to hook, also when mode is changed TO normal
       const fixed = fixNormalCursor(this.editor, pos);
       this.editor.selections = [{ anchor: fixed, active: fixed }];
-      return { mode: "normal", menu: undefined };
+      return { processed, mode: "normal", menu: undefined };
     } else if (toMode === "visual") {
       // only possible via "v" for now
       this.editor.selections = [
@@ -231,34 +233,26 @@ export class Vim {
       // TODO "blockBefore" cursor type (non-blinking)
       // TODO depending on the order of anchor/active!
       this.editor.cursor = { type: "line" };
-      return { mode: "visual", menu: undefined };
+      return { processed, mode: "visual", menu: undefined };
     } else {
       this.editor.selections = [{ anchor: pos, active: pos }];
       this.editor.cursor = { type: "line" };
-      return { mode: "insert" };
+      return { processed, mode: "insert" };
     }
   }
 
-  public onKey(key: string): { processed: boolean; mode: Mode } {
+  public processKey(key: string): boolean {
     switch (this.state.mode) {
       case "visual": {
         // check if selection is forward or backward
-        this.state = this.runVisual(key, this.state);
-        return {
-          processed: true,
-          mode: isStatePending(this.state)
-            ? "operator-pending"
-            : this.state.mode,
-        };
+        const { processed, ...state } = this.runVisual(key, this.state);
+        this.state = state;
+        return processed;
       }
       case "normal": {
-        this.state = this.runNormal(key, this.state);
-        return {
-          processed: true,
-          mode: isStatePending(this.state)
-            ? "operator-pending"
-            : this.state.mode,
-        };
+        const { processed, ...state } = this.runNormal(key, this.state);
+        this.state = state;
+        return processed;
       }
       case "insert": {
         if (key === "<escape>") {
@@ -269,14 +263,17 @@ export class Vim {
           );
           this.editor.selections = [{ anchor: fixed, active: fixed }];
           this.state = { mode: "normal", menu: undefined };
-          return { processed: true, mode: "normal" };
+          return true;
         } else {
-          // TODO in fact we don't need to handle these in the real VSCode environment
+          if (!this.editor.isFake)
+            return false;
+
+          // don't handle any key in the real VSCode environment
           const sel = this.editor.selections[0];
           this.editor.editText(sel, key);
           const newPos = { l: sel.active.l, c: sel.active.c + 1 };
           this.editor.selections = [{ anchor: newPos, active: newPos }];
-          return { processed: false, mode: "insert" };
+          return true;
         }
       }
       default: {
@@ -284,5 +281,20 @@ export class Vim {
         throw new Error(`Unexpected state ${(this.state as any).mode}`);
       }
     }
+  }
+
+  public onKey(key: string): { processed: boolean; mode: Mode } {
+    const processed = this.processKey(key);
+    let mode: Mode;
+    if (this.state.mode === "insert") {
+      mode = "insert";
+    }
+    else if (this.state.mode === "normal") {
+      mode = this.state.menu === undefined ? "normal" : "normal+";
+    } else {
+      // this.state.mode === "visual) {
+      mode = this.state.menu === undefined ? "visual" : "visual+";
+    }
+    return { processed, mode };
   }
 }

@@ -36,6 +36,8 @@ export class FakeEditor implements Editor {
     this._cursor = val;
   }
 
+  isFake = true;
+
   getLines() {
     return this.lines.length;
   }

@@ -53,5 +53,7 @@ export interface Editor {
 
   editText: (range: Selection, text: string) => void;
 
+  isFake: boolean;
+
   // TODO visible lines
 }
