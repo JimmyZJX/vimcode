@@ -17,26 +17,23 @@ type VisualModeResult = { active: Pos; toMode: "visual" | "normal" | "insert" };
 type State =
   | {
     mode: "normal";
-    // TODO duplicated info? [menu === undefined] <=> pending
-    pending: boolean;
     menu: ChordMenu<Pos, NormalModeResult> | undefined;
   }
   | {
     mode: "visual";
-    pending: boolean;
     menu: ChordMenu<Selection, VisualModeResult> | undefined;
   }
   | { mode: "insert" }; // TODO insert chords
 
 function isStatePending(state: State) {
   if (state.mode === "insert") return false;
-  return state.pending;
+  return state.menu !== undefined;
 }
 
 export class Vim {
   constructor(readonly editor: Editor, readonly env: Env) { }
 
-  private state: State = { mode: "normal", pending: false, menu: undefined };
+  private state: State = { mode: "normal", menu: undefined };
 
   public fixState() {
     // insert is still insert, even if there's selection
@@ -46,7 +43,7 @@ export class Vim {
       const { anchor, active } = this.editor.selections[0];
       if (anchor.l !== active.l || anchor.c !== active.c) {
         // normal -> visual
-        this.state = { mode: "visual", pending: false, menu: undefined };
+        this.state = { mode: "visual", menu: undefined };
       }
     }
   }
@@ -172,10 +169,10 @@ export class Vim {
     );
     if (runKeyResult === undefined) {
       // TODO LOG key not found
-      return { mode: "visual", pending: false, menu: undefined };
+      return { mode: "visual", menu: undefined };
     }
     if (runKeyResult.type === "menu") {
-      return { mode: "visual", pending: true, menu: runKeyResult.menu };
+      return { mode: "visual", menu: runKeyResult.menu };
     }
     const { active, toMode } = runKeyResult.output;
     if (toMode === "normal") {
@@ -183,7 +180,7 @@ export class Vim {
       const fixed = fixNormalCursor(this.editor, active);
       this.editor.cursor = { type: "block" };
       this.editor.selections = [{ anchor: fixed, active: fixed }];
-      return { mode: "normal", pending: false, menu: undefined };
+      return { mode: "normal", menu: undefined };
     } else if (toMode === "visual") {
       this.editor.selections = [
         visualToEditor(this.editor, {
@@ -194,7 +191,7 @@ export class Vim {
       // TODO "blockBefore" cursor type (non-blinking)
       // TODO depending on the order of anchor/active!
       this.editor.cursor = { type: "line" };
-      return { mode: "visual", pending: false, menu: undefined };
+      return { mode: "visual", menu: undefined };
     } else {
       // toMode === "insert"
       this.editor.selections = [{ anchor: active, active }];
@@ -215,17 +212,17 @@ export class Vim {
     );
     if (runKeyResult === undefined) {
       // TODO LOG key not found
-      return { mode: "normal", pending: false, menu: undefined };
+      return { mode: "normal", menu: undefined };
     }
     if (runKeyResult.type === "menu") {
-      return { mode: "normal", pending: true, menu: runKeyResult.menu };
+      return { mode: "normal", menu: runKeyResult.menu };
     }
     const { pos, toMode } = runKeyResult.output;
     if (toMode === "normal") {
       // TODO global fix to hook, also when mode is changed TO normal
       const fixed = fixNormalCursor(this.editor, pos);
       this.editor.selections = [{ anchor: fixed, active: fixed }];
-      return { mode: "normal", pending: false, menu: undefined };
+      return { mode: "normal", menu: undefined };
     } else if (toMode === "visual") {
       // only possible via "v" for now
       this.editor.selections = [
@@ -234,7 +231,7 @@ export class Vim {
       // TODO "blockBefore" cursor type (non-blinking)
       // TODO depending on the order of anchor/active!
       this.editor.cursor = { type: "line" };
-      return { mode: "visual", pending: false, menu: undefined };
+      return { mode: "visual", menu: undefined };
     } else {
       this.editor.selections = [{ anchor: pos, active: pos }];
       this.editor.cursor = { type: "line" };
@@ -271,7 +268,7 @@ export class Vim {
             this.editor.selections[0].active
           );
           this.editor.selections = [{ anchor: fixed, active: fixed }];
-          this.state = { mode: "normal", pending: false, menu: undefined };
+          this.state = { mode: "normal", menu: undefined };
           return { processed: true, mode: "normal" };
         } else {
           // TODO in fact we don't need to handle these in the real VSCode environment
