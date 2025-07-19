@@ -4,7 +4,7 @@ import {
   fixPos,
   Pos,
   Selection,
-} from "../../editorInterface";
+} from "../../editorInterface.js";
 import {
   Action,
   ChordKeys,
@@ -12,10 +12,10 @@ import {
   Env,
   mapChordMenu,
   simpleKeys,
-} from "../common";
-import { getLineWhitePrefix } from "../lineUtil";
-import { motions } from "../motion/motion";
-import { getCharType } from "../motion/word";
+} from "../common.js";
+import { getLineWhitePrefix } from "../lineUtil.js";
+import { motions } from "../motion/motion.js";
+import { getCharType } from "../motion/word.js";
 
 export function delWithMotion(
   editor: Editor,

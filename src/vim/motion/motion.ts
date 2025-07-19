@@ -1,4 +1,4 @@
-import { Editor, Pos } from "../../editorInterface";
+import { Editor, Pos } from "../../editorInterface.js";
 import {
   Action,
   ChordKeys,
@@ -6,10 +6,10 @@ import {
   Env,
   simpleKeys,
   testKeys,
-} from "../common";
-import { left, right, upDown } from "./basic";
-import { lineMotions } from "./line";
-import { back, forwardEnd, forwardWord } from "./word";
+} from "../common.js";
+import { left, right, upDown } from "./basic.js";
+import { lineMotions } from "./line.js";
+import { back, forwardEnd, forwardWord } from "./word.js";
 
 // TODO motion has a "preferred interpretation"
 // type Interpretation =

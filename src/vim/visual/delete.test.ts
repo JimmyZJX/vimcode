@@ -1,8 +1,8 @@
-import { Editor } from "../../editorInterface";
-import { withEditor } from "../../testUtils";
-import { emptyEnv, Env, testKeys } from "../common";
-import { fixNormalCursor } from "../modeUtil";
-import { visualDelete } from "./delete";
+import { Editor } from "../../editorInterface.js";
+import { withEditor } from "../../testUtils.js";
+import { emptyEnv, Env, testKeys } from "../common.js";
+import { fixNormalCursor } from "../modeUtil.js";
+import { visualDelete } from "./delete.js";
 
 export function testVisualDeleteKeys(
   editor: Editor,

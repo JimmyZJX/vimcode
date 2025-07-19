@@ -1,7 +1,7 @@
-import { Pos } from "../../editorInterface";
-import { Action, ChordKeys, simpleKeys } from "../common";
-import { getLineWhitePrefix } from "../lineUtil";
-import { cuts } from "./cutDelete";
+import { Pos } from "../../editorInterface.js";
+import { Action, ChordKeys, simpleKeys } from "../common.js";
+import { getLineWhitePrefix } from "../lineUtil.js";
+import { cuts } from "./cutDelete.js";
 
 const insert: Record<string, Action<Pos, Pos>> = {
   i: (_editor, _env, p) => p,

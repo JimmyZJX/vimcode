@@ -1,6 +1,6 @@
-import { Editor, Pos } from "../../editorInterface";
-import { ChordKeys, simpleKeys } from "../common";
-import { getLineWhitePrefix } from "../lineUtil";
+import { Editor, Pos } from "../../editorInterface.js";
+import { ChordKeys, simpleKeys } from "../common.js";
+import { getLineWhitePrefix } from "../lineUtil.js";
 
 /** suitable for normal mode */
 function lineNonWhiteStart(editor: Editor, l: number) {

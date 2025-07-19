@@ -1,6 +1,6 @@
-import { withEditor } from "../testUtils";
-import { emptyEnv } from "./common";
-import { Vim } from "./vim";
+import { withEditor } from "../testUtils.js";
+import { emptyEnv } from "./common.js";
+import { Vim } from "./vim.js";
 
 function debugVim(vim: Vim, writeState: (description: string) => void) {
   return (keys: string | string[]) => {

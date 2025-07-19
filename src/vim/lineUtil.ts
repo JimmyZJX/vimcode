@@ -1,4 +1,4 @@
-import { Editor } from "../editorInterface";
+import { Editor } from "../editorInterface.js";
 
 export function getLineWhitePrefix(editor: Editor, l: number) {
   const line = editor.getLine(l);

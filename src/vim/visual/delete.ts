@@ -3,9 +3,9 @@ import {
   Pos,
   rangeOfSelection,
   Selection,
-} from "../../editorInterface";
-import { ChordKeys, Env, simpleKeys } from "../common";
-import { getLineWhitePrefix } from "../lineUtil";
+} from "../../editorInterface.js";
+import { ChordKeys, Env, simpleKeys } from "../common.js";
+import { getLineWhitePrefix } from "../lineUtil.js";
 
 function fixRegionEnd(editor: Editor, p: Pos): Pos {
   const lines = editor.getLines();

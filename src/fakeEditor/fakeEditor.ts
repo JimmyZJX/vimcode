@@ -3,7 +3,7 @@ import {
   Editor,
   rangeOfSelection,
   Selection,
-} from "../editorInterface";
+} from "../editorInterface.js";
 
 export class FakeEditor implements Editor {
   private lines: string[];

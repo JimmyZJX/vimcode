@@ -1,6 +1,6 @@
-import { withEditor } from "../../testUtils";
-import { emptyEnv, Env } from "../common";
-import { testMotionKeys } from "./motion";
+import { withEditor } from "../../testUtils.js";
+import { emptyEnv } from "../common.js";
+import { testMotionKeys } from "./motion.js";
 
 it("motion basic", () => {
   withEditor(__filename, "abcd\nef\n\nghijkl", (editor, writeState) => {

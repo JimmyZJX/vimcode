@@ -1,5 +1,5 @@
-import { withEditor } from "../../testUtils";
-import { testMotionKeys } from "./motion";
+import { withEditor } from "../../testUtils.js";
+import { testMotionKeys } from "./motion.js";
 
 it("motion basic", () => {
   withEditor(__filename, "ab cdef\ngh.-=! ** 8w8\n\n", (editor, writeState) => {

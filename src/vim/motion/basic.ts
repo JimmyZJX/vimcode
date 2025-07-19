@@ -1,5 +1,5 @@
-import { Editor, fixPos, Pos } from "../../editorInterface";
-import { Env } from "../common";
+import { Editor, fixPos, Pos } from "../../editorInterface.js";
+import { Env } from "../common.js";
 
 export function left(editor: Editor, p: Pos) {
   return fixPos(editor, p, -1);

@@ -1,10 +1,10 @@
-import { Editor, fixPos, Pos, Selection } from "../editorInterface";
-import { ChordMenu, Env, followKey, mapChordMenu } from "./common";
-import { fixNormalCursor, visualFromEditor, visualToEditor } from "./modeUtil";
-import { motions } from "./motion/motion";
-import { deletes } from "./normal/cutDelete";
-import { inserts } from "./normal/insert";
-import { visualDelete } from "./visual/delete";
+import { Editor, fixPos, Pos, Selection } from "../editorInterface.js";
+import { ChordMenu, Env, followKey, mapChordMenu } from "./common.js";
+import { fixNormalCursor, visualFromEditor, visualToEditor } from "./modeUtil.js";
+import { motions } from "./motion/motion.js";
+import { deletes } from "./normal/cutDelete.js";
+import { inserts } from "./normal/insert.js";
+import { visualDelete } from "./visual/delete.js";
 
 // TODO for VSCode: click cursor should be corrected to block cursor instead of line
 // cursor

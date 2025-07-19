@@ -1,4 +1,4 @@
-import { Editor, Pos } from "../../editorInterface";
+import { Editor, Pos } from "../../editorInterface.js";
 
 type CharType = "word" | "white" | "other";
 

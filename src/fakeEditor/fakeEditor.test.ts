@@ -1,4 +1,4 @@
-import { withEditor } from "../testUtils";
+import { withEditor } from "../testUtils.js";
 
 it("should dump initial state and after edits", () => {
   withEditor(__filename, "hello\nworld", (editor, writeState) => {

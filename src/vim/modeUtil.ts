@@ -1,4 +1,4 @@
-import { comparePos, Editor, Pos, Selection } from "../editorInterface";
+import { comparePos, Editor, Pos, Selection } from "../editorInterface.js";
 
 export function fixNormalCursor(editor: Editor, pos: Pos): Pos {
   const line = editor.getLine(pos.l);

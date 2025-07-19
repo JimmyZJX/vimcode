@@ -1,7 +1,7 @@
-import { Editor } from "../../editorInterface";
-import { withEditor } from "../../testUtils";
-import { emptyEnv, Env, testKeys } from "../common";
-import { inserts } from "./insert";
+import { Editor } from "../../editorInterface.js";
+import { withEditor } from "../../testUtils.js";
+import { emptyEnv, Env, testKeys } from "../common.js";
+import { inserts } from "./insert.js";
 
 export function testInsertKeys(
   editor: Editor,
