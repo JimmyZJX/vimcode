@@ -296,7 +296,7 @@ export class Vim {
     }
   }
 
-  public processKey(key: string): boolean {
+  public onKey(key: string): boolean {
     switch (this.state.mode) {
       case "visual": {
         // check if selection is forward or backward
@@ -338,18 +338,15 @@ export class Vim {
     }
   }
 
-  public onKey(key: string): { processed: boolean; mode: Mode } {
-    const processed = this.processKey(key);
-    let mode: Mode;
+  public get mode(): Mode {
     if (this.state.mode === "insert") {
-      mode = "insert";
+      return "insert";
     }
     else if (this.state.mode === "normal") {
-      mode = this.state.menu === undefined ? "normal" : "normal+";
+      return this.state.menu === undefined ? "normal" : "normal+";
     } else {
       // this.state.mode === "visual) {
-      mode = this.state.menu === undefined ? "visual" : "visual+";
+      return this.state.menu === undefined ? "visual" : "visual+";
     }
-    return { processed, mode };
   }
 }
