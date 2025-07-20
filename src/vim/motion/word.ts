@@ -56,21 +56,22 @@ function editorEndPos(editor: Editor): Pos {
 function doForwardWord(
   editor: Editor,
   p: Pos,
-  whiteSpaceOnly: boolean,
-  allowStopOnWhite: boolean
+  whiteOnly: boolean,
+  stopOnWhite: boolean,
+  stopOnLF: boolean
 ) {
   let charType: CharType | null = null;
   for (const { char, pos } of iterChar(editor, p)) {
     const t = getCharType(char);
     if (charType !== null) {
-      if (char === "\n" && pos.c === 0) {
+      if (char === "\n" && (stopOnLF || pos.c === 0)) {
         // empty new line
         return pos;
       }
-      const isDifferentType = whiteSpaceOnly
+      const isDifferentType = whiteOnly
         ? (charType === "white") !== (t === "white")
         : charType !== t;
-      if (isDifferentType && (allowStopOnWhite || t !== "white")) {
+      if (isDifferentType && (stopOnWhite || t !== "white")) {
         return pos;
       }
     }
@@ -82,10 +83,13 @@ function doForwardWord(
 export function forwardWord(
   editor: Editor,
   p: Pos,
-  whiteSpaceOnly: boolean,
-  allowStopOnWhite?: boolean
+  {
+    whiteOnly,
+    stopOnWhite,
+    stopOnLF,
+  }: { whiteOnly: boolean; stopOnWhite?: boolean; stopOnLF?: boolean }
 ): MotionResult {
-  const pos = doForwardWord(editor, p, whiteSpaceOnly, !!allowStopOnWhite);
+  const pos = doForwardWord(editor, p, whiteOnly, !!stopOnWhite, !!stopOnLF);
   return { pos, range: { active: p, anchor: pos } };
 }
 

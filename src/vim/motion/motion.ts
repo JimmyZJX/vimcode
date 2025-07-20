@@ -34,8 +34,8 @@ const actions: Record<string, Action<Pos, MotionResult>> = {
 
   // vscodevim default behavior: go to next different type (word, non-word, white)
   // of character, and stop on non-white
-  w: (editor, _env, p: Pos) => forwardWord(editor, p, false),
-  W: (editor, _env, p: Pos) => forwardWord(editor, p, true),
+  w: (editor, _env, p: Pos) => forwardWord(editor, p, { whiteOnly: false }),
+  W: (editor, _env, p: Pos) => forwardWord(editor, p, { whiteOnly: true }),
   e: (editor, _env, p: Pos) => forwardEnd(editor, p, false),
   E: (editor, _env, p: Pos) => forwardEnd(editor, p, true),
   b: (editor, _env, p: Pos) => back(editor, p, false),

@@ -183,14 +183,20 @@ export const cuts: ChordKeys<Pos, Pos> = {
             keys: simpleKeys({
               c: (editor, env, p) => cutLines(editor, env, p.l, p.l),
               w: (editor, env, p) => {
-                const motion = forwardWord(editor, p, false, true);
+                const motion = forwardWord(editor, p, {
+                  whiteOnly: false,
+                  stopOnWhite: true,
+                });
                 return curOrDeleteMotion("cut", editor, env, {
                   input: p,
                   output: motion,
                 });
               },
               W: (editor, env, p) => {
-                const motion = forwardWord(editor, p, true, true);
+                const motion = forwardWord(editor, p, {
+                  whiteOnly: true,
+                  stopOnWhite: true,
+                });
                 return curOrDeleteMotion("cut", editor, env, {
                   input: p,
                   output: motion,
@@ -240,7 +246,10 @@ export const deletes: ChordKeys<Pos, Pos> = {
             keys: simpleKeys({
               d: (editor, env, p) => deleteLines(editor, env, p.l, p.l),
               w: (editor, env, p) => {
-                const motion = forwardWord(editor, p, false, true);
+                const motion = forwardWord(editor, p, {
+                  whiteOnly: false,
+                  stopOnLF: true,
+                });
                 fixDwMotion(motion, editor);
                 return curOrDeleteMotion("delete", editor, env, {
                   input: p,
@@ -248,7 +257,10 @@ export const deletes: ChordKeys<Pos, Pos> = {
                 });
               },
               W: (editor, env, p) => {
-                const motion = forwardWord(editor, p, true, true);
+                const motion = forwardWord(editor, p, {
+                  whiteOnly: true,
+                  stopOnLF: true,
+                });
                 fixDwMotion(motion, editor);
                 return curOrDeleteMotion("delete", editor, env, {
                   input: p,
