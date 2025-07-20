@@ -46,6 +46,15 @@ export class Vim {
         this.state = { mode: "visual", menu: undefined };
       }
     }
+    if (this.state.mode === "visual") {
+      const { anchor, active } = this.editor.selections[0];
+      if (anchor.l === active.l && anchor.c === active.c) {
+        // visual -> normal
+        const fixed = fixNormalCursor(this.editor, anchor);
+        this.editor.selections = [{ anchor: fixed, active: fixed }];
+        this.state = { mode: "normal", menu: undefined };
+      }
+    }
 
     if (this.state.mode === "normal") {
       this.editor.cursor = { type: "block" };
