@@ -1,6 +1,6 @@
-import { Pos } from "../../editorInterface";
-import { ChordKeys, simpleKeys } from "../common";
-import { deletes } from "./cutDelete";
+import { Pos } from "../../editorInterface.js";
+import { ChordKeys, simpleKeys } from "../common.js";
+import { deletes } from "./cutDelete.js";
 
 export const changes: ChordKeys<Pos, Pos> = {
     ...deletes,
