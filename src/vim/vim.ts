@@ -2,7 +2,7 @@ import { Editor, fixPos, Pos, Selection } from "../editorInterface.js";
 import { ChordMenu, Env, followKey, mapChordMenu } from "./common.js";
 import { fixNormalCursor, visualFromEditor, visualToEditor } from "./modeUtil.js";
 import { motions } from "./motion/motion.js";
-import { changes } from "./normal/change.js";
+import { changes, changesCursorNeutral } from "./normal/change.js";
 import { inserts } from "./normal/insert.js";
 import { visualDelete } from "./visual/delete.js";
 
@@ -11,7 +11,7 @@ import { visualDelete } from "./visual/delete.js";
 
 export type Mode = "normal" | "insert" | "visual" | "normal+" | "visual+";
 
-type NormalModeResult = { pos: Pos; toMode: "normal" | "insert" | "visual" };
+type NormalModeResult = { pos?: Pos; toMode: "normal" | "insert" | "visual" };
 type VisualModeResult = { active: Pos; toMode: "visual" | "normal" | "insert" };
 
 type State =
@@ -70,6 +70,17 @@ export class Vim {
         },
         (_editor, _env, { input: _, output }) => ({
           pos: output,
+          toMode: "normal",
+        })
+      ),
+      mapChordMenu(
+        (i) => { },
+        {
+          type: "impl",
+          impl: { type: "keys", keys: changesCursorNeutral },
+        },
+        (_editor, _env, { input: _inp, output: _outp }) => ({
+          pos: undefined,
           toMode: "normal",
         })
       ),
@@ -234,20 +245,26 @@ export class Vim {
     const { pos, toMode } = runKeyResult.output;
     if (toMode === "normal") {
       // TODO global fix to hook, also when mode is changed TO normal
-      const fixed = fixNormalCursor(this.editor, pos);
-      this.editor.selections = [{ anchor: fixed, active: fixed }];
+      if (pos) {
+        const fixed = fixNormalCursor(this.editor, pos);
+        this.editor.selections = [{ anchor: fixed, active: fixed }];
+      }
       return { processed, mode: "normal", menu: undefined };
     } else if (toMode === "visual") {
       // only possible via "v" for now
-      this.editor.selections = [
-        { anchor: pos, active: fixPos(this.editor, pos, 1) },
-      ];
+      if (pos) {
+        this.editor.selections = [
+          { anchor: pos, active: fixPos(this.editor, pos, 1) },
+        ];
+      }
       // TODO "blockBefore" cursor type (non-blinking)
       // TODO depending on the order of anchor/active!
       this.editor.cursor = { type: "line" };
       return { processed, mode: "visual", menu: undefined };
     } else {
-      this.editor.selections = [{ anchor: pos, active: pos }];
+      if (pos) {
+        this.editor.selections = [{ anchor: pos, active: pos }];
+      }
       this.editor.cursor = { type: "line" };
       return { processed, mode: "insert" };
     }

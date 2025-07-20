@@ -29,8 +29,11 @@ export const changes: ChordKeys<Pos, Pos> = {
             },
         },
     },
+};
+
+export const changesCursorNeutral: ChordKeys<void, void> = {
     ...simpleKeys({
-        u: (editor, _env, _pos) => editor.real_undo(),
-        "C-r": (editor, _env, _pos) => editor.real_redo(),
+        u: (editor, _env, _void) => editor.real_undo(),
+        "C-r": (editor, _env, _void) => editor.real_redo(),
     })
 }
