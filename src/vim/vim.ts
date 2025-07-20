@@ -12,7 +12,7 @@ import { visualDelete } from "./visual/delete.js";
 export type Mode = "normal" | "insert" | "visual" | "normal+" | "visual+";
 
 type NormalModeResult = { pos?: Pos; toMode: "normal" | "insert" | "visual" };
-type VisualModeResult = { active: Pos; toMode: "visual" | "normal" | "insert" };
+type VisualModeResult = { active?: Pos; toMode: "visual" | "normal" | "insert" };
 
 type State =
   | {
@@ -133,6 +133,17 @@ export class Vim {
           toMode: "normal",
         })
       ),
+      mapChordMenu(
+        (i) => { },
+        {
+          type: "impl",
+          impl: { type: "keys", keys: changesCursorNeutral },
+        },
+        (_editor, _env, { input: _inp, output: _outp }) => ({
+          pos: undefined,
+          toMode: "normal",
+        })
+      ),
       // mapChordMenu(
       //   (i) => i,
       //   { type: "impl", impl: { type: "keys", keys: inserts } },
@@ -201,24 +212,30 @@ export class Vim {
     const { active, toMode } = runKeyResult.output;
     if (toMode === "normal") {
       // TODO global fix to hook, also when mode is changed TO normal
-      const fixed = fixNormalCursor(this.editor, active);
-      this.editor.cursor = { type: "block" };
-      this.editor.selections = [{ anchor: fixed, active: fixed }];
+      if (active) {
+        const fixed = fixNormalCursor(this.editor, active);
+        this.editor.cursor = { type: "block" };
+        this.editor.selections = [{ anchor: fixed, active: fixed }];
+      }
       return { processed, mode: "normal", menu: undefined };
     } else if (toMode === "visual") {
-      this.editor.selections = [
-        visualToEditor(this.editor, {
-          anchor: visualSelection.anchor,
-          active,
-        }),
-      ];
+      if (active) {
+        this.editor.selections = [
+          visualToEditor(this.editor, {
+            anchor: visualSelection.anchor,
+            active,
+          }),
+        ];
+      }
       // TODO "blockBefore" cursor type (non-blinking)
       // TODO depending on the order of anchor/active!
       this.editor.cursor = { type: "line" };
       return { processed, mode: "visual", menu: undefined };
     } else {
       // toMode === "insert"
-      this.editor.selections = [{ anchor: active, active }];
+      if (active) {
+        this.editor.selections = [{ anchor: active, active }];
+      }
       this.editor.cursor = { type: "line" };
       return { processed, mode: "insert" };
     }
