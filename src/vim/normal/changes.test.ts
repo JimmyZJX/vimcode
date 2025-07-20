@@ -1,29 +1,7 @@
-import { Editor } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
-import { emptyEnv, Env, testKeys } from "../common.js";
-import { fixNormalCursor } from "../modeUtil.js";
-import { changes } from "./change.js";
+import { testChangeKeys } from "./change.js";
 
-export function testChangeKeys(
-  editor: Editor,
-  keys: string[],
-  env?: Env
-): void {
-  testKeys({
-    editor,
-    keys,
-    chords: { type: "impl", impl: { type: "keys", keys: changes } },
-    getInput: () => editor.selections[0].active,
-    onOutput: (pos) => {
-      editor.cursor = { type: "block" };
-      const p = fixNormalCursor(editor, pos);
-      editor.selections = [{ anchor: p, active: p }];
-    },
-    env: env ?? emptyEnv(),
-  });
-}
-
-it("delete", () => {
+it("change", () => {
   withEditor(
     __filename,
     "abcde\n  fghij klmnopqrst\n",

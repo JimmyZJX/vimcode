@@ -1,6 +1,10 @@
 import { Editor, fixPos, Pos, Selection } from "../editorInterface.js";
 import { ChordMenu, Env, followKey, mapChordMenu } from "./common.js";
-import { fixNormalCursor, visualFromEditor, visualToEditor } from "./modeUtil.js";
+import {
+  fixNormalCursor,
+  visualFromEditor,
+  visualToEditor,
+} from "./modeUtil.js";
 import { motions } from "./motion/motion.js";
 import { changes, changesCursorNeutral } from "./normal/change.js";
 import { inserts } from "./normal/insert.js";
@@ -12,22 +16,25 @@ import { visualDelete } from "./visual/delete.js";
 export type Mode = "normal" | "insert" | "visual" | "normal+" | "visual+";
 
 type NormalModeResult = { pos?: Pos; toMode: "normal" | "insert" | "visual" };
-type VisualModeResult = { active?: Pos; toMode: "visual" | "normal" | "insert" };
+type VisualModeResult = {
+  active?: Pos;
+  toMode: "visual" | "normal" | "insert";
+};
 
 type State =
   | {
-    mode: "normal";
-    menu: ChordMenu<Pos, NormalModeResult> | undefined;
-  }
+      mode: "normal";
+      menu: ChordMenu<Pos, NormalModeResult> | undefined;
+    }
   | {
-    mode: "visual";
-    menu: ChordMenu<Selection, VisualModeResult> | undefined;
-  }
+      mode: "visual";
+      menu: ChordMenu<Selection, VisualModeResult> | undefined;
+    }
   | { mode: "insert" }; // TODO insert chords
 
 export class Vim {
   constructor(readonly editor: Editor, readonly env: Env) {
-    editor.cursor = { "type": "block" };
+    editor.cursor = { type: "block" };
   }
 
   private state: State = { mode: "normal", menu: undefined };
@@ -75,7 +82,7 @@ export class Vim {
         (i) => i,
         {
           type: "impl",
-          impl: { type: "keys", keys: { ...motions, ...changes } },
+          impl: { type: "keys", keys: changes },
         },
         (_editor, _env, { input: _, output }) => ({
           pos: output,
@@ -83,7 +90,18 @@ export class Vim {
         })
       ),
       mapChordMenu(
-        (i) => { },
+        (i) => i,
+        {
+          type: "impl",
+          impl: { type: "keys", keys: motions },
+        },
+        (_editor, _env, { input: _, output: { pos } }) => ({
+          pos,
+          toMode: "normal",
+        })
+      ),
+      mapChordMenu(
+        (i) => {},
         {
           type: "impl",
           impl: { type: "keys", keys: changesCursorNeutral },
@@ -125,8 +143,8 @@ export class Vim {
           type: "impl",
           impl: { type: "keys", keys: motions },
         },
-        (_editor, _env, { input: _, output }) => ({
-          active: output,
+        (_editor, _env, { input: _, output: { pos } }) => ({
+          active: pos,
           toMode: "visual",
         })
       ),
@@ -143,7 +161,7 @@ export class Vim {
         })
       ),
       mapChordMenu(
-        (i) => { },
+        (i) => {},
         {
           type: "impl",
           impl: { type: "keys", keys: changesCursorNeutral },
@@ -183,8 +201,9 @@ export class Vim {
   private runKey<I, O>(menu: ChordMenu<I, O>, getInput: () => I, key: string) {
     const r = followKey(menu, getInput(), key, this.editor, this.env);
     if (r === undefined) return undefined;
-    if (r.type === "menu") { return r; }
-    else {
+    if (r.type === "menu") {
+      return r;
+    } else {
       // r.type === "action"
       // clear flash on top-level chords
       const oldFlash = this.env.flash;
@@ -313,13 +332,15 @@ export class Vim {
         if (key === "<escape>") {
           this.editor.cursor = { type: "block" };
           const active = this.editor.selections[0].active;
-          const fixed = fixNormalCursor(this.editor, fixPos(this.editor, active, -1));
+          const fixed = fixNormalCursor(
+            this.editor,
+            fixPos(this.editor, active, -1)
+          );
           this.editor.selections = [{ anchor: fixed, active: fixed }];
           this.state = { mode: "normal", menu: undefined };
           return true;
         } else {
-          if (!this.editor.isFake)
-            return false;
+          if (!this.editor.isFake) return false;
 
           // don't handle any key in the real VSCode environment
           const sel = this.editor.selections[0];
@@ -339,8 +360,7 @@ export class Vim {
   public get mode(): Mode {
     if (this.state.mode === "insert") {
       return "insert";
-    }
-    else if (this.state.mode === "normal") {
+    } else if (this.state.mode === "normal") {
       return this.state.menu === undefined ? "normal" : "normal+";
     } else {
       // this.state.mode === "visual) {

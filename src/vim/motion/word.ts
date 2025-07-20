@@ -1,4 +1,5 @@
 import { Editor, Pos } from "../../editorInterface.js";
+import { MotionResult } from "./motion.js";
 
 type CharType = "word" | "white" | "other";
 
@@ -47,15 +48,17 @@ function* iterCharBack(editor: Editor, p: Pos) {
   }
 }
 
-function editorLastPos(editor: Editor): Pos {
+function editorEndPos(editor: Editor): Pos {
   const lastLine = editor.getLines() - 1;
   return { l: lastLine, c: Math.max(0, editor.getLineLength(lastLine) - 1) };
 }
 
-// TODO "w" and "W" motion region should stop at newline
-// TODO I think the "w" motion should stop before the next word
-// TODO and the "w" normal key is the current implementation
-export function forwardWord(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
+function doForwardWord(
+  editor: Editor,
+  p: Pos,
+  whiteSpaceOnly: boolean,
+  allowStopOnWhite: boolean
+) {
   let charType: CharType | null = null;
   for (const { char, pos } of iterChar(editor, p)) {
     const t = getCharType(char);
@@ -67,16 +70,30 @@ export function forwardWord(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
       const isDifferentType = whiteSpaceOnly
         ? (charType === "white") !== (t === "white")
         : charType !== t;
-      if (isDifferentType && t !== "white") {
+      if (isDifferentType && (allowStopOnWhite || t !== "white")) {
         return pos;
       }
     }
     charType = t;
   }
-  return editorLastPos(editor);
+  return editorEndPos(editor);
 }
 
-export function forwardEnd(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
+export function forwardWord(
+  editor: Editor,
+  p: Pos,
+  whiteSpaceOnly: boolean,
+  allowStopOnWhite?: boolean
+): MotionResult {
+  const pos = doForwardWord(editor, p, whiteSpaceOnly, !!allowStopOnWhite);
+  return { pos, range: { active: p, anchor: pos } };
+}
+
+export function forwardEnd(
+  editor: Editor,
+  p: Pos,
+  whiteSpaceOnly: boolean
+): MotionResult {
   let charType: CharType | null = null;
   let lastPos: Pos = { l: p.l, c: p.c };
   let skipFirst = true;
@@ -90,17 +107,21 @@ export function forwardEnd(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
           ? (charType === "white") !== (t === "white")
           : charType !== t;
         if (isDifferentType && charType !== "white") {
-          return lastPos;
+          return { pos: lastPos };
         }
       }
       charType = t;
     }
     lastPos = pos;
   }
-  return editorLastPos(editor);
+  return { pos: editorEndPos(editor) };
 }
 
-export function back(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
+export function back(
+  editor: Editor,
+  p: Pos,
+  whiteSpaceOnly: boolean
+): MotionResult {
   let charType: CharType | null = null;
   let lastPos: Pos = { l: p.l, c: p.c };
   let skipFirst = true;
@@ -110,7 +131,7 @@ export function back(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
     } else {
       if (char === "\n" && pos.c === 0) {
         // empty new line
-        return pos;
+        return { pos };
       }
       const t = getCharType(char);
       if (charType !== null) {
@@ -118,12 +139,12 @@ export function back(editor: Editor, p: Pos, whiteSpaceOnly: boolean) {
           ? (charType === "white") !== (t === "white")
           : charType !== t;
         if (isDifferentType && charType !== "white") {
-          return lastPos;
+          return { pos: lastPos };
         }
       }
       charType = t;
     }
     lastPos = pos;
   }
-  return { l: 0, c: 0 };
+  return { pos: { l: 0, c: 0 } };
 }

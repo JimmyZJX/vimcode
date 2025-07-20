@@ -37,9 +37,9 @@ export type ChordKeys<I, O> = Record<string, ChordEntry<I, O> | undefined>;
 export type ChordMenuImpl<I, O> =
   | { type: "keys"; keys: Record<string, ChordEntry<I, O> | undefined> }
   | {
-    type: "fn";
-    fn: Action<{ key: string; input: I }, ChordEntry<I, O> | undefined>;
-  };
+      type: "fn";
+      fn: Action<{ key: string; input: I }, ChordEntry<I, O> | undefined>;
+    };
 
 export type ChordMenu<I, O> =
   | { type: "map"; mapper: ChordMenuMapper<I, O> }
@@ -200,9 +200,9 @@ export function testKeys<I, O>({
   if (cur !== init) {
     throw new Error(
       "Chords not fully applied: " +
-      keys.join(" ") +
-      "\nJSON\n====\n" +
-      JSON.stringify(cur)
+        keys.join(" ") +
+        "\nJSON\n====\n" +
+        JSON.stringify(cur)
     );
   }
 }

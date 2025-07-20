@@ -1,16 +1,24 @@
 import { Editor, fixPos, Pos } from "../../editorInterface.js";
 import { Env } from "../common.js";
+import { MotionResult } from "./motion.js";
 
-export function left(editor: Editor, p: Pos) {
-  return fixPos(editor, p, -1);
+export function left(editor: Editor, p: Pos): MotionResult {
+  const pos = fixPos(editor, p, -1);
+  return { pos, range: { active: pos, anchor: p } };
 }
 
 export function right(editor: Editor, p: Pos) {
-  return fixPos(editor, p, 1);
+  const pos = fixPos(editor, p, 1);
+  return { pos, range: { active: p, anchor: pos } };
 }
 
 // TODO different behavior for different mode... for the \n character... fixPos
-export function upDown(editor: Editor, env: Env, p: Pos, mode: "up" | "down") {
+export function moveUpDown(
+  editor: Editor,
+  env: Env,
+  p: Pos,
+  mode: "up" | "down"
+) {
   let tc = p.c;
   if (env.flash.preferredColumn !== undefined) {
     const lenL = editor.getLineLength(p.l);
@@ -31,4 +39,8 @@ export function upDown(editor: Editor, env: Env, p: Pos, mode: "up" | "down") {
     const pos = fixPos(editor, { l, c: tc });
     return pos;
   }
+}
+
+export function upDown(editor: Editor, env: Env, p: Pos, mode: "up" | "down") {
+  return { pos: moveUpDown(editor, env, p, mode), wholeLine: true };
 }

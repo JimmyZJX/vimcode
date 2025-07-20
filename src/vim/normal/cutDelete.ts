@@ -3,10 +3,10 @@ import {
   Editor,
   fixPos,
   Pos,
+  rangeOfSelection,
   Selection,
 } from "../../editorInterface.js";
 import {
-  Action,
   ChordKeys,
   ChordMenu,
   Env,
@@ -14,8 +14,19 @@ import {
   simpleKeys,
 } from "../common.js";
 import { getLineWhitePrefix } from "../lineUtil.js";
-import { motions } from "../motion/motion.js";
-import { getCharType } from "../motion/word.js";
+import { MotionResult, motions } from "../motion/motion.js";
+import { forwardWord } from "../motion/word.js";
+
+/** deletes [anchor <- active) */
+export function delRange(editor: Editor, env: Env, range: Selection) {
+  // TODO show register diff in tests
+  env.globalState.textRegister[""] = {
+    fullLine: false, // TODO implement
+    content: editor.getText(range),
+  };
+
+  editor.editText(range, "");
+}
 
 export function delWithMotion(
   editor: Editor,
@@ -27,115 +38,126 @@ export function delWithMotion(
   const region: Selection =
     comparePos(normalCursorPos, motionEnd) > 0
       ? /* backward */
-      {
-        anchor: motionEnd,
-        active: normalCursorPos,
-      }
+        {
+          anchor: motionEnd,
+          active: normalCursorPos,
+        }
       : /* forward */
-      {
-        anchor: normalCursorPos,
-        active: fixPos(editor, motionEnd, 1),
-      };
+        {
+          anchor: normalCursorPos,
+          active: fixPos(editor, motionEnd, 1),
+        };
 
-  // TODO show register diff in tests
-  env.globalState.textRegister[""] = {
-    fullLine: false, // TODO implement
-    content: editor.getText(region),
-  };
-
-  editor.editText(region, "");
+  delRange(editor, env, region);
   return region.anchor;
 }
 
-function delMotionW(e: "e" | "E", w: "w" | "W") {
-  const motionE = motions[e];
-  const motionW = motions[w];
-  if (motionE?.type !== "action" || motionW?.type !== "action")
-    return undefined;
-  return (editor: Editor, env: Env, p: Pos) => {
-    const motionEnd =
-      getCharType(editor.getLine(p.l)[p.c]) === "white"
-        ? motionW.action(editor, env, p)
-        : motionE.action(editor, env, p);
-    return delWithMotion(editor, env, p, motionEnd);
+// function delMotionWord(e: "e" | "E", w: "w" | "W") {
+//   const motionE = motions[e];
+//   const motionW = motions[w];
+//   if (motionE?.type !== "action" || motionW?.type !== "action")
+//     return undefined;
+//   return (editor: Editor, env: Env, p: Pos) => {
+//     const motionEnd =
+//       getCharType(editor.getLine(p.l)[p.c]) === "white"
+//         ? motionW.action(editor, env, p)
+//         : motionE.action(editor, env, p);
+//     return delWithMotion(editor, env, p, motionEnd);
+//   };
+// }
+
+function cutLines(editor: Editor, env: Env, l1: number, l2: number) {
+  [l1, l2] = [Math.min(l1, l2), Math.max(l1, l2)];
+  const len2 = editor.getLineLength(l2);
+  const prefix = getLineWhitePrefix(editor, l1);
+
+  const range = { anchor: { l: l1, c: 0 }, active: { l: l2, c: len2 } };
+
+  env.globalState.textRegister[""] = {
+    fullLine: true,
+    content: editor.getText(range),
   };
+
+  editor.editText(range, prefix);
+  return { l: l1, c: prefix.length };
 }
 
-function cutCurrentLine(editor: Editor, env: Env, p: Pos) {
-  const line = editor.getLine(p.l);
-  const prefix = getLineWhitePrefix(editor, p.l);
-  delWithMotion(editor, env, { l: p.l, c: 0 }, { l: p.l, c: line.length });
-  editor.editText(
-    { anchor: { l: p.l, c: 0 }, active: { l: p.l, c: 0 } },
-    prefix
-  );
-  return { l: p.l, c: prefix.length };
-}
-
-function deleteCurrentLine(editor: Editor, env: Env, p: Pos) {
+function deleteLines(editor: Editor, env: Env, l1: number, l2: number) {
+  [l1, l2] = [Math.min(l1, l2), Math.max(l1, l2)];
   const lines = editor.getLines();
-  const curLine = editor.getLine(p.l);
-  if (p.l >= lines - 1) {
-    if (p.l === 0) {
-      // only one line
-      editor.editText(
-        {
-          anchor: { l: 0, c: 0 },
-          active: { l: 0, c: editor.getLineLength(0) },
-        },
-        ""
-      );
-      return { l: 0, c: 0 };
-    } else {
-      // remove last line
-      const lastLine = editor.getLine(p.l - 1);
-      editor.editText(
-        {
-          anchor: { l: p.l - 1, c: lastLine.length },
-          active: { l: p.l, c: curLine.length },
-        },
-        ""
-      );
-      return { l: p.l - 1, c: getLineWhitePrefix(editor, p.l - 1).length };
-    }
-  } else {
-    // remove current line
+  const len2 = editor.getLineLength(l2);
+
+  const range = { anchor: { l: l1, c: 0 }, active: { l: l2, c: len2 - 1 } };
+  env.globalState.textRegister[""] = {
+    fullLine: true,
+    content: editor.getText(range),
+  };
+
+  if (l2 + 1 < lines) {
+    // delete and focus on next line
     editor.editText(
-      { anchor: { l: p.l, c: 0 }, active: { l: p.l + 1, c: 0 } },
+      { anchor: { l: l1, c: 0 }, active: { l: l2 + 1, c: 0 } },
       ""
     );
-    return { l: p.l, c: getLineWhitePrefix(editor, p.l).length };
+    return { l: l1, c: getLineWhitePrefix(editor, l1).length };
+  } else if (l1 > 0) {
+    // remove text and focus on previous line
+    editor.editText(
+      {
+        anchor: { l: l1 - 1, c: editor.getLineLength(l1 - 1) },
+        active: { l: l2, c: len2 },
+      },
+      ""
+    );
+    return { l: l1 - 1, c: getLineWhitePrefix(editor, l1 - 1).length };
+  } else {
+    // all text removed
+    editor.editText(
+      {
+        anchor: { l: 0, c: 0 },
+        active: { l: l2, c: len2 },
+      },
+      ""
+    );
+    return { l: 0, c: 0 };
   }
 }
 
-function cutOrDelete(
-  actions: Record<string, Action<Pos, Pos> | undefined>
-): ChordMenu<Pos, Pos> {
-  return {
-    type: "multi",
-    menus: [
-      {
-        type: "impl",
-        impl: {
-          type: "keys",
-          keys: simpleKeys({
-            // TODO instead, implement motion with different modes (as context)
-            /* c{w,W} is c{e,E} when cursor is not on whitespace */
-            w: delMotionW("e", "w"),
-            W: delMotionW("E", "W"),
-            ...actions,
-          }),
-        },
-      },
-      mapChordMenu(
-        (i) => i,
-        { type: "impl", impl: { type: "keys", keys: motions } },
-        (editor, env, { input, output }) => {
-          return delWithMotion(editor, env, input, output);
-        }
-      ),
-    ],
-  };
+function curOrDeleteMotion(
+  mode: "cut" | "delete",
+  editor: Editor,
+  env: Env,
+  {
+    input,
+    output: { pos, range, wholeLine },
+  }: { input: Pos; output: MotionResult }
+): Pos {
+  if (wholeLine) {
+    const [l1, l2] = range
+      ? [range.anchor.l, range.active.l]
+      : [input.l, pos.l];
+    if (mode === "cut") {
+      return cutLines(editor, env, l1, l2);
+    } else {
+      return deleteLines(editor, env, l1, l2);
+    }
+  } else {
+    if (range) {
+      const { start, end } = rangeOfSelection(range);
+      delRange(editor, env, { anchor: start, active: end });
+      return fixPos(editor, start, 0);
+    } else {
+      return delWithMotion(editor, env, input, pos);
+    }
+  }
+}
+
+function cutOrDelete(mode: "cut" | "delete"): ChordMenu<Pos, Pos> {
+  return mapChordMenu(
+    (i) => i,
+    { type: "impl", impl: { type: "keys", keys: motions } },
+    (editor, env, inp) => curOrDeleteMotion(mode, editor, env, inp)
+  );
 }
 
 export const cuts: ChordKeys<Pos, Pos> = {
@@ -143,14 +165,53 @@ export const cuts: ChordKeys<Pos, Pos> = {
     s: (editor, env, p) => {
       return delWithMotion(editor, env, p, fixPos(editor, p, 1));
     },
-    S: cutCurrentLine,
+    S: (editor, env, p) => cutLines(editor, env, p.l, p.l),
     C: (editor, env, p) => {
       const line = editor.getLine(p.l);
       return delWithMotion(editor, env, p, { l: p.l, c: line.length });
     },
   }),
-  c: { type: "menu", menu: cutOrDelete({ c: cutCurrentLine }) },
+  c: {
+    type: "menu",
+    menu: {
+      type: "multi",
+      menus: [
+        {
+          type: "impl",
+          impl: {
+            type: "keys",
+            keys: simpleKeys({
+              c: (editor, env, p) => cutLines(editor, env, p.l, p.l),
+              w: (editor, env, p) => {
+                const motion = forwardWord(editor, p, false, true);
+                return curOrDeleteMotion("cut", editor, env, {
+                  input: p,
+                  output: motion,
+                });
+              },
+              W: (editor, env, p) => {
+                const motion = forwardWord(editor, p, true, true);
+                return curOrDeleteMotion("cut", editor, env, {
+                  input: p,
+                  output: motion,
+                });
+              },
+            }),
+          },
+        },
+        cutOrDelete("cut"),
+      ],
+    },
+  },
 };
+
+function fixDwMotion(motion: MotionResult, editor: Editor) {
+  const range = motion.range;
+  if (range && range.anchor.l > 0 && range.anchor.c === 0) {
+    const l = range.anchor.l - 1;
+    range.anchor = { l, c: editor.getLineLength(l) };
+  }
+}
 
 export const deletes: ChordKeys<Pos, Pos> = {
   ...simpleKeys({
@@ -169,8 +230,36 @@ export const deletes: ChordKeys<Pos, Pos> = {
   }),
   d: {
     type: "menu",
-    menu: cutOrDelete({
-      d: deleteCurrentLine,
-    }),
+    menu: {
+      type: "multi",
+      menus: [
+        {
+          type: "impl",
+          impl: {
+            type: "keys",
+            keys: simpleKeys({
+              d: (editor, env, p) => deleteLines(editor, env, p.l, p.l),
+              w: (editor, env, p) => {
+                const motion = forwardWord(editor, p, false, true);
+                fixDwMotion(motion, editor);
+                return curOrDeleteMotion("delete", editor, env, {
+                  input: p,
+                  output: motion,
+                });
+              },
+              W: (editor, env, p) => {
+                const motion = forwardWord(editor, p, true, true);
+                fixDwMotion(motion, editor);
+                return curOrDeleteMotion("delete", editor, env, {
+                  input: p,
+                  output: motion,
+                });
+              },
+            }),
+          },
+        },
+        cutOrDelete("delete"),
+      ],
+    },
   },
 };

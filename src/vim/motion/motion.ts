@@ -1,4 +1,4 @@
-import { Editor, Pos } from "../../editorInterface.js";
+import { Editor, Pos, Selection } from "../../editorInterface.js";
 import {
   Action,
   ChordKeys,
@@ -20,7 +20,13 @@ import { back, forwardEnd, forwardWord } from "./word.js";
 
 // {type:"pos", pos:Pos} | {type:"range", range:Range} | {type:"none"} (ftFT)
 
-const actions: Record<string, Action<Pos, Pos>> = {
+export type MotionResult = {
+  pos: Pos;
+  range?: Selection; // sort first, and interpret as [start, end)
+  wholeLine?: boolean;
+};
+
+const actions: Record<string, Action<Pos, MotionResult>> = {
   h: (editor, _env, p: Pos) => left(editor, p),
   l: (editor, _env, p: Pos) => right(editor, p),
   k: (editor, env, p: Pos) => upDown(editor, env, p, "up"),
@@ -36,7 +42,7 @@ const actions: Record<string, Action<Pos, Pos>> = {
   B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
-export const motions: ChordKeys<Pos, Pos> = {
+export const motions: ChordKeys<Pos, MotionResult> = {
   ...simpleKeys(actions),
   ...lineMotions,
 };
@@ -51,7 +57,7 @@ export function testMotionKeys(
     keys,
     chords: { type: "impl", impl: { type: "keys", keys: motions } },
     getInput: () => editor.selections[0].active,
-    onOutput: (pos) => (editor.selections = [{ anchor: pos, active: pos }]),
+    onOutput: ({ pos }) => (editor.selections = [{ anchor: pos, active: pos }]),
     env: env ?? emptyEnv(),
   });
 }
