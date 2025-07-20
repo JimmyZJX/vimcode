@@ -2,9 +2,9 @@ import { Editor } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
 import { emptyEnv, Env, testKeys } from "../common.js";
 import { fixNormalCursor } from "../modeUtil.js";
-import { deletes } from "./cutDelete.js";
+import { changes } from "./change.js";
 
-export function testDeleteKeys(
+export function testChangeKeys(
   editor: Editor,
   keys: string[],
   env?: Env
@@ -12,7 +12,7 @@ export function testDeleteKeys(
   testKeys({
     editor,
     keys,
-    chords: { type: "impl", impl: { type: "keys", keys: deletes } },
+    chords: { type: "impl", impl: { type: "keys", keys: changes } },
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "block" };
@@ -32,17 +32,17 @@ it("delete", () => {
       editor.cursor = { type: "block" };
       writeState("init");
 
-      testDeleteKeys(editor, ["D"]);
+      testChangeKeys(editor, ["D"]);
       writeState("D");
 
       editor.selections = [{ anchor: { l: 0, c: 1 }, active: { l: 0, c: 1 } }];
       editor.cursor = { type: "block" };
       writeState("reset");
 
-      testDeleteKeys(editor, ["r", "d"]);
+      testChangeKeys(editor, ["r", "d"]);
       writeState("rd");
 
-      testDeleteKeys(editor, ["d", "d"]);
+      testChangeKeys(editor, ["d", "d"]);
       writeState("dd");
 
       editor.editText(
@@ -52,38 +52,38 @@ it("delete", () => {
       editor.selections = [{ anchor: { l: 1, c: 4 }, active: { l: 1, c: 4 } }];
       editor.cursor = { type: "block" };
       writeState("reset and move to line 2");
-      testDeleteKeys(editor, ["d", "e"]);
+      testChangeKeys(editor, ["d", "e"]);
       writeState("de");
 
       editor.selections = [{ anchor: { l: 1, c: 7 }, active: { l: 1, c: 7 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
-      testDeleteKeys(editor, ["x"]);
+      testChangeKeys(editor, ["x"]);
       writeState("x");
-      testDeleteKeys(editor, ["X"]);
+      testChangeKeys(editor, ["X"]);
       writeState("X");
 
       editor.selections = [{ anchor: { l: 1, c: 7 }, active: { l: 1, c: 7 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
-      testDeleteKeys(editor, ["d", "b"]);
+      testChangeKeys(editor, ["d", "b"]);
       writeState("db");
 
       editor.selections = [{ anchor: { l: 1, c: 6 }, active: { l: 1, c: 6 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
-      testDeleteKeys(editor, ["d", "w"]);
+      testChangeKeys(editor, ["d", "w"]);
       writeState("dw");
 
       editor.selections = [{ anchor: { l: 1, c: 5 }, active: { l: 1, c: 5 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
       for (let i = 0; i < 4; i++) {
-        testDeleteKeys(editor, ["d", "d"]);
+        testChangeKeys(editor, ["d", "d"]);
         writeState("dd");
       }
 
-      testDeleteKeys(editor, ["r", "a"]);
+      testChangeKeys(editor, ["r", "a"]);
       writeState("ra");
     }
   );

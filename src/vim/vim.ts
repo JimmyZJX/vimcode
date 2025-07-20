@@ -2,7 +2,7 @@ import { Editor, fixPos, Pos, Selection } from "../editorInterface.js";
 import { ChordMenu, Env, followKey, mapChordMenu } from "./common.js";
 import { fixNormalCursor, visualFromEditor, visualToEditor } from "./modeUtil.js";
 import { motions } from "./motion/motion.js";
-import { deletes } from "./normal/cutDelete.js";
+import { changes } from "./normal/change.js";
 import { inserts } from "./normal/insert.js";
 import { visualDelete } from "./visual/delete.js";
 
@@ -66,7 +66,7 @@ export class Vim {
         (i) => i,
         {
           type: "impl",
-          impl: { type: "keys", keys: { ...motions, ...deletes } },
+          impl: { type: "keys", keys: { ...motions, ...changes } },
         },
         (_editor, _env, { input: _, output }) => ({
           pos: output,
