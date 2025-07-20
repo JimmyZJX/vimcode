@@ -54,9 +54,9 @@ export class Vim {
     }
   }
 
-  public isStatePending(state: State) {
-    if (state.mode === "insert") return false;
-    return state.menu !== undefined;
+  public isPending() {
+    if (this.state.mode === "insert") return false;
+    return this.state.menu !== undefined;
   }
 
   private static normalMenus: ChordMenu<Pos, NormalModeResult> = {
