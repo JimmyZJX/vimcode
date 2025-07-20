@@ -149,6 +149,9 @@ export class FakeEditor implements Editor {
     }
     return FakeEditor.withTableBorder(linesWithMarkers);
   }
+
+  real_undo() { }
+  real_redo() { }
 }
 
 export default FakeEditor;

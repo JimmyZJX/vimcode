@@ -1,5 +1,5 @@
 import { Pos } from "../../editorInterface";
-import { ChordKeys } from "../common";
+import { ChordKeys, simpleKeys } from "../common";
 import { deletes } from "./cutDelete";
 
 export const changes: ChordKeys<Pos, Pos> = {
@@ -29,4 +29,8 @@ export const changes: ChordKeys<Pos, Pos> = {
             },
         },
     },
+    ...simpleKeys({
+        u: (editor, _env, _pos) => editor.real_undo(),
+        "C-r": (editor, _env, _pos) => editor.real_redo(),
+    })
 }

@@ -56,4 +56,8 @@ export interface Editor {
   isFake: boolean;
 
   // TODO visible lines
+
+  // only implemented in real editors (VSCode)
+  real_undo: () => void;
+  real_redo: () => void;
 }
