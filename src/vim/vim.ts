@@ -25,11 +25,6 @@ type State =
   }
   | { mode: "insert" }; // TODO insert chords
 
-export function isStatePending(state: State) {
-  if (state.mode === "insert") return false;
-  return state.menu !== undefined;
-}
-
 export class Vim {
   constructor(readonly editor: Editor, readonly env: Env) {
     editor.cursor = { "type": "block" };
@@ -39,7 +34,10 @@ export class Vim {
 
   public fixState() {
     // insert is still insert, even if there's selection
-    if (this.state.mode === "insert") return;
+    if (this.state.mode === "insert") {
+      this.editor.cursor = { type: "line" };
+      return;
+    }
 
     if (this.state.mode === "normal") {
       const { anchor, active } = this.editor.selections[0];
@@ -48,6 +46,17 @@ export class Vim {
         this.state = { mode: "visual", menu: undefined };
       }
     }
+
+    if (this.state.mode === "normal") {
+      this.editor.cursor = { type: "block" };
+    } else if (this.state.mode === "visual") {
+      this.editor.cursor = { type: "line" };
+    }
+  }
+
+  public isStatePending(state: State) {
+    if (state.mode === "insert") return false;
+    return state.menu !== undefined;
   }
 
   private static normalMenus: ChordMenu<Pos, NormalModeResult> = {
