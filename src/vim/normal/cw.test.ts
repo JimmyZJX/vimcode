@@ -1,5 +1,5 @@
 import { withEditor } from "../../testUtils.js";
-import { testChangeKeys } from "./change.js";
+import { testInsertKeys } from "./insert.js";
 
 it("dw", () => {
   withEditor(__filename, "abc def ghi\n  j klm\n", (editor, writeState) => {
@@ -7,13 +7,12 @@ it("dw", () => {
     editor.cursor = { type: "block" };
     writeState("init");
 
-    testChangeKeys(editor, ["d", "w"]);
-    writeState("dw");
+    for (let i = 0; i < 4; i++) {
+      testInsertKeys(editor, ["c", "w"]);
+      writeState("cw");
 
-    testChangeKeys(editor, ["d", "w"]);
-    writeState("dw");
-
-    testChangeKeys(editor, ["d", "w"]);
-    writeState("dw");
+      editor.cursor = { type: "block" };
+      writeState("(block)");
+    }
   });
 });

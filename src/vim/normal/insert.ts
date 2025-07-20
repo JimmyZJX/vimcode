@@ -1,5 +1,12 @@
-import { Pos } from "../../editorInterface.js";
-import { Action, ChordKeys, simpleKeys } from "../common.js";
+import { Editor, Pos } from "../../editorInterface.js";
+import {
+  Action,
+  ChordKeys,
+  emptyEnv,
+  Env,
+  simpleKeys,
+  testKeys,
+} from "../common.js";
 import { getLineWhitePrefix } from "../lineUtil.js";
 import { cuts } from "./cutDelete.js";
 
@@ -35,3 +42,21 @@ export const inserts: ChordKeys<Pos, Pos> = {
   ...simpleKeys(insert),
   ...cuts,
 };
+
+export function testInsertKeys(
+  editor: Editor,
+  keys: string[],
+  env?: Env
+): void {
+  testKeys({
+    editor,
+    keys,
+    chords: { type: "impl", impl: { type: "keys", keys: inserts } },
+    getInput: () => editor.selections[0].active,
+    onOutput: (pos) => {
+      editor.cursor = { type: "line" };
+      editor.selections = [{ anchor: pos, active: pos }];
+    },
+    env: env ?? emptyEnv(),
+  });
+}

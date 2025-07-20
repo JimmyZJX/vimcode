@@ -1,5 +1,5 @@
 import { withEditor } from "../../testUtils.js";
-import { testInsertKeys } from "./insert.test.js";
+import { testInsertKeys } from "./insert.js";
 
 it("cut", () => {
   withEditor(

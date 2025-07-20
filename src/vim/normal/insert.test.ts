@@ -1,25 +1,5 @@
-import { Editor } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
-import { emptyEnv, Env, testKeys } from "../common.js";
-import { inserts } from "./insert.js";
-
-export function testInsertKeys(
-  editor: Editor,
-  keys: string[],
-  env?: Env
-): void {
-  testKeys({
-    editor,
-    keys,
-    chords: { type: "impl", impl: { type: "keys", keys: inserts } },
-    getInput: () => editor.selections[0].active,
-    onOutput: (pos) => {
-      editor.cursor = { type: "line" };
-      editor.selections = [{ anchor: pos, active: pos }];
-    },
-    env: env ?? emptyEnv(),
-  });
-}
+import { testInsertKeys } from "./insert.js";
 
 it("insert", () => {
   withEditor(__filename, "abc\n  def\nghi\n", (editor, writeState) => {
