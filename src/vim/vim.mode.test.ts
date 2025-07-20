@@ -22,7 +22,9 @@ it("vim mode", () => {
 
     type("lllljl");
     type("cw");
-    type("abc");
+    type("abcd");
+    type(["<escape>"]);
+    type("i");
     type(["<escape>"]);
 
     type("hv");

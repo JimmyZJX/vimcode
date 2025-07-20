@@ -312,10 +312,8 @@ export class Vim {
       case "insert": {
         if (key === "<escape>") {
           this.editor.cursor = { type: "block" };
-          const fixed = fixNormalCursor(
-            this.editor,
-            this.editor.selections[0].active
-          );
+          const active = this.editor.selections[0].active;
+          const fixed = fixNormalCursor(this.editor, fixPos(this.editor, active, -1));
           this.editor.selections = [{ anchor: fixed, active: fixed }];
           this.state = { mode: "normal", menu: undefined };
           return true;
