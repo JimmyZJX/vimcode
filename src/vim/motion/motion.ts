@@ -1,7 +1,7 @@
 import { Editor, Pos, Selection } from "../../editorInterface.js";
 import {
   Action,
-  ChordKeys,
+  ChordMenu,
   emptyEnv,
   Env,
   simpleKeys,
@@ -9,7 +9,7 @@ import {
 } from "../common.js";
 import { left, right, upDown } from "./basic.js";
 import { lineMotions } from "./line.js";
-import { back, forwardEnd, forwardWord } from "./word.js";
+import { back, backEnd, forwardEnd, forwardWord } from "./word.js";
 
 // TODO motion has a "preferred interpretation"
 // type Interpretation =
@@ -42,9 +42,36 @@ const actions: Record<string, Action<Pos, MotionResult>> = {
   B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
-export const motions: ChordKeys<Pos, MotionResult> = {
-  ...simpleKeys(actions),
-  ...lineMotions,
+export const motions: ChordMenu<Pos, MotionResult> = {
+  type: "multi",
+  menus: [
+    {
+      type: "impl",
+      impl: {
+        type: "keys",
+        keys: {
+          ...simpleKeys(actions),
+          g: {
+            type: "menu",
+            menu: {
+              type: "impl",
+              impl: {
+                type: "keys",
+                keys: simpleKeys({
+                  e: (editor, _env, p: Pos) => backEnd(editor, p, false),
+                  E: (editor, _env, p: Pos) => backEnd(editor, p, true),
+                }),
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "impl",
+      impl: { type: "keys", keys: lineMotions },
+    },
+  ],
 };
 
 export function testMotionKeys(
@@ -55,7 +82,7 @@ export function testMotionKeys(
   testKeys({
     editor,
     keys,
-    chords: { type: "impl", impl: { type: "keys", keys: motions } },
+    chords: motions,
     getInput: () => editor.selections[0].active,
     onOutput: ({ pos }) => (editor.selections = [{ anchor: pos, active: pos }]),
     env: env ?? emptyEnv(),

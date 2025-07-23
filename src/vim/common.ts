@@ -89,7 +89,7 @@ function followKeyGeneric<I, I_, O_, O>(
       );
     });
   } else if (menu.type === "multi") {
-    for (const m of menu.menus) {
+    const entries = menu.menus.flatMap((m) => {
       const entry = followKeyGeneric(
         m,
         input,
@@ -99,9 +99,17 @@ function followKeyGeneric<I, I_, O_, O>(
         editor,
         env
       );
-      if (entry !== undefined) return entry;
-    }
-    return undefined;
+      return entry !== undefined ? [entry] : [];
+    });
+
+    if (entries.length === 0) return undefined;
+    const action = entries.find((e) => e.type === "action");
+    if (action !== undefined) return action;
+    if (entries.length === 1) return entries[0];
+
+    // all entries are menu now
+    const menus = entries.flatMap((e) => (e.type === "menu" ? [e.menu] : []));
+    return { type: "menu", menu: { type: "multi", menus } };
   } else {
     const impl = menu.impl;
     const entry =

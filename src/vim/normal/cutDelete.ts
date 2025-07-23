@@ -155,7 +155,7 @@ function curOrDeleteMotion(
 function cutOrDelete(mode: "cut" | "delete"): ChordMenu<Pos, Pos> {
   return mapChordMenu(
     (i) => i,
-    { type: "impl", impl: { type: "keys", keys: motions } },
+    motions,
     (editor, env, inp) => curOrDeleteMotion(mode, editor, env, inp)
   );
 }

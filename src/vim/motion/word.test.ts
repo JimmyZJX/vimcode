@@ -38,5 +38,15 @@ it("motion basic", () => {
       testMotionKeys(editor, ["B"]);
       writeState("B");
     }
+
+    testMotionKeys(editor, ["G"]);
+    writeState("G");
+
+    for (let i = 0; i < 3; i++) {
+      testMotionKeys(editor, ["g", "E"]);
+      writeState("gE");
+      testMotionKeys(editor, ["g", "e"]);
+      writeState("ge");
+    }
   });
 });

@@ -91,10 +91,7 @@ export class Vim {
       ),
       mapChordMenu(
         (i) => i,
-        {
-          type: "impl",
-          impl: { type: "keys", keys: motions },
-        },
+        motions,
         (_editor, _env, { input: _, output: { pos } }) => ({
           pos,
           toMode: "normal",
@@ -139,10 +136,7 @@ export class Vim {
     menus: [
       mapChordMenu(
         ({ anchor: _, active }) => active,
-        {
-          type: "impl",
-          impl: { type: "keys", keys: motions },
-        },
+        motions,
         (_editor, _env, { input: _, output: { pos } }) => ({
           active: pos,
           toMode: "visual",

@@ -152,3 +152,30 @@ export function back(
   }
   return { pos: { l: 0, c: 0 } };
 }
+
+export function backEnd(
+  editor: Editor,
+  p: Pos,
+  whiteSpaceOnly: boolean
+): MotionResult {
+  let charType: CharType | null = null;
+  let skipFirst = true;
+  for (const { char, pos } of iterCharBack(editor, p)) {
+    if (!skipFirst && char === "\n" && pos.c === 0) {
+      // empty new line
+      return { pos };
+    }
+    skipFirst = false;
+    const t = getCharType(char);
+    if (charType !== null) {
+      const isDifferentType = whiteSpaceOnly
+        ? (charType === "white") !== (t === "white")
+        : charType !== t;
+      if (isDifferentType && t !== "white") {
+        return { pos };
+      }
+    }
+    charType = t;
+  }
+  return { pos: { l: 0, c: 0 } };
+}
