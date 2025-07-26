@@ -1,4 +1,5 @@
 import { withEditor } from "../../testUtils.js";
+import { emptyEnv } from "../common.js";
 import { testChangeKeys } from "./change.js";
 
 it("change", () => {
@@ -6,21 +7,24 @@ it("change", () => {
     __filename,
     "abcde\n  fghij klmnopqrst\n",
     (editor, writeState) => {
+      const env = emptyEnv();
+      const testKeys = (keys: string[]) => testChangeKeys(editor, keys, env);
+
       editor.selections = [{ anchor: { l: 0, c: 3 }, active: { l: 0, c: 3 } }];
       editor.cursor = { type: "block" };
       writeState("init");
 
-      testChangeKeys(editor, ["D"]);
+      testKeys(["D"]);
       writeState("D");
 
       editor.selections = [{ anchor: { l: 0, c: 1 }, active: { l: 0, c: 1 } }];
       editor.cursor = { type: "block" };
       writeState("reset");
 
-      testChangeKeys(editor, ["r", "d"]);
+      testKeys(["r", "d"]);
       writeState("rd");
 
-      testChangeKeys(editor, ["d", "d"]);
+      testKeys(["d", "d"]);
       writeState("dd");
 
       editor.editText(
@@ -30,38 +34,38 @@ it("change", () => {
       editor.selections = [{ anchor: { l: 1, c: 4 }, active: { l: 1, c: 4 } }];
       editor.cursor = { type: "block" };
       writeState("reset and move to line 2");
-      testChangeKeys(editor, ["d", "e"]);
+      testKeys(["d", "e"]);
       writeState("de");
 
       editor.selections = [{ anchor: { l: 1, c: 7 }, active: { l: 1, c: 7 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
-      testChangeKeys(editor, ["x"]);
+      testKeys(["x"]);
       writeState("x");
-      testChangeKeys(editor, ["X"]);
+      testKeys(["X"]);
       writeState("X");
 
       editor.selections = [{ anchor: { l: 1, c: 7 }, active: { l: 1, c: 7 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
-      testChangeKeys(editor, ["d", "b"]);
+      testKeys(["d", "b"]);
       writeState("db");
 
       editor.selections = [{ anchor: { l: 1, c: 6 }, active: { l: 1, c: 6 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
-      testChangeKeys(editor, ["d", "w"]);
+      testKeys(["d", "w"]);
       writeState("dw");
 
       editor.selections = [{ anchor: { l: 1, c: 5 }, active: { l: 1, c: 5 } }];
       editor.cursor = { type: "block" };
       writeState("move to line 2");
       for (let i = 0; i < 4; i++) {
-        testChangeKeys(editor, ["d", "d"]);
+        testKeys(["d", "d"]);
         writeState("dd");
       }
 
-      testChangeKeys(editor, ["r", "a"]);
+      testKeys(["r", "a"]);
       writeState("ra");
     }
   );

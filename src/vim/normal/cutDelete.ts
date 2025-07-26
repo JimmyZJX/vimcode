@@ -87,7 +87,7 @@ function deleteLines(editor: Editor, env: Env, l1: number, l2: number) {
   const lines = editor.getLines();
   const len2 = editor.getLineLength(l2);
 
-  const range = { anchor: { l: l1, c: 0 }, active: { l: l2, c: len2 - 1 } };
+  const range = { anchor: { l: l1, c: 0 }, active: { l: l2, c: len2 } };
   env.globalState.registers.putText(editor, {
     isFullLine: true,
     content: editor.getText(range),

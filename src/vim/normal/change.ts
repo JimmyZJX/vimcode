@@ -33,19 +33,25 @@ function paste(
     }
   } else {
     const pos = mode === "before" ? p : fixPos(editor, p, 1);
-    editor.editText({ anchor: pos, active: pos }, registerText.content);
+    const content = registerText.content;
+    editor.editText({ anchor: pos, active: pos }, content);
+    const lineOffset = (content.match(/\n/g) || "").length;
+    const col =
+      lineOffset === 0
+        ? p.c + content.length + (mode === "before" ? 0 : 1)
+        : content.length - content.lastIndexOf("\n");
+    return { l: p.l + lineOffset, c: col };
   }
-  return { l: p.l, c: p.c };
 }
 
 export const changes: ChordKeys<Pos, Pos> = {
   ...deletes,
   ...simpleKeys({
     p: (editor, env, p) => {
-      return paste(editor, env, p, "before");
+      return paste(editor, env, p, "after");
     },
     P: (editor, env, p) => {
-      return paste(editor, env, p, "after");
+      return paste(editor, env, p, "before");
     },
   }),
   r: {
