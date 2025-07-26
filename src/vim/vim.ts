@@ -320,7 +320,7 @@ export class Vim {
       case "normal": {
         const { processed, ...state } = this.runNormal(key, this.state);
         this.state = state;
-        return processed;
+        return processed || key.length === 1;
       }
       case "insert": {
         if (key === "<escape>") {
