@@ -1,10 +1,53 @@
-import { Editor, Pos } from "../../editorInterface.js";
+import { Editor, fixPos, Pos } from "../../editorInterface.js";
 import { ChordKeys, emptyEnv, Env, simpleKeys, testKeys } from "../common.js";
+import { getLineWhitePrefix } from "../lineUtil.js";
 import { fixNormalCursor } from "../modeUtil.js";
 import { deletes } from "./cutDelete.js";
 
+function paste(
+  editor: Editor,
+  env: Env,
+  p: Pos,
+  mode: "before" | "after"
+): Pos {
+  const registerText = env.globalState.registers.getText(editor);
+  if (registerText === undefined) {
+    return { l: p.l, c: p.c };
+  }
+  if (registerText.isFullLine) {
+    if (mode === "before") {
+      const lineStart = { l: p.l, c: 0 };
+      editor.editText(
+        { anchor: lineStart, active: lineStart },
+        registerText.content + "\n"
+      );
+      return { l: p.l, c: getLineWhitePrefix(editor, p.l).length };
+    } else {
+      // after
+      const lineLen = editor.getLineLength(p.l);
+      editor.editText(
+        { anchor: { l: p.l, c: lineLen }, active: { l: p.l, c: lineLen } },
+        "\n" + registerText.content
+      );
+      return { l: p.l + 1, c: getLineWhitePrefix(editor, p.l + 1).length };
+    }
+  } else {
+    const pos = mode === "before" ? p : fixPos(editor, p, 1);
+    editor.editText({ anchor: pos, active: pos }, registerText.content);
+  }
+  return { l: p.l, c: p.c };
+}
+
 export const changes: ChordKeys<Pos, Pos> = {
   ...deletes,
+  ...simpleKeys({
+    p: (editor, env, p) => {
+      return paste(editor, env, p, "before");
+    },
+    P: (editor, env, p) => {
+      return paste(editor, env, p, "after");
+    },
+  }),
   r: {
     type: "menu",
     menu: {
