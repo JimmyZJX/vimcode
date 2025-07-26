@@ -60,4 +60,6 @@ export interface Editor {
   // only implemented in real editors (VSCode)
   real_undo: () => void;
   real_redo: () => void;
+  real_putClipboard: (content: string) => void;
+  real_getClipboard: () => string | undefined;
 }

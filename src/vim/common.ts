@@ -1,10 +1,10 @@
 import { Editor } from "../editorInterface.js";
+import { Registers } from "./registers.js";
 
 export type Options = {};
 
 export type GlobalState = {
-  // TODO this should be a class
-  textRegister: Record<string, { fullLine: boolean; content: string }>;
+  registers: Registers;
 };
 
 export type Flash = {
@@ -20,7 +20,7 @@ export type Env = {
 export function emptyEnv(): Env {
   return {
     options: {},
-    globalState: { textRegister: {} },
+    globalState: { registers: new Registers() },
     flash: {},
   };
 }

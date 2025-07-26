@@ -121,8 +121,8 @@ export class FakeEditor implements Editor {
       this._cursor.type === "line"
         ? "▏"
         : this._cursor.type === "block"
-          ? "█"
-          : "▄";
+        ? "█"
+        : "▄";
     for (const {
       anchor: _,
       active: { l, c },
@@ -150,8 +150,12 @@ export class FakeEditor implements Editor {
     return FakeEditor.withTableBorder(linesWithMarkers);
   }
 
-  real_undo() { }
-  real_redo() { }
+  real_undo() {}
+  real_redo() {}
+  real_getClipboard() {
+    return undefined;
+  }
+  real_putClipboard(content: string) {}
 }
 
 export default FakeEditor;

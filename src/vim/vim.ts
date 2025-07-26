@@ -309,7 +309,7 @@ export class Vim {
     }
   }
 
-  public onKey(key: string): boolean {
+  private _onKey(key: string): boolean {
     switch (this.state.mode) {
       case "visual": {
         // check if selection is forward or backward
@@ -349,6 +349,12 @@ export class Vim {
         throw new Error(`Unexpected state ${(state as any).mode}`);
       }
     }
+  }
+
+  public onKey(key: string): boolean {
+    const processed = this._onKey(key);
+    this.env.globalState.registers.onAfterKeyProcessed(this.mode);
+    return processed;
   }
 
   public get mode(): Mode {

@@ -20,10 +20,10 @@ import { forwardWord } from "../motion/word.js";
 /** deletes [anchor <- active) */
 export function delRange(editor: Editor, env: Env, range: Selection) {
   // TODO show register diff in tests
-  env.globalState.textRegister[""] = {
-    fullLine: false, // TODO implement
+  env.globalState.registers.putText(editor, {
+    isFullLine: false,
     content: editor.getText(range),
-  };
+  });
 
   editor.editText(range, "");
 }
@@ -73,10 +73,10 @@ function cutLines(editor: Editor, env: Env, l1: number, l2: number) {
 
   const range = { anchor: { l: l1, c: 0 }, active: { l: l2, c: len2 } };
 
-  env.globalState.textRegister[""] = {
-    fullLine: true,
+  env.globalState.registers.putText(editor, {
+    isFullLine: true,
     content: editor.getText(range),
-  };
+  });
 
   editor.editText(range, prefix);
   return { l: l1, c: prefix.length };
@@ -88,10 +88,10 @@ function deleteLines(editor: Editor, env: Env, l1: number, l2: number) {
   const len2 = editor.getLineLength(l2);
 
   const range = { anchor: { l: l1, c: 0 }, active: { l: l2, c: len2 - 1 } };
-  env.globalState.textRegister[""] = {
-    fullLine: true,
+  env.globalState.registers.putText(editor, {
+    isFullLine: true,
     content: editor.getText(range),
-  };
+  });
 
   if (l2 + 1 < lines) {
     // delete and focus on next line
