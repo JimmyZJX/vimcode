@@ -1,8 +1,14 @@
-import { Editor, Pos } from "../../editorInterface";
-import { ChordKeys, ChordMenu, Env, mapChordMenu, simpleKeys } from "../common";
-import { MotionResult, motions } from "../motion/motion";
-import { forwardWord } from "../motion/word";
-import { fixDwMotion, getMotionRange } from "./cutDelete";
+import { Editor, Pos } from "../../editorInterface.js";
+import {
+  ChordKeys,
+  ChordMenu,
+  Env,
+  mapChordMenu,
+  simpleKeys,
+} from "../common.js";
+import { MotionResult, motions } from "../motion/motion.js";
+import { forwardWord } from "../motion/word.js";
+import { fixDwMotion, getMotionRange } from "./cutDelete.js";
 
 function yankLines(editor: Editor, env: Env, l1: number, l2: number) {
   [l1, l2] = [Math.min(l1, l2), Math.max(l1, l2)];
