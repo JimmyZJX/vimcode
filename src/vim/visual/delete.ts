@@ -24,14 +24,26 @@ function getVisualRange(editor: Editor, sel: Selection) {
   return { start, end: fixRegionEnd(editor, end) };
 }
 
-function deleteRegion(editor: Editor, _env: Env, sel: Selection) {
+function deleteRegion(editor: Editor, env: Env, sel: Selection) {
   const { start, end } = getVisualRange(editor, sel);
-  editor.editText({ anchor: start, active: end }, "");
+  const range = { anchor: start, active: end };
+  env.globalState.registers.putText(editor, {
+    isFullLine: false,
+    content: editor.getText(range),
+  });
+  editor.editText(range, "");
   return rangeOfSelection(sel).start;
 }
 
-function deleteLine(editor: Editor, _env: Env, sel: Selection) {
+function deleteLine(editor: Editor, env: Env, sel: Selection) {
   const { start, end } = rangeOfSelection(sel);
+  env.globalState.registers.putText(editor, {
+    isFullLine: true,
+    content: editor.getText({
+      anchor: { l: start.l, c: 0 },
+      active: { l: end.l, c: editor.getLineLength(end.l) },
+    }),
+  });
   const endOfLine =
     end.l + 1 >= editor.getLines()
       ? { l: end.l, c: editor.getLineLength(end.l) }
