@@ -9,7 +9,9 @@ import { motions } from "./motion/motion.js";
 import { changes, changesCursorNeutral } from "./normal/change.js";
 import { inserts } from "./normal/insert.js";
 import { yanks } from "./normal/yank.js";
+import { visualCursor } from "./visual/cursor.js";
 import { visualDelete } from "./visual/delete.js";
+import { visualInsert } from "./visual/insert.js";
 
 // TODO for VSCode: click cursor should be corrected to block cursor instead of line
 // cursor
@@ -19,6 +21,7 @@ export type Mode = "normal" | "insert" | "visual" | "normal+" | "visual+";
 type NormalModeResult = { pos?: Pos; toMode: "normal" | "insert" | "visual" };
 type VisualModeResult = {
   active?: Pos;
+  anchor?: Pos;
   toMode: "visual" | "normal" | "insert";
 };
 
@@ -181,15 +184,23 @@ export class Vim {
           toMode: "normal",
         })
       ),
-      // mapChordMenu(
-      //   (i) => i,
-      //   { type: "impl", impl: { type: "keys", keys: inserts } },
-      //   (_editor, _env, { input: _, output }) => ({
-      //     active: output,
-      //     toMode: "insert",
-      //     // TODO keys like "sSiaIA" behaves very differently
-      //   })
-      // ),
+      mapChordMenu(
+        (i) => i,
+        { type: "impl", impl: { type: "keys", keys: visualInsert } },
+        (_editor, _env, { input: _, output }) => ({
+          active: output,
+          toMode: "insert",
+        })
+      ),
+      mapChordMenu(
+        (i) => i,
+        { type: "impl", impl: { type: "keys", keys: visualCursor } },
+        (_editor, _env, { input: _, output }) => ({
+          active: output.active,
+          anchor: output.anchor,
+          toMode: "insert",
+        })
+      ),
       {
         type: "impl",
         impl: {
