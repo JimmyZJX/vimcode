@@ -1,9 +1,9 @@
-import { Editor, Pos } from "../../editorInterface";
-import { withEditor } from "../../testUtils";
-import { emptyEnv, Env, mapChordMenu, testKeys } from "../common";
-import { fixNormalCursor } from "../modeUtil";
-import { changes } from "./change";
-import { yanks } from "./yank";
+import { Editor, Pos } from "../../editorInterface.js";
+import { withEditor } from "../../testUtils.js";
+import { emptyEnv, Env, mapChordMenu, testKeys } from "../common.js";
+import { fixNormalCursor } from "../modeUtil.js";
+import { changes } from "./change.js";
+import { yanks } from "./yank.js";
 
 async function testChangeAndYankKeys(
   editor: Editor,
