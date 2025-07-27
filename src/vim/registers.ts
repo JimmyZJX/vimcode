@@ -31,7 +31,7 @@ export class Registers {
     const regName = this.currentRegName ?? '"';
     this.registers[regName] = { type: "text", isFullLine, content };
     if (regName === '"') {
-      editor.real_putClipboard(regName);
+      editor.real_putClipboard(content);
     }
   }
 
