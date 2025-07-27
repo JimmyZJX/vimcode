@@ -45,7 +45,8 @@ export class Registers {
       regName === '"' ? await editor.real_getClipboard() : undefined;
     let content = realClipboard ?? regText?.content;
     if (content === undefined) return undefined;
-    if (regText && content.replace(/(\r\n|\r)/g, "\n") === regText.content) {
+    content = content.replace(/(\r\n|\r)/g, "\n");
+    if (regText && content === regText.content) {
       return { isFullLine: regText.isFullLine, content };
     } else {
       return { isFullLine: false, content };
