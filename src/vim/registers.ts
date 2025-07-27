@@ -1,5 +1,5 @@
-import { Editor } from "../editorInterface";
-import { Mode } from "./vim";
+import { Editor } from "../editorInterface.js";
+import { Mode } from "./vim.js";
 
 export type RegisterTextContent = { isFullLine: boolean; content: string };
 
@@ -45,7 +45,7 @@ export class Registers {
       regName === '"' ? await editor.real_getClipboard() : undefined;
     let content = realClipboard ?? regText?.content;
     if (content === undefined) return undefined;
-    if (content === regText?.content) {
+    if (regText && content === regText.content) {
       return { isFullLine: regText.isFullLine, content };
     } else {
       return { isFullLine: false, content };
