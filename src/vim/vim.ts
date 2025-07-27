@@ -198,7 +198,7 @@ export class Vim {
         (_editor, _env, { input: _, output }) => ({
           active: output.active,
           anchor: output.anchor,
-          toMode: "insert",
+          toMode: "visual",
         })
       ),
       {
@@ -253,7 +253,11 @@ export class Vim {
       return { processed: true, mode: "visual", menu: r.menu };
     }
 
-    const onVisualResult = ({ active, toMode }: VisualModeResult): State => {
+    const onVisualResult = ({
+      active,
+      anchor,
+      toMode,
+    }: VisualModeResult): State => {
       if (toMode === "normal") {
         // TODO global fix to hook, also when mode is changed TO normal
         if (active) {
@@ -266,7 +270,7 @@ export class Vim {
         if (active) {
           this.editor.selections = [
             visualToEditor(this.editor, {
-              anchor: visualSelection.anchor,
+              anchor: anchor ?? visualSelection.anchor,
               active,
             }),
           ];
