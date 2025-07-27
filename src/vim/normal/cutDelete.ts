@@ -28,25 +28,31 @@ export function delRange(editor: Editor, env: Env, range: Selection) {
   editor.editText(range, "");
 }
 
+export function getMotionRange(
+  editor: Editor,
+  normalCursorPos: Pos,
+  motionEnd: Pos
+): Selection {
+  return comparePos(normalCursorPos, motionEnd) > 0
+    ? /* backward */
+      {
+        anchor: motionEnd,
+        active: normalCursorPos,
+      }
+    : /* forward */
+      {
+        anchor: normalCursorPos,
+        active: fixPos(editor, motionEnd, 1),
+      };
+}
+
 export function delWithMotion(
   editor: Editor,
   env: Env,
   normalCursorPos: Pos,
   motionEnd: Pos
 ): Pos {
-  // TODO use suggested region
-  const region: Selection =
-    comparePos(normalCursorPos, motionEnd) > 0
-      ? /* backward */
-        {
-          anchor: motionEnd,
-          active: normalCursorPos,
-        }
-      : /* forward */
-        {
-          anchor: normalCursorPos,
-          active: fixPos(editor, motionEnd, 1),
-        };
+  const region = getMotionRange(editor, normalCursorPos, motionEnd);
 
   delRange(editor, env, region);
   return region.anchor;
@@ -211,7 +217,7 @@ export const cuts: ChordKeys<Pos, Pos> = {
   },
 };
 
-function fixDwMotion(motion: MotionResult, editor: Editor) {
+export function fixDwMotion(motion: MotionResult, editor: Editor) {
   const range = motion.range;
   if (range && range.anchor.l > 0 && range.anchor.c === 0) {
     const l = range.anchor.l - 1;
