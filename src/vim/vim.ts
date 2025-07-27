@@ -350,6 +350,7 @@ export class Vim {
             const normalResult = Vim.withEnv(this.env, () =>
               delayed(this.editor, this.env, delayedInput)
             );
+            // TODO this should trigger some onStateChange callbacks...
             this.state = onNormalResult(normalResult);
           }
         });
