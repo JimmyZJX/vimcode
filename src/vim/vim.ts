@@ -32,12 +32,16 @@ type State =
     }
   | { mode: "insert" }; // TODO insert chords
 
+// TODO on macro execution, wait for delayed token
+class DelayedToken {}
+
 export class Vim {
   constructor(readonly editor: Editor, readonly env: Env) {
     editor.cursor = { type: "block" };
   }
 
   private state: State = { mode: "normal", menu: undefined };
+  private lastDelayed: DelayedToken | undefined = undefined;
 
   public fixState() {
     // insert is still insert, even if there's selection
@@ -192,21 +196,14 @@ export class Vim {
     ],
   };
 
-  private runKey<I, O>(menu: ChordMenu<I, O>, getInput: () => I, key: string) {
-    const r = followKey(menu, getInput(), key, this.editor, this.env);
-    if (r === undefined) return undefined;
-    if (r.type === "menu") {
-      return r;
-    } else {
-      // r.type === "action"
-      // clear flash on top-level chords
-      const oldFlash = this.env.flash;
-      const output = r.action(this.editor, this.env, getInput());
-      if (this.env.flash === oldFlash) {
-        this.env.flash = {};
-      }
-      return { type: "output" as const, output };
+  private static withEnv<O>(env: Env, action: () => O): O {
+    // clear flash on top-level chords
+    const oldFlash = env.flash;
+    const output = action();
+    if (env.flash === oldFlash) {
+      env.flash = {};
     }
+    return output;
   }
 
   private runVisual(
@@ -218,48 +215,74 @@ export class Vim {
       this.editor.selections[0]
     );
     const getInput = () => visualSelection;
-    const runKeyResult = this.runKey(
+    const r = followKey(
       state.menu ?? Vim.visualMenus,
-      getInput,
-      key
+      getInput(),
+      key,
+      this.editor,
+      this.env
     );
-    if (runKeyResult === undefined) {
+    if (r === undefined) {
       // TODO LOG key not found
       return { processed: false, mode: "visual", menu: undefined };
     }
-    const processed = true;
-    if (runKeyResult.type === "menu") {
-      return { processed, mode: "visual", menu: runKeyResult.menu };
+    if (r.type === "menu") {
+      return { processed: true, mode: "visual", menu: r.menu };
     }
-    const { active, toMode } = runKeyResult.output;
-    if (toMode === "normal") {
-      // TODO global fix to hook, also when mode is changed TO normal
-      if (active) {
-        const fixed = fixNormalCursor(this.editor, active);
-        this.editor.cursor = { type: "block" };
-        this.editor.selections = [{ anchor: fixed, active: fixed }];
+
+    const onVisualResult = ({ active, toMode }: VisualModeResult): State => {
+      if (toMode === "normal") {
+        // TODO global fix to hook, also when mode is changed TO normal
+        if (active) {
+          const fixed = fixNormalCursor(this.editor, active);
+          this.editor.cursor = { type: "block" };
+          this.editor.selections = [{ anchor: fixed, active: fixed }];
+        }
+        return { mode: "normal", menu: undefined };
+      } else if (toMode === "visual") {
+        if (active) {
+          this.editor.selections = [
+            visualToEditor(this.editor, {
+              anchor: visualSelection.anchor,
+              active,
+            }),
+          ];
+        }
+        // TODO "blockBefore" cursor type (non-blinking)
+        // TODO depending on the order of anchor/active!
+        this.editor.cursor = { type: "line" };
+        return { mode: "visual", menu: undefined };
+      } else {
+        // toMode === "insert"
+        if (active) {
+          this.editor.selections = [{ anchor: active, active }];
+        }
+        this.editor.cursor = { type: "line" };
+        return { mode: "insert" };
       }
-      return { processed, mode: "normal", menu: undefined };
-    } else if (toMode === "visual") {
-      if (active) {
-        this.editor.selections = [
-          visualToEditor(this.editor, {
-            anchor: visualSelection.anchor,
-            active,
-          }),
-        ];
-      }
-      // TODO "blockBefore" cursor type (non-blinking)
-      // TODO depending on the order of anchor/active!
-      this.editor.cursor = { type: "line" };
-      return { processed, mode: "visual", menu: undefined };
+    };
+
+    if (r.type === "action") {
+      const visualResult = Vim.withEnv(this.env, () =>
+        r.action(this.editor, this.env, getInput())
+      );
+      return { processed: true, ...onVisualResult(visualResult) };
     } else {
-      // toMode === "insert"
-      if (active) {
-        this.editor.selections = [{ anchor: active, active }];
-      }
-      this.editor.cursor = { type: "line" };
-      return { processed, mode: "insert" };
+      // "delayed"
+      const delayedToken = new DelayedToken();
+      this.lastDelayed = delayedToken;
+      r.delayed((prepare, delayed) => {
+        prepare(this.editor, this.env, getInput()).then((delayedInput) => {
+          if (this.lastDelayed === delayedToken) {
+            const visualResult = Vim.withEnv(this.env, () =>
+              delayed(this.editor, this.env, delayedInput)
+            );
+            this.state = onVisualResult(visualResult);
+          }
+        });
+      });
+
+      return { processed: true, ...state };
     }
   }
 
@@ -268,44 +291,71 @@ export class Vim {
     state: Extract<State, { mode: "normal" }>
   ): State & { processed: boolean } {
     const getInput = () => this.editor.selections[0].active;
-    const runKeyResult = this.runKey(
+    const r = followKey(
       state.menu ?? Vim.normalMenus,
-      getInput,
-      key
+      getInput(),
+      key,
+      this.editor,
+      this.env
     );
-    if (runKeyResult === undefined) {
+    if (r === undefined) {
       // TODO LOG key not found
       return { processed: false, mode: "normal", menu: undefined };
     }
-    const processed = true;
-    if (runKeyResult.type === "menu") {
-      return { processed, mode: "normal", menu: runKeyResult.menu };
+    if (r.type === "menu") {
+      return { processed: true, mode: "normal", menu: r.menu };
     }
-    const { pos, toMode } = runKeyResult.output;
-    if (toMode === "normal") {
-      // TODO global fix to hook, also when mode is changed TO normal
-      if (pos) {
-        const fixed = fixNormalCursor(this.editor, pos);
-        this.editor.selections = [{ anchor: fixed, active: fixed }];
+
+    const onNormalResult = ({ pos, toMode }: NormalModeResult): State => {
+      if (toMode === "normal") {
+        // TODO global fix to hook, also when mode is changed TO normal
+        if (pos) {
+          const fixed = fixNormalCursor(this.editor, pos);
+          this.editor.selections = [{ anchor: fixed, active: fixed }];
+        }
+        return { mode: "normal", menu: undefined };
+      } else if (toMode === "visual") {
+        // only possible via "v" for now
+        if (pos) {
+          this.editor.selections = [
+            { anchor: pos, active: fixPos(this.editor, pos, 1) },
+          ];
+        }
+        // TODO "blockBefore" cursor type (non-blinking)
+        // TODO depending on the order of anchor/active!
+        this.editor.cursor = { type: "line" };
+        return { mode: "visual", menu: undefined };
+      } else {
+        // toMode === "insert"
+        if (pos) {
+          this.editor.selections = [{ anchor: pos, active: pos }];
+        }
+        this.editor.cursor = { type: "line" };
+        return { mode: "insert" };
       }
-      return { processed, mode: "normal", menu: undefined };
-    } else if (toMode === "visual") {
-      // only possible via "v" for now
-      if (pos) {
-        this.editor.selections = [
-          { anchor: pos, active: fixPos(this.editor, pos, 1) },
-        ];
-      }
-      // TODO "blockBefore" cursor type (non-blinking)
-      // TODO depending on the order of anchor/active!
-      this.editor.cursor = { type: "line" };
-      return { processed, mode: "visual", menu: undefined };
+    };
+
+    if (r.type === "action") {
+      const normalResult = Vim.withEnv(this.env, () =>
+        r.action(this.editor, this.env, getInput())
+      );
+      return { processed: true, ...onNormalResult(normalResult) };
     } else {
-      if (pos) {
-        this.editor.selections = [{ anchor: pos, active: pos }];
-      }
-      this.editor.cursor = { type: "line" };
-      return { processed, mode: "insert" };
+      // "delayed"
+      const delayedToken = new DelayedToken();
+      this.lastDelayed = delayedToken;
+      r.delayed((prepare, delayed) => {
+        prepare(this.editor, this.env, getInput()).then((delayedInput) => {
+          if (this.lastDelayed === delayedToken) {
+            const normalResult = Vim.withEnv(this.env, () =>
+              delayed(this.editor, this.env, delayedInput)
+            );
+            this.state = onNormalResult(normalResult);
+          }
+        });
+      });
+
+      return { processed: true, ...state };
     }
   }
 

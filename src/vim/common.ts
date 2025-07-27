@@ -25,11 +25,19 @@ export function emptyEnv(): Env {
   };
 }
 
+export type DelayedAction<I, O> = <R>(
+  k: <DelayedInput>(
+    prepare: Action<I, Promise<DelayedInput>>,
+    delayed: Action<DelayedInput, O>
+  ) => R
+) => R;
+
 export type Action<I, O> = (editor: Editor, env: Env, input: I) => O;
 
 export type ChordEntry<I, O> =
   | { type: "menu"; menu: ChordMenu<I, O> }
-  | { type: "action"; action: Action<I, O> };
+  | { type: "action"; action: Action<I, O> }
+  | { type: "delayed"; delayed: DelayedAction<I, O> };
 
 export type ChordKeys<I, O> = Record<string, ChordEntry<I, O> | undefined>;
 
@@ -127,6 +135,28 @@ function followKeyGeneric<I, I_, O_, O>(
           return mapOutput(editor, env, { input, output: rawOutput });
         },
       };
+    if (entry.type === "delayed") {
+      return {
+        type: "delayed",
+        delayed: (k) =>
+          entry.delayed((prepare, delayed) =>
+            k(
+              async (editor, env, input) => {
+                const delayedInput = await prepare(
+                  editor,
+                  env,
+                  mapInput(input)
+                );
+                return { delayedInput, input };
+              },
+              (editor, env, { delayedInput, input }) => {
+                const rawOutput = delayed(editor, env, delayedInput);
+                return mapOutput(editor, env, { input, output: rawOutput });
+              }
+            )
+          ),
+      };
+    }
     return {
       type: "menu",
       menu: mapChordMenu(mapInput, entry.menu, mapOutput),
@@ -168,7 +198,7 @@ export function simpleKeys<I, O>(
 }
 
 /** `getInput` should be fast */
-export function testKeys<I, O>({
+export async function testKeys<I, O>({
   editor,
   keys,
   chords,
@@ -182,7 +212,7 @@ export function testKeys<I, O>({
   getInput: () => I;
   onOutput: (output: O) => void;
   env: Env;
-}): void {
+}): Promise<void> {
   const init = chords;
   let cur = init;
 
@@ -193,7 +223,7 @@ export function testKeys<I, O>({
     }
     if (r.type === "menu") {
       cur = r.menu;
-    } else {
+    } else if (r.type === "action") {
       // In test, every key chord triggers a flash
       const oldFlash = env.flash;
       const output = r.action(editor, env, getInput());
@@ -202,6 +232,18 @@ export function testKeys<I, O>({
       }
       onOutput(output);
       cur = init;
+    } else {
+      await r.delayed(async (prepare, delayed) => {
+        const prepared = await prepare(editor, env, getInput());
+
+        const oldFlash = env.flash;
+        const output = delayed(editor, env, prepared);
+        if (env.flash === oldFlash) {
+          env.flash = {};
+        }
+        onOutput(output);
+        cur = init;
+      });
     }
   }
 

@@ -1,10 +1,13 @@
 import fs from "fs";
 import FakeEditor from "./fakeEditor/fakeEditor.js";
 
-export function withEditor(
+export async function withEditor(
   filename: string,
   initText: string,
-  f: (editor: FakeEditor, writeState: (description: string) => void) => void
+  f: (
+    editor: FakeEditor,
+    writeState: (description: string) => void
+  ) => void | Promise<void>
 ) {
   const dumpFd = fs.openSync(filename.replace(/\.+$/, "") + ".txt", "w");
   function writeState(description: string) {
@@ -13,7 +16,7 @@ export function withEditor(
   const editor = new FakeEditor(initText);
 
   try {
-    f(editor, writeState);
+    await f(editor, writeState);
   } finally {
     fs.closeSync(dumpFd);
   }

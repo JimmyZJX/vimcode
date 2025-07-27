@@ -35,12 +35,14 @@ export class Registers {
     }
   }
 
-  public getText(editor: Editor): RegisterTextContent | undefined {
+  public async getText(
+    editor: Editor
+  ): Promise<RegisterTextContent | undefined> {
     const regName = this.currentRegName ?? '"';
     const reg = this.registers[regName];
     const regText = reg?.type === "text" ? reg : undefined;
     const realClipboard =
-      regName === '"' ? editor.real_getClipboard() : undefined;
+      regName === '"' ? await editor.real_getClipboard() : undefined;
     let content = realClipboard ?? regText?.content;
     if (content === undefined) return undefined;
     if (content === regText?.content) {

@@ -152,10 +152,10 @@ export class FakeEditor implements Editor {
 
   real_undo() {}
   real_redo() {}
-  real_getClipboard() {
+  async real_getClipboard() {
     return undefined;
   }
-  real_putClipboard(content: string) {}
+  async real_putClipboard(_content: string) {}
 }
 
 export default FakeEditor;

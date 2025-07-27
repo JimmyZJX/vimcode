@@ -2,11 +2,11 @@ import { withEditor } from "../../testUtils.js";
 import { emptyEnv } from "../common.js";
 import { testChangeKeys } from "./change.js";
 
-it("change", () => {
+it("change", async () => {
   withEditor(
     __filename,
     " abcde\n  fghij klmnopqrst\n",
-    (editor, writeState) => {
+    async (editor, writeState) => {
       const env = emptyEnv();
       const testKeys = (keys: string[]) => testChangeKeys(editor, keys, env);
 
@@ -17,22 +17,22 @@ it("change", () => {
       testKeys(["D"]);
       writeState("D");
 
-      testKeys(["p"]);
+      await testKeys(["p"]);
       writeState("p");
 
-      testKeys(["P"]);
+      await testKeys(["P"]);
       writeState("P");
 
       testKeys(["d", "j"]);
       writeState("dj");
 
-      testKeys(["p"]);
+      await testKeys(["p"]);
       writeState("p");
 
       testKeys(["d", "j"]);
       writeState("dj");
 
-      testKeys(["P"]);
+      await testKeys(["P"]);
       writeState("P");
     }
   );

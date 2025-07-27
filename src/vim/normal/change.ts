@@ -1,59 +1,69 @@
 import { Editor, fixPos, Pos } from "../../editorInterface.js";
-import { ChordKeys, emptyEnv, Env, simpleKeys, testKeys } from "../common.js";
+import {
+  ChordKeys,
+  DelayedAction,
+  emptyEnv,
+  Env,
+  simpleKeys,
+  testKeys,
+} from "../common.js";
 import { getLineWhitePrefix } from "../lineUtil.js";
 import { fixNormalCursor } from "../modeUtil.js";
 import { deletes } from "./cutDelete.js";
 
-function paste(
-  editor: Editor,
-  env: Env,
-  p: Pos,
-  mode: "before" | "after"
-): Pos {
-  const registerText = env.globalState.registers.getText(editor);
-  if (registerText === undefined) {
-    return { l: p.l, c: p.c };
-  }
-  if (registerText.isFullLine) {
-    if (mode === "before") {
-      const lineStart = { l: p.l, c: 0 };
-      editor.editText(
-        { anchor: lineStart, active: lineStart },
-        registerText.content + "\n"
-      );
-      return { l: p.l, c: getLineWhitePrefix(editor, p.l).length };
-    } else {
-      // after
-      const lineLen = editor.getLineLength(p.l);
-      editor.editText(
-        { anchor: { l: p.l, c: lineLen }, active: { l: p.l, c: lineLen } },
-        "\n" + registerText.content
-      );
-      return { l: p.l + 1, c: getLineWhitePrefix(editor, p.l + 1).length };
-    }
-  } else {
-    const pos = mode === "before" ? p : fixPos(editor, p, 1);
-    const content = registerText.content;
-    editor.editText({ anchor: pos, active: pos }, content);
-    const lineOffset = (content.match(/\n/g) || "").length;
-    const col =
-      lineOffset === 0
-        ? p.c + content.length + (mode === "before" ? 0 : 1)
-        : content.length - content.lastIndexOf("\n");
-    return { l: p.l + lineOffset, c: col };
-  }
+function paste(mode: "before" | "after"): DelayedAction<Pos, Pos> {
+  return (k) =>
+    k(
+      async (editor: Editor, env: Env, p: Pos) => {
+        const registerText = await env.globalState.registers.getText(editor);
+        return { p, registerText };
+      },
+      (editor: Editor, _env: Env, { p, registerText }) => {
+        if (registerText === undefined) {
+          return { l: p.l, c: p.c };
+        }
+        if (registerText.isFullLine) {
+          if (mode === "before") {
+            const lineStart = { l: p.l, c: 0 };
+            editor.editText(
+              { anchor: lineStart, active: lineStart },
+              registerText.content + "\n"
+            );
+            return { l: p.l, c: getLineWhitePrefix(editor, p.l).length };
+          } else {
+            // after
+            const lineLen = editor.getLineLength(p.l);
+            editor.editText(
+              {
+                anchor: { l: p.l, c: lineLen },
+                active: { l: p.l, c: lineLen },
+              },
+              "\n" + registerText.content
+            );
+            return {
+              l: p.l + 1,
+              c: getLineWhitePrefix(editor, p.l + 1).length,
+            };
+          }
+        } else {
+          const pos = mode === "before" ? p : fixPos(editor, p, 1);
+          const content = registerText.content;
+          editor.editText({ anchor: pos, active: pos }, content);
+          const lineOffset = (content.match(/\n/g) || "").length;
+          const col =
+            lineOffset === 0
+              ? p.c + content.length + (mode === "before" ? 0 : 1)
+              : content.length - content.lastIndexOf("\n");
+          return { l: p.l + lineOffset, c: col };
+        }
+      }
+    );
 }
 
 export const changes: ChordKeys<Pos, Pos> = {
   ...deletes,
-  ...simpleKeys({
-    p: (editor, env, p) => {
-      return paste(editor, env, p, "after");
-    },
-    P: (editor, env, p) => {
-      return paste(editor, env, p, "before");
-    },
-  }),
+  p: { type: "delayed", delayed: paste("after") },
+  P: { type: "delayed", delayed: paste("before") },
   r: {
     type: "menu",
     menu: {
@@ -88,12 +98,12 @@ export const changesCursorNeutral: ChordKeys<void, void> = {
   }),
 };
 
-export function testChangeKeys(
+export async function testChangeKeys(
   editor: Editor,
   keys: string[],
   env?: Env
-): void {
-  testKeys({
+): Promise<void> {
+  await testKeys({
     editor,
     keys,
     chords: { type: "impl", impl: { type: "keys", keys: changes } },
