@@ -111,6 +111,7 @@ function followKeyGeneric<I, I_, O_, O>(
     });
 
     if (entries.length === 0) return undefined;
+    // TODO wrong: should determine type by the first non-undefined entry
     const action = entries.find((e) => e.type === "action");
     if (action !== undefined) return action;
     if (entries.length === 1) return entries[0];
