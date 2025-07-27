@@ -8,6 +8,7 @@ import {
 import { motions } from "./motion/motion.js";
 import { changes, changesCursorNeutral } from "./normal/change.js";
 import { inserts } from "./normal/insert.js";
+import { yanks } from "./normal/yank.js";
 import { visualDelete } from "./visual/delete.js";
 
 // TODO for VSCode: click cursor should be corrected to block cursor instead of line
@@ -106,6 +107,17 @@ export class Vim {
         {
           type: "impl",
           impl: { type: "keys", keys: changesCursorNeutral },
+        },
+        (_editor, _env, { input: _inp, output: _outp }) => ({
+          pos: undefined,
+          toMode: "normal",
+        })
+      ),
+      mapChordMenu(
+        (i) => i,
+        {
+          type: "impl",
+          impl: { type: "keys", keys: yanks },
         },
         (_editor, _env, { input: _inp, output: _outp }) => ({
           pos: undefined,
