@@ -1,0 +1,28 @@
+init - paste after test
+┌────────────┐
+│hello world⏎│
+│      █     │
+│⏎           │
+└────────────┘
+
+after paste with p
+┌───────────┐
+│hello wabc⏎│
+│deforld⏎   │
+│   █       │
+│⏎          │
+└───────────┘
+
+init - paste before test
+┌────────────┐
+│hello world⏎│
+│      █     │
+└────────────┘
+
+after paste with P
+┌──────────┐
+│hello xyz⏎│
+│123world⏎ │
+│   █      │
+└──────────┘
+

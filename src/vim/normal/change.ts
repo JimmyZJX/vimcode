@@ -53,7 +53,7 @@ function paste(mode: "before" | "after"): DelayedAction<Pos, Pos> {
           const col =
             lineOffset === 0
               ? p.c + content.length + (mode === "before" ? 0 : 1)
-              : content.length - content.lastIndexOf("\n");
+              : content.length - content.lastIndexOf("\n") - 1;
           return { l: p.l + lineOffset, c: col };
         }
       }

@@ -24,8 +24,8 @@ r.delayed((prepare, delayed) => {
 
 ---
 
-### 2. Multi-line Paste Cursor Position Bug
-**Location**: `src/vim/normal/change.ts:52-58`
+### 2. Multi-line Paste Cursor Position Bug ✅ FIXED
+**Location**: `src/vim/normal/change.ts:56`
 
 **Problem**: Column calculation after pasting multi-line text is incorrect:
 
@@ -37,7 +37,9 @@ const col = lineOffset === 0
 
 For content `"abc\ndef"` (length 7, lastIndexOf("\n") = 3), this calculates `col = 4`, but the text after the newline is `"def"` (length 3), so cursor should be at column 3, not 4. Missing a `-1`.
 
-**Solution**: Change to `content.length - content.lastIndexOf("\n") - 1`
+**Solution**: Changed to `content.length - content.lastIndexOf("\n") - 1`
+
+**Status**: ✅ Fixed with test coverage in `src/vim/normal/paste.multiline.test.ts`
 
 ---
 
