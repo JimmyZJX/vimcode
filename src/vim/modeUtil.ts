@@ -1,14 +1,43 @@
 import { comparePos, Editor, Pos, Selection } from "../editorInterface.js";
 
-export function fixNormalCursor(editor: Editor, pos: Pos): Pos {
+/**
+ * Fixes cursor position to be within valid bounds for the given mode.
+ *
+ * @param editor - The editor instance
+ * @param pos - The position to fix
+ * @param options - Configuration options
+ * @param options.mode - The mode to fix the cursor for (REQUIRED):
+ *   - 'normal': Cursor must be ON a character (max column = line.length - 1)
+ *   - 'insert': Cursor can be AFTER the last character (max column = line.length)
+ * @param options.offset - Optional offset to apply to the column (e.g., -1 for left, 1 for right)
+ * @returns The fixed position with column clamped to valid bounds
+ *
+ * @example
+ * // Fix cursor for normal mode (on a character)
+ * fixCursorPosition(editor, pos, { mode: 'normal' })
+ *
+ * @example
+ * // Move right and fix for insert mode
+ * fixCursorPosition(editor, pos, { mode: 'insert', offset: 1 })
+ *
+ * @example
+ * // Move left in normal mode
+ * fixCursorPosition(editor, pos, { mode: 'normal', offset: -1 })
+ */
+export function fixCursorPosition(
+  editor: Editor,
+  pos: Pos,
+  options: { mode: 'normal' | 'insert'; offset?: number }
+): Pos {
+  const mode = options.mode;
+  const offset = options.offset ?? 0;
   const line = editor.getLine(pos.l);
-  const c = Math.max(0, Math.min(line.length - 1, pos.c));
-  return { l: pos.l, c };
-}
 
-export function fixCursor(editor: Editor, pos: Pos): Pos {
-  const line = editor.getLine(pos.l);
-  const c = Math.max(0, Math.min(line.length, pos.c));
+  // In normal mode, cursor must be ON a character (max = line.length - 1)
+  // In insert mode, cursor can be AFTER the last character (max = line.length)
+  const maxColumn = mode === 'normal' ? Math.max(0, line.length - 1) : line.length;
+
+  const c = Math.max(0, Math.min(maxColumn, pos.c + offset));
   return { l: pos.l, c };
 }
 

@@ -1,7 +1,7 @@
 import { Editor } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
 import { emptyEnv, Env, testKeys } from "../common.js";
-import { fixNormalCursor } from "../modeUtil.js";
+import { fixCursorPosition } from "../modeUtil.js";
 import { visualDelete } from "./delete.js";
 
 export function testVisualDeleteKeys(
@@ -16,7 +16,7 @@ export function testVisualDeleteKeys(
     getInput: () => editor.selections[0],
     onOutput: (pos) => {
       editor.cursor = { type: "block" };
-      const p = fixNormalCursor(editor, pos);
+      const p = fixCursorPosition(editor, pos, { mode: 'normal' });
       editor.selections = [{ anchor: p, active: p }];
     },
     env: env ?? emptyEnv(),

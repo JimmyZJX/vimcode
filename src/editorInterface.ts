@@ -25,14 +25,6 @@ export function rangeOfSelection(sel: Selection) {
   return { start, end };
 }
 
-// TODO two versions: accept end or not, also depending on if the line is empty
-export function fixPos(editor: Editor, p: Pos, offset?: number) {
-  return {
-    l: p.l,
-    c: Math.max(0, Math.min(editor.getLineLength(p.l), p.c + (offset ?? 0))),
-  };
-}
-
 export type Cursor =
   | { type: "line" }
   | { type: "block" }

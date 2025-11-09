@@ -1,4 +1,4 @@
-import { Editor, fixPos, Pos } from "../../editorInterface.js";
+import { Editor, Pos } from "../../editorInterface.js";
 import {
   ChordKeys,
   DelayedAction,
@@ -8,7 +8,7 @@ import {
   testKeys,
 } from "../common.js";
 import { getLineWhitePrefix } from "../lineUtil.js";
-import { fixNormalCursor } from "../modeUtil.js";
+import { fixCursorPosition } from "../modeUtil.js";
 import { deletes } from "./cutDelete.js";
 
 function paste(mode: "before" | "after"): DelayedAction<Pos, Pos> {
@@ -46,7 +46,7 @@ function paste(mode: "before" | "after"): DelayedAction<Pos, Pos> {
             };
           }
         } else {
-          const pos = mode === "before" ? p : fixPos(editor, p, 1);
+          const pos = mode === "before" ? p : fixCursorPosition(editor, p, { mode: 'insert', offset: 1 });
           const content = registerText.content;
           editor.editText({ anchor: pos, active: pos }, content);
           const lineOffset = (content.match(/\n/g) || "").length;
@@ -110,7 +110,7 @@ export async function testChangeKeys(
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "block" };
-      const p = fixNormalCursor(editor, pos);
+      const p = fixCursorPosition(editor, pos, { mode: 'normal' });
       editor.selections = [{ anchor: p, active: p }];
     },
     env: env ?? emptyEnv(),

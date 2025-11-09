@@ -1,14 +1,15 @@
-import { Editor, fixPos, Pos } from "../../editorInterface.js";
+import { Editor, Pos } from "../../editorInterface.js";
 import { Env } from "../common.js";
+import { fixCursorPosition } from "../modeUtil.js";
 import { MotionResult } from "./motion.js";
 
 export function left(editor: Editor, p: Pos): MotionResult {
-  const pos = fixPos(editor, p, -1);
+  const pos = fixCursorPosition(editor, p, { mode: 'insert', offset: -1 });
   return { pos, range: { active: pos, anchor: p } };
 }
 
 export function right(editor: Editor, p: Pos) {
-  const pos = fixPos(editor, p, 1);
+  const pos = fixCursorPosition(editor, p, { mode: 'insert', offset: 1 });
   return { pos, range: { active: p, anchor: pos } };
 }
 
@@ -36,7 +37,7 @@ export function moveUpDown(
   if (len === 0) {
     return { l, c: 0 };
   } else {
-    const pos = fixPos(editor, { l, c: tc });
+    const pos = fixCursorPosition(editor, { l, c: tc }, { mode: 'insert' });
     return pos;
   }
 }

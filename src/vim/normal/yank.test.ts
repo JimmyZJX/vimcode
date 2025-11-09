@@ -1,7 +1,7 @@
 import { Editor, Pos } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
 import { emptyEnv, Env, mapChordMenu, testKeys } from "../common.js";
-import { fixNormalCursor } from "../modeUtil.js";
+import { fixCursorPosition } from "../modeUtil.js";
 import { changes } from "./change.js";
 import { yanks } from "./yank.js";
 
@@ -28,7 +28,7 @@ async function testChangeAndYankKeys(
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "block" };
-      const p = fixNormalCursor(editor, pos);
+      const p = fixCursorPosition(editor, pos, { mode: 'normal' });
       editor.selections = [{ anchor: p, active: p }];
     },
     env: env ?? emptyEnv(),

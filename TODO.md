@@ -151,7 +151,7 @@ The new implementation properly matches Vim's behavior where registers are used 
 
 ---
 
-### 8. Inconsistent Cursor Position Fixing Functions
+### 8. Inconsistent Cursor Position Fixing Functions ✅ FIXED
 
 **Location**:
 
@@ -163,11 +163,27 @@ The new implementation properly matches Vim's behavior where registers are used 
 
 - `fixPos` - allows `c = line.length`
 - `fixNormalCursor` - restricts to `c = line.length - 1`
-- `fixCursor` - allows `c = line.length`
+- `fixCursor` - allows `c = line.length` (dead code, never used)
 
 Confusing API surface. Callers must know which to use when. `fixCursor` and `fixPos` appear functionally identical.
 
-**Solution**: Consolidate to two clearly named functions (e.g., `fixInsertCursor` and `fixNormalCursor`) or add clear documentation.
+**Solution**: Consolidated into single `fixCursorPosition` function with explicit mode parameter:
+
+```typescript
+export function fixCursorPosition(
+  editor: Editor,
+  pos: Pos,
+  options: { mode: 'normal' | 'insert'; offset?: number }
+): Pos
+```
+
+- `mode: 'normal'` - Cursor must be ON a character (max column = line.length - 1) [REQUIRED]
+- `mode: 'insert'` - Cursor can be AFTER last character (max column = line.length) [REQUIRED]
+- `offset` - Optional offset to apply (e.g., -1 for left, 1 for right)
+
+Making `mode` required forces callers to be explicit about cursor semantics, preventing bugs from implicit defaults. All 19 usages of the old functions have been migrated with explicit modes. Old functions removed.
+
+**Status**: ✅ Fixed with comprehensive documentation in `src/vim/modeUtil.ts:3-43`
 
 ---
 

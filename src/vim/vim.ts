@@ -1,7 +1,7 @@
-import { Editor, fixPos, Pos, Selection } from "../editorInterface.js";
+import { Editor, Pos, Selection } from "../editorInterface.js";
 import { ChordMenu, Env, followKey, mapChordMenu } from "./common.js";
 import {
-  fixNormalCursor,
+  fixCursorPosition,
   visualFromEditor,
   visualToEditor,
 } from "./modeUtil.js";
@@ -66,7 +66,7 @@ export class Vim {
       const { anchor, active } = this.editor.selections[0];
       if (anchor.l === active.l && anchor.c === active.c) {
         // visual -> normal
-        const fixed = fixNormalCursor(this.editor, anchor);
+        const fixed = fixCursorPosition(this.editor, anchor, { mode: 'normal' });
         this.editor.selections = [{ anchor: fixed, active: fixed }];
         this.state = { mode: "normal", menu: undefined };
       }
@@ -264,7 +264,7 @@ export class Vim {
       if (toMode === "normal") {
         // TODO global fix to hook, also when mode is changed TO normal
         if (active) {
-          const fixed = fixNormalCursor(this.editor, active);
+          const fixed = fixCursorPosition(this.editor, active, { mode: 'normal' });
           this.editor.cursor = { type: "block" };
           this.editor.selections = [{ anchor: fixed, active: fixed }];
         }
@@ -340,7 +340,7 @@ export class Vim {
       if (toMode === "normal") {
         // TODO global fix to hook, also when mode is changed TO normal
         if (pos) {
-          const fixed = fixNormalCursor(this.editor, pos);
+          const fixed = fixCursorPosition(this.editor, pos, { mode: 'normal' });
           this.editor.selections = [{ anchor: fixed, active: fixed }];
         }
         return { mode: "normal", menu: undefined };
@@ -348,7 +348,7 @@ export class Vim {
         // only possible via "v" for now
         if (pos) {
           this.editor.selections = [
-            { anchor: pos, active: fixPos(this.editor, pos, 1) },
+            { anchor: pos, active: fixCursorPosition(this.editor, pos, { mode: 'insert', offset: 1 }) },
           ];
         }
         // TODO "blockBefore" cursor type (non-blinking)
@@ -407,9 +407,10 @@ export class Vim {
         if (key === "<escape>") {
           this.editor.cursor = { type: "block" };
           const active = this.editor.selections[0].active;
-          const fixed = fixNormalCursor(
+          const fixed = fixCursorPosition(
             this.editor,
-            fixPos(this.editor, active, -1)
+            active,
+            { mode: 'normal', offset: -1 }
           );
           this.editor.selections = [{ anchor: fixed, active: fixed }];
           this.state = { mode: "normal", menu: undefined };

@@ -1,11 +1,11 @@
 import {
   comparePos,
   Editor,
-  fixPos,
   Pos,
   rangeOfSelection,
   Selection,
 } from "../../editorInterface.js";
+import { fixCursorPosition } from "../modeUtil.js";
 import {
   ChordKeys,
   ChordMenu,
@@ -42,7 +42,7 @@ export function getMotionRange(
     : /* forward */
       {
         anchor: normalCursorPos,
-        active: fixPos(editor, motionEnd, 1),
+        active: fixCursorPosition(editor, motionEnd, { mode: 'insert', offset: 1 }),
       };
 }
 
@@ -151,7 +151,7 @@ function curOrDeleteMotion(
     if (range) {
       const { start, end } = rangeOfSelection(range);
       delRange(editor, env, { anchor: start, active: end });
-      return fixPos(editor, start, 0);
+      return fixCursorPosition(editor, start, { mode: 'insert' });
     } else {
       return delWithMotion(editor, env, input, pos);
     }
@@ -169,7 +169,7 @@ function cutOrDelete(mode: "cut" | "delete"): ChordMenu<Pos, Pos> {
 export const cuts: ChordKeys<Pos, Pos> = {
   ...simpleKeys({
     s: (editor, env, p) => {
-      return delWithMotion(editor, env, p, fixPos(editor, p, 1));
+      return delWithMotion(editor, env, p, fixCursorPosition(editor, p, { mode: 'insert', offset: 1 }));
     },
     S: (editor, env, p) => cutLines(editor, env, p.l, p.l),
     C: (editor, env, p) => {
@@ -232,7 +232,7 @@ export const deletes: ChordKeys<Pos, Pos> = {
     },
     X: (editor, env, p) => {
       if (p.c === 0) return p;
-      const left = fixPos(editor, p, -1);
+      const left = fixCursorPosition(editor, p, { mode: 'insert', offset: -1 });
       return delWithMotion(editor, env, left, left);
     },
     D: (editor, env, p) => {
