@@ -98,12 +98,19 @@ Modern editors support multiple cursors/selections. This architecture can't be e
 
 ---
 
-### 6. No Bounds Checking on Line Access
+### 6. No Bounds Checking on Line Access ✅ FIXED
 **Location**: Throughout codebase wherever `editor.getLine(pos.l)` is called
 
 **Problem**: No verification that `pos.l < editor.getLines()`. FakeEditor returns `""` for out-of-bounds (line 46), but real editors might throw.
 
-**Solution**: Add bounds checking wrapper or document contract that Editor implementations must handle out-of-bounds gracefully.
+**Solution**: Documented the contract with JSDoc comments and added development-time warnings:
+1. **`editorInterface.ts`**: Added comprehensive JSDoc documenting that implementations MUST return "" for out-of-bounds `getLine()` and 0 for out-of-bounds `getLineLength()`
+2. **`fakeEditor.ts`**: Added console warnings when out-of-bounds access occurs during testing
+3. **Test coverage**: Added `bounds.test.ts` to verify warnings work correctly
+
+This approach catches bugs during development while maintaining zero performance overhead in production.
+
+**Status**: ✅ Fixed with test coverage in `src/fakeEditor/bounds.test.ts`
 
 ---
 

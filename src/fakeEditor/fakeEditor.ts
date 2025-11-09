@@ -43,10 +43,20 @@ export class FakeEditor implements Editor {
   }
 
   getLine(l: number) {
+    if (l < 0 || l >= this.lines.length) {
+      console.warn(
+        `[FakeEditor] Out of bounds getLine(${l}). Valid range: [0, ${this.lines.length - 1}]. Returning "".`
+      );
+    }
     return this.lines[l] ?? "";
   }
 
   getLineLength(l: number) {
+    if (l < 0 || l >= this.lines.length) {
+      console.warn(
+        `[FakeEditor] Out of bounds getLineLength(${l}). Valid range: [0, ${this.lines.length - 1}]. Returning 0.`
+      );
+    }
     return (this.lines[l] ?? "").length;
   }
 

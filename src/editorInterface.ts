@@ -43,9 +43,33 @@ export interface Editor {
   selections: Selection[];
   cursor: Cursor;
 
+  /**
+   * Get the total number of lines in the editor.
+   * @returns Number of lines (minimum 1 for empty document)
+   */
   getLines: () => number;
+
+  /**
+   * Get the content of a line.
+   * @param l - Line number (0-indexed)
+   * @returns Line content, or empty string "" if line is out of bounds
+   * @contract Implementations MUST return "" for out-of-bounds access (l < 0 or l >= getLines())
+   */
   getLine: (l: number) => string;
+
+  /**
+   * Get the length of a line.
+   * @param l - Line number (0-indexed)
+   * @returns Length of the line, or 0 if line is out of bounds
+   * @contract Implementations MUST return 0 for out-of-bounds access (l < 0 or l >= getLines())
+   */
   getLineLength: (l: number) => number;
+
+  /**
+   * Get text content from a selection range.
+   * @param selection - Optional selection range. If omitted, returns entire document text.
+   * @returns Text content
+   */
   getText: (selection?: Selection) => string;
 
   /** This takes care of code folding */
