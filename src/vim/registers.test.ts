@@ -241,6 +241,150 @@ it("register cleared by motion - should not affect subsequent operation", () => 
   });
 });
 
+it("paste from named register - basic", async () => {
+  await withEditor(__filename, "hello world\n", async (editor, writeState) => {
+    const env = emptyEnv();
+    const vim = new Vim(editor, env);
+
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("init");
+
+    // Yank word to register 'a': "ayw
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"ayw - yanked 'hello ' to register a");
+
+    // Move to end of line
+    vim.onKey("$");
+    writeState("after $ - at end of line");
+
+    // Paste from register 'a': "ap
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("p");
+    // Wait for async paste operation to complete
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"ap - pasted 'hello ' from register a");
+
+    expect(editor.getLine(0)).toBe("hello worldhello ");
+  });
+});
+
+it("paste before from named register", async () => {
+  await withEditor(__filename, "one two three\n", async (editor, writeState) => {
+    const env = emptyEnv();
+    const vim = new Vim(editor, env);
+
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("init");
+
+    // Yank first word to register 'x'
+    vim.onKey('"');
+    vim.onKey("x");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"xyw - yanked 'one ' to register x");
+
+    // Move to 'three'
+    vim.onKey("w");
+    vim.onKey("w");
+    writeState("after ww - at 'three'");
+
+    // Paste before from register 'x': "xP
+    vim.onKey('"');
+    vim.onKey("x");
+    vim.onKey("P");
+    // Wait for async paste operation to complete
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"xP - pasted 'one ' before cursor");
+
+    expect(editor.getLine(0)).toBe("one two one three");
+  });
+});
+
+it("paste from multiple different registers", async () => {
+  await withEditor(__filename, "A B C\n", async (editor, writeState) => {
+    const env = emptyEnv();
+    const vim = new Vim(editor, env);
+
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("init");
+
+    // Yank 'A ' to register 'a'
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"ayw - yanked 'A ' to register a");
+
+    // Move to 'B'
+    vim.onKey("w");
+    writeState("after w - moved to 'B'");
+
+    // Yank 'B ' to register 'b'
+    vim.onKey('"');
+    vim.onKey("b");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"byw - yanked 'B ' to register b");
+
+    // Move to end
+    vim.onKey("$");
+    writeState("after $ - at end");
+
+    // Paste from register 'a'
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    writeState("after \"ap - pasted from register a");
+
+    // Paste from register 'b'
+    vim.onKey('"');
+    vim.onKey("b");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    writeState("after \"bp - pasted from register b");
+
+    expect(editor.getLine(0)).toBe("A B CA B ");
+  });
+});
+
+it("paste full line from register", async () => {
+  await withEditor(__filename, "line1\nline2\nline3\n", async (editor, writeState) => {
+    const env = emptyEnv();
+    const vim = new Vim(editor, env);
+
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("init");
+
+    // Yank full line to register 'a': "ayy
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("y");
+    vim.onKey("y");
+    writeState("after \"ayy - yanked 'line1' to register a");
+
+    // Move to line2
+    vim.onKey("j");
+    writeState("after j - on line2");
+
+    // Paste line from register 'a': "ap
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"ap - pasted full line from register a");
+
+    expect(editor.getLine(0)).toBe("line1");
+    expect(editor.getLine(1)).toBe("line2");
+    expect(editor.getLine(2)).toBe("line1");
+    expect(editor.getLine(3)).toBe("line3");
+  });
+});
+
 it("visual demonstrations: register operations and isolation", () => {
   withEditor(__filename, "apple banana cherry\n", (editor, writeState) => {
     const env = emptyEnv();
@@ -390,5 +534,146 @@ it("visual demonstrations: register operations and isolation", () => {
     if (regDefault?.type === "text") expect(regDefault.content).toBe("line4");
 
     writeState("final - all 4 registers verified");
+  });
+});
+
+it("visual demonstrations: paste from registers", async () => {
+  await withEditor(__filename, "foo bar baz\n", async (editor, writeState) => {
+    const env = emptyEnv();
+    let vim = new Vim(editor, env);
+
+    // === Demo 1: Paste after from named register ===
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("DEMO 1: Paste after - initial");
+
+    // Yank 'foo ' to register 'f'
+    vim.onKey('"');
+    vim.onKey("f");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"fyw - yanked 'foo ' to register f");
+
+    // Move to end and paste
+    vim.onKey("$");
+    writeState("at end of line");
+
+    vim.onKey('"');
+    vim.onKey("f");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"fp - pasted 'foo ' after cursor");
+
+    // === Demo 2: Paste before from named register ===
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    vim.onKey("d");
+    vim.onKey("G");
+    editor.editText({ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }, "alpha beta gamma\n");
+    vim = new Vim(editor, env);
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("DEMO 2: Paste before - initial");
+
+    // Yank 'alpha ' to register 'a'
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"ayw - yanked 'alpha ' to register a");
+
+    // Move to 'gamma' and paste before
+    vim.onKey("w");
+    vim.onKey("w");
+    writeState("at 'gamma'");
+
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("P");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"aP - pasted 'alpha ' before cursor");
+
+    // === Demo 3: Paste from multiple registers ===
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    vim.onKey("d");
+    vim.onKey("G");
+    editor.editText({ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }, "X Y Z\n");
+    vim = new Vim(editor, env);
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("DEMO 3: Multiple paste - initial");
+
+    // Yank 'X ' to register 'x'
+    vim.onKey('"');
+    vim.onKey("x");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"xyw - yanked 'X ' to register x");
+
+    // Yank 'Y ' to register 'y'
+    vim.onKey('"');
+    vim.onKey("y");
+    vim.onKey("y");
+    vim.onKey("w");
+    writeState("after \"yyw - yanked 'Y ' to register y");
+
+    // Move to end
+    vim.onKey("$");
+    writeState("at end of line");
+
+    // Paste from register 'x'
+    vim.onKey('"');
+    vim.onKey("x");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"xp - pasted 'X '");
+
+    // Paste from register 'y'
+    vim.onKey('"');
+    vim.onKey("y");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"yp - pasted 'Y '");
+
+    // Paste from register 'x' again
+    vim.onKey('"');
+    vim.onKey("x");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"xp - pasted 'X ' again");
+
+    // === Demo 4: Paste full lines ===
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    vim.onKey("d");
+    vim.onKey("G");
+    editor.editText({ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }, "AAA\nBBB\nCCC\n");
+    vim = new Vim(editor, env);
+    editor.selections = [{ anchor: { l: 0, c: 0 }, active: { l: 0, c: 0 } }];
+    writeState("DEMO 4: Paste full lines - initial");
+
+    // Yank first line to register 'a'
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("y");
+    vim.onKey("y");
+    writeState("after \"ayy - yanked line AAA");
+
+    // Move to second line
+    vim.onKey("j");
+    writeState("on line BBB");
+
+    // Paste line from register 'a'
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("p");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"ap - pasted line after BBB");
+
+    // Move to last line
+    vim.onKey("G");
+    writeState("on last line");
+
+    // Paste before
+    vim.onKey('"');
+    vim.onKey("a");
+    vim.onKey("P");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    writeState("after \"aP - pasted line before CCC");
   });
 });

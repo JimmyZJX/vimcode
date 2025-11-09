@@ -1,125 +1,163 @@
-DEMO 1: Yank to multiple registers - initial
-┌────────────────────┐
-│apple banana cherry⏎│
-│█                   │
-│⏎                   │
-└────────────────────┘
+DEMO 1: Paste after - initial
+┌────────────┐
+│foo bar baz⏎│
+│█           │
+│⏎           │
+└────────────┘
 
-after "xyw - yanked 'apple ' to register x
-┌────────────────────┐
-│apple banana cherry⏎│
-│█                   │
-│⏎                   │
-└────────────────────┘
+after "fyw - yanked 'foo ' to register f
+┌────────────┐
+│foo bar baz⏎│
+│█           │
+│⏎           │
+└────────────┘
 
-after "yyw - yanked 'banana ' to register y
-┌────────────────────┐
-│apple banana cherry⏎│
-│      █             │
-│⏎                   │
-└────────────────────┘
+at end of line
+┌────────────┐
+│foo bar baz⏎│
+│          █ │
+│⏎           │
+└────────────┘
 
-DEMO 2: Delete to register - initial
-┌──────────────────────────┐
-│first second third fourth⏎│
-│█                         │
-│⏎                         │
-└──────────────────────────┘
+after "fp - pasted 'foo ' after cursor
+┌────────────────┐
+│foo bar bazfoo ⏎│
+│              █ │
+│⏎               │
+└────────────────┘
 
-after "adw - deleted 'first ' to register a
-┌────────────────────┐
-│second third fourth⏎│
-│█                   │
-│⏎                   │
-└────────────────────┘
+DEMO 2: Paste before - initial
+┌─────────────────┐
+│alpha beta gamma⏎│
+│█                │
+│⏎                │
+└─────────────────┘
 
-after dw - deleted 'second ' to default register
-┌─────────────┐
-│third fourth⏎│
-│█            │
-│⏎            │
-└─────────────┘
+after "ayw - yanked 'alpha ' to register a
+┌─────────────────┐
+│alpha beta gamma⏎│
+│█                │
+│⏎                │
+└─────────────────┘
 
-DEMO 3: Visual mode - initial
-┌───────────┐
-│ABCDEFGHIJ⏎│
-│█          │
-│⏎          │
-└───────────┘
+at 'gamma'
+┌─────────────────┐
+│alpha beta gamma⏎│
+│           █     │
+│⏎                │
+└─────────────────┘
 
-selected 3 chars (ABC)
-┌───────────┐
-│ABCDEFGHIJ⏎│
-│▅▂▂▏       │
-│⏎          │
-└───────────┘
+after "aP - pasted 'alpha ' before cursor
+┌───────────────────────┐
+│alpha beta alpha gamma⏎│
+│                 █     │
+│⏎                      │
+└───────────────────────┘
 
-after "zd - deleted to register z
+DEMO 3: Multiple paste - initial
+┌──────┐
+│X Y Z⏎│
+│█     │
+│⏎     │
+└──────┘
+
+after "xyw - yanked 'X ' to register x
+┌──────┐
+│X Y Z⏎│
+│█     │
+│⏎     │
+└──────┘
+
+after "yyw - yanked 'Y ' to register y
+┌──────┐
+│X Y Z⏎│
+│█     │
+│⏎     │
+└──────┘
+
+at end of line
+┌──────┐
+│X Y Z⏎│
+│    █ │
+│⏎     │
+└──────┘
+
+after "xp - pasted 'X '
 ┌────────┐
-│DEFGHIJ⏎│
-│█       │
+│X Y ZX ⏎│
+│      █ │
 │⏎       │
 └────────┘
 
-after vld - deleted to default register
-┌─────┐
-│GHIJ⏎│
-│█    │
-│⏎    │
-└─────┘
+after "yp - pasted 'Y '
+┌──────────┐
+│X Y ZX X ⏎│
+│        █ │
+│⏎         │
+└──────────┘
 
-DEMO 4: Multiple registers - initial
-┌──────┐
-│line1⏎│
-│█     │
-│line2⏎│
-│line3⏎│
-│line4⏎│
-│⏎     │
-└──────┘
+after "xp - pasted 'X ' again
+┌────────────┐
+│X Y ZX X X ⏎│
+│          █ │
+│⏎           │
+└────────────┘
 
-after "ayy - yanked line1 to register a
-┌──────┐
-│line1⏎│
-│█     │
-│line2⏎│
-│line3⏎│
-│line4⏎│
-│⏎     │
-└──────┘
+DEMO 4: Paste full lines - initial
+┌────┐
+│AAA⏎│
+│█   │
+│BBB⏎│
+│CCC⏎│
+│⏎   │
+└────┘
 
-after "byy - yanked line2 to register b
-┌──────┐
-│line1⏎│
-│line2⏎│
-│█     │
-│line3⏎│
-│line4⏎│
-│⏎     │
-└──────┘
+after "ayy - yanked line AAA
+┌────┐
+│AAA⏎│
+│█   │
+│BBB⏎│
+│CCC⏎│
+│⏎   │
+└────┘
 
-after "cdd - deleted line3 to register c
-┌──────┐
-│line1⏎│
-│line2⏎│
-│line4⏎│
-│█     │
-│⏎     │
-└──────┘
+on line BBB
+┌────┐
+│AAA⏎│
+│BBB⏎│
+│█   │
+│CCC⏎│
+│⏎   │
+└────┘
 
-after dd - deleted line4 to default register
-┌──────┐
-│line1⏎│
-│line2⏎│
-│⏎     │
-│█     │
-└──────┘
+after "ap - pasted line after BBB
+┌────┐
+│AAA⏎│
+│BBB⏎│
+│AAA⏎│
+│█   │
+│CCC⏎│
+│⏎   │
+└────┘
 
-final - all 4 registers verified
-┌──────┐
-│line1⏎│
-│line2⏎│
-│⏎     │
-│█     │
-└──────┘
+on last line
+┌────┐
+│AAA⏎│
+│BBB⏎│
+│AAA⏎│
+│CCC⏎│
+│⏎   │
+│█   │
+└────┘
+
+after "aP - pasted line before CCC
+┌────┐
+│AAA⏎│
+│BBB⏎│
+│AAA⏎│
+│CCC⏎│
+│AAA⏎│
+│█   │
+│⏎   │
+└────┘
 
