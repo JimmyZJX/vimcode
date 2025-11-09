@@ -58,8 +58,8 @@ If clipboard write fails, users won't know their yank/delete didn't reach the sy
 
 ---
 
-### 4. ChordMenu Multi-Menu Resolution Logic is Broken
-**Location**: `src/vim/common.ts:114-116`
+### 4. ChordMenu Multi-Menu Resolution Logic is Broken ✅ FIXED
+**Location**: `src/vim/common.ts:116-136`
 
 **Problem**: The code itself admits it's wrong via TODO comment:
 
@@ -69,9 +69,15 @@ const action = entries.find((e) => e.type === "action");
 if (action !== undefined) return action;
 ```
 
-When multiple menus match a key, it always prefers actions over menus, which could cause incorrect command resolution.
+When multiple menus match a key, it always prefers actions over menus, which could cause incorrect command resolution and not respect menu order.
 
-**Solution**: Return the first non-undefined entry regardless of type, as the comment suggests.
+**Solution**: Simplified first-match-wins logic:
+- If first entry is `action` or `delayed`: return it immediately (respects menu order)
+- If first entry is `menu`: merge all menu entries together (preserves existing behavior for 'g' command with 'ge'/'gg'/etc.)
+
+This ensures menu order is respected when there are type conflicts, while still allowing menu merging when needed.
+
+**Status**: ✅ Fixed with test coverage in `src/vim/common.multimenu.test.ts`
 
 ---
 

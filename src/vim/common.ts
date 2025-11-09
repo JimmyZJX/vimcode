@@ -111,14 +111,18 @@ function followKeyGeneric<I, I_, O_, O>(
     });
 
     if (entries.length === 0) return undefined;
-    // TODO wrong: should determine type by the first non-undefined entry
-    const action = entries.find((e) => e.type === "action");
-    if (action !== undefined) return action;
     if (entries.length === 1) return entries[0];
 
-    // all entries are menu now
-    const menus = entries.flatMap((e) => (e.type === "menu" ? [e.menu] : []));
-    return { type: "menu", menu: { type: "multi", menus } };
+    // Multiple entries found - respect first match
+    const firstType = entries[0].type;
+    if (firstType === "action" || firstType === "delayed") {
+      // Actions and delayed actions: return first match
+      return entries[0];
+    } else {
+      // Menus: merge all menus together
+      const menus = entries.flatMap((e) => (e.type === "menu" ? [e.menu] : []));
+      return { type: "menu", menu: { type: "multi", menus } };
+    }
   } else {
     const impl = menu.impl;
     const entry =
