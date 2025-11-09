@@ -205,13 +205,36 @@ Makes code hard to reason about. If an action wants to preserve flash state, it 
 
 ---
 
-### 10. Visual Mode Selection Conversion Complexity
+### 10. Visual Mode Selection Conversion Complexity ✅ IMPROVED
 
-**Location**: `src/vim/modeUtil.ts:15-71`
+**Location**: `src/vim/modeUtil.ts:44-191`
 
 **Problem**: The `visualFromEditor` and `visualToEditor` functions handle inclusive/exclusive selection conversion with complex logic that's error-prone and has subtle edge cases around line wrapping.
 
-**Solution**: Add comprehensive edge case tests and consider simplifying the conversion logic.
+**Context**: VSCode uses exclusive selections (active position is AFTER the last character) while Vim uses inclusive selections (cursor is ON the last character). These functions bridge this impedance mismatch.
+
+**Solution**: Improved readability while preserving exact behavior:
+
+1. **Extracted helper functions** with clear names:
+   - `moveBackwardOneChar()` - Handles line wrapping when moving backward
+   - `moveForwardOneChar()` - Handles line wrapping when moving forward
+
+2. **Added comprehensive JSDoc documentation**:
+   - Explains VSCode vs Vim selection models
+   - Documents edge cases (line wrapping, document boundaries)
+   - Provides concrete examples
+
+3. **Improved variable naming**:
+   - `isForward` → `selectionDirection` (more descriptive)
+   - Added inline comments explaining each branch
+
+4. **Documented the why, not just the what**:
+   - Explains that we move the "far end" of the selection
+   - Clarifies which end to move based on direction
+
+The logic remains unchanged, but the code is now self-documenting and much easier to understand and maintain.
+
+**Status**: ✅ Improved with comprehensive documentation in `src/vim/modeUtil.ts:44-191`
 
 ---
 
