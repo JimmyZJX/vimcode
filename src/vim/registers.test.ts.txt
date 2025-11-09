@@ -1,0 +1,125 @@
+DEMO 1: Yank to multiple registers - initial
+┌────────────────────┐
+│apple banana cherry⏎│
+│█                   │
+│⏎                   │
+└────────────────────┘
+
+after "xyw - yanked 'apple ' to register x
+┌────────────────────┐
+│apple banana cherry⏎│
+│█                   │
+│⏎                   │
+└────────────────────┘
+
+after "yyw - yanked 'banana ' to register y
+┌────────────────────┐
+│apple banana cherry⏎│
+│      █             │
+│⏎                   │
+└────────────────────┘
+
+DEMO 2: Delete to register - initial
+┌──────────────────────────┐
+│first second third fourth⏎│
+│█                         │
+│⏎                         │
+└──────────────────────────┘
+
+after "adw - deleted 'first ' to register a
+┌────────────────────┐
+│second third fourth⏎│
+│█                   │
+│⏎                   │
+└────────────────────┘
+
+after dw - deleted 'second ' to default register
+┌─────────────┐
+│third fourth⏎│
+│█            │
+│⏎            │
+└─────────────┘
+
+DEMO 3: Visual mode - initial
+┌───────────┐
+│ABCDEFGHIJ⏎│
+│█          │
+│⏎          │
+└───────────┘
+
+selected 3 chars (ABC)
+┌───────────┐
+│ABCDEFGHIJ⏎│
+│▅▂▂▏       │
+│⏎          │
+└───────────┘
+
+after "zd - deleted to register z
+┌────────┐
+│DEFGHIJ⏎│
+│█       │
+│⏎       │
+└────────┘
+
+after vld - deleted to default register
+┌─────┐
+│GHIJ⏎│
+│█    │
+│⏎    │
+└─────┘
+
+DEMO 4: Multiple registers - initial
+┌──────┐
+│line1⏎│
+│█     │
+│line2⏎│
+│line3⏎│
+│line4⏎│
+│⏎     │
+└──────┘
+
+after "ayy - yanked line1 to register a
+┌──────┐
+│line1⏎│
+│█     │
+│line2⏎│
+│line3⏎│
+│line4⏎│
+│⏎     │
+└──────┘
+
+after "byy - yanked line2 to register b
+┌──────┐
+│line1⏎│
+│line2⏎│
+│█     │
+│line3⏎│
+│line4⏎│
+│⏎     │
+└──────┘
+
+after "cdd - deleted line3 to register c
+┌──────┐
+│line1⏎│
+│line2⏎│
+│line4⏎│
+│█     │
+│⏎     │
+└──────┘
+
+after dd - deleted line4 to default register
+┌──────┐
+│line1⏎│
+│line2⏎│
+│⏎     │
+│█     │
+└──────┘
+
+final - all 4 registers verified
+┌──────┐
+│line1⏎│
+│line2⏎│
+│⏎     │
+│█     │
+└──────┘
+

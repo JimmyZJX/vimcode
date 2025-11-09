@@ -114,23 +114,29 @@ This approach catches bugs during development while maintaining zero performance
 
 ---
 
-### 7. Fragile Register State Management
-**Location**: `src/vim/registers.ts:16-27`
+### 7. Fragile Register State Management ✅ FIXED
+**Location**: `src/vim/registers.ts:23-37`
 
-**Problem**: The `currentRegNameJustSet` flag is a one-shot boolean that relies on precise call ordering:
+**Problem**: The `currentRegNameJustSet` flag was a one-shot boolean that relied on precise call ordering. If `onAfterKeyProcessed` was called out of order or multiple times, register state could corrupt.
 
-```typescript
-public onAfterKeyProcessed(mode: Mode) {
-  if (mode === "normal" && !this.currentRegNameJustSet) {
-    this.currentRegName = undefined;
-  }
-  this.currentRegNameJustSet = false;
-}
-```
+**Solution**: Redesigned to use operation lifecycle based on mode transitions:
+1. **Updated `onAfterKeyProcessed` signature** to receive both current and previous mode
+2. **Track register selection** with `registerJustSelected` flag
+3. **Clear register after ANY command in normal/visual mode** (except when just selected or in operator-pending mode)
+   - This ensures `"awwdw` correctly uses default register for `dw` (register cleared by `w` motion)
+   - Register persists through operator-pending mode for multi-key operations like `"ad3w`
+4. **Implemented `"` command** in both normal and visual modes for register selection
+5. **Added comprehensive tests** in `src/vim/registers.test.ts` covering:
+   - Basic register selection (`"ayy`)
+   - Register persistence through operations (`"adw`)
+   - Register clearing after operations
+   - Register cleared by motions (`"awwdw` uses default register)
+   - Visual mode register selection
+   - Multiple different register operations
 
-If `onAfterKeyProcessed` is called out of order or multiple times, register state corrupts. This is fragile temporal coupling.
+The new implementation properly matches Vim's behavior where registers are used for the NEXT operation only.
 
-**Solution**: Use a more robust state machine or clearer lifecycle management.
+**Status**: ✅ Fixed with full implementation and test coverage in `src/vim/registers.test.ts`
 
 ---
 

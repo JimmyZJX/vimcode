@@ -9,6 +9,7 @@ import { motions } from "./motion/motion.js";
 import { changes, changesCursorNeutral } from "./normal/change.js";
 import { inserts } from "./normal/insert.js";
 import { yanks } from "./normal/yank.js";
+import { Registers } from "./registers.js";
 import { visualCursor } from "./visual/cursor.js";
 import { visualDelete } from "./visual/delete.js";
 import { visualInsert } from "./visual/insert.js";
@@ -144,6 +145,7 @@ export class Vim {
               type: "action",
               action: (_editor, _env, p) => ({ pos: p, toMode: "visual" }),
             },
+            '"': Registers.createRegisterSelectionChord(),
           },
         },
       },
@@ -213,6 +215,7 @@ export class Vim {
                 toMode: "normal",
               }),
             },
+            '"': Registers.createRegisterSelectionChordVisual(),
           },
         },
       },
@@ -430,8 +433,9 @@ export class Vim {
   }
 
   public onKey(key: string): boolean {
+    const previousMode = this.mode;
     const processed = this._onKey(key);
-    this.env.globalState.registers.onAfterKeyProcessed(this.mode);
+    this.env.globalState.registers.onAfterKeyProcessed(this.mode, previousMode);
     return processed;
   }
 

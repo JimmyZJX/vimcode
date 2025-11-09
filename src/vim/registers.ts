@@ -1,4 +1,5 @@
-import { Editor } from "../editorInterface.js";
+import { Editor, Pos, Selection } from "../editorInterface.js";
+import { ChordEntry } from "./common.js";
 import { Mode } from "./vim.js";
 
 export type RegisterTextContent = { isFullLine: boolean; content: string };
@@ -13,18 +14,24 @@ export class Registers {
   // TODO Can also show current reg name somewhere
   // ...this really means text register, not macro
   currentRegName: string | undefined;
-  currentRegNameJustSet = false;
+  private registerJustSelected = false;
 
   public setCurrentRegister(register: string | undefined) {
     this.currentRegName = register;
-    if (register) this.currentRegNameJustSet = true;
+    this.registerJustSelected = true;
   }
 
-  public onAfterKeyProcessed(mode: Mode) {
-    if (mode === "normal" && !this.currentRegNameJustSet) {
+  public onAfterKeyProcessed(mode: Mode, previousMode: Mode) {
+    // Clear register after any command in normal/visual mode
+    // (but not when we just selected a register or while in operator-pending)
+    const inNormalOrVisual = mode === "normal" || mode === "visual";
+
+    if (inNormalOrVisual && !this.registerJustSelected) {
       this.currentRegName = undefined;
     }
-    this.currentRegNameJustSet = false;
+
+    // Always clear the "just selected" flag after processing
+    this.registerJustSelected = false;
   }
 
   public putText(editor: Editor, { isFullLine, content }: RegisterTextContent) {
@@ -51,5 +58,72 @@ export class Registers {
     } else {
       return { isFullLine: false, content };
     }
+  }
+
+  /**
+   * Create a ChordEntry for register selection (the `"` command) in normal mode.
+   * Returns a menu that accepts any single character as a register name.
+   */
+  public static createRegisterSelectionChord(): ChordEntry<
+    Pos,
+    { pos: Pos; toMode: "normal" }
+  > {
+    return {
+      type: "menu",
+      menu: {
+        type: "impl",
+        impl: {
+          type: "fn",
+          fn: (_editor, env, { key, input: p }) => {
+            // Accept any single character as register name
+            if (key.length === 1) {
+              env.globalState.registers.setCurrentRegister(key);
+              return {
+                type: "action",
+                action: (_e, _env, _p) => ({
+                  pos: p,
+                  toMode: "normal",
+                }),
+              };
+            }
+            return undefined;
+          },
+        },
+      },
+    };
+  }
+
+  /**
+   * Create a ChordEntry for register selection (the `"` command) in visual mode.
+   * Returns a menu that accepts any single character as a register name.
+   */
+  public static createRegisterSelectionChordVisual(): ChordEntry<
+    Selection,
+    { active: Pos; anchor: Pos; toMode: "visual" }
+  > {
+    return {
+      type: "menu",
+      menu: {
+        type: "impl",
+        impl: {
+          type: "fn",
+          fn: (_editor, env, { key, input: sel }) => {
+            // Accept any single character as register name
+            if (key.length === 1) {
+              env.globalState.registers.setCurrentRegister(key);
+              return {
+                type: "action",
+                action: (_e, _env, _sel) => ({
+                  active: sel.active,
+                  anchor: sel.anchor,
+                  toMode: "visual",
+                }),
+              };
+            }
+            return undefined;
+          },
+        },
+      },
+    };
   }
 }
