@@ -1,4 +1,4 @@
-DEMO 1: Paste after - initial
+DEMO 1: Yank and paste - initial
 ┌────────────┐
 │foo bar baz⏎│
 │█           │
@@ -26,7 +26,56 @@ after "fp - pasted 'foo ' after cursor
 │⏎               │
 └────────────────┘
 
-DEMO 2: Paste before - initial
+DEMO 2: Delete to register - initial
+┌───────────────────┐
+│first second third⏎│
+│█                  │
+│⏎                  │
+└───────────────────┘
+
+after "adw - deleted 'first ' to register a
+┌─────────────┐
+│second third⏎│
+│█            │
+│⏎            │
+└─────────────┘
+
+after dw - deleted 'second ' to default register
+┌──────┐
+│third⏎│
+│█     │
+│⏎     │
+└──────┘
+
+DEMO 3: Visual mode delete - initial
+┌───────────┐
+│ABCDEFGHIJ⏎│
+│█          │
+│⏎          │
+└───────────┘
+
+after vll - selected ABC
+┌───────────┐
+│ABCDEFGHIJ⏎│
+│▅▂▂▏       │
+│⏎          │
+└───────────┘
+
+after "zd - deleted to register z
+┌────────┐
+│DEFGHIJ⏎│
+│█       │
+│⏎       │
+└────────┘
+
+after vld - deleted to default register
+┌─────┐
+│GHIJ⏎│
+│█    │
+│⏎    │
+└─────┘
+
+DEMO 4: Paste before - initial
 ┌─────────────────┐
 │alpha beta gamma⏎│
 │█                │
@@ -54,7 +103,7 @@ after "aP - pasted 'alpha ' before cursor
 │⏎                      │
 └───────────────────────┘
 
-DEMO 3: Multiple paste - initial
+DEMO 5: Multiple registers - initial
 ┌──────┐
 │X Y Z⏎│
 │█     │
@@ -103,7 +152,7 @@ after "xp - pasted 'X ' again
 │⏎           │
 └────────────┘
 
-DEMO 4: Paste full lines - initial
+DEMO 6: Full line operations - initial
 ┌────┐
 │AAA⏎│
 │█   │
@@ -112,7 +161,7 @@ DEMO 4: Paste full lines - initial
 │⏎   │
 └────┘
 
-after "ayy - yanked line AAA
+after "ayy - yanked line AAA to register a
 ┌────┐
 │AAA⏎│
 │█   │
@@ -140,7 +189,7 @@ after "ap - pasted line after BBB
 │⏎   │
 └────┘
 
-on last line
+on last line CCC
 ┌────┐
 │AAA⏎│
 │BBB⏎│
