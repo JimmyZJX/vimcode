@@ -18,9 +18,6 @@ export function comparePos(a: Pos, b: Pos): number {
 }
 
 export function rangeOfSelection(sel: Selection) {
-  function comparePos(a: Pos, b: Pos): number {
-    return a.l === b.l ? a.c - b.c : a.l - b.l;
-  }
   const [start, end] = [sel.anchor, sel.active].sort(comparePos);
   return { start, end };
 }

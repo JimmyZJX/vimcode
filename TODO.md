@@ -266,7 +266,7 @@ The abstraction should be complete—either fake editor should handle typing, or
 
 ---
 
-### 13. Duplicated `comparePos` Function
+### 13. Duplicated `comparePos` Function ✅ FIXED
 
 **Location**: `src/editorInterface.ts:16` and `src/editorInterface.ts:21`
 
@@ -285,7 +285,9 @@ export function rangeOfSelection(sel: Selection) {
 
 If the comparison logic needs to change, it must be updated in both places.
 
-**Solution**: Remove the inner definition and use the exported one.
+**Solution**: Removed the inner definition. `rangeOfSelection` now uses the exported `comparePos` function.
+
+**Status**: ✅ Fixed in `src/editorInterface.ts:20-23`
 
 ---
 
