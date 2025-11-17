@@ -403,3 +403,5 @@ by Jimmy:
     operations is not completed. Be mindful that we need to be smart so that async
     locking/waiting has minimal impact.
   - After this is done, the delays in `registers.test.ts` can be fixed.
+
+- Refactor the GADT via class inheritance
