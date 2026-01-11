@@ -39,7 +39,7 @@ type ChordMenuEntry<I, O> =
 	| { type: "action"; action: Action<I, O> }
 	| null;
 
-class ChordMenu<I, O> extends ChordState<I, O> {
+class ChordMenu<I, O> implements ChordState<I, O> {
 	current: null | Record<string, ChordMenuEntry<I, O>> = null;
 
 	constructor(readonly menu: Record<string, ChordMenuEntry<I, O>>) {}
@@ -64,7 +64,7 @@ class ChordMenu<I, O> extends ChordState<I, O> {
 	}
 }
 
-class WrapperChord<I, O> extends ChordState<I, O> {
+class WrapperChord<I, O> implements ChordState<I, O> {
 	constructor(
 		readonly inner: ChordState<InnerI, InnerO>,
 		readonly mapInput: (input: I) => InnerI,
@@ -92,7 +92,7 @@ class WrapperChord<I, O> extends ChordState<I, O> {
 	}
 }
 
-class MultiChord<I, O> extends ChordState<I, O> {
+class MultiChord<I, O> implements ChordState<I, O> {
 	constructor(readonly multi: ChordState<I, O>) {}
 
 	reset() {
