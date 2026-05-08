@@ -4,6 +4,8 @@ import {
   ChordMenu,
   emptyEnv,
   Env,
+  KeyChordMenu,
+  MultiChordMenu,
   simpleKeys,
   testKeys,
 } from "../common.js";
@@ -42,37 +44,24 @@ const actions: Record<string, Action<Pos, MotionResult>> = {
   B: (editor, _env, p: Pos) => back(editor, p, true),
 };
 
-export const motions: ChordMenu<Pos, MotionResult> = {
-  type: "multi",
-  menus: [
-    {
-      type: "impl",
-      impl: {
-        type: "keys",
-        keys: {
-          ...simpleKeys(actions),
-          g: {
-            type: "menu",
-            menu: {
-              type: "impl",
-              impl: {
-                type: "keys",
-                keys: simpleKeys({
-                  e: (editor, _env, p: Pos) => backEnd(editor, p, false),
-                  E: (editor, _env, p: Pos) => backEnd(editor, p, true),
-                }),
-              },
-            },
-          },
-        },
-      },
+export const motions: ChordMenu<Pos, MotionResult> = new MultiChordMenu<
+  Pos,
+  MotionResult
+>([
+  new KeyChordMenu({
+    ...simpleKeys(actions),
+    g: {
+      type: "menu",
+      menu: new KeyChordMenu(
+        simpleKeys({
+          e: (editor, _env, p: Pos) => backEnd(editor, p, false),
+          E: (editor, _env, p: Pos) => backEnd(editor, p, true),
+        })
+      ),
     },
-    {
-      type: "impl",
-      impl: { type: "keys", keys: lineMotions },
-    },
-  ],
-};
+  }),
+  new KeyChordMenu(lineMotions),
+]);
 
 export function testMotionKeys(
   editor: Editor,

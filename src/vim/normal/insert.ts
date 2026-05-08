@@ -1,9 +1,10 @@
 import { Editor, Pos } from "../../editorInterface.js";
 import {
   Action,
-  ChordKeys,
+  ChordKeymap,
   emptyEnv,
   Env,
+  KeyChordMenu,
   simpleKeys,
   testKeys,
 } from "../common.js";
@@ -38,7 +39,7 @@ const insert: Record<string, Action<Pos, Pos>> = {
   },
 };
 
-export const inserts: ChordKeys<Pos, Pos> = {
+export const inserts: ChordKeymap<Pos, Pos> = {
   ...simpleKeys(insert),
   ...cuts,
 };
@@ -51,7 +52,7 @@ export function testInsertKeys(
   testKeys({
     editor,
     keys,
-    chords: { type: "impl", impl: { type: "keys", keys: inserts } },
+    chords: new KeyChordMenu(inserts),
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "line" };

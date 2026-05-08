@@ -7,10 +7,12 @@ import {
 } from "../../editorInterface.js";
 import { fixCursorPosition } from "../modeUtil.js";
 import {
-  ChordKeys,
+  ChordKeymap,
   ChordMenu,
   Env,
-  mapChordMenu,
+  KeyChordMenu,
+  MappedChordMenu,
+  MultiChordMenu,
   simpleKeys,
 } from "../common.js";
 import { getLineWhitePrefix } from "../lineUtil.js";
@@ -159,14 +161,14 @@ function curOrDeleteMotion(
 }
 
 function cutOrDelete(mode: "cut" | "delete"): ChordMenu<Pos, Pos> {
-  return mapChordMenu(
+  return new MappedChordMenu(
     (i) => i,
     motions,
     (editor, env, inp) => curOrDeleteMotion(mode, editor, env, inp)
   );
 }
 
-export const cuts: ChordKeys<Pos, Pos> = {
+export const cuts: ChordKeymap<Pos, Pos> = {
   ...simpleKeys({
     s: (editor, env, p) => {
       return delWithMotion(editor, env, p, fixCursorPosition(editor, p, { mode: 'insert', offset: 1 }));
@@ -179,41 +181,34 @@ export const cuts: ChordKeys<Pos, Pos> = {
   }),
   c: {
     type: "menu",
-    menu: {
-      type: "multi",
-      menus: [
-        {
-          type: "impl",
-          impl: {
-            type: "keys",
-            keys: simpleKeys({
-              c: (editor, env, p) => cutLines(editor, env, p.l, p.l),
-              w: (editor, env, p) => {
-                const motion = forwardWord(editor, p, {
-                  whiteOnly: false,
-                  stopOnWhite: true,
-                });
-                return curOrDeleteMotion("cut", editor, env, {
-                  input: p,
-                  output: motion,
-                });
-              },
-              W: (editor, env, p) => {
-                const motion = forwardWord(editor, p, {
-                  whiteOnly: true,
-                  stopOnWhite: true,
-                });
-                return curOrDeleteMotion("cut", editor, env, {
-                  input: p,
-                  output: motion,
-                });
-              },
-            }),
+    menu: new MultiChordMenu<Pos, Pos>([
+      new KeyChordMenu(
+        simpleKeys({
+          c: (editor, env, p) => cutLines(editor, env, p.l, p.l),
+          w: (editor, env, p) => {
+            const motion = forwardWord(editor, p, {
+              whiteOnly: false,
+              stopOnWhite: true,
+            });
+            return curOrDeleteMotion("cut", editor, env, {
+              input: p,
+              output: motion,
+            });
           },
-        },
-        cutOrDelete("cut"),
-      ],
-    },
+          W: (editor, env, p) => {
+            const motion = forwardWord(editor, p, {
+              whiteOnly: true,
+              stopOnWhite: true,
+            });
+            return curOrDeleteMotion("cut", editor, env, {
+              input: p,
+              output: motion,
+            });
+          },
+        })
+      ),
+      cutOrDelete("cut"),
+    ]),
   },
 };
 
@@ -225,7 +220,7 @@ export function fixDwMotion(motion: MotionResult, editor: Editor) {
   }
 }
 
-export const deletes: ChordKeys<Pos, Pos> = {
+export const deletes: ChordKeymap<Pos, Pos> = {
   ...simpleKeys({
     x: (editor, env, p) => {
       return delWithMotion(editor, env, p, p);
@@ -242,42 +237,35 @@ export const deletes: ChordKeys<Pos, Pos> = {
   }),
   d: {
     type: "menu",
-    menu: {
-      type: "multi",
-      menus: [
-        {
-          type: "impl",
-          impl: {
-            type: "keys",
-            keys: simpleKeys({
-              d: (editor, env, p) => deleteLines(editor, env, p.l, p.l),
-              w: (editor, env, p) => {
-                const motion = forwardWord(editor, p, {
-                  whiteOnly: false,
-                  stopOnLF: true,
-                });
-                fixDwMotion(motion, editor);
-                return curOrDeleteMotion("delete", editor, env, {
-                  input: p,
-                  output: motion,
-                });
-              },
-              W: (editor, env, p) => {
-                const motion = forwardWord(editor, p, {
-                  whiteOnly: true,
-                  stopOnLF: true,
-                });
-                fixDwMotion(motion, editor);
-                return curOrDeleteMotion("delete", editor, env, {
-                  input: p,
-                  output: motion,
-                });
-              },
-            }),
+    menu: new MultiChordMenu<Pos, Pos>([
+      new KeyChordMenu(
+        simpleKeys({
+          d: (editor, env, p) => deleteLines(editor, env, p.l, p.l),
+          w: (editor, env, p) => {
+            const motion = forwardWord(editor, p, {
+              whiteOnly: false,
+              stopOnLF: true,
+            });
+            fixDwMotion(motion, editor);
+            return curOrDeleteMotion("delete", editor, env, {
+              input: p,
+              output: motion,
+            });
           },
-        },
-        cutOrDelete("delete"),
-      ],
-    },
+          W: (editor, env, p) => {
+            const motion = forwardWord(editor, p, {
+              whiteOnly: true,
+              stopOnLF: true,
+            });
+            fixDwMotion(motion, editor);
+            return curOrDeleteMotion("delete", editor, env, {
+              input: p,
+              output: motion,
+            });
+          },
+        })
+      ),
+      cutOrDelete("delete"),
+    ]),
   },
 };

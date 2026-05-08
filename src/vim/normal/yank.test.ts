@@ -1,6 +1,13 @@
 import { Editor, Pos } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
-import { emptyEnv, Env, mapChordMenu, testKeys } from "../common.js";
+import {
+  emptyEnv,
+  Env,
+  KeyChordMenu,
+  MappedChordMenu,
+  MultiChordMenu,
+  testKeys,
+} from "../common.js";
 import { fixCursorPosition } from "../modeUtil.js";
 import { changes } from "./change.js";
 import { yanks } from "./yank.js";
@@ -13,18 +20,15 @@ async function testChangeAndYankKeys(
   await testKeys({
     editor,
     keys,
-    chords: {
-      type: "multi",
-      menus: [
-        { type: "impl", impl: { type: "keys", keys: changes } },
-        mapChordMenu(
-          (i: Pos) => i,
-          { type: "impl", impl: { type: "keys", keys: yanks } },
-          (_editor, _env, { input, output: _ }: { input: Pos; output: void }) =>
-            input
-        ),
-      ],
-    },
+    chords: new MultiChordMenu<Pos, Pos>([
+      new KeyChordMenu(changes),
+      new MappedChordMenu(
+        (i: Pos) => i,
+        new KeyChordMenu(yanks),
+        (_editor, _env, { input, output: _ }: { input: Pos; output: void }) =>
+          input
+      ),
+    ]),
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "block" };

@@ -1,9 +1,11 @@
 import { Editor, Pos } from "../../editorInterface.js";
 import {
-  ChordKeys,
+  ChordKeymap,
   ChordMenu,
   Env,
-  mapChordMenu,
+  KeyChordMenu,
+  MappedChordMenu,
+  MultiChordMenu,
   simpleKeys,
 } from "../common.js";
 import { MotionResult, motions } from "../motion/motion.js";
@@ -46,51 +48,44 @@ function yankMotionImpl(
   }
 }
 
-const yankMotion: ChordMenu<Pos, void> = mapChordMenu(
+const yankMotion: ChordMenu<Pos, void> = new MappedChordMenu(
   (i) => i,
   motions,
   (editor, env, inp) => yankMotionImpl(editor, env, inp)
 );
 
-export const yanks: ChordKeys<Pos, void> = {
+export const yanks: ChordKeymap<Pos, void> = {
   y: {
     type: "menu",
-    menu: {
-      type: "multi",
-      menus: [
-        {
-          type: "impl",
-          impl: {
-            type: "keys",
-            keys: simpleKeys({
-              y: (editor, env, p) => yankLines(editor, env, p.l, p.l),
-              w: (editor, env, p) => {
-                const motion = forwardWord(editor, p, {
-                  whiteOnly: false,
-                  stopOnLF: true,
-                });
-                fixDwMotion(motion, editor);
-                return yankMotionImpl(editor, env, {
-                  input: p,
-                  output: motion,
-                });
-              },
-              W: (editor, env, p) => {
-                const motion = forwardWord(editor, p, {
-                  whiteOnly: true,
-                  stopOnLF: true,
-                });
-                fixDwMotion(motion, editor);
-                return yankMotionImpl(editor, env, {
-                  input: p,
-                  output: motion,
-                });
-              },
-            }),
+    menu: new MultiChordMenu<Pos, void>([
+      new KeyChordMenu(
+        simpleKeys({
+          y: (editor, env, p) => yankLines(editor, env, p.l, p.l),
+          w: (editor, env, p) => {
+            const motion = forwardWord(editor, p, {
+              whiteOnly: false,
+              stopOnLF: true,
+            });
+            fixDwMotion(motion, editor);
+            return yankMotionImpl(editor, env, {
+              input: p,
+              output: motion,
+            });
           },
-        },
-        yankMotion,
-      ],
-    },
+          W: (editor, env, p) => {
+            const motion = forwardWord(editor, p, {
+              whiteOnly: true,
+              stopOnLF: true,
+            });
+            fixDwMotion(motion, editor);
+            return yankMotionImpl(editor, env, {
+              input: p,
+              output: motion,
+            });
+          },
+        })
+      ),
+      yankMotion,
+    ]),
   },
 };

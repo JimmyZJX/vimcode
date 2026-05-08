@@ -4,7 +4,7 @@ import {
   rangeOfSelection,
   Selection,
 } from "../../editorInterface.js";
-import { ChordKeys, Env, simpleKeys } from "../common.js";
+import { ChordKeymap, Env, simpleKeys } from "../common.js";
 import { fixCursorPosition } from "../modeUtil.js";
 import { delRange } from "../normal/cutDelete.js";
 
@@ -14,7 +14,7 @@ function cutRange(editor: Editor, env: Env, sel: Selection) {
   return start;
 }
 
-export const visualInsert: ChordKeys<Selection, Pos> = {
+export const visualInsert: ChordKeymap<Selection, Pos> = {
   ...simpleKeys({
     A: (editor, _env, sel) => {
       const { start: _, end } = rangeOfSelection(sel);

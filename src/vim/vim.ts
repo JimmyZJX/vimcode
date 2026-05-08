@@ -1,5 +1,11 @@
 import { Editor, Pos, Selection } from "../editorInterface.js";
-import { ChordMenu, Env, followKey, mapChordMenu } from "./common.js";
+import {
+  ChordMenu,
+  Env,
+  KeyChordMenu,
+  MappedChordMenu,
+  MultiChordMenu,
+} from "./common.js";
 import {
   fixCursorPosition,
   visualFromEditor,
@@ -84,143 +90,115 @@ export class Vim {
     return this.state.menu !== undefined;
   }
 
-  private static normalMenus: ChordMenu<Pos, NormalModeResult> = {
-    type: "multi",
-    menus: [
-      mapChordMenu(
-        (i) => i,
-        {
-          type: "impl",
-          impl: { type: "keys", keys: changes },
-        },
-        (_editor, _env, { input: _, output }) => ({
-          pos: output,
-          toMode: "normal",
-        })
-      ),
-      mapChordMenu(
-        (i) => i,
-        motions,
-        (_editor, _env, { input: _, output: { pos } }) => ({
-          pos,
-          toMode: "normal",
-        })
-      ),
-      mapChordMenu(
-        (i) => {},
-        {
-          type: "impl",
-          impl: { type: "keys", keys: changesCursorNeutral },
-        },
-        (_editor, _env, { input: _inp, output: _outp }) => ({
-          pos: undefined,
-          toMode: "normal",
-        })
-      ),
-      mapChordMenu(
-        (i) => i,
-        {
-          type: "impl",
-          impl: { type: "keys", keys: yanks },
-        },
-        (_editor, _env, { input: _inp, output: _outp }) => ({
-          pos: undefined,
-          toMode: "normal",
-        })
-      ),
-      mapChordMenu(
-        (i) => i,
-        { type: "impl", impl: { type: "keys", keys: inserts } },
-        (_editor, _env, { input: _, output }) => ({
-          pos: output,
-          toMode: "insert",
-        })
-      ),
-      {
-        type: "impl",
-        impl: {
-          type: "keys",
-          keys: {
-            v: {
-              type: "action",
-              action: (_editor, _env, p) => ({ pos: p, toMode: "visual" }),
-            },
-            '"': Registers.createRegisterSelectionChord(),
-          },
-        },
+  private static normalMenus: ChordMenu<Pos, NormalModeResult> = new MultiChordMenu<
+    Pos,
+    NormalModeResult
+  >([
+    new MappedChordMenu(
+      (i) => i,
+      new KeyChordMenu(changes),
+      (_editor, _env, { input: _, output }) => ({
+        pos: output,
+        toMode: "normal",
+      })
+    ),
+    new MappedChordMenu(
+      (i) => i,
+      motions,
+      (_editor, _env, { input: _, output: { pos } }) => ({
+        pos,
+        toMode: "normal",
+      })
+    ),
+    new MappedChordMenu(
+      (i) => {},
+      new KeyChordMenu(changesCursorNeutral),
+      (_editor, _env, { input: _inp, output: _outp }) => ({
+        pos: undefined,
+        toMode: "normal",
+      })
+    ),
+    new MappedChordMenu(
+      (i) => i,
+      new KeyChordMenu(yanks),
+      (_editor, _env, { input: _inp, output: _outp }) => ({
+        pos: undefined,
+        toMode: "normal",
+      })
+    ),
+    new MappedChordMenu(
+      (i) => i,
+      new KeyChordMenu(inserts),
+      (_editor, _env, { input: _, output }) => ({
+        pos: output,
+        toMode: "insert",
+      })
+    ),
+    new KeyChordMenu<Pos, NormalModeResult>({
+      v: {
+        type: "action",
+        action: (_editor, _env, p) => ({ pos: p, toMode: "visual" }),
       },
-    ],
-  };
+      '"': Registers.createRegisterSelectionChord(),
+    }),
+  ]);
 
-  private static visualMenus: ChordMenu<Selection, VisualModeResult> = {
-    type: "multi",
-    menus: [
-      mapChordMenu(
-        ({ anchor: _, active }) => active,
-        motions,
-        (_editor, _env, { input: _, output: { pos } }) => ({
-          active: pos,
-          toMode: "visual",
-        })
-      ),
-      mapChordMenu(
-        (i) => i,
-        {
-          type: "impl",
-          impl: { type: "keys", keys: visualDelete },
-          // TODO keys like "xX" behaves very differently
-        },
-        (_editor, _env, { input: _, output }) => ({
-          active: output,
+  private static visualMenus: ChordMenu<Selection, VisualModeResult> = new MultiChordMenu<
+    Selection,
+    VisualModeResult
+  >([
+    new MappedChordMenu(
+      ({ anchor: _, active }) => active,
+      motions,
+      (_editor, _env, { input: _, output: { pos } }) => ({
+        active: pos,
+        toMode: "visual",
+      })
+    ),
+    // TODO keys like "xX" behaves very differently
+    new MappedChordMenu(
+      (i) => i,
+      new KeyChordMenu(visualDelete),
+      (_editor, _env, { input: _, output }) => ({
+        active: output,
+        toMode: "normal",
+      })
+    ),
+    new MappedChordMenu(
+      (i) => {},
+      new KeyChordMenu(changesCursorNeutral),
+      (_editor, _env, { input: _inp, output: _outp }) => ({
+        toMode: "normal",
+      })
+    ),
+    new MappedChordMenu(
+      (i) => i,
+      new KeyChordMenu(visualInsert),
+      (_editor, _env, { input: _, output }) => ({
+        active: output,
+        toMode: "insert",
+      })
+    ),
+    new MappedChordMenu(
+      (i) => i,
+      new KeyChordMenu(visualCursor),
+      (_editor, _env, { input: _, output }) => ({
+        active: output.active,
+        anchor: output.anchor,
+        toMode: "visual",
+      })
+    ),
+    new KeyChordMenu<Selection, VisualModeResult>({
+      "<escape>": {
+        type: "action",
+        action: (_editor, _env, { anchor: _, active }) => ({
+          active,
           toMode: "normal",
-        })
-      ),
-      mapChordMenu(
-        (i) => {},
-        {
-          type: "impl",
-          impl: { type: "keys", keys: changesCursorNeutral },
-        },
-        (_editor, _env, { input: _inp, output: _outp }) => ({
-          pos: undefined,
-          toMode: "normal",
-        })
-      ),
-      mapChordMenu(
-        (i) => i,
-        { type: "impl", impl: { type: "keys", keys: visualInsert } },
-        (_editor, _env, { input: _, output }) => ({
-          active: output,
-          toMode: "insert",
-        })
-      ),
-      mapChordMenu(
-        (i) => i,
-        { type: "impl", impl: { type: "keys", keys: visualCursor } },
-        (_editor, _env, { input: _, output }) => ({
-          active: output.active,
-          anchor: output.anchor,
-          toMode: "visual",
-        })
-      ),
-      {
-        type: "impl",
-        impl: {
-          type: "keys",
-          keys: {
-            "<escape>": {
-              type: "action",
-              action: (_editor, _env, { anchor: _, active }) => ({
-                active,
-                toMode: "normal",
-              }),
-            },
-            '"': Registers.createRegisterSelectionChordVisual(),
-          },
-        },
+        }),
       },
-    ],
-  };
+      '"': Registers.createRegisterSelectionChordVisual(),
+    }),
+  ]);
 
   private static withEnv<O>(env: Env, action: () => O): O {
     // clear flash on top-level chords
@@ -241,8 +219,7 @@ export class Vim {
       this.editor.selections[0]
     );
     const getInput = () => visualSelection;
-    const r = followKey(
-      state.menu ?? Vim.visualMenus,
+    const r = (state.menu ?? Vim.visualMenus).followKey(
       getInput(),
       key,
       this.editor,
@@ -321,8 +298,7 @@ export class Vim {
     state: Extract<State, { mode: "normal" }>
   ): State & { processed: boolean } {
     const getInput = () => this.editor.selections[0].active;
-    const r = followKey(
-      state.menu ?? Vim.normalMenus,
+    const r = (state.menu ?? Vim.normalMenus).followKey(
       getInput(),
       key,
       this.editor,

@@ -4,7 +4,7 @@ import {
   rangeOfSelection,
   Selection,
 } from "../../editorInterface.js";
-import { ChordKeys, Env, simpleKeys } from "../common.js";
+import { ChordKeymap, DynamicChordMenu, Env, simpleKeys } from "../common.js";
 import { getLineWhitePrefix } from "../lineUtil.js";
 
 function fixRegionEnd(editor: Editor, p: Pos): Pos {
@@ -54,7 +54,7 @@ function deleteLine(editor: Editor, env: Env, sel: Selection) {
   return { l: toLine, c: getLineWhitePrefix(editor, toLine).length };
 }
 
-export const visualDelete: ChordKeys<Selection, Pos> = {
+export const visualDelete: ChordKeymap<Selection, Pos> = {
   ...simpleKeys({
     x: deleteRegion,
     d: deleteRegion,
@@ -63,24 +63,18 @@ export const visualDelete: ChordKeys<Selection, Pos> = {
   }),
   r: {
     type: "menu",
-    menu: {
-      type: "impl",
-      impl: {
-        type: "fn",
-        fn: (_editor, _env, { key, input: _ }) => {
-          if (key.length > 1) return undefined;
-          return {
-            type: "action",
-            action: (editor, _env, sel) => {
-              const { start, end } = getVisualRange(editor, sel);
-              const text = editor.getText({ anchor: start, active: end });
-              const edited = text.replace(/[^\n]/g, key);
-              editor.editText({ anchor: start, active: end }, edited);
-              return start;
-            },
-          };
+    menu: new DynamicChordMenu((_editor, _env, { key, input: _ }) => {
+      if (key.length > 1) return undefined;
+      return {
+        type: "action",
+        action: (editor, _env, sel) => {
+          const { start, end } = getVisualRange(editor, sel);
+          const text = editor.getText({ anchor: start, active: end });
+          const edited = text.replace(/[^\n]/g, key);
+          editor.editText({ anchor: start, active: end }, edited);
+          return start;
         },
-      },
-    },
+      };
+    }),
   },
 };

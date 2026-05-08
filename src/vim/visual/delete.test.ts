@@ -1,6 +1,6 @@
 import { Editor } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
-import { emptyEnv, Env, testKeys } from "../common.js";
+import { emptyEnv, Env, KeyChordMenu, testKeys } from "../common.js";
 import { fixCursorPosition } from "../modeUtil.js";
 import { visualDelete } from "./delete.js";
 
@@ -12,7 +12,7 @@ export function testVisualDeleteKeys(
   testKeys({
     editor,
     keys,
-    chords: { type: "impl", impl: { type: "keys", keys: visualDelete } },
+    chords: new KeyChordMenu(visualDelete),
     getInput: () => editor.selections[0],
     onOutput: (pos) => {
       editor.cursor = { type: "block" };

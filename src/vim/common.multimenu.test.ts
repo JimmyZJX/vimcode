@@ -1,5 +1,5 @@
 import FakeEditor from "../fakeEditor/fakeEditor.js";
-import { ChordMenu, emptyEnv, followKey } from "./common.js";
+import { ChordMenu, emptyEnv, KeyChordMenu, MultiChordMenu } from "./common.js";
 
 it("multi-menu with menu first, then action - should return menu", () => {
   const editor = new FakeEditor("test\n");
@@ -11,57 +11,36 @@ it("multi-menu with menu first, then action - should return menu", () => {
   // - First menu: 'x' returns a MENU (multi-key command 'xy')
   // - Second menu: 'x' returns an ACTION (single-key command)
   // Expected behavior: Since first entry is a menu, return it (action is ignored)
-  const multiMenu: ChordMenu<void, string> = {
-    type: "multi",
-    menus: [
-      // First menu: 'x' is a menu (waiting for more keys)
-      {
-        type: "impl",
-        impl: {
-          type: "keys",
-          keys: {
-            x: {
-              type: "menu",
-              menu: {
-                type: "impl",
-                impl: {
-                  type: "keys",
-                  keys: {
-                    y: {
-                      type: "action",
-                      action: () => {
-                        executedAction = "first-menu-xy";
-                        return "first-menu-xy";
-                      },
-                    },
-                  },
-                },
-              },
+  const multiMenu: ChordMenu<void, string> = new MultiChordMenu<void, string>([
+    // First menu: 'x' is a menu (waiting for more keys)
+    new KeyChordMenu({
+      x: {
+        type: "menu",
+        menu: new KeyChordMenu({
+          y: {
+            type: "action",
+            action: () => {
+              executedAction = "first-menu-xy";
+              return "first-menu-xy";
             },
           },
+        }),
+      },
+    }),
+    // Second menu: 'x' is an action
+    new KeyChordMenu({
+      x: {
+        type: "action",
+        action: () => {
+          executedAction = "second-menu-x";
+          return "second-menu-x";
         },
       },
-      // Second menu: 'x' is an action
-      {
-        type: "impl",
-        impl: {
-          type: "keys",
-          keys: {
-            x: {
-              type: "action",
-              action: () => {
-                executedAction = "second-menu-x";
-                return "second-menu-x";
-              },
-            },
-          },
-        },
-      },
-    ],
-  };
+    }),
+  ]);
 
   // Press 'x' - should return the menu from the first menu (menu before action)
-  const result = followKey(multiMenu, undefined, "x", editor, env);
+  const result = multiMenu.followKey(undefined, "x", editor, env);
 
   // Since first entry is a menu, it should be returned (not the action from second menu)
   if (result?.type !== "menu") {
@@ -78,7 +57,7 @@ it("multi-menu with menu first, then action - should return menu", () => {
   }
 
   // Now press 'y' to complete the sequence 'xy'
-  const result2 = followKey(result.menu, undefined, "y", editor, env);
+  const result2 = result.menu.followKey(undefined, "y", editor, env);
 
   if (result2?.type !== "action") {
     throw new Error(`Expected 'xy' to return an action, but got: ${result2?.type}`);
@@ -103,57 +82,36 @@ it("multi-menu with action first, then menu - should return action", () => {
   // - First menu: 'a' returns an ACTION (single-key command)
   // - Second menu: 'a' returns a MENU (multi-key command 'ab')
   // Expected behavior: Since first entry is an action, return it (menu is ignored)
-  const multiMenu: ChordMenu<void, string> = {
-    type: "multi",
-    menus: [
-      // First menu: 'a' is an action
-      {
-        type: "impl",
-        impl: {
-          type: "keys",
-          keys: {
-            a: {
-              type: "action",
-              action: () => {
-                executedAction = "first-menu-a";
-                return "first-menu-a";
-              },
-            },
-          },
+  const multiMenu: ChordMenu<void, string> = new MultiChordMenu<void, string>([
+    // First menu: 'a' is an action
+    new KeyChordMenu({
+      a: {
+        type: "action",
+        action: () => {
+          executedAction = "first-menu-a";
+          return "first-menu-a";
         },
       },
-      // Second menu: 'a' is a menu
-      {
-        type: "impl",
-        impl: {
-          type: "keys",
-          keys: {
-            a: {
-              type: "menu",
-              menu: {
-                type: "impl",
-                impl: {
-                  type: "keys",
-                  keys: {
-                    b: {
-                      type: "action",
-                      action: () => {
-                        executedAction = "second-menu-ab";
-                        return "second-menu-ab";
-                      },
-                    },
-                  },
-                },
-              },
+    }),
+    // Second menu: 'a' is a menu
+    new KeyChordMenu({
+      a: {
+        type: "menu",
+        menu: new KeyChordMenu({
+          b: {
+            type: "action",
+            action: () => {
+              executedAction = "second-menu-ab";
+              return "second-menu-ab";
             },
           },
-        },
+        }),
       },
-    ],
-  };
+    }),
+  ]);
 
   // Press 'a' - should return the action from the first menu
-  const result = followKey(multiMenu, undefined, "a", editor, env);
+  const result = multiMenu.followKey(undefined, "a", editor, env);
 
   // Since first entry is an action, it should be returned (menu from second is ignored)
   if (result?.type !== "action") {

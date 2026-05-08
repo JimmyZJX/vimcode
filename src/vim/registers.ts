@@ -1,5 +1,5 @@
 import { Editor, Pos, Selection } from "../editorInterface.js";
-import { ChordEntry } from "./common.js";
+import { ChordEntry, DynamicChordMenu } from "./common.js";
 import { Mode } from "./vim.js";
 
 export type RegisterTextContent = { isFullLine: boolean; content: string };
@@ -70,26 +70,20 @@ export class Registers {
   > {
     return {
       type: "menu",
-      menu: {
-        type: "impl",
-        impl: {
-          type: "fn",
-          fn: (_editor, env, { key, input: p }) => {
-            // Accept any single character as register name
-            if (key.length === 1) {
-              env.globalState.registers.setCurrentRegister(key);
-              return {
-                type: "action",
-                action: (_e, _env, _p) => ({
-                  pos: p,
-                  toMode: "normal",
-                }),
-              };
-            }
-            return undefined;
-          },
-        },
-      },
+      menu: new DynamicChordMenu((_editor, env, { key, input: p }) => {
+        // Accept any single character as register name
+        if (key.length === 1) {
+          env.globalState.registers.setCurrentRegister(key);
+          return {
+            type: "action",
+            action: (_e, _env, _p) => ({
+              pos: p,
+              toMode: "normal",
+            }),
+          };
+        }
+        return undefined;
+      }),
     };
   }
 
@@ -103,27 +97,21 @@ export class Registers {
   > {
     return {
       type: "menu",
-      menu: {
-        type: "impl",
-        impl: {
-          type: "fn",
-          fn: (_editor, env, { key, input: sel }) => {
-            // Accept any single character as register name
-            if (key.length === 1) {
-              env.globalState.registers.setCurrentRegister(key);
-              return {
-                type: "action",
-                action: (_e, _env, _sel) => ({
-                  active: sel.active,
-                  anchor: sel.anchor,
-                  toMode: "visual",
-                }),
-              };
-            }
-            return undefined;
-          },
-        },
-      },
+      menu: new DynamicChordMenu((_editor, env, { key, input: sel }) => {
+        // Accept any single character as register name
+        if (key.length === 1) {
+          env.globalState.registers.setCurrentRegister(key);
+          return {
+            type: "action",
+            action: (_e, _env, _sel) => ({
+              active: sel.active,
+              anchor: sel.anchor,
+              toMode: "visual",
+            }),
+          };
+        }
+        return undefined;
+      }),
     };
   }
 }

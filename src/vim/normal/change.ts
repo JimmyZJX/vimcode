@@ -1,9 +1,11 @@
 import { Editor, Pos } from "../../editorInterface.js";
 import {
-  ChordKeys,
+  ChordKeymap,
   DelayedAction,
+  DynamicChordMenu,
   emptyEnv,
   Env,
+  KeyChordMenu,
   simpleKeys,
   testKeys,
 } from "../common.js";
@@ -60,38 +62,32 @@ function paste(mode: "before" | "after"): DelayedAction<Pos, Pos> {
     );
 }
 
-export const changes: ChordKeys<Pos, Pos> = {
+export const changes: ChordKeymap<Pos, Pos> = {
   ...deletes,
   p: { type: "delayed", delayed: paste("after") },
   P: { type: "delayed", delayed: paste("before") },
   r: {
     type: "menu",
-    menu: {
-      type: "impl",
-      impl: {
-        type: "fn",
-        fn: (_editor, _env, { key, input: _ }) => {
-          if (key.length > 1) return undefined;
-          return {
-            type: "action",
-            action: (editor, _env, p) => {
-              const line = editor.getLine(p.l);
-              if (p.c < line.length) {
-                editor.editText(
-                  { anchor: p, active: { l: p.l, c: p.c + 1 } },
-                  key
-                );
-              }
-              return { l: p.l, c: p.c };
-            },
-          };
+    menu: new DynamicChordMenu((_editor, _env, { key, input: _ }) => {
+      if (key.length > 1) return undefined;
+      return {
+        type: "action",
+        action: (editor, _env, p) => {
+          const line = editor.getLine(p.l);
+          if (p.c < line.length) {
+            editor.editText(
+              { anchor: p, active: { l: p.l, c: p.c + 1 } },
+              key
+            );
+          }
+          return { l: p.l, c: p.c };
         },
-      },
-    },
+      };
+    }),
   },
 };
 
-export const changesCursorNeutral: ChordKeys<void, void> = {
+export const changesCursorNeutral: ChordKeymap<void, void> = {
   ...simpleKeys({
     u: (editor, _env, _void) => editor.real_undo(),
     "C-r": (editor, _env, _void) => editor.real_redo(),
@@ -106,7 +102,7 @@ export async function testChangeKeys(
   await testKeys({
     editor,
     keys,
-    chords: { type: "impl", impl: { type: "keys", keys: changes } },
+    chords: new KeyChordMenu(changes),
     getInput: () => editor.selections[0].active,
     onOutput: (pos) => {
       editor.cursor = { type: "block" };

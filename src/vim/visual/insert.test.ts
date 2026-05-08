@@ -1,6 +1,6 @@
 import { Editor } from "../../editorInterface.js";
 import { withEditor } from "../../testUtils.js";
-import { emptyEnv, Env, testKeys } from "../common.js";
+import { emptyEnv, Env, KeyChordMenu, testKeys } from "../common.js";
 import { visualInsert } from "./insert.js";
 
 export function testVisualInsertKeys(
@@ -11,7 +11,7 @@ export function testVisualInsertKeys(
   testKeys({
     editor,
     keys,
-    chords: { type: "impl", impl: { type: "keys", keys: visualInsert } },
+    chords: new KeyChordMenu(visualInsert),
     getInput: () => editor.selections[0],
     onOutput: (p) => {
       editor.cursor = { type: "line" };

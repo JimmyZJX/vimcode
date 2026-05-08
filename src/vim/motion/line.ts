@@ -1,5 +1,5 @@
 import { Editor, Pos } from "../../editorInterface.js";
-import { ChordKeys, simpleKeys } from "../common.js";
+import { ChordKeymap, KeyChordMenu, simpleKeys } from "../common.js";
 import { getLineWhitePrefix } from "../lineUtil.js";
 import { MotionResult } from "./motion.js";
 
@@ -10,7 +10,7 @@ function lineNonWhiteStart(editor: Editor, l: number): MotionResult {
   return { pos: { l, c: Math.max(0, Math.min(line.length - 1, whiteLength)) } };
 }
 
-const lineStartEnd: ChordKeys<Pos, MotionResult> = simpleKeys({
+const lineStartEnd: ChordKeymap<Pos, MotionResult> = simpleKeys({
   "0": (_editor, _env, p) => {
     return { pos: { l: p.l, c: 0 } };
   },
@@ -28,29 +28,23 @@ const lineStartEnd: ChordKeys<Pos, MotionResult> = simpleKeys({
   },
 });
 
-export const lineMotions: ChordKeys<Pos, MotionResult> = {
+export const lineMotions: ChordKeymap<Pos, MotionResult> = {
   g: {
     type: "menu",
-    menu: {
-      type: "impl",
-      impl: {
-        type: "keys",
-        keys: {
-          ...lineStartEnd,
-          ...simpleKeys({
-            g: (editor, _env, _p) => {
-              return { ...lineNonWhiteStart(editor, 0), wholeLine: true };
-            },
-            _: (editor, _env, p) => {
-              return {
-                pos: { l: p.l, c: Math.max(0, editor.getLineLength(p.l) - 1) },
-                wholeLine: true,
-              };
-            },
-          }),
+    menu: new KeyChordMenu({
+      ...lineStartEnd,
+      ...simpleKeys({
+        g: (editor, _env, _p) => {
+          return { ...lineNonWhiteStart(editor, 0), wholeLine: true };
         },
-      },
-    },
+        _: (editor, _env, p) => {
+          return {
+            pos: { l: p.l, c: Math.max(0, editor.getLineLength(p.l) - 1) },
+            wholeLine: true,
+          };
+        },
+      }),
+    }),
   },
   ...lineStartEnd,
 
