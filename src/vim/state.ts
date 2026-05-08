@@ -49,6 +49,8 @@ export type TextEdit = {
 
 export type CursorStyle = "block" | "line" | "underline";
 
+export type KeyResult = "handled" | "not-handled";
+
 export function position(row: number, column: number): Position {
   return { row, column };
 }

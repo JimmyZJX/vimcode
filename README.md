@@ -10,9 +10,12 @@ Done in this branch:
 
 - Replaced the old `src/vim` chord-menu implementation with a small semantic core.
 - Organized new source files to mirror Zed naming:
-  - `src/vim/vim.ts` — main Vim state/key engine, corresponding conceptually to Zed `vim::Vim`.
+  - `src/vim/vim.ts` — main Vim state/mode coordinator, corresponding conceptually to Zed `vim::Vim`.
   - `src/vim/state.ts` — modes/operators/selections/state vocabulary, corresponding to Zed `state` module.
   - `src/vim/motion.ts` — `Motion` and basic motion behavior, corresponding to Zed `motion` module.
+  - `src/vim/normal.ts` — normal-mode key dispatch, corresponding to Zed `normal` module plus `assets/keymaps/vim.json`.
+  - `src/vim/normal/{change,delete,yank,paste}.ts` — first operator implementations, corresponding to Zed `normal/*` modules.
+  - `src/vim/insert.ts` — insert-mode text application and normal/insert cursor transitions, corresponding to Zed `insert` plus insert-related normal commands.
   - `src/vim/editor.ts` — local editor capability interface plus in-memory test adapter.
   - `src/vim/vim.test.ts` — first smoke tests through the capability interface.
 - Added provenance comments in source files that refer to Zed module/type/function names rather than brittle line numbers.
@@ -168,13 +171,11 @@ These may still be implemented step by step, but their state model and adapter r
 
 Near-term:
 
-1. Split `src/vim/vim.ts` into Zed-like modules as behavior grows:
-   - `normal.ts` for normal-mode key/action dispatch.
-   - `normal/delete.ts`, `normal/change.ts`, `normal/yank.ts`, `normal/paste.ts` for operator implementations.
-   - `insert.ts` for insert/replace behavior.
+1. Continue splitting Zed-like modules as behavior grows:
    - `visual.ts` for visual/visual-line/visual-block behavior.
    - `object.ts` for text objects.
    - `surrounds.ts` for surround operations.
+   - additional `normal/*` modules as normal-mode behavior expands.
 2. Replace the temporary hard-coded `motionForKey` / operator key mapping with a declarative keymap inspired by `assets/keymaps/vim.json`.
 3. Expand the editor capability interface into grouped capabilities:
    - document/model reads
