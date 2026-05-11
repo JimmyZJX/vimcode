@@ -1,0 +1,6 @@
+// DISABLED: Vim's cw uses special word-change semantics; current changeMotion deletes the same range as dw, including trailing whitespace.
+{"Put":{"state":"ˇone two"}}
+{"Key":"c"}
+{"Key":"w"}
+{"Key":"X"}
+{"Key":"<escape>"}

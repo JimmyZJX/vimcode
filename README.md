@@ -28,9 +28,9 @@ Done in this branch:
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
-  - `src/vim/test/neovim_fixtures.ts` reads/writes `src/vim/test_data/*.json` fixtures using `Put` / `Key` / `Get` entries inspired by Zed's `NeovimData`.
+  - `src/vim/test/neovim_fixtures.ts` reads/writes `src/vim/test_data/*.json` fixtures using `Put` / `Key` / `ReadRegister` / `Get` entries inspired by Zed's `NeovimData`.
   - `src/vim/test/neovim_backed_test_context.ts` compares local editor state with Neovim/fixtures.
-  - `src/vim/neovim.test.ts` covers a small supported subset against recorded Neovim fixtures.
+  - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
   - `npm test -- --runInBand` passes.
@@ -229,7 +229,7 @@ Zed's approach
 
 Zed's `test::neovim_backed_test_context::NeovimBackedTestContext` keeps a Zed editor and a Neovim instance in sync. Tests call helpers such as `set_shared_state`, `simulate_shared_keystrokes`, `simulate`, `shared_state`, and `shared_clipboard`. The backing `test::neovim_connection::NeovimConnection` can either talk to live embedded Neovim or replay recorded JSON test data. State is represented as marked text, with `ˇ` for the cursor and visual markers for selections.
 
-Our first migration step is intentionally smaller: Jest replays JSON-line fixtures from `src/vim/test_data/*.json` by default. Set `VIMCODE_RECORD_NEOVIM=1` while running the Neovim-backed tests to regenerate fixtures from short-lived `nvim --headless` processes. The current helper supports single-cursor `ˇ` marked text and explicit `ReadRegister` fixture entries. This is enough to catch basic normal/insert/operator/register drift before adding more features. Later steps should add visual markers and multi-selection support.
+Our first migration step is intentionally smaller: `src/vim/neovim.test.ts` discovers every JSON-line fixture in `src/vim/test_data/*.json`. Enabled files replay the recorded Neovim result; files whose first header is `// DISABLED: <reason>` become skipped Jest tests. Set `VIMCODE_RECORD_NEOVIM=1` while running the Neovim-backed tests to regenerate enabled fixtures from short-lived `nvim --headless` processes. The current helper supports single-cursor `ˇ` marked text and explicit `ReadRegister` fixture entries. This is enough to catch basic normal/insert/operator/register drift before adding more features. Later steps should add visual markers and multi-selection support.
 
 Test layers:
 
@@ -242,12 +242,12 @@ Test layers:
    - Prefer behavior-level translation over implementation-level translation.
 3. Neovim-backed comparison tests.
    - Borrow the idea from Zed's `test::neovim_backed_test_context::NeovimBackedTestContext`.
-   - Replay `src/vim/test_data/*.json` by default so CI does not need live Neovim.
-   - Regenerate fixtures with `VIMCODE_RECORD_NEOVIM=1 npx jest src/vim/neovim.test.ts --runInBand`.
+   - Discover and replay `src/vim/test_data/*.json` by default so CI does not need live Neovim.
+   - Regenerate enabled fixtures with `VIMCODE_RECORD_NEOVIM=1 npx jest src/vim/neovim.test.ts --runInBand`.
    - Initialize Neovim and the fake editor with the same text/selections where possible.
    - Send the same keystrokes.
    - Compare buffer text, mode, cursor/selections, and registers when applicable.
-   - It is fine to migrate tests before implementing the feature. Use `it.skip` and put `// DISABLED: <reason>` immediately above the skipped test or skipped block. The reason should say what is missing or intentionally divergent, not just "not implemented".
+   - It is fine to migrate tests before implementing the feature. Put `// DISABLED: <reason>` as a header in the fixture file. The reason should say what is missing or intentionally divergent, not just "not implemented".
 4. VSCode adapter integration tests/manual test scripts.
    - Validate patched VSCode key interception.
    - Validate undo/redo grouping.

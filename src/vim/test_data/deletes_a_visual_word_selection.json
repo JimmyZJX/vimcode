@@ -1,0 +1,5 @@
+// DISABLED: visual mode state and visual marker support in the test harness are not implemented yet.
+{"Put":{"state":"ˇone two three"}}
+{"Key":"v"}
+{"Key":"w"}
+{"Key":"d"}
