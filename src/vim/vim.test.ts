@@ -76,7 +76,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["c", "w", "X", "<escape>"]);
 
-    expect(editor.getText()).toBe("Xtwo");
+    expect(editor.getText()).toBe("X two");
     expect(vim.modeName).toBe("vim:normal");
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
@@ -126,12 +126,12 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
 
     runKeys(vim, ["G"]);
-    expect(head(editor)).toEqual({ row: 2, column: 2 });
+    expect(head(editor)).toEqual({ row: 2, column: 0 });
 
     runKeys(vim, ["g", "g"]);
-    expect(head(editor)).toEqual({ row: 0, column: 2 });
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
 
     runKeys(vim, ["2", "G"]);
-    expect(head(editor)).toEqual({ row: 1, column: 2 });
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
   });
 });

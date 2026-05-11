@@ -111,6 +111,18 @@ export class NormalMode {
       return handled();
     }
 
+    if (key === "enter") {
+      this.moveToNextLineStart();
+      this.selectedRegister = undefined;
+      return handled();
+    }
+
+    if (key === "backspace") {
+      this.moveSelections({ type: "wrappingLeft" }, this.takeCount(1));
+      this.selectedRegister = undefined;
+      return handled();
+    }
+
     if (isOperatorKey(key)) {
       if (this.pendingOperator?.operator === operatorForKey(key)) {
         return handled({ enterInsert: this.handleLineOperator(this.pendingOperator.operator) });
@@ -192,7 +204,23 @@ export class NormalMode {
   private moveToLine(row: number): void {
     const targetRow = Math.max(0, Math.min(row, this.editor.lineCount() - 1));
     this.editor.setSelections(
-      this.editor.getSelections().map(() => charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow)))
+      this.editor.getSelections().map((selection) => {
+        const head = selectionHead(selection);
+        return charwiseSelection({
+          row: targetRow,
+          column: Math.min(head.column, Math.max(0, this.editor.lineLength(targetRow) - 1)),
+        });
+      })
+    );
+  }
+
+  private moveToNextLineStart(): void {
+    this.editor.setSelections(
+      this.editor.getSelections().map((selection) => {
+        const head = selectionHead(selection);
+        const targetRow = Math.min(head.row + 1, this.editor.lineCount() - 1);
+        return charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow));
+      })
     );
   }
 

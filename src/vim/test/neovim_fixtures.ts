@@ -8,7 +8,7 @@
 
 import fs from "fs";
 import path from "path";
-import { NeovimState } from "./neovim_connection.js";
+import { NeovimMode, NeovimState } from "./neovim_connection.js";
 
 export type NeovimFixtureEntry = {
   Put: { state: string };
@@ -17,16 +17,14 @@ export type NeovimFixtureEntry = {
 } | {
   ReadRegister: { name: string; value: string };
 } | {
-  Get: { state: string; mode: NeovimState["mode"] };
+  Get: { state: string; mode: NeovimMode };
 };
 
 export type EnabledNeovimFixture = {
   status: "enabled";
   testCaseId: string;
   file: string;
-  initialState: string;
-  keys: readonly string[];
-  result: NeovimState;
+  entries: readonly NeovimFixtureEntry[];
 };
 
 export type DisabledNeovimFixture = {
@@ -87,28 +85,32 @@ function readFixtureFile(file: string): NeovimFixture {
   const entries = lines
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith("//"))
-    .map((line) => JSON.parse(line) as NeovimFixtureEntry);
+    .map(parseEntry);
 
-  const put = entries.find((entry): entry is { Put: { state: string } } => "Put" in entry);
-  const get = [...entries].reverse().find((entry): entry is { Get: { state: string; mode: NeovimState["mode"] } } => "Get" in entry);
-  if (put === undefined || get === undefined) {
+  if (!entries.some((entry) => "Put" in entry) || !entries.some((entry) => "Get" in entry)) {
     throw new Error(`invalid Neovim fixture ${file}: expected Put and Get entries`);
   }
 
-  const registers = Object.fromEntries(
-    entries.flatMap((entry) => "ReadRegister" in entry ? [[entry.ReadRegister.name, entry.ReadRegister.value]] : [])
-  );
-  return {
-    status: "enabled",
-    testCaseId,
-    file,
-    initialState: put.Put.state,
-    keys: entries.flatMap((entry) => "Key" in entry ? [entry.Key] : []),
-    result: { markedText: get.Get.state, mode: get.Get.mode, registers },
-  };
+  return { status: "enabled", testCaseId, file, entries };
 }
 
-export function writeFixture(testCaseId: string, fixture: Omit<EnabledNeovimFixture, "status" | "testCaseId" | "file">): void {
+function parseEntry(line: string): NeovimFixtureEntry {
+  const entry = JSON.parse(line) as
+    | { Put: { state: string } }
+    | { Key: string }
+    | { ReadRegister: { name: string; value: string } }
+    | { Get: { state: string; mode: string } };
+
+  if ("Get" in entry) {
+    return { Get: { state: entry.Get.state, mode: normalizeMode(entry.Get.mode) } };
+  }
+  return entry;
+}
+
+export function writeFixture(
+  testCaseId: string,
+  fixture: { initialState: string; keys: readonly string[]; result: NeovimState }
+): void {
   fs.mkdirSync(testDataDir, { recursive: true });
   const entries: NeovimFixtureEntry[] = [
     { Put: { state: fixture.initialState } },
@@ -119,6 +121,31 @@ export function writeFixture(testCaseId: string, fixture: Omit<EnabledNeovimFixt
     { Get: { state: fixture.result.markedText, mode: fixture.result.mode } },
   ];
   fs.writeFileSync(fixturePath(testCaseId), entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+}
+
+function normalizeMode(mode: string): NeovimMode {
+  switch (mode) {
+    case "Normal":
+    case "normal":
+      return "normal";
+    case "Insert":
+    case "insert":
+      return "insert";
+    case "Visual":
+    case "visual":
+      return "visual";
+    case "VisualLine":
+    case "visualLine":
+      return "visualLine";
+    case "VisualBlock":
+    case "visualBlock":
+      return "visualBlock";
+    case "Replace":
+    case "replace":
+      return "replace";
+    default:
+      throw new Error(`unexpected fixture mode: ${mode}`);
+  }
 }
 
 function sanitizeTestCaseId(testCaseId: string): string {

@@ -24,24 +24,47 @@ export function deleteMotion(
   motion: Motion,
   count: number
 ): void {
+  deleteRange(editor, registers, registerName, (head) => motionRange(editor, head, motion, count));
+}
+
+export function deleteRange(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  rangeForHead: (head: ReturnType<typeof selectionHead>) => TextEdit["range"],
+  cursorForRange: (editor: VimEditorCapabilities, range: TextEdit["range"]) => ReturnType<typeof selectionHead> = cursorAfterDeletingRange
+): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   const copied: string[] = [];
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
-    const range = motionRange(editor, head, motion, count);
+    const range = rangeForHead(head);
     if (range.start.row === range.end.row && range.start.column === range.end.column) {
       selectionsAfter.push(charwiseSelection(head));
       continue;
     }
     copied.push(rangeText(editor, range));
     edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, range.start)));
+    selectionsAfter.push(charwiseSelection(cursorForRange(editor, range)));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "characterwise");
   editor.applyEdits(edits, selectionsAfter);
+}
+
+function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: TextEdit["range"]) {
+  if (range.start.row === range.end.row) {
+    const oldLineLength = editor.lineLength(range.start.row);
+    const deletedColumns = range.end.column - range.start.column;
+    const newLineLength = oldLineLength - deletedColumns;
+    return normalCursorPosition(editor, {
+      row: range.start.row,
+      column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
+    });
+  }
+  return normalCursorPosition(editor, range.start);
 }
 
 // Zed: `Motion::CurrentLine` flowing into `normal::delete::Vim::delete_motion`.
@@ -56,14 +79,15 @@ export function deleteLines(
   const copied: string[] = [];
 
   for (const selection of editor.getSelections()) {
-    const row = selectionHead(selection).row;
+    const head = selectionHead(selection);
+    const row = head.row;
     const range = lineRange(editor, row, count);
     copied.push(rangeText(editor, range));
     edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, row)));
+    selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, row, head.column, count)));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "linewise");
   editor.applyEdits(edits, selectionsAfter);
 }
 
@@ -80,16 +104,22 @@ export function deleteCharacters(
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
+    const oldLineLength = editor.lineLength(head.row);
     const end = {
       row: head.row,
-      column: Math.min(head.column + count, editor.lineLength(head.row)),
+      column: Math.min(head.column + count, oldLineLength),
     };
     const range = orderedRange(head, end);
+    const deletedColumns = Math.max(0, range.end.column - range.start.column);
+    const newLineLength = oldLineLength - deletedColumns;
     copied.push(rangeText(editor, range));
     edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, head)));
+    selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, {
+      row: head.row,
+      column: Math.min(head.column, Math.max(0, newLineLength - 1)),
+    })));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "characterwise");
   editor.applyEdits(edits, selectionsAfter);
 }

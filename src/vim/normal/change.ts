@@ -6,9 +6,9 @@
 //   switch to insert mode; Zed has richer recording, indentation, and selection fixups.
 
 import { VimEditorCapabilities } from "../editor.js";
-import { Motion } from "../motion.js";
+import { Motion, changeMotionRange } from "../motion.js";
 import { RegisterName, Registers } from "../registers.js";
-import { deleteLines, deleteMotion } from "./delete.js";
+import { deleteLines, deleteRange } from "./delete.js";
 
 // Zed: `normal::change::Vim::change_motion`.
 export function changeMotion(
@@ -18,7 +18,13 @@ export function changeMotion(
   motion: Motion,
   count: number
 ): void {
-  deleteMotion(editor, registers, registerName, motion, count);
+  deleteRange(
+    editor,
+    registers,
+    registerName,
+    (head) => changeMotionRange(editor, head, motion, count),
+    (_editor, range) => range.start
+  );
 }
 
 // Zed: `Motion::CurrentLine` flowing into `normal::change::Vim::change_motion`.

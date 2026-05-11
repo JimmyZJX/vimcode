@@ -8,24 +8,37 @@
 //   append, expression, and read-only registers are future work.
 
 export type RegisterName = '"' | LowercaseLetter;
+export type RegisterKind = "characterwise" | "linewise";
+
+export type RegisterContent = {
+  text: string;
+  kind: RegisterKind;
+};
 
 type LowercaseLetter =
   | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m"
   | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z";
 
+const emptyRegister: RegisterContent = { text: "", kind: "characterwise" };
+
 export class Registers {
-  private unnamed = "";
-  private readonly named = new Map<LowercaseLetter, string>();
+  private unnamed: RegisterContent = emptyRegister;
+  private readonly named = new Map<LowercaseLetter, RegisterContent>();
 
   read(name: RegisterName | undefined): string {
-    if (name === undefined || name === '"') return this.unnamed;
-    return this.named.get(name) ?? "";
+    return this.readContent(name).text;
   }
 
-  write(name: RegisterName | undefined, text: string): void {
-    this.unnamed = text;
+  readContent(name: RegisterName | undefined): RegisterContent {
+    if (name === undefined || name === '"') return this.unnamed;
+    return this.named.get(name) ?? emptyRegister;
+  }
+
+  write(name: RegisterName | undefined, text: string, kind: RegisterKind = "characterwise"): void {
+    const content = { text, kind };
+    this.unnamed = content;
     if (name !== undefined && name !== '"') {
-      this.named.set(name, text);
+      this.named.set(name, content);
     }
   }
 }

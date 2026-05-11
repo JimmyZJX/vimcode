@@ -25,7 +25,7 @@ export function yankMotion(
     copied.push(rangeText(editor, range));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "characterwise");
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
 }
 
@@ -42,6 +42,6 @@ export function yankLines(
     copied.push(rangeText(editor, lineRange(editor, selectionHead(selection).row, count)));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "linewise");
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
 }

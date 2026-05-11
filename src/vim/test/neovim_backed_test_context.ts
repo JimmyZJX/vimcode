@@ -6,48 +6,86 @@
 // - intentional differences: this is a synchronous Jest helper and fixtures are the
 //   source of truth for which tests exist.
 
-import { RegisterName } from "../registers.js";
-import { runKeys } from "../vim.js";
+import { parseRegisterName } from "../registers.js";
+import { Vim, runKeys } from "../vim.js";
+import { InMemoryVimEditor } from "../editor.js";
 import { editorFromMarkedText, markedTextFromEditor } from "./marked_text.js";
 import { EnabledNeovimFixture } from "./neovim_fixtures.js";
 
 export type SharedState = {
-  neovim: EnabledNeovimFixture["result"];
   local: {
     mode: string;
     markedText: string;
     registers: Record<string, string>;
   };
-  initialState: string;
-  keys: readonly string[];
 };
 
 export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
-  const { editor, vim } = editorFromMarkedText(fixture.initialState);
-  runKeys(vim, fixture.keys);
-  const localRegisters = Object.fromEntries(
-    Object.keys(fixture.result.registers ?? {}).map((register) => [
-      register,
-      vim.readRegister(register as RegisterName),
-    ])
-  );
+  let editor: InMemoryVimEditor | undefined;
+  let vim: Vim | undefined;
+  const registers: Record<string, string> = {};
+
+  for (const entry of fixture.entries) {
+    if ("Put" in entry) {
+      ({ editor, vim } = editorFromMarkedText(entry.Put.state));
+    } else if ("Key" in entry) {
+      const currentVim = requireVim(vim, fixture.testCaseId);
+      runKeys(currentVim, [keyForLocalVim(entry.Key)]);
+    } else if ("ReadRegister" in entry) {
+      const currentVim = requireVim(vim, fixture.testCaseId);
+      const registerName = parseRegisterName(entry.ReadRegister.name);
+      if (registerName === undefined) {
+        throw new Error(`unsupported register ${entry.ReadRegister.name} in ${fixture.testCaseId}`);
+      }
+      registers[entry.ReadRegister.name] = currentVim.readRegister(registerName);
+      expect(registers[entry.ReadRegister.name]).toBe(entry.ReadRegister.value);
+    } else {
+      const currentEditor = requireEditor(editor, fixture.testCaseId);
+      const currentVim = requireVim(vim, fixture.testCaseId);
+      expect({ mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor) }).toEqual({
+        mode: entry.Get.mode,
+        markedText: entry.Get.state,
+      });
+    }
+  }
+
+  const currentEditor = requireEditor(editor, fixture.testCaseId);
+  const currentVim = requireVim(vim, fixture.testCaseId);
   return {
-    neovim: fixture.result,
     local: {
-      mode: vim.mode.kind,
-      markedText: markedTextFromEditor(editor),
-      registers: localRegisters,
+      mode: currentVim.mode.kind,
+      markedText: markedTextFromEditor(currentEditor),
+      registers,
     },
-    initialState: fixture.initialState,
-    keys: fixture.keys,
   };
 }
 
 export function expectFixtureMatchesNeovim(fixture: EnabledNeovimFixture): void {
-  const shared = simulateFixture(fixture);
-  expect(shared.local).toEqual({
-    mode: shared.neovim.mode,
-    markedText: shared.neovim.markedText,
-    registers: shared.neovim.registers ?? {},
-  });
+  simulateFixture(fixture);
+}
+
+function requireEditor(editor: InMemoryVimEditor | undefined, testCaseId: string): InMemoryVimEditor {
+  if (editor === undefined) throw new Error(`fixture ${testCaseId} used editor state before Put`);
+  return editor;
+}
+
+function requireVim(vim: Vim | undefined, testCaseId: string): Vim {
+  if (vim === undefined) throw new Error(`fixture ${testCaseId} used Vim state before Put`);
+  return vim;
+}
+
+function keyForLocalVim(key: string): string {
+  switch (key) {
+    case "escape":
+      return "<escape>";
+    case "enter":
+      return "enter";
+    default:
+      break;
+  }
+
+  const shiftMatch = /^shift-(.)$/.exec(key);
+  if (shiftMatch !== null) return shiftMatch[1].toUpperCase();
+
+  return key;
 }
