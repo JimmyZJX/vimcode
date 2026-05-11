@@ -6,10 +6,17 @@
 
 import { VimEditorCapabilities, rangeText } from "../editor.js";
 import { Motion, lineRange, motionRange } from "../motion.js";
+import { RegisterName, Registers } from "../registers.js";
 import { charwiseSelection, selectionHead } from "../state.js";
 
 // Zed: `normal::yank::Vim::yank_motion`.
-export function yankMotion(editor: VimEditorCapabilities, motion: Motion, count: number): void {
+export function yankMotion(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  motion: Motion,
+  count: number
+): void {
   const copied: string[] = [];
 
   for (const selection of editor.getSelections()) {
@@ -18,18 +25,23 @@ export function yankMotion(editor: VimEditorCapabilities, motion: Motion, count:
     copied.push(rangeText(editor, range));
   }
 
-  if (copied.length > 0) editor.writeClipboard(copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
 }
 
 // Zed: `normal::Vim::yank_line` dispatches `Motion::CurrentLine` to `yank_motion`.
-export function yankLines(editor: VimEditorCapabilities, count: number): void {
+export function yankLines(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  count: number
+): void {
   const copied: string[] = [];
 
   for (const selection of editor.getSelections()) {
     copied.push(rangeText(editor, lineRange(editor, selectionHead(selection).row, count)));
   }
 
-  if (copied.length > 0) editor.writeClipboard(copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
 }

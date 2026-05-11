@@ -20,6 +20,17 @@ Done in this branch:
   - `src/vim/vim.test.ts` — first smoke tests through the capability interface.
 - Added provenance comments in source files that refer to Zed module/type/function names rather than brittle line numbers.
 - Updated `jest.config.js` so normal `npm test` works without `ts-jest-resolver`.
+- Added a first register slice:
+  - `src/vim/registers.ts` stores the unnamed register and lowercase named registers.
+  - Normal-mode `"{register}` prefixes are supported for yank/delete/change/paste in the current subset.
+  - Yank/delete/change update the selected register and the unnamed register; paste can read a selected named register.
+  - Neovim fixtures can now include `ReadRegister` entries for register comparison.
+- Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
+  - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text.
+  - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
+  - `src/vim/test/neovim_fixtures.ts` reads/writes `src/vim/test_data/*.json` fixtures using `Put` / `Key` / `Get` entries inspired by Zed's `NeovimData`.
+  - `src/vim/test/neovim_backed_test_context.ts` compares local editor state with Neovim/fixtures.
+  - `src/vim/neovim.test.ts` covers a small supported subset against recorded Neovim fixtures.
 - Current validation:
   - `npm run build -- --noEmit` passes.
   - `npm test -- --runInBand` passes.
@@ -37,6 +48,7 @@ Implemented first-slice behavior:
 - insert commands: `i`, `a`, `I`, `A`, `o`, `O`
 - `x`
 - very basic `p` / `P`
+- unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 
 ## Reference points
@@ -185,7 +197,7 @@ Near-term:
    - clipboard
    - search
    - editor commands
-4. Add basic registers as first-class state instead of using only the editor clipboard string.
+4. Expand register fidelity beyond the first lowercase-named-register slice: system clipboard, black-hole, append, numbered, small-delete, and read-only registers.
 5. Add provenance comments to every newly translated type/function using Zed module/function names.
 6. Add tests for multi-selection behavior before implementing more operators, so new code does not regress into single-selection assumptions.
 
@@ -213,6 +225,12 @@ Longer-term:
 
 Testing should stay centered on the editor capability interface.
 
+Zed's approach
+
+Zed's `test::neovim_backed_test_context::NeovimBackedTestContext` keeps a Zed editor and a Neovim instance in sync. Tests call helpers such as `set_shared_state`, `simulate_shared_keystrokes`, `simulate`, `shared_state`, and `shared_clipboard`. The backing `test::neovim_connection::NeovimConnection` can either talk to live embedded Neovim or replay recorded JSON test data. State is represented as marked text, with `ˇ` for the cursor and visual markers for selections.
+
+Our first migration step is intentionally smaller: Jest replays JSON-line fixtures from `src/vim/test_data/*.json` by default. Set `VIMCODE_RECORD_NEOVIM=1` while running the Neovim-backed tests to regenerate fixtures from short-lived `nvim --headless` processes. The current helper supports single-cursor `ˇ` marked text and explicit `ReadRegister` fixture entries. This is enough to catch basic normal/insert/operator/register drift before adding more features. Later steps should add visual markers and multi-selection support.
+
 Test layers:
 
 1. Core unit tests with in-memory editor.
@@ -224,10 +242,12 @@ Test layers:
    - Prefer behavior-level translation over implementation-level translation.
 3. Neovim-backed comparison tests.
    - Borrow the idea from Zed's `test::neovim_backed_test_context::NeovimBackedTestContext`.
+   - Replay `src/vim/test_data/*.json` by default so CI does not need live Neovim.
+   - Regenerate fixtures with `VIMCODE_RECORD_NEOVIM=1 npx jest src/vim/neovim.test.ts --runInBand`.
    - Initialize Neovim and the fake editor with the same text/selections where possible.
    - Send the same keystrokes.
    - Compare buffer text, mode, cursor/selections, and registers when applicable.
-   - Store fixtures/recordings if live Neovim is unavailable in CI.
+   - It is fine to migrate tests before implementing the feature. Use `it.skip` and put `// DISABLED: <reason>` immediately above the skipped test or skipped block. The reason should say what is missing or intentionally divergent, not just "not implemented".
 4. VSCode adapter integration tests/manual test scripts.
    - Validate patched VSCode key interception.
    - Validate undo/redo grouping.

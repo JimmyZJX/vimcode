@@ -7,14 +7,26 @@
 
 import { VimEditorCapabilities } from "../editor.js";
 import { Motion } from "../motion.js";
+import { RegisterName, Registers } from "../registers.js";
 import { deleteLines, deleteMotion } from "./delete.js";
 
 // Zed: `normal::change::Vim::change_motion`.
-export function changeMotion(editor: VimEditorCapabilities, motion: Motion, count: number): void {
-  deleteMotion(editor, motion, count);
+export function changeMotion(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  motion: Motion,
+  count: number
+): void {
+  deleteMotion(editor, registers, registerName, motion, count);
 }
 
 // Zed: `Motion::CurrentLine` flowing into `normal::change::Vim::change_motion`.
-export function changeLines(editor: VimEditorCapabilities, count: number): void {
-  deleteLines(editor, count);
+export function changeLines(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  count: number
+): void {
+  deleteLines(editor, registers, registerName, count);
 }

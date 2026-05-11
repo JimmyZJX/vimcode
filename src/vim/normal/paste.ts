@@ -7,11 +7,17 @@
 
 import { VimEditorCapabilities, normalCursorPosition } from "../editor.js";
 import { positionAfterInsertedText } from "../insert.js";
+import { RegisterName, Registers } from "../registers.js";
 import { TextEdit, VimSelection, charwiseSelection, selectionHead } from "../state.js";
 
 // Zed: `normal::paste::Vim::paste`.
-export function paste(editor: VimEditorCapabilities, { before }: { before: boolean }): void {
-  const text = editor.readClipboard();
+export function paste(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  { before }: { before: boolean }
+): void {
+  const text = registers.read(registerName);
   if (text.length === 0) return;
 
   const edits: TextEdit[] = [];

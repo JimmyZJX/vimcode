@@ -7,6 +7,7 @@
 
 import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
 import { Motion, lineRange, linewiseCursorAfterDelete, motionRange } from "../motion.js";
+import { RegisterName, Registers } from "../registers.js";
 import {
   TextEdit,
   VimSelection,
@@ -16,7 +17,13 @@ import {
 } from "../state.js";
 
 // Zed: `normal::delete::Vim::delete_motion`.
-export function deleteMotion(editor: VimEditorCapabilities, motion: Motion, count: number): void {
+export function deleteMotion(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  motion: Motion,
+  count: number
+): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   const copied: string[] = [];
@@ -33,12 +40,17 @@ export function deleteMotion(editor: VimEditorCapabilities, motion: Motion, coun
     selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, range.start)));
   }
 
-  if (copied.length > 0) editor.writeClipboard(copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
   editor.applyEdits(edits, selectionsAfter);
 }
 
 // Zed: `Motion::CurrentLine` flowing into `normal::delete::Vim::delete_motion`.
-export function deleteLines(editor: VimEditorCapabilities, count: number): void {
+export function deleteLines(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  count: number
+): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   const copied: string[] = [];
@@ -51,12 +63,17 @@ export function deleteLines(editor: VimEditorCapabilities, count: number): void 
     selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, row)));
   }
 
-  if (copied.length > 0) editor.writeClipboard(copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
   editor.applyEdits(edits, selectionsAfter);
 }
 
 // Zed: the `normal::DeleteRight` action calls `delete_motion(Motion::Right, ...)`.
-export function deleteCharacters(editor: VimEditorCapabilities, count: number): void {
+export function deleteCharacters(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  count: number
+): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   const copied: string[] = [];
@@ -73,6 +90,6 @@ export function deleteCharacters(editor: VimEditorCapabilities, count: number): 
     selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, head)));
   }
 
-  if (copied.length > 0) editor.writeClipboard(copied.join("\n"));
+  if (copied.length > 0) registers.write(registerName, copied.join("\n"));
   editor.applyEdits(edits, selectionsAfter);
 }

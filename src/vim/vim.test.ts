@@ -35,7 +35,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["d", "w"]);
 
     expect(editor.getText()).toBe("two three");
-    expect(editor.readClipboard()).toBe("one ");
+    expect(vim.readRegister(undefined)).toBe("one ");
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
@@ -46,7 +46,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["2", "d", "w"]);
 
     expect(editor.getText()).toBe("three four");
-    expect(editor.readClipboard()).toBe("one two ");
+    expect(vim.readRegister(undefined)).toBe("one two ");
   });
 
   it("applies counts after an operator", () => {
@@ -56,7 +56,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["d", "2", "w"]);
 
     expect(editor.getText()).toBe("three four");
-    expect(editor.readClipboard()).toBe("one two ");
+    expect(vim.readRegister(undefined)).toBe("one two ");
   });
 
   it("deletes whole lines", () => {
@@ -66,7 +66,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["2", "d", "d"]);
 
     expect(editor.getText()).toBe("gamma");
-    expect(editor.readClipboard()).toBe("alpha\nbeta\n");
+    expect(vim.readRegister(undefined)).toBe("alpha\nbeta\n");
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
@@ -88,8 +88,28 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["y", "w"]);
 
     expect(editor.getText()).toBe("one two");
-    expect(editor.readClipboard()).toBe("one ");
+    expect(vim.readRegister(undefined)).toBe("one ");
     expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("yanks into named registers while also updating the unnamed register", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["\"", "a", "y", "w"]);
+
+    expect(editor.getText()).toBe("one two");
+    expect(vim.readRegister("a")).toBe("one ");
+    expect(vim.readRegister(undefined)).toBe("one ");
+  });
+
+  it("pastes from a selected named register", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["\"", "a", "y", "w", "G", "$", "\"", "a", "p"]);
+
+    expect(editor.getText()).toBe("one twoone ");
   });
 
   it("opens lines above and below using normal VSCode-like edit transactions", () => {

@@ -8,6 +8,7 @@
 import { VimEditorCapabilities } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
 import { NormalMode } from "./normal.js";
+import { RegisterName, Registers } from "./registers.js";
 import { KeyResult, VimMode } from "./state.js";
 
 // Zed: `vim::Vim`. This class is the local main state holder; GPUI
@@ -15,11 +16,12 @@ import { KeyResult, VimMode } from "./state.js";
 // `VimEditorCapabilities`.
 export class Vim {
   private modeState: VimMode = { dialect: "vim", kind: "normal" };
+  private readonly registers = new Registers();
   private readonly normalMode: NormalMode;
 
   constructor(private readonly editor: VimEditorCapabilities) {
     this.editor.setCursorStyle("block");
-    this.normalMode = new NormalMode(editor);
+    this.normalMode = new NormalMode(editor, this.registers);
   }
 
   get mode(): VimMode {
@@ -29,6 +31,10 @@ export class Vim {
   get modeName(): string {
     const suffix = this.normalMode.isPending() ? "+" : "";
     return `${this.modeState.dialect}:${this.modeState.kind}${suffix}`;
+  }
+
+  readRegister(name: RegisterName | undefined): string {
+    return this.registers.read(name);
   }
 
   // Zed: key dispatch normally arrives through GPUI actions registered by

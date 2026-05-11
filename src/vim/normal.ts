@@ -12,6 +12,7 @@ import { changeLines, changeMotion } from "./normal/change.js";
 import { deleteCharacters, deleteLines, deleteMotion } from "./normal/delete.js";
 import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion } from "./normal/yank.js";
+import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { KeyResult, Operator, charwiseSelection, selectionHead } from "./state.js";
 
 type PendingOperator = {
@@ -19,7 +20,7 @@ type PendingOperator = {
   count: number;
 };
 
-type PendingPrefix = "g";
+type PendingPrefix = "g" | "register";
 
 export type NormalKeyResult = {
   keyResult: KeyResult;
@@ -38,28 +39,45 @@ export class NormalMode {
   private countBuffer = "";
   private pendingOperator: PendingOperator | undefined;
   private pendingPrefix: PendingPrefix | undefined;
+  private selectedRegister: RegisterName | undefined;
 
-  constructor(private readonly editor: VimEditorCapabilities) {}
+  constructor(
+    private readonly editor: VimEditorCapabilities,
+    private readonly registers: Registers
+  ) {}
 
   isPending(): boolean {
-    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined;
+    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.selectedRegister !== undefined;
   }
 
   clearPending(): void {
     this.countBuffer = "";
     this.pendingOperator = undefined;
     this.pendingPrefix = undefined;
+    this.selectedRegister = undefined;
   }
 
   // Zed: assets/keymaps/vim.json plus `vim_operator` / `vim_mode` contexts.
   // This first slice hard-codes the tiny keymap until we introduce a Zed-like
   // declarative keymap file.
   onKey(key: string): NormalKeyResult {
+    if (this.pendingPrefix === "register") {
+      this.pendingPrefix = undefined;
+      const registerName = parseRegisterName(key);
+      if (registerName === undefined) {
+        this.clearPending();
+        return notHandled();
+      }
+      this.selectedRegister = registerName;
+      return handled();
+    }
+
     if (this.pendingPrefix === "g") {
       this.pendingPrefix = undefined;
       if (key === "g") {
         const count = this.takeCount(1);
         this.moveToLine(count - 1);
+        this.selectedRegister = undefined;
         return handled();
       }
       this.clearPending();
@@ -76,6 +94,11 @@ export class NormalMode {
       return handled();
     }
 
+    if (key === '"') {
+      this.pendingPrefix = "register";
+      return handled();
+    }
+
     const motion = motionForKey(key);
     if (motion !== undefined) {
       return handled({ enterInsert: this.handleMotion(motion) });
@@ -84,6 +107,7 @@ export class NormalMode {
     if (key === "G") {
       const maybeLine = this.takeCount(undefined);
       this.moveToLine(maybeLine === undefined ? this.editor.lineCount() - 1 : maybeLine - 1);
+      this.selectedRegister = undefined;
       return handled();
     }
 
@@ -99,34 +123,40 @@ export class NormalMode {
 
     switch (key) {
       case "i":
+        this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => pos);
         return handled({ enterInsert: true });
       case "a":
+        this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => ({
           row: pos.row,
           column: Math.min(pos.column + 1, this.editor.lineLength(pos.row)),
         }));
         return handled({ enterInsert: true });
       case "I":
+        this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => firstNonWhitespace(this.editor.line(pos.row), pos.row));
         return handled({ enterInsert: true });
       case "A":
+        this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => ({ row: pos.row, column: this.editor.lineLength(pos.row) }));
         return handled({ enterInsert: true });
       case "o":
+        this.selectedRegister = undefined;
         openLine(this.editor, { above: false });
         return handled({ enterInsert: true });
       case "O":
+        this.selectedRegister = undefined;
         openLine(this.editor, { above: true });
         return handled({ enterInsert: true });
       case "x":
-        deleteCharacters(this.editor, this.takeCount(1));
+        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
         return handled();
       case "p":
-        paste(this.editor, { before: false });
+        paste(this.editor, this.registers, this.takeSelectedRegister(), { before: false });
         return handled();
       case "P":
-        paste(this.editor, { before: true });
+        paste(this.editor, this.registers, this.takeSelectedRegister(), { before: true });
         return handled();
       default:
         this.clearPending();
@@ -143,6 +173,7 @@ export class NormalMode {
 
     if (pending === undefined) {
       this.moveSelections(motion, postCount);
+      this.selectedRegister = undefined;
       return false;
     } else {
       return this.applyOperatorToMotion(pending.operator, motion, pending.count * postCount);
@@ -169,15 +200,16 @@ export class NormalMode {
   // `normal::change::Vim::change_motion`, `normal::delete::Vim::delete_motion`,
   // or `normal::yank::Vim::yank_motion`.
   private applyOperatorToMotion(operator: Operator, motion: Motion, count: number): boolean {
+    const registerName = this.takeSelectedRegister();
     switch (operator) {
       case "change":
-        changeMotion(this.editor, motion, count);
+        changeMotion(this.editor, this.registers, registerName, motion, count);
         return true;
       case "delete":
-        deleteMotion(this.editor, motion, count);
+        deleteMotion(this.editor, this.registers, registerName, motion, count);
         return false;
       case "yank":
-        yankMotion(this.editor, motion, count);
+        yankMotion(this.editor, this.registers, registerName, motion, count);
         return false;
     }
   }
@@ -189,15 +221,16 @@ export class NormalMode {
     const count = pendingCount * postCount;
     this.pendingOperator = undefined;
 
+    const registerName = this.takeSelectedRegister();
     switch (operator) {
       case "change":
-        changeLines(this.editor, count);
+        changeLines(this.editor, this.registers, registerName, count);
         return true;
       case "delete":
-        deleteLines(this.editor, count);
+        deleteLines(this.editor, this.registers, registerName, count);
         return false;
       case "yank":
-        yankLines(this.editor, count);
+        yankLines(this.editor, this.registers, registerName, count);
         return false;
     }
   }
@@ -216,6 +249,12 @@ export class NormalMode {
   private isCountKey(key: string): boolean {
     if (!/^\d$/.test(key)) return false;
     return key !== "0" || this.countBuffer.length > 0 || this.pendingOperator !== undefined;
+  }
+
+  private takeSelectedRegister(): RegisterName | undefined {
+    const registerName = this.selectedRegister;
+    this.selectedRegister = undefined;
+    return registerName;
   }
 }
 
