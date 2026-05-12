@@ -1,6 +1,6 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
-// - sources: crates/vim/src/vim.rs, crates/vim/src/normal.rs, crates/vim/src/motion.rs
+// - source: `vim::Vim`
 // - translated concepts: main Vim state holder and high-level mode dispatch
 // - intentional differences: GPUI action registration is replaced by direct key dispatch
 //   from the VSCode patch / tests.
@@ -10,6 +10,7 @@ import { enterNormalMode, insertText } from "./insert.js";
 import { NormalMode } from "./normal.js";
 import { RegisterName, Registers } from "./registers.js";
 import { KeyResult, Operator, VimMode } from "./state.js";
+import { VisualMode } from "./visual.js";
 
 export type VimStatus = {
   mode: VimMode["kind"];
@@ -26,10 +27,12 @@ export class Vim {
   private modeState: VimMode = { dialect: "vim", kind: "normal" };
   private readonly registers = new Registers();
   private readonly normalMode: NormalMode;
+  private readonly visualMode: VisualMode;
 
   constructor(private readonly editor: VimEditorCapabilities) {
     this.editor.setCursorStyle("block");
     this.normalMode = new NormalMode(editor, this.registers);
+    this.visualMode = new VisualMode(editor, this.registers);
   }
 
   get mode(): VimMode {
@@ -63,7 +66,10 @@ export class Vim {
   onKey(key: string): KeyResult {
     if (this.isEscape(key)) {
       this.normalMode.clearPending();
-      if (this.modeState.kind !== "normal") {
+      if (this.modeState.kind === "visual") {
+        this.visualMode.exit();
+        this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+      } else if (this.modeState.kind !== "normal") {
         enterNormalMode(this.editor, { moveLeft: this.modeState.kind === "insert" });
         this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
       }
@@ -78,8 +84,22 @@ export class Vim {
       return "not-handled";
     }
 
+    if (this.modeState.kind === "visual") {
+      const result = this.visualMode.onKey(key);
+      if (result.exitVisual) {
+        this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+      }
+      return result.keyResult;
+    }
+
     if (this.modeState.kind !== "normal") {
       return "not-handled";
+    }
+
+    if (key === "v") {
+      this.visualMode.enter();
+      this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
+      return "handled";
     }
 
     const normalResult = this.normalMode.onKey(key);

@@ -32,6 +32,42 @@ export type Motion =
   | { type: "previousWordStart"; bigWord: boolean };
 import { VimEditorCapabilities, clipPosition, normalCursorPosition } from "./editor.js";
 
+// Zed: `motion::register` maps key actions to `Motion` variants once, while
+// `vim::Vim::motion` dispatches those motions by mode. This is the local
+// key-to-motion subset used by both normal and visual modes.
+export function motionForKey(key: string): Motion | undefined {
+  switch (key) {
+    case "h":
+      return { type: "left" };
+    case "l":
+      return { type: "right" };
+    case "k":
+      return { type: "up" };
+    case "j":
+      return { type: "down" };
+    case "0":
+      return { type: "startOfLine" };
+    case "^":
+      return { type: "firstNonWhitespace" };
+    case "$":
+      return { type: "endOfLine" };
+    case "w":
+      return { type: "nextWordStart", bigWord: false };
+    case "W":
+      return { type: "nextWordStart", bigWord: true };
+    case "e":
+      return { type: "nextWordEnd", bigWord: false };
+    case "E":
+      return { type: "nextWordEnd", bigWord: true };
+    case "b":
+      return { type: "previousWordStart", bigWord: false };
+    case "B":
+      return { type: "previousWordStart", bigWord: true };
+    default:
+      return undefined;
+  }
+}
+
 function isWhitespace(char: string): boolean {
   return /\s/.test(char);
 }

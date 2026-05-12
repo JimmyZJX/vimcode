@@ -16,6 +16,7 @@ Done in this branch:
   - `src/vim/normal.ts` — normal-mode key dispatch, corresponding to Zed `normal` module plus `assets/keymaps/vim.json`.
   - `src/vim/normal/{change,delete,yank,paste}.ts` — first operator implementations, corresponding to Zed `normal/*` modules.
   - `src/vim/object.ts` — first text-object support, corresponding to Zed `object::Object`.
+  - `src/vim/visual.ts` — first charwise visual-mode support, corresponding to Zed `visual` module.
   - `src/vim/insert.ts` — insert-mode text application and normal/insert cursor transitions, corresponding to Zed `insert` plus insert-related normal commands.
   - `src/vim/editor.ts` — local editor capability interface plus in-memory test adapter.
   - `src/vim/vim.test.ts` — first smoke tests through the capability interface.
@@ -28,8 +29,8 @@ Done in this branch:
   - Neovim fixtures can now include `ReadRegister` entries for register comparison.
 - Migrated the first batch of Zed normal/motion fixtures into `src/vim/test_data`:
   - Enabled passing Zed normal/motion fixtures now include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
-  - Enabled first text-object/search fixtures: `changes_inner_word_text_object` and `searches_forward_and_repeats_the_match`.
-  - Imported-but-disabled fixtures now document the remaining higher-level visual-mode gap.
+  - Enabled first text-object/search/visual fixtures: `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, and `deletes_a_visual_word_selection`.
+  - The currently migrated fixture set has no disabled files; broader visual marker fixtures still need to be imported and migrated.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
@@ -47,6 +48,7 @@ Implemented first-slice behavior:
 - counts
 - pending operators
 - first text-object grammar: operator + `i`/`a` + `w`/`W`
+- first charwise visual mode slice: `v`, visual motions, and visual `d`/`x`
 - motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`
 - operators: `d`, `c`, `y`
 - line operators: `dd`, `cc`, `yy`
@@ -120,7 +122,25 @@ Key grammar
 
 The core should stay testable without a real VSCode instance. It should talk to an editor capability interface, backed in tests by an in-memory/fake editor and in production by a VSCode adapter.
 
-## Source provenance policy
+## Source provenance and layout policy
+
+Keep the local `src/vim` structure aligned with Zed's `crates/vim/src` structure as much as practical. When adding or moving behavior, first ask "where does Zed put this?" and prefer the corresponding local module name.
+
+Current alignment:
+
+| Local path | Zed reference | Notes |
+|---|---|---|
+| `src/vim/vim.ts` | `vim.rs`, `vim::Vim` | High-level mode/state coordinator only. Avoid moving normal/visual/motion/object details back into this file. |
+| `src/vim/state.ts` | `state.rs` | Modes, operators, selections, and shared state vocabulary. |
+| `src/vim/motion.ts` | `motion.rs` | `Motion`, key-to-motion mapping, point movement, and motion ranges. Motions should be registered/mapped here once and shared by modes. |
+| `src/vim/normal.ts` | `normal.rs` | Normal-mode dispatch and pending operator grammar. |
+| `src/vim/normal/*` | `normal/*` | Operator/action implementations such as change/delete/yank/paste. |
+| `src/vim/visual.ts` | `visual.rs` | Visual-mode state and visual interpretation of motions/actions. Do not duplicate motion key maps here. |
+| `src/vim/object.ts` | `object.rs` | Text objects. |
+| `src/vim/insert.ts` | `insert.rs` plus insert-related normal commands | Insert-mode behavior and insert command helpers. |
+| `src/vim/registers.ts` | `state::Register` / `VimGlobals.registers` | Local register model until state grows closer to Zed. |
+| `src/vim/test/*` | `test/*` | Neovim-backed harness and fixture machinery. |
+| `src/vim/test_data/*` | `test_data/*` | Fixture-driven compatibility backlog. |
 
 When translating behavior from Zed, add source comments near the local type/function. Prefer stable API/module references over line numbers.
 
@@ -191,11 +211,10 @@ These may still be implemented step by step, but their state model and adapter r
 Near-term:
 
 1. Continue splitting Zed-like modules as behavior grows:
-   - `visual.ts` for visual/visual-line/visual-block behavior.
-   - `object.ts` for text objects.
    - `surrounds.ts` for surround operations.
+   - `replace.ts`, `command.ts`, `search.ts`/`normal/search.ts`, `normal/repeat.ts`, `normal/mark.ts`, etc. as those features are migrated.
    - additional `normal/*` modules as normal-mode behavior expands.
-2. Replace the temporary hard-coded `motionForKey` / operator key mapping with a declarative keymap inspired by `assets/keymaps/vim.json`.
+2. Replace the remaining temporary hard-coded key grammar with a declarative keymap inspired by `assets/keymaps/vim.json`; keep the key-to-motion mapping centralized in `motion.ts`.
 3. Expand the editor capability interface into grouped capabilities:
    - document/model reads
    - selections

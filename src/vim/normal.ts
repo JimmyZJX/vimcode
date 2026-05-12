@@ -7,7 +7,7 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
-import { Motion, applyMotion } from "./motion.js";
+import { Motion, applyMotion, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { changeLines, changeMotion, changeRange } from "./normal/change.js";
 import { deleteCharacters, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
@@ -389,42 +389,6 @@ export class NormalMode {
     const registerName = this.selectedRegister;
     this.selectedRegister = undefined;
     return registerName;
-  }
-}
-
-// Zed: assets/keymaps/vim.json maps keys to action structs, and
-// `motion::register` registers those actions to concrete `Motion` variants.
-// This local mapping is the temporary minimal equivalent.
-function motionForKey(key: string): Motion | undefined {
-  switch (key) {
-    case "h":
-      return { type: "left" };
-    case "l":
-      return { type: "right" };
-    case "k":
-      return { type: "up" };
-    case "j":
-      return { type: "down" };
-    case "0":
-      return { type: "startOfLine" };
-    case "^":
-      return { type: "firstNonWhitespace" };
-    case "$":
-      return { type: "endOfLine" };
-    case "w":
-      return { type: "nextWordStart", bigWord: false };
-    case "W":
-      return { type: "nextWordStart", bigWord: true };
-    case "e":
-      return { type: "nextWordEnd", bigWord: false };
-    case "E":
-      return { type: "nextWordEnd", bigWord: true };
-    case "b":
-      return { type: "previousWordStart", bigWord: false };
-    case "B":
-      return { type: "previousWordStart", bigWord: true };
-    default:
-      return undefined;
   }
 }
 

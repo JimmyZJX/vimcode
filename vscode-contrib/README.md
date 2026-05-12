@@ -22,6 +22,7 @@ src/vs/editor/contrib/vim/
     registers.ts
     state.ts
     vim.ts
+    visual.ts
     normal/
       change.ts
       delete.ts
