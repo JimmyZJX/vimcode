@@ -239,6 +239,10 @@ export function motionRange(
       return orderedRange(start, wordEnd);
     }
   }
+  if (motion.type === "nextWordEnd") {
+    const rangeEnd = nextPosition(editor, end) ?? end;
+    return orderedRange(start, rangeEnd);
+  }
   return orderedRange(start, end);
 }
 

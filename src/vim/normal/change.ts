@@ -8,6 +8,7 @@
 import { VimEditorCapabilities } from "../editor.js";
 import { Motion, changeMotionRange } from "../motion.js";
 import { RegisterName, Registers } from "../registers.js";
+import { TextRange, selectionHead } from "../state.js";
 import { deleteLines, deleteRange } from "./delete.js";
 
 // Zed: `normal::change::Vim::change_motion`.
@@ -18,11 +19,20 @@ export function changeMotion(
   motion: Motion,
   count: number
 ): void {
+  changeRange(editor, registers, registerName, (head) => changeMotionRange(editor, head, motion, count));
+}
+
+export function changeRange(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  rangeForHead: (head: ReturnType<typeof selectionHead>) => TextRange
+): void {
   deleteRange(
     editor,
     registers,
     registerName,
-    (head) => changeMotionRange(editor, head, motion, count),
+    rangeForHead,
     (_editor, range) => range.start
   );
 }

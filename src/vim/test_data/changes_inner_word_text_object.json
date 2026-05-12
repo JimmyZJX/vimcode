@@ -1,7 +1,7 @@
-// DISABLED: text-object grammar and object::Object translation have not been added, so ciw is not parsed after a pending change operator.
 {"Put":{"state":"one ˇtwo three"}}
 {"Key":"c"}
 {"Key":"i"}
 {"Key":"w"}
 {"Key":"X"}
 {"Key":"<escape>"}
+{"Get":{"state":"one ˇX three","mode":"normal"}}

@@ -1,4 +1,3 @@
-// DISABLED: search UI/state integration and / key handling are not implemented.
 {"Put":{"state":"ˇone\ntwo\none"}}
 {"Key":"/"}
 {"Key":"o"}
@@ -6,3 +5,4 @@
 {"Key":"e"}
 {"Key":"enter"}
 {"Key":"n"}
+{"Get":{"state":"ˇone\ntwo\none","mode":"normal"}}

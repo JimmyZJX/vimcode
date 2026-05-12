@@ -112,6 +112,40 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("one twoone ");
   });
 
+  it("shows unfinished chords using Vim keys rather than semantic names", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d"]);
+    expect(vim.status.chord).toBe("d");
+    expect(vim.status.text).toBe("NORMAL d");
+
+    runKeys(vim, ["i"]);
+    expect(vim.status.chord).toBe("di");
+    expect(vim.status.text).toBe("NORMAL di");
+  });
+
+  it("ignores invalid text objects without entering insert mode", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d", "i", "c"]);
+
+    expect(editor.getText()).toBe("one two");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("ignores unsupported normal-mode keys instead of inserting them", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["s"]);
+
+    expect(editor.getText()).toBe("one two");
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
   it("opens lines above and below using normal VSCode-like edit transactions", () => {
     const editor = new InMemoryVimEditor("alpha\nbeta");
     const vim = new Vim(editor);

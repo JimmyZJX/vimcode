@@ -7,7 +7,7 @@
 import { VimEditorCapabilities, rangeText } from "../editor.js";
 import { Motion, lineRange, motionRange } from "../motion.js";
 import { RegisterName, Registers } from "../registers.js";
-import { charwiseSelection, selectionHead } from "../state.js";
+import { TextRange, charwiseSelection, selectionHead } from "../state.js";
 
 // Zed: `normal::yank::Vim::yank_motion`.
 export function yankMotion(
@@ -17,12 +17,19 @@ export function yankMotion(
   motion: Motion,
   count: number
 ): void {
+  yankRange(editor, registers, registerName, (head) => motionRange(editor, head, motion, count));
+}
+
+export function yankRange(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  rangeForHead: (head: ReturnType<typeof selectionHead>) => TextRange
+): void {
   const copied: string[] = [];
 
   for (const selection of editor.getSelections()) {
-    const head = selectionHead(selection);
-    const range = motionRange(editor, head, motion, count);
-    copied.push(rangeText(editor, range));
+    copied.push(rangeText(editor, rangeForHead(selectionHead(selection))));
   }
 
   if (copied.length > 0) registers.write(registerName, copied.join("\n"), "characterwise");

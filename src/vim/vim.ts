@@ -9,7 +9,15 @@ import { VimEditorCapabilities } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
 import { NormalMode } from "./normal.js";
 import { RegisterName, Registers } from "./registers.js";
-import { KeyResult, VimMode } from "./state.js";
+import { KeyResult, Operator, VimMode } from "./state.js";
+
+export type VimStatus = {
+  mode: VimMode["kind"];
+  pending: boolean;
+  operator: Operator | undefined;
+  chord: string;
+  text: string;
+};
 
 // Zed: `vim::Vim`. This class is the local main state holder; GPUI
 // entity/window fields are intentionally replaced by the injected
@@ -31,6 +39,18 @@ export class Vim {
   get modeName(): string {
     const suffix = this.normalMode.isPending() ? "+" : "";
     return `${this.modeState.dialect}:${this.modeState.kind}${suffix}`;
+  }
+
+  get status(): VimStatus {
+    const chord = this.modeState.kind === "normal" ? this.normalMode.pendingChord() : "";
+    const mode = this.modeState.kind;
+    return {
+      mode,
+      pending: chord.length > 0,
+      operator: this.modeState.kind === "normal" ? this.normalMode.pendingOperatorName() : undefined,
+      chord,
+      text: chord.length > 0 ? `${mode.toUpperCase()} ${chord}` : mode.toUpperCase(),
+    };
   }
 
   readRegister(name: RegisterName | undefined): string {

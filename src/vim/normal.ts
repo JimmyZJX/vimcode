@@ -8,10 +8,11 @@
 import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
 import { Motion, applyMotion } from "./motion.js";
-import { changeLines, changeMotion } from "./normal/change.js";
-import { deleteCharacters, deleteLines, deleteMotion } from "./normal/delete.js";
+import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
+import { changeLines, changeMotion, changeRange } from "./normal/change.js";
+import { deleteCharacters, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
 import { paste } from "./normal/paste.js";
-import { yankLines, yankMotion } from "./normal/yank.js";
+import { yankLines, yankMotion, yankRange } from "./normal/yank.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { KeyResult, Operator, charwiseSelection, selectionHead } from "./state.js";
 
@@ -21,6 +22,7 @@ type PendingOperator = {
 };
 
 type PendingPrefix = "g" | "register";
+type PendingTextObject = { around: boolean };
 
 export type NormalKeyResult = {
   keyResult: KeyResult;
@@ -31,14 +33,13 @@ function handled({ enterInsert = false }: { enterInsert?: boolean } = {}): Norma
   return { keyResult: "handled", enterInsert };
 }
 
-function notHandled(): NormalKeyResult {
-  return { keyResult: "not-handled", enterInsert: false };
-}
-
 export class NormalMode {
   private countBuffer = "";
   private pendingOperator: PendingOperator | undefined;
   private pendingPrefix: PendingPrefix | undefined;
+  private pendingTextObject: PendingTextObject | undefined;
+  private pendingSearch: string | undefined;
+  private lastSearch: string | undefined;
   private selectedRegister: RegisterName | undefined;
 
   constructor(
@@ -47,13 +48,31 @@ export class NormalMode {
   ) {}
 
   isPending(): boolean {
-    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.selectedRegister !== undefined;
+    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingSearch !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
+  }
+
+  pendingOperatorName(): Operator | undefined {
+    return this.pendingOperator?.operator;
+  }
+
+  pendingChord(): string {
+    if (this.pendingSearch !== undefined) return `/${this.pendingSearch}`;
+    const count = this.countBuffer;
+    const operator = this.pendingOperator === undefined ? "" : keyForOperator(this.pendingOperator.operator);
+    if (this.pendingTextObject !== undefined) return `${count}${operator}${this.pendingTextObject.around ? "a" : "i"}`;
+    if (this.pendingPrefix === "register") return `${count}${operator}\"`;
+    if (this.pendingPrefix === "g") return `${count}g`;
+    if (this.selectedRegister !== undefined) return `${count}\"${this.selectedRegister}`;
+    if (operator !== "") return `${count}${operator}`;
+    return count;
   }
 
   clearPending(): void {
     this.countBuffer = "";
     this.pendingOperator = undefined;
     this.pendingPrefix = undefined;
+    this.pendingTextObject = undefined;
+    this.pendingSearch = undefined;
     this.selectedRegister = undefined;
   }
 
@@ -61,12 +80,26 @@ export class NormalMode {
   // This first slice hard-codes the tiny keymap until we introduce a Zed-like
   // declarative keymap file.
   onKey(key: string): NormalKeyResult {
+    if (this.pendingSearch !== undefined) {
+      this.handlePendingSearchKey(key);
+      return handled();
+    }
+
+    if (this.pendingTextObject !== undefined) {
+      const object = textObjectForKey(key);
+      if (object === undefined) {
+        this.clearPending();
+        return handled();
+      }
+      return handled({ enterInsert: this.handleTextObject(object, this.pendingTextObject.around) });
+    }
+
     if (this.pendingPrefix === "register") {
       this.pendingPrefix = undefined;
       const registerName = parseRegisterName(key);
       if (registerName === undefined) {
         this.clearPending();
-        return notHandled();
+        return handled();
       }
       this.selectedRegister = registerName;
       return handled();
@@ -81,7 +114,7 @@ export class NormalMode {
         return handled();
       }
       this.clearPending();
-      return notHandled();
+      return handled();
     }
 
     if (this.isCountKey(key)) {
@@ -96,6 +129,21 @@ export class NormalMode {
 
     if (key === '"') {
       this.pendingPrefix = "register";
+      return handled();
+    }
+
+    if (key === "/") {
+      this.pendingSearch = "";
+      return handled();
+    }
+
+    if (key === "n") {
+      this.repeatSearch();
+      return handled();
+    }
+
+    if (this.pendingOperator !== undefined && (key === "i" || key === "a")) {
+      this.pendingTextObject = { around: key === "a" };
       return handled();
     }
 
@@ -172,7 +220,7 @@ export class NormalMode {
         return handled();
       default:
         this.clearPending();
-        return notHandled();
+        return handled();
     }
   }
 
@@ -222,6 +270,64 @@ export class NormalMode {
         return charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow));
       })
     );
+  }
+
+  private handlePendingSearchKey(key: string): void {
+    if (this.pendingSearch === undefined) return;
+    if (key === "enter") {
+      const query = this.pendingSearch;
+      this.pendingSearch = undefined;
+      if (query.length > 0) {
+        this.lastSearch = query;
+        this.searchForward(query);
+      }
+      return;
+    }
+    if (key === "backspace") {
+      this.pendingSearch = this.pendingSearch.slice(0, -1);
+      return;
+    }
+    this.pendingSearch += key === "space" ? " " : key;
+  }
+
+  private repeatSearch(): void {
+    if (this.lastSearch !== undefined) {
+      this.searchForward(this.lastSearch);
+    }
+  }
+
+  private searchForward(query: string): void {
+    const text = documentText(this.editor);
+    this.editor.setSelections(
+      this.editor.getSelections().map((selection) => {
+        const head = selectionHead(selection);
+        const startOffset = offsetOfPosition(this.editor, head) + 1;
+        const found = findWithWrap(text, query, startOffset);
+        return found === undefined ? charwiseSelection(head) : charwiseSelection(positionOfOffset(this.editor, found));
+      })
+    );
+  }
+
+  private handleTextObject(object: TextObject, around: boolean): boolean {
+    const pending = this.pendingOperator;
+    this.pendingTextObject = undefined;
+    this.pendingOperator = undefined;
+    if (pending === undefined) {
+      return false;
+    }
+
+    const registerName = this.takeSelectedRegister();
+    switch (pending.operator) {
+      case "change":
+        changeRange(this.editor, this.registers, registerName, (head) => textObjectRange(this.editor, head, object, { around }));
+        return true;
+      case "delete":
+        deleteRange(this.editor, this.registers, registerName, (head) => textObjectRange(this.editor, head, object, { around }));
+        return false;
+      case "yank":
+        yankRange(this.editor, this.registers, registerName, (head) => textObjectRange(this.editor, head, object, { around }));
+        return false;
+    }
   }
 
   // Zed: `normal::Vim::normal_motion` dispatches active operators to
@@ -322,8 +428,53 @@ function motionForKey(key: string): Motion | undefined {
   }
 }
 
+function documentText(editor: VimEditorCapabilities): string {
+  const lines: string[] = [];
+  for (let row = 0; row < editor.lineCount(); row++) {
+    lines.push(editor.line(row));
+  }
+  return lines.join("\n");
+}
+
+function findWithWrap(text: string, query: string, startOffset: number): number | undefined {
+  const fromStart = text.indexOf(query, startOffset);
+  if (fromStart >= 0) return fromStart;
+  const wrapped = text.indexOf(query, 0);
+  return wrapped >= 0 ? wrapped : undefined;
+}
+
+function offsetOfPosition(editor: VimEditorCapabilities, position: ReturnType<typeof selectionHead>): number {
+  let offset = 0;
+  for (let row = 0; row < position.row; row++) {
+    offset += editor.lineLength(row) + 1;
+  }
+  return offset + position.column;
+}
+
+function positionOfOffset(editor: VimEditorCapabilities, offset: number): ReturnType<typeof selectionHead> {
+  let remaining = offset;
+  for (let row = 0; row < editor.lineCount(); row++) {
+    const lineLength = editor.lineLength(row);
+    if (remaining <= lineLength) return { row, column: remaining };
+    remaining -= lineLength + 1;
+  }
+  const lastRow = editor.lineCount() - 1;
+  return { row: lastRow, column: Math.max(0, editor.lineLength(lastRow) - 1) };
+}
+
 function isOperatorKey(key: string): boolean {
   return key === "d" || key === "c" || key === "y";
+}
+
+function keyForOperator(operator: Operator): string {
+  switch (operator) {
+    case "delete":
+      return "d";
+    case "change":
+      return "c";
+    case "yank":
+      return "y";
+  }
 }
 
 // Zed: assets/keymaps/vim.json maps `d`, `c`, and `y` to `PushDelete`,

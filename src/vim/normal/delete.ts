@@ -64,7 +64,11 @@ function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: TextEdit
       column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
     });
   }
-  return normalCursorPosition(editor, range.start);
+  const newLineLength = range.start.column + editor.line(range.end.row).slice(range.end.column).length;
+  return normalCursorPosition(editor, {
+    row: range.start.row,
+    column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
+  });
 }
 
 // Zed: `Motion::CurrentLine` flowing into `normal::delete::Vim::delete_motion`.

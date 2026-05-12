@@ -15,6 +15,7 @@ Done in this branch:
   - `src/vim/motion.ts` — `Motion` and basic motion behavior, corresponding to Zed `motion` module.
   - `src/vim/normal.ts` — normal-mode key dispatch, corresponding to Zed `normal` module plus `assets/keymaps/vim.json`.
   - `src/vim/normal/{change,delete,yank,paste}.ts` — first operator implementations, corresponding to Zed `normal/*` modules.
+  - `src/vim/object.ts` — first text-object support, corresponding to Zed `object::Object`.
   - `src/vim/insert.ts` — insert-mode text application and normal/insert cursor transitions, corresponding to Zed `insert` plus insert-related normal commands.
   - `src/vim/editor.ts` — local editor capability interface plus in-memory test adapter.
   - `src/vim/vim.test.ts` — first smoke tests through the capability interface.
@@ -26,8 +27,9 @@ Done in this branch:
   - Yank/delete/change update the selected register and the unnamed register; paste can read a selected named register.
   - Neovim fixtures can now include `ReadRegister` entries for register comparison.
 - Migrated the first batch of Zed normal/motion fixtures into `src/vim/test_data`:
-  - Enabled passing Zed normal/motion fixtures now include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_change_w`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
-  - Imported-but-disabled fixtures now document higher-level gaps around text objects, visual mode, and search.
+  - Enabled passing Zed normal/motion fixtures now include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
+  - Enabled first text-object/search fixtures: `changes_inner_word_text_object` and `searches_forward_and_repeats_the_match`.
+  - Imported-but-disabled fixtures now document the remaining higher-level visual-mode gap.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
@@ -44,14 +46,16 @@ Implemented first-slice behavior:
 - basic key dispatch through `Vim.onKey`
 - counts
 - pending operators
+- first text-object grammar: operator + `i`/`a` + `w`/`W`
 - motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`
 - operators: `d`, `c`, `y`
 - line operators: `dd`, `cc`, `yy`
-- motion operators: `dw`, `cw`, `yw`
+- motion operators: `dw`, `de`, `cw`, `ce`, `yw`
 - insert commands: `i`, `a`, `I`, `A`, `o`, `O`
 - `x`
 - very basic `p` / `P`
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
+- simple `/...<enter>` search and `n` repeat for the current forward-search fixture
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 
 ## Reference points
@@ -242,7 +246,7 @@ Do not bulk-enable imported fixtures. When importing a Zed fixture whose feature
 
 ```json
 // DISABLED: <reason>
-{"Put":{"state":"ˇexample"}}
+{ "Put": { "state": "ˇexample" } }
 ```
 
 The reason should be specific enough to guide implementation. Good examples:
@@ -294,8 +298,72 @@ Test layers:
    - Validate soft wrap, folds, search UI, and cursor rendering.
    - Validate interoperability with normal VSCode commands and extensions.
 
-## Open questions
+## VSCode patch integration notes
 
+The intended production integration is a VSCode patch plus adapter, not a normal extension. The current code-oss checkout inspected for this section is `/home/jimzhao/vscode-extensions/vscode`.
+
+Relevant VSCode seams
+
+- Per-editor contribution registration: `src/vs/editor/browser/editorExtensions.ts` exposes `registerEditorContribution` and `EditorContributionInstantiation`. A modal editing contribution should probably live under `src/vs/editor/contrib/vim/browser/` and be registered eagerly or before first interaction.
+- Main editor widget: `src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts` exposes the APIs the adapter needs: `getModel`, `getSelections`, `setSelections`, `executeEdits`, `pushUndoStop`, `trigger`, `onKeyDown`, `onWillPaste`, and editor-scoped `contextKeyService`.
+- Key dispatch: `src/vs/workbench/services/keybinding/browser/keybindingService.ts` listens for window `keydown` and calls `AbstractKeybindingService._dispatch`. Editor-level `onKeyDown` is emitted from `CodeEditorWidget` via `ViewUserInputEvents`. A deep patch can either intercept at the editor contribution level and stop propagation/default for handled keys, or add a pre-keybinding modal hook in the workbench keybinding service that asks the focused editor contribution whether it handled the key.
+- Text input path: `CodeEditorWidget._createView` routes typed text and paste either directly to `_type`/`_paste` for simple widgets or through command service handlers for normal editors. The Vim layer should pass insert-mode ordinary typing through VSCode's native path where possible, and intercept only normal/visual/operator-pending keys.
+- Undo/edit API: `CodeEditorWidget.pushUndoStop()` pushes `model.pushStackElement()`. `executeEdits(source, edits, endCursorState)` applies edits and sets resulting selections. Vim commands that mutate text should generally create an undo boundary around the complete Vim command, not around every internal primitive.
+- Clipboard: `IClipboardService` lives at `src/vs/platform/clipboard/common/clipboardService.ts` with `readText` / `writeText`. Vim registers should use the system clipboard by default where desired, but still keep internal register metadata such as characterwise vs linewise because the plain clipboard service only stores text.
+- Context keys: `src/vs/editor/common/editorContextKeys.ts` defines editor context keys. `CodeEditorWidget` creates an editor-scoped context key service. Vim should bind keys such as `vim.mode`, `vim.pending`, `vim.operator`, and possibly boolean convenience keys like `vim.normalMode` so normal VSCode keybindings/menus can react.
+- Cursor style / line numbers: editor options include `cursorStyle` and `lineNumbers` in `src/vs/editor/common/config/editorOptions.ts`. The adapter can use `editor.updateOptions(...)` for mode-specific cursor style and eventually relative line-number behavior, but it should preserve/restore user options carefully.
+
+Tracked patch prototype
+
+VSCode-specific contribution files live in `vscode-contrib/` in this repo so they can be committed and reviewed without participating in the `vimcode` package build. Sync them into a VSCode checkout with:
+
+```sh
+scripts/sync-vscode-contrib.sh /path/to/vscode
+```
+
+The script copies production core files from `src/vim` into the VSCode checkout, excluding tests and fixtures, copies `vscode-contrib/browser` into the VSCode contribution directory, adds Microsoft copyright headers to copied core files when needed, and patches `src/vs/editor/editor.all.ts` to import the Vim contribution.
+
+Target patch shape
+
+```text
+src/vs/editor/contrib/vim/
+  browser/
+    vim.contribution.ts       # registers editor contribution
+    vimController.ts          # per-editor controller, mode/context-key sync, key interception
+    vscodeVimEditor.ts        # implements VimEditorCapabilities on top of ICodeEditor
+    vscodeClipboard.ts        # bridges registers/system clipboard through IClipboardService
+  common/
+    ... copied/adapted vimcode core modules ...
+```
+
+The production adapter should own all VSCode-specific behavior:
+
+- translate between VSCode `Position`/`Selection` and vimcode `Position`/`VimSelection`;
+- apply edits with `executeEdits('vim', edits, resultingSelections)`;
+- call `pushUndoStop()` before/after a complete Vim edit command;
+- read/write system clipboard via `IClipboardService` for the default clipboard-backed register policy;
+- update editor-scoped context keys whenever the mode or pending state changes;
+- update cursor style on mode changes and restore the user's prior cursor style when disabled/disposed;
+- avoid intercepting IME composition and avoid stealing keys when focus is in editor widgets such as find/suggest/rename unless explicitly desired.
+
+Key interception recommendation
+
+Start with an editor contribution that listens to `editor.onKeyDown`. When the modal state says the key is handleable, call into the Vim controller, then `preventDefault()` and `stopPropagation()` on the keyboard event. This is the smallest patch surface and should prevent the workbench keybinding service from seeing handled keys if the editor event fires during target/bubble propagation.
+
+If that is not early enough for all cases, add a slightly deeper pre-dispatch hook in `WorkbenchKeybindingService._registerKeyListeners` / `AbstractKeybindingService._dispatch`: resolve the focused `ICodeEditor` from `ICodeEditorService`, get its Vim contribution, and ask it to handle the `IKeyboardEvent` before normal keybinding resolution. This is more invasive but gives deterministic priority over global keybindings.
+
+Undo/checkpoint policy
+
+- Non-editing motions should not create undo stops.
+- A complete editing Vim command (`x`, `dw`, `dd`, `cw`, `p`, etc.) should usually be wrapped as:
+  - `editor.pushUndoStop()` before the command;
+  - one or more `executeEdits('vim', ...)` calls if needed;
+  - `editor.pushUndoStop()` after the command.
+- Insert mode should mostly use VSCode's native typing/undo grouping. Escaping insert mode should not necessarily create an extra edit boundary unless testing shows it is needed for Vim-compatible repeat/undo semantics.
+
+Open questions
+
+- Should key interception live only in an editor contribution, or should we add the deeper keybinding-service pre-dispatch hook immediately?
 - What exact VSCode commit/branch will the patch target?
 - Which VSCode internal editor services will the adapter be allowed to import?
 - Should the local implementation be GPL-compatible if substantial Zed code is translated, or should Zed remain a behavioral reference only?
@@ -313,3 +381,19 @@ npm test -- --runInBand
 ```
 
 The npm commands may print existing `.npmrc` proxy warnings; those warnings are not currently test failures.
+
+## For Manual testing
+
+Run these commands in different terminals
+
+```sh
+npm run watch
+npm run watch-web
+./scripts/code-server.sh
+```
+
+and run
+
+```sh
+./scripts/sync-vscode-contrib.sh /path/to/vscode
+```
