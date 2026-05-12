@@ -42,7 +42,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
     } else {
       const currentEditor = requireEditor(editor, fixture.testCaseId);
       const currentVim = requireVim(vim, fixture.testCaseId);
-      expect({ mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor) }).toEqual({
+      expect({ mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor, currentVim.mode.kind) }).toEqual({
         mode: entry.Get.mode,
         markedText: entry.Get.state,
       });

@@ -54,7 +54,7 @@ export function deleteRange(
   editor.applyEdits(edits, selectionsAfter);
 }
 
-function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: TextEdit["range"]) {
+export function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: TextEdit["range"]) {
   if (range.start.row === range.end.row) {
     const oldLineLength = editor.lineLength(range.start.row);
     const deletedColumns = range.end.column - range.start.column;

@@ -70,6 +70,7 @@ export function runNeovim({
         text: raw.lines.join("\n"),
         row: raw.cursor[0] - 1,
         column: raw.cursor[1],
+        mode: parseNeovimMode(raw.mode),
       }),
       registers: raw.registers,
     };

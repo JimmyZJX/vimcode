@@ -146,6 +146,33 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.modeName).toBe("vim:normal");
   });
 
+  it("extends visual selections backward", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["l", "l", "v", "h", "h"]);
+
+    expect(editor.getSelections()).toEqual([
+      {
+        type: "charwise",
+        anchor: { row: 0, column: 3 },
+        head: { row: 0, column: 0 },
+      },
+    ]);
+    expect(vim.modeName).toBe("vim:visual");
+  });
+
+  it("deletes backward visual selections", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["l", "l", "v", "h", "h", "d"]);
+
+    expect(editor.getText()).toBe("");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
   it("opens lines above and below using normal VSCode-like edit transactions", () => {
     const editor = new InMemoryVimEditor("alpha\nbeta");
     const vim = new Vim(editor);

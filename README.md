@@ -34,7 +34,7 @@ Done in this branch:
   - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
   - Enabled first text-object/search/visual fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, and visual word delete fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
-  - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text.
+  - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text and simple forward charwise visual markers (`«...ˇ...»`).
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
   - `src/vim/test/neovim_fixtures.ts` reads/writes `src/vim/test_data/*.json` fixtures using `Put` / `Key` / `ReadRegister` / `Get` entries inspired by Zed's `NeovimData`.
   - `src/vim/test/neovim_backed_test_context.ts` compares local editor state with Neovim/fixtures.
@@ -257,7 +257,7 @@ Zed's approach
 
 Zed's `test::neovim_backed_test_context::NeovimBackedTestContext` keeps a Zed editor and a Neovim instance in sync. Tests call helpers such as `set_shared_state`, `simulate_shared_keystrokes`, `simulate`, `shared_state`, and `shared_clipboard`. The backing `test::neovim_connection::NeovimConnection` can either talk to live embedded Neovim or replay recorded JSON test data. State is represented as marked text, with `ˇ` for the cursor and visual markers for selections.
 
-Our first migration step is intentionally smaller: `src/vim/neovim.test.ts` discovers every JSON-line fixture in `src/vim/test_data/*.json`. Enabled files replay the recorded Neovim result; files whose first header is `// DISABLED: <reason>` become skipped Jest tests. Set `VIMCODE_RECORD_NEOVIM=1` while running the Neovim-backed tests to regenerate enabled fixtures from short-lived `nvim --headless` processes. The current helper supports single-cursor `ˇ` marked text and explicit `ReadRegister` fixture entries. This is enough to catch basic normal/insert/operator/register drift before adding more features. Later steps should add visual markers and multi-selection support.
+Our first migration step is intentionally smaller: `src/vim/neovim.test.ts` discovers every JSON-line fixture in `src/vim/test_data/*.json`. Enabled files replay the recorded Neovim result; files whose first header is `// DISABLED: <reason>` become skipped Jest tests. Set `VIMCODE_RECORD_NEOVIM=1` while running the Neovim-backed tests to regenerate enabled fixtures from short-lived `nvim --headless` processes. The current helper supports single-cursor `ˇ` marked text, simple forward charwise visual markers (`«...ˇ...»`), and explicit `ReadRegister` fixture entries. This is enough to catch basic normal/insert/operator/register/visual drift before adding more features. Later steps should add backward visual selections, visual line/block markers, and multi-selection support.
 
 Zed fixture migration policy
 
@@ -273,7 +273,7 @@ Do not bulk-enable imported fixtures. When importing a Zed fixture whose feature
 The reason should be specific enough to guide implementation. Good examples:
 
 ```text
-// DISABLED: visual mode state and visual marker support in the test harness are not implemented.
+// DISABLED: backward visual selections / visual-line / visual-block marker support is not implemented.
 // DISABLED: text-object grammar and object::Object translation have not been added.
 // DISABLED: command-line mode is not implemented.
 // DISABLED: dot-repeat and macro replay are not implemented.
@@ -293,7 +293,7 @@ Useful first batches to import:
 - Basic normal/motion fixtures, some of which should be enabled quickly: `test_h`, `test_j`, `test_k`, `test_l`, `test_w`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_change_w`, `test_insert_*`, `test_o`.
 - Text object fixtures as disabled backlog: word, paragraph, sentence, quote/bracket objects.
 - Register fixtures as disabled/enabled according to current support: named registers can be enabled selectively; numbered, black-hole, system, append, and special registers should stay disabled until implemented.
-- Visual/visual-line/visual-block fixtures as disabled until the marked-text parser and selection model support visual markers.
+- Visual fixtures can now be enabled for simple forward charwise selections; keep backward, visual-line, and visual-block cases disabled until the marked-text parser and selection model support them.
 - Search, command, repeat, marks, folds, wrapped-lines, and Helix fixtures as disabled category backlogs.
 
 Test layers:
