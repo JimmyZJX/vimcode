@@ -1,0 +1,16 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"SetOption":{"value":"wrap"}}
+{"SetOption":{"value":"columns=12"}}
+{"Put":{"state":"aaˇaa\n😃😃"}}
+{"Key":"j"}
+{"Get":{"state":"aaaa\n😃ˇ😃","mode":"Normal"}}
+{"Put":{"state":"123456789012aaˇaa\n123456789012😃😃"}}
+{"Key":"j"}
+{"Get":{"state":"123456789012aaaa\n123456789012😃ˇ😃","mode":"Normal"}}
+{"Put":{"state":"123456789012aaˇaa\n123456789012😃😃"}}
+{"Key":"j"}
+{"Get":{"state":"123456789012aaaa\n123456789012😃ˇ😃","mode":"Normal"}}
+{"Put":{"state":"123456789012aaaaˇaaaaaaaa123456789012\nwow\n123456789012😃😃😃😃😃😃123456789012"}}
+{"Key":"j"}
+{"Key":"j"}
+{"Get":{"state":"123456789012aaaaaaaaaaaa123456789012\nwow\n123456789012😃😃ˇ😃😃😃😃123456789012","mode":"Normal"}}

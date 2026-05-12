@@ -1,0 +1,6 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"ˇa\nb\nc"}}
+{"Key":":"}
+{"Key":"3"}
+{"Key":"enter"}
+{"Get":{"state":"a\nb\nˇc","mode":"Normal"}}

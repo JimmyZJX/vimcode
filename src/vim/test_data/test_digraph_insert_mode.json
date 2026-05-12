@@ -1,0 +1,22 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"Hellˇo"}}
+{"Key":"a"}
+{"Key":"ctrl-k"}
+{"Key":"o"}
+{"Key":":"}
+{"Key":"escape"}
+{"Get":{"state":"Helloˇö","mode":"Normal"}}
+{"Put":{"state":"Hellˇo"}}
+{"Key":"a"}
+{"Key":"ctrl-k"}
+{"Key":":"}
+{"Key":"o"}
+{"Key":"escape"}
+{"Get":{"state":"Helloˇö","mode":"Normal"}}
+{"Put":{"state":"Hellˇo"}}
+{"Key":"i"}
+{"Key":"ctrl-k"}
+{"Key":"o"}
+{"Key":":"}
+{"Key":"escape"}
+{"Get":{"state":"Hellˇöo","mode":"Normal"}}

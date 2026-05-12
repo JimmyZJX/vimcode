@@ -1,0 +1,13 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"A😀c«DÉ1*fˇ»\n"}}
+{"Key":"u"}
+{"Get":{"state":"A😀cˇdé1*f\n","mode":"Normal"}}
+{"Put":{"state":"ABˇc\n"}}
+{"Key":"shift-v"}
+{"Key":"u"}
+{"Get":{"state":"ˇabc\n","mode":"Normal"}}
+{"Put":{"state":"ˇAa\nBb\nCc"}}
+{"Key":"ctrl-v"}
+{"Key":"j"}
+{"Key":"u"}
+{"Get":{"state":"ˇaa\nbb\nCc","mode":"Normal"}}

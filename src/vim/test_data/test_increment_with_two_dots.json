@@ -1,0 +1,6 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"111.ˇ.2\n"}}
+{"Key":"ctrl-a"}
+{"Get":{"state":"111..ˇ3\n","mode":"Normal"}}
+{"Key":"ctrl-x"}
+{"Get":{"state":"111..ˇ2\n","mode":"Normal"}}

@@ -1,0 +1,7 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"ˇhello world"}}
+{"Key":">"}
+{"Key":"."}
+{"Key":"."}
+{"Key":"."}
+{"Get":{"state":"ˇhello world","mode":"Normal"}}

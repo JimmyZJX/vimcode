@@ -1,0 +1,9 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"Teˇst"}}
+{"Key":"c"}
+{"Key":"l"}
+{"Get":{"state":"Teˇt","mode":"Insert"}}
+{"Put":{"state":"Tesˇt"}}
+{"Key":"c"}
+{"Key":"l"}
+{"Get":{"state":"Tesˇ","mode":"Insert"}}

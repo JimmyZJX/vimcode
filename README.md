@@ -27,10 +27,12 @@ Done in this branch:
   - Normal-mode `"{register}` prefixes are supported for yank/delete/change/paste in the current subset.
   - Yank/delete/change update the selected register and the unnamed register; paste can read a selected named register.
   - Neovim fixtures can now include `ReadRegister` entries for register comparison.
-- Migrated the first batch of Zed normal/motion fixtures into `src/vim/test_data`:
-  - Enabled passing Zed normal/motion fixtures now include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
-  - Enabled first text-object/search/visual fixtures: `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, and `deletes_a_visual_word_selection`.
-  - The currently migrated fixture set has no disabled files; broader visual marker fixtures still need to be imported and migrated.
+- Migrated Zed's full `crates/vim/test_data/*.json` fixture inventory into `src/vim/test_data`:
+  - Existing passing local fixtures remain enabled.
+  - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
+  - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
+  - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
+  - Enabled first text-object/search/visual fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, and visual word delete fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.

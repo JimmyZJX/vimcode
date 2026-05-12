@@ -1,0 +1,25 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Exec":{"command":"imap dog 🐶"}}
+{"Exec":{"command":"imap cat 🐱"}}
+{"Put":{"state":"ˇ"}}
+{"Key":"i"}
+{"Key":"d"}
+{"Key":"o"}
+{"Key":"g"}
+{"Get":{"state":"🐶ˇ","mode":"Insert"}}
+{"Put":{"state":"ˇ"}}
+{"Key":"i"}
+{"Key":"d"}
+{"Key":"o"}
+{"Key":"d"}
+{"Key":"o"}
+{"Key":"g"}
+{"Get":{"state":"do🐶ˇ","mode":"Insert"}}
+{"Put":{"state":"ˇ"}}
+{"Key":"i"}
+{"Key":"d"}
+{"Key":"o"}
+{"Key":"c"}
+{"Key":"a"}
+{"Key":"t"}
+{"Get":{"state":"do🐱ˇ","mode":"Insert"}}

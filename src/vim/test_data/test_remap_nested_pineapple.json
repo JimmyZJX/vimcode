@@ -1,0 +1,29 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Exec":{"command":"imap pin 📌"}}
+{"Exec":{"command":"imap pine 🌲"}}
+{"Exec":{"command":"imap pineapple 🍍"}}
+{"Put":{"state":"ˇ"}}
+{"Key":"i"}
+{"Key":"p"}
+{"Key":"i"}
+{"Key":"n"}
+{"Get":{"state":"📌ˇ","mode":"Insert"}}
+{"Put":{"state":"ˇ"}}
+{"Key":"i"}
+{"Key":"p"}
+{"Key":"i"}
+{"Key":"n"}
+{"Key":"e"}
+{"Get":{"state":"🌲ˇ","mode":"Insert"}}
+{"Put":{"state":"ˇ"}}
+{"Key":"i"}
+{"Key":"p"}
+{"Key":"i"}
+{"Key":"n"}
+{"Key":"e"}
+{"Key":"a"}
+{"Key":"p"}
+{"Key":"p"}
+{"Key":"l"}
+{"Key":"e"}
+{"Get":{"state":"🍍ˇ","mode":"Insert"}}

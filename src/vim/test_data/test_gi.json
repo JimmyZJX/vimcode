@@ -1,0 +1,11 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"one two\nthree fˇr"}}
+{"Key":"i"}
+{"Key":"o"}
+{"Key":"escape"}
+{"Key":"k"}
+{"Key":"g"}
+{"Key":"i"}
+{"Key":"u"}
+{"Key":"escape"}
+{"Get":{"state":"one two\nthree foˇur","mode":"Normal"}}

@@ -1,0 +1,24 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"SetOption":{"value":"foldmethod=manual"}}
+{"Put":{"state":"fn boop() {\n  ˇbarp()\n  bazp()\n}\n"}}
+{"Key":"shift-v"}
+{"Key":"j"}
+{"Key":"z"}
+{"Key":"f"}
+{"Key":"escape"}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"5"}
+{"Key":"d"}
+{"Key":"j"}
+{"Get":{"state":"ˇ","mode":"Normal"}}
+{"Put":{"state":"fn boop() {\n  ˇbarp()\n  bazp()\n}\n"}}
+{"Key":"shift-v"}
+{"Key":"j"}
+{"Key":"j"}
+{"Key":"z"}
+{"Key":"f"}
+{"Key":"escape"}
+{"Key":"shift-g"}
+{"Key":"shift-v"}
+{"Get":{"state":"fn boop() {\n  barp()\n  bazp()\n}\nˇ","mode":"VisualLine"}}

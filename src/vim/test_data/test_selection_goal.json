@@ -1,0 +1,9 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":";;ˇ;\nLorem Ipsum"}}
+{"Key":"a"}
+{"Key":"down"}
+{"Key":"up"}
+{"Key":";"}
+{"Key":"down"}
+{"Key":"up"}
+{"Get":{"state":";;;;ˇ\nLorem Ipsum","mode":"Insert"}}

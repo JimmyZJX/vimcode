@@ -1,0 +1,7 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"ˇabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"}}
+{"Key":"g"}
+{"Key":"?"}
+{"Key":"i"}
+{"Key":"w"}
+{"Get":{"state":"ˇnopqrstuvwxyzabcdefghijklmNOPQRSTUVWXYZABCDEFGHIJKLM","mode":"Normal"}}

@@ -1,0 +1,11 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"helˇlo world."}}
+{"Key":"i"}
+{"Key":"ctrl-o"}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"w"}
+{"Get":{"state":"ˇ world.","mode":"Insert"}}
+{"Key":"ctrl-o"}
+{"Key":"p"}
+{"Get":{"state":" helloˇworld.","mode":"Insert"}}

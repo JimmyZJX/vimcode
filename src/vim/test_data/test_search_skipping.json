@@ -1,0 +1,13 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"ˇaa aa aa"}}
+{"Key":"/"}
+{"Key":"a"}
+{"Key":"a"}
+{"Key":"enter"}
+{"Get":{"state":"aa ˇaa aa","mode":"Normal"}}
+{"Key":"left"}
+{"Key":"/"}
+{"Key":"a"}
+{"Key":"a"}
+{"Key":"enter"}
+{"Get":{"state":"aa ˇaa aa","mode":"Normal"}}

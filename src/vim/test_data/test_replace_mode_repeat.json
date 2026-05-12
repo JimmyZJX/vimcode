@@ -1,0 +1,11 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"ˇhello world\n"}}
+{"Key":"shift-r"}
+{"Key":"-"}
+{"Key":"-"}
+{"Key":"-"}
+{"Key":"escape"}
+{"Key":"4"}
+{"Key":"l"}
+{"Key":"."}
+{"Get":{"state":"---lo --ˇ-ld\n","mode":"Normal"}}

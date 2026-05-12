@@ -1,0 +1,8 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"The quick brown\nfox juˇmps over\nthe lazy dog"}}
+{"Key":"4"}
+{"Key":"escape"}
+{"Key":"3"}
+{"Key":"d"}
+{"Key":"l"}
+{"Get":{"state":"The quick brown\nfox juˇ over\nthe lazy dog","mode":"Normal"}}

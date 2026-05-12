@@ -1,0 +1,8 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"The ˇquick brown\n"}}
+{"Key":"v"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"shift-y"}
+{"Get":{"state":"ˇThe quick brown\n","mode":"Normal"}}
+{"ReadRegister":{"name":"\"","value":"The quick brown\n"}}

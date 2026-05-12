@@ -1,0 +1,7 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"SetOption":{"value":"wrap"}}
+{"SetOption":{"value":"columns=12"}}
+{"Put":{"state":"twelve ˇchar twelve char\ntwelve char"}}
+{"Key":"d"}
+{"Key":"w"}
+{"Get":{"state":"twelve ˇtwelve char\ntwelve char","mode":"Normal"}}

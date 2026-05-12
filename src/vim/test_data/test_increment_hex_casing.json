@@ -1,0 +1,6 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"0xFˇa\n"}}
+{"Key":"ctrl-a"}
+{"Get":{"state":"0xfˇb\n","mode":"Normal"}}
+{"Key":"ctrl-a"}
+{"Get":{"state":"0xfˇc\n","mode":"Normal"}}

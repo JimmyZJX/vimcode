@@ -1,0 +1,4 @@
+// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+{"Put":{"state":"abˇc"}}
+{"Key":"delete"}
+{"Get":{"state":"aˇb","mode":"Normal"}}
