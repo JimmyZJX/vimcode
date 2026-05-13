@@ -212,6 +212,63 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 1, column: 2 });
   });
 
+  it("adds surrounds around a text object", () => {
+    const editor = new InMemoryVimEditor("The quick brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["w", "y", "s", "i", "w", "{"]);
+
+    expect(editor.getText()).toBe("The { quick } brown");
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+  });
+
+  it("adds compact surrounds with closing bracket keys", () => {
+    const editor = new InMemoryVimEditor("The quick brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["w", "y", "s", "i", "w", "}"]);
+
+    expect(editor.getText()).toBe("The {quick} brown");
+  });
+
+  it("adds surrounds by motion", () => {
+    const editor = new InMemoryVimEditor("The quick brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["4", "l", "y", "s", "$", "}"]);
+
+    expect(editor.getText()).toBe("The {quick brown}");
+  });
+
+  it("deletes surrounds", () => {
+    const editor = new InMemoryVimEditor("The { quick } brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["6", "l", "d", "s", "{"]);
+
+    expect(editor.getText()).toBe("The quick brown");
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+  });
+
+  it("changes surrounds", () => {
+    const editor = new InMemoryVimEditor("The {quick} brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["6", "l", "c", "s", "{", "["]);
+
+    expect(editor.getText()).toBe("The [ quick ] brown");
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+  });
+
+  it("uses shifted surround keys as bracket pairs", () => {
+    const editor = new InMemoryVimEditor("The quick brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["w", "v", "i", "w", "S", ")"]);
+
+    expect(editor.getText()).toBe("The (quick) brown");
+  });
+
   it("opens lines above and below using normal VSCode-like edit transactions", () => {
     const editor = new InMemoryVimEditor("alpha\nbeta");
     const vim = new Vim(editor);

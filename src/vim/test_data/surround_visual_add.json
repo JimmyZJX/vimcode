@@ -1,0 +1,14 @@
+{"Put":{"state":"The ˇquick brown"}}
+{"Key":"v"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"shift-s"}
+{"Key":"'"}
+{"Get":{"state":"The ˇ'quick' brown","mode":"Normal"}}
+{"Put":{"state":"The ˇquick brown"}}
+{"Key":"v"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"shift-s"}
+{"Key":"{"}
+{"Get":{"state":"The ˇ{ quick } brown","mode":"Normal"}}

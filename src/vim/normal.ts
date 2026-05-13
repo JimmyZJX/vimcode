@@ -7,14 +7,15 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
-import { Motion, applyMotionWithGoal, motionForKey } from "./motion.js";
+import { Motion, applyMotionWithGoal, lineRange, motionRange, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { changeLines, changeMotion, changeRange } from "./normal/change.js";
 import { deleteCharacters, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
 import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion, yankRange } from "./normal/yank.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
-import { KeyResult, Operator, charwiseSelection, selectionHead } from "./state.js";
+import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
+import { KeyResult, Operator, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
 type PendingOperator = {
   operator: Operator;
@@ -23,6 +24,13 @@ type PendingOperator = {
 
 type PendingPrefix = "g" | "register";
 type PendingTextObject = { around: boolean };
+type PendingSurround =
+  | { type: "addTarget"; count: number }
+  | { type: "addObject"; around: boolean; count: number }
+  | { type: "addChar"; ranges: readonly TextRange[]; linewise: boolean }
+  | { type: "deleteChar" }
+  | { type: "changeFrom" }
+  | { type: "changeTo"; fromKey: string };
 
 export type NormalKeyResult = {
   keyResult: KeyResult;
@@ -38,6 +46,7 @@ export class NormalMode {
   private pendingOperator: PendingOperator | undefined;
   private pendingPrefix: PendingPrefix | undefined;
   private pendingTextObject: PendingTextObject | undefined;
+  private pendingSurround: PendingSurround | undefined;
   private pendingSearch: string | undefined;
   private lastSearch: string | undefined;
   private selectedRegister: RegisterName | undefined;
@@ -48,7 +57,7 @@ export class NormalMode {
   ) {}
 
   isPending(): boolean {
-    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingSearch !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
+    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingSurround !== undefined || this.pendingSearch !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
   }
 
   pendingOperatorName(): Operator | undefined {
@@ -60,6 +69,7 @@ export class NormalMode {
     const count = this.countBuffer;
     const operator = this.pendingOperator === undefined ? "" : keyForOperator(this.pendingOperator.operator);
     if (this.pendingTextObject !== undefined) return `${count}${operator}${this.pendingTextObject.around ? "a" : "i"}`;
+    if (this.pendingSurround !== undefined) return `${count}${operator}s`;
     if (this.pendingPrefix === "register") return `${count}${operator}\"`;
     if (this.pendingPrefix === "g") return `${count}g`;
     if (this.selectedRegister !== undefined) return `${count}\"${this.selectedRegister}`;
@@ -72,6 +82,7 @@ export class NormalMode {
     this.pendingOperator = undefined;
     this.pendingPrefix = undefined;
     this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
     this.pendingSearch = undefined;
     this.selectedRegister = undefined;
   }
@@ -83,6 +94,10 @@ export class NormalMode {
     if (this.pendingSearch !== undefined) {
       this.handlePendingSearchKey(key);
       return handled();
+    }
+
+    if (this.pendingSurround !== undefined) {
+      return handled({ enterInsert: this.handleSurroundKey(key) });
     }
 
     if (this.pendingTextObject !== undefined) {
@@ -140,6 +155,23 @@ export class NormalMode {
     if (key === "n") {
       this.repeatSearch();
       return handled();
+    }
+
+    if (this.pendingOperator !== undefined && key === "s") {
+      switch (this.pendingOperator.operator) {
+        case "yank":
+          this.pendingSurround = { type: "addTarget", count: this.pendingOperator.count };
+          this.pendingOperator = undefined;
+          return handled();
+        case "delete":
+          this.pendingSurround = { type: "deleteChar" };
+          this.pendingOperator = undefined;
+          return handled();
+        case "change":
+          this.pendingSurround = { type: "changeFrom" };
+          this.pendingOperator = undefined;
+          return handled();
+      }
     }
 
     if (this.pendingOperator !== undefined && (key === "i" || key === "a")) {
@@ -303,6 +335,61 @@ export class NormalMode {
     }
   }
 
+  private handleSurroundKey(key: string): boolean {
+    const pending = this.pendingSurround;
+    if (pending === undefined) return false;
+
+    switch (pending.type) {
+      case "deleteChar":
+        this.pendingSurround = undefined;
+        deleteSurrounds(this.editor, key);
+        return false;
+      case "changeFrom":
+        this.pendingSurround = { type: "changeTo", fromKey: key };
+        return false;
+      case "changeTo":
+        this.pendingSurround = undefined;
+        changeSurrounds(this.editor, pending.fromKey, key);
+        return false;
+      case "addChar":
+        this.pendingSurround = undefined;
+        addSurrounds(this.editor, pending.ranges, key, { linewise: pending.linewise });
+        return false;
+      case "addObject": {
+        const object = textObjectForKey(key);
+        if (object === undefined) {
+          this.clearPending();
+          return false;
+        }
+        const ranges = this.editor.getSelections().map(selection =>
+          textObjectRange(this.editor, selectionHead(selection), object, { around: pending.around }));
+        this.pendingSurround = { type: "addChar", ranges, linewise: false };
+        return false;
+      }
+      case "addTarget": {
+        if (key === "i" || key === "a") {
+          this.pendingSurround = { type: "addObject", around: key === "a", count: pending.count };
+          return false;
+        }
+        if (key === "s") {
+          const ranges = this.editor.getSelections().map(selection =>
+            trimmedLineRange(this.editor, selectionHead(selection).row, pending.count));
+          this.pendingSurround = { type: "addChar", ranges, linewise: false };
+          return false;
+        }
+        const motion = motionForKey(key);
+        if (motion !== undefined) {
+          const ranges = this.editor.getSelections().map(selection =>
+            motionRange(this.editor, selectionHead(selection), motion, pending.count));
+          this.pendingSurround = { type: "addChar", ranges, linewise: false };
+          return false;
+        }
+        this.clearPending();
+        return false;
+      }
+    }
+  }
+
   private searchForward(query: string): void {
     const text = documentText(this.editor);
     this.editor.setSelections(
@@ -431,6 +518,16 @@ function positionOfOffset(editor: VimEditorCapabilities, offset: number): Return
   }
   const lastRow = editor.lineCount() - 1;
   return { row: lastRow, column: Math.max(0, editor.lineLength(lastRow) - 1) };
+}
+
+function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: number): TextRange {
+  const range = lineRange(editor, row, count);
+  if (range.start.row !== range.end.row) return range;
+  const line = editor.line(row);
+  const first = line.search(/\S/);
+  if (first < 0) return range;
+  const last = line.search(/\s*$/);
+  return { start: { row, column: first }, end: { row, column: last } };
 }
 
 function isOperatorKey(key: string): boolean {

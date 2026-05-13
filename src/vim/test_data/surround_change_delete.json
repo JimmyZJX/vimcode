@@ -1,0 +1,17 @@
+{"Put":{"state":"The { quˇick } brown"}}
+{"Key":"d"}
+{"Key":"s"}
+{"Key":"{"}
+{"Get":{"state":"The ˇquick brown","mode":"Normal"}}
+{"Put":{"state":"The {quˇick} brown"}}
+{"Key":"c"}
+{"Key":"s"}
+{"Key":"{"}
+{"Key":"["}
+{"Get":{"state":"The ˇ[ quick ] brown","mode":"Normal"}}
+{"Put":{"state":"The 'quˇick' brown"}}
+{"Key":"c"}
+{"Key":"s"}
+{"Key":"'"}
+{"Key":"}"}
+{"Get":{"state":"The ˇ{quick} brown","mode":"Normal"}}

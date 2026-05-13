@@ -13,6 +13,7 @@ import { applyMotionWithGoal, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { cursorAfterDeletingRange, deleteRange } from "./normal/delete.js";
 import { RegisterContent, Registers } from "./registers.js";
+import { addSurrounds } from "./surrounds.js";
 import {
   KeyResult,
   Position,
@@ -70,6 +71,7 @@ function handled(
 export class VisualMode {
   private state: VisualState | undefined;
   private pendingTextObject: PendingTextObject | undefined;
+  private pendingSurround: { ranges: readonly TextRange[]; linewise: boolean } | undefined;
   private countBuffer = "";
 
   constructor(
@@ -81,6 +83,7 @@ export class VisualMode {
     const selection = this.editor.getSelections()[0];
     const head = selectionHead(selection);
     this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
     this.countBuffer = "";
     switch (kind) {
       case "charwise":
@@ -101,6 +104,7 @@ export class VisualMode {
     const state = this.state;
     this.state = undefined;
     this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");
     if (state === undefined) {
@@ -111,6 +115,15 @@ export class VisualMode {
   }
 
   onKey(key: string): VisualKeyResult {
+    if (this.pendingSurround !== undefined) {
+      const pending = this.pendingSurround;
+      this.pendingSurround = undefined;
+      addSurrounds(this.editor, pending.ranges, key, { linewise: pending.linewise });
+      this.state = undefined;
+      this.editor.setCursorStyle("block");
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+
     if (this.pendingTextObject !== undefined) {
       return this.handlePendingTextObject(key);
     }
@@ -155,11 +168,16 @@ export class VisualMode {
       return handled({ nextMode: "visualBlock" });
     }
 
-    if (state.kind === "blockwise" && key === "I") {
-              enterBlockInsert(this.editor, this.registers, state, { deleteSelection: false });;
+        if (state.kind === "blockwise" && key === "I") {
+      enterBlockInsert(this.editor, this.registers, state, { deleteSelection: false });
       this.state = undefined;
       this.editor.setCursorStyle("line");
       return handled({ exitVisual: true, enterInsert: true });
+    }
+
+    if (key === "S") {
+      this.pendingSurround = surroundTargetForState(this.editor, state);
+      return handled();
     }
 
     if (key === "i" || key === "a") {
@@ -316,6 +334,7 @@ export class VisualMode {
   private finishNormalAt(position: Position): void {
     this.state = undefined;
     this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");
     this.editor.setSelections([charwiseSelection(position)]);
@@ -562,6 +581,17 @@ function inclusiveHeadForRangeEnd(editor: VimEditorCapabilities, range: TextRang
   return { row: range.end.row, column: 0 };
 }
 
+function surroundTargetForState(editor: VimEditorCapabilities, state: VisualState): { ranges: readonly TextRange[]; linewise: boolean } {
+  switch (state.kind) {
+    case "charwise":
+      return { ranges: [charwiseVisualRange(editor, state)], linewise: false };
+    case "linewise":
+      return { ranges: [linewiseEditRange(editor, state)], linewise: true };
+    case "blockwise":
+      return { ranges: blockRanges(editor, state), linewise: false };
+  }
+}
+
 function visualStartPosition(state: VisualState): Position {
   switch (state.kind) {
     case "charwise":
@@ -801,13 +831,20 @@ function blockInsertSelections(editor: VimEditorCapabilities, state: BlockwiseVi
   return selections;
 }
 
-function blockwiseText(editor: VimEditorCapabilities, state: BlockwiseVisualState): string {
+function blockRanges(editor: VimEditorCapabilities, state: BlockwiseVisualState): TextRange[] {
   const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
-  const lines: string[] = [];
+  const ranges: TextRange[] = [];
   for (let row = startRow; row <= endRow; row++) {
-    lines.push(editor.line(row).slice(startColumn, Math.min(endColumn + 1, editor.lineLength(row))));
+    ranges.push({
+      start: { row, column: Math.min(startColumn, editor.lineLength(row)) },
+      end: { row, column: Math.min(endColumn + 1, editor.lineLength(row)) },
+    });
   }
-  return lines.join("\n");
+  return ranges;
+}
+
+function blockwiseText(editor: VimEditorCapabilities, state: BlockwiseVisualState): string {
+  return blockRanges(editor, state).map(range => rangeText(editor, range)).join("\n");
 }
 
 function blockBounds(state: BlockwiseVisualState): {

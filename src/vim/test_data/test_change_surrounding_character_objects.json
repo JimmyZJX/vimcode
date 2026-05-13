@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: quote/bracket text-object fixture still includes broad edge cases beyond the current Zed-aligned first slice.
 {"Put":{"state":"ˇTh\"e \"\"qui\"ck bro\"wn\"\n\"fox jumps ov\"er\nthe lazy d\"o\"g"}}
 {"Key":"c"}
 {"Key":"i"}

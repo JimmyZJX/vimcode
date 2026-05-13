@@ -100,6 +100,11 @@ function isEscapeKey(key: string): boolean {
 	return key === '<escape>' || key === 'escape' || key === 'ctrl-[';
 }
 
+function shiftedDigitKey(digit: number): string {
+	const shiftedDigits = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
+	return shiftedDigits[digit] ?? String(digit);
+}
+
 function keyFromEvent(event: IKeyboardEvent): string | undefined {
 	if (event.altKey || event.metaKey) {
 		return undefined;
@@ -120,7 +125,8 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 	}
 
 	if (event.keyCode >= KeyCode.Digit0 && event.keyCode <= KeyCode.Digit9) {
-		return String(event.keyCode - KeyCode.Digit0);
+		const digit = event.keyCode - KeyCode.Digit0;
+		return event.shiftKey ? shiftedDigitKey(digit) : String(digit);
 	}
 
 	switch (event.keyCode) {

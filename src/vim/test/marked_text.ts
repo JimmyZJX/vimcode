@@ -26,6 +26,7 @@ export type ParsedMarkedText = {
 };
 
 export function parseMarkedText(markedText: string): ParsedMarkedText {
+  markedText = markedText.split("•").join(" ");
   const cursorIndex = exactlyOneMarker(markedText, cursorMarker);
   const hasVisualStart = markedText.includes(visualStartMarker);
   const hasVisualEnd = markedText.includes(visualEndMarker);

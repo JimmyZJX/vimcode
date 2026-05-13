@@ -16,6 +16,7 @@ Done in this branch:
   - `src/vim/normal.ts` — normal-mode key dispatch, corresponding to Zed `normal` module plus `assets/keymaps/vim.json`.
   - `src/vim/normal/{change,delete,yank,paste}.ts` — first operator implementations, corresponding to Zed `normal/*` modules.
   - `src/vim/object.ts` — first text-object support, corresponding to Zed `object::Object`.
+  - `src/vim/surrounds.ts` — first Vim surround operators, corresponding to Zed `surrounds` module.
   - `src/vim/visual.ts` — first charwise visual-mode support, corresponding to Zed `visual` module.
   - `src/vim/insert.ts` — insert-mode text application and normal/insert cursor transitions, corresponding to Zed `insert` plus insert-related normal commands.
   - `src/vim/editor.ts` — local editor capability interface plus in-memory test adapter.
@@ -32,7 +33,7 @@ Done in this branch:
   - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
   - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
   - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
-  - Enabled first text-object/search/visual fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, and the first visual-block movement/paste/insert fixtures.
+  - Enabled first text-object/search/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text plus the charwise, linewise, and rectangular visual marker shapes used by the enabled fixtures.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
@@ -41,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 68 enabled tests.
+  - `npm test -- --runInBand` passes with 84 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -49,7 +50,7 @@ Implemented first-slice behavior:
 - basic key dispatch through `Vim.onKey`
 - counts
 - pending operators
-- first text-object grammar: operator + `i`/`a` + `w`/`W`
+- first text-object grammar: operator + `i`/`a` + `w`/`W` and simple quote/bracket text objects
 - visual mode slice: charwise `v`, visual-line `V`, and visual-block `ctrl-v` motions plus visual `d`/`x`, `y`, `c`/`s`, `iw`/`iW`, `p`/`P`, block insert, and other-end block movement for the enabled Zed fixtures
 - motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`
 - operators: `d`, `c`, `y`
@@ -60,6 +61,7 @@ Implemented first-slice behavior:
 - very basic normal and visual `p` / `P`
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
 - simple `/...<enter>` search and `n` repeat for the current forward-search fixture
+- first surround operators: `ys`, `yss`, `ds`, `cs`, and visual `S` for word/motion/quote/bracket ranges
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 
 ## Reference points
