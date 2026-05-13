@@ -42,9 +42,7 @@ function wordRange(
   const line = editor.line(head.row);
   if (line.length === 0) return { start: head, end: head };
 
-  const initialColumn = Math.min(head.column, Math.max(0, line.length - 1));
-  const wordColumn = wordColumnAtOrAfter(line, initialColumn, bigWord);
-  if (wordColumn === undefined) return { start: head, end: head };
+  const wordColumn = Math.min(head.column, Math.max(0, line.length - 1));
 
   const wordClass = charClass(line[wordColumn], bigWord);
   let startColumn = wordColumn;
@@ -75,13 +73,6 @@ function wordRange(
   };
 }
 
-function wordColumnAtOrAfter(line: string, column: number, bigWord: boolean): number | undefined {
-  for (let current = column; current < line.length; current++) {
-    if (!isWhitespace(line[current])) return current;
-    if (!bigWord && charClass(line[current], bigWord) !== "whitespace") return current;
-  }
-  return undefined;
-}
 
 function charClass(char: string, bigWord: boolean): "whitespace" | "word" | "other" {
   if (isWhitespace(char)) return "whitespace";

@@ -38,12 +38,16 @@ import { VimEditorCapabilities, clipPosition, normalCursorPosition } from "./edi
 export function motionForKey(key: string): Motion | undefined {
   switch (key) {
     case "h":
+    case "left":
       return { type: "left" };
     case "l":
+    case "right":
       return { type: "right" };
     case "k":
+    case "up":
       return { type: "up" };
     case "j":
+    case "down":
       return { type: "down" };
     case "0":
       return { type: "startOfLine" };
@@ -249,11 +253,42 @@ export function applyMotion(
   motion: Motion,
   count: number
 ): Position {
+  return applyMotionWithGoal(editor, start, motion, count).position;
+}
+
+export type MotionResult = {
+  position: Position;
+  goalColumn?: number;
+};
+
+// Zed: vertical movement preserves a `SelectionGoal` through repeated up/down
+// motions. This is the local model-position equivalent: while moving vertically,
+// remember the original target column even when shorter lines temporarily clip the
+// cursor. Non-vertical motions clear the goal.
+export function applyMotionWithGoal(
+  editor: VimEditorCapabilities,
+  start: Position,
+  motion: Motion,
+  count: number,
+  goalColumn?: number,
+  { allowEndOfLine = false }: { allowEndOfLine?: boolean } = {}
+): MotionResult {
+  if (motion.type === "up" || motion.type === "down") {
+    const targetColumn = goalColumn ?? start.column;
+    const rowDelta = motion.type === "up" ? -count : count;
+    const row = Math.max(0, Math.min(start.row + rowDelta, editor.lineCount() - 1));
+    const maxColumn = allowEndOfLine ? editor.lineLength(row) : Math.max(0, editor.lineLength(row) - 1);
+    return {
+      position: { row, column: Math.min(targetColumn, maxColumn) },
+      goalColumn: targetColumn,
+    };
+  }
+
   let current = start;
   for (let i = 0; i < count; i++) {
     current = applyMotionOnce(editor, current, motion);
   }
-  return current;
+  return { position: current };
 }
 
 // Zed: `motion::Motion::range` / `motion::Motion::expand_selection` decide

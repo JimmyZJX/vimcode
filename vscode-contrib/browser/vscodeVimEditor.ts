@@ -1,16 +1,24 @@
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
-import { IIdentifiedSingleEditOperation } from '../../../common/model.js';
-import { CursorStyle, TextEdit, TextRange, VimSelection, charwiseSelection } from '../common/state.js';
+import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
+import { IIdentifiedSingleEditOperation, IModelDeltaDecoration } from '../../../common/model.js';
+import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, charwiseSelection } from '../common/state.js';
 import { VimEditorCapabilities } from '../common/editor.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
+	private readonly visualLineDecorations: IEditorDecorationsCollection;
+	private lastSetVimSelections: readonly VimSelection[] | undefined;
+	private lastSetVSCodeSelections: readonly Selection[] | undefined;
+
 	constructor(
 		private readonly editor: ICodeEditor,
 		private readonly clipboard: VSCodeVimClipboard
-	) { }
+	) {
+		this.visualLineDecorations = editor.createDecorationsCollection();
+	}
 
 	lineCount(): number {
 		return this.model().getLineCount();
@@ -34,6 +42,9 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	getSelections(): readonly VimSelection[] {
 		const selections = this.editor.getSelections() ?? [];
+		if (this.lastSetVimSelections !== undefined && this.selectionsMatchLastSet(selections)) {
+			return this.lastSetVimSelections;
+		}
 		if (selections.length === 0) {
 			return [charwiseSelection({ row: 0, column: 0 })];
 		}
@@ -51,7 +62,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	setSelections(selections: readonly VimSelection[]): void {
-		this.editor.setSelections(selections.map(toSelection), 'vim');
+		const vscodeSelections = selections.map(selection => this.toSelection(selection));
+		const cursorPositions = selections.map(selection => this.cursorPositionForSelection(selection));
+		const source = cursorPositions.some((position, index) => !position.equals(vscodeSelections[index].getPosition()))
+			? `vim.cursorPositions:${cursorPositions.map(position => `${position.lineNumber},${position.column}`).join(';')}`
+			: 'vim';
+		this.updateVisualLineDecorations(selections);
+		this.rememberSelections(selections, vscodeSelections);
+		this.editor.setSelections(vscodeSelections, source);
 	}
 
 	setCursorStyle(style: CursorStyle): void {
@@ -64,7 +82,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			range: toRange(edit.range),
 			text: edit.text,
 		}));
-		this.editor.executeEdits('vim', vscodeEdits, selectionsAfter.map(toSelection));
+		const vscodeSelectionsAfter = selectionsAfter.map(selection => this.toSelection(selection));
+		this.updateVisualLineDecorations(selectionsAfter);
+		this.rememberSelections(selectionsAfter, vscodeSelectionsAfter);
+		this.editor.executeEdits('vim', vscodeEdits, vscodeSelectionsAfter);
 		this.editor.pushUndoStop();
 	}
 
@@ -87,6 +108,86 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 		return model;
 	}
+
+	private rememberSelections(vimSelections: readonly VimSelection[], vscodeSelections: readonly Selection[]): void {
+		this.lastSetVimSelections = [...vimSelections];
+		this.lastSetVSCodeSelections = [...vscodeSelections];
+	}
+
+	private selectionsMatchLastSet(selections: readonly Selection[]): boolean {
+		if (this.lastSetVSCodeSelections === undefined || selections.length !== this.lastSetVSCodeSelections.length) {
+			this.lastSetVimSelections = undefined;
+			this.lastSetVSCodeSelections = undefined;
+			this.visualLineDecorations.clear();
+			return false;
+		}
+		const matches = selections.every((selection, index) => selection.equalsSelection(this.lastSetVSCodeSelections![index]));
+		if (!matches) {
+			this.lastSetVimSelections = undefined;
+			this.lastSetVSCodeSelections = undefined;
+			this.visualLineDecorations.clear();
+		}
+		return matches;
+	}
+
+	private toSelection(selection: VimSelection): Selection {
+		switch (selection.type) {
+			case 'charwise':
+			case 'blockwise':
+				return new Selection(
+					selection.anchor.row + 1,
+					selection.anchor.column + 1,
+					selection.head.row + 1,
+					selection.head.column + 1
+				);
+			case 'linewise':
+				return this.toLinewiseSelection(selection);
+		}
+	}
+
+	private toLinewiseSelection(selection: Extract<VimSelection, { type: 'linewise' }>): Selection {
+		const cursor = this.linewiseCursorPosition(selection);
+		return new Selection(cursor.lineNumber, cursor.column, cursor.lineNumber, cursor.column);
+	}
+
+	private cursorPositionForSelection(selection: VimSelection): VSCodePosition {
+		switch (selection.type) {
+			case 'charwise':
+			case 'blockwise':
+				return selection.cursor !== undefined ? toVSCodePosition(selection.cursor) : this.toSelection(selection).getPosition();
+			case 'linewise':
+				return this.linewiseCursorPosition(selection);
+		}
+	}
+
+	private linewiseCursorPosition(selection: Extract<VimSelection, { type: 'linewise' }>): VSCodePosition {
+		if (selection.cursor !== undefined) {
+			return toVSCodePosition(selection.cursor);
+		}
+		const lineNumber = selection.headLine + 1;
+		return new VSCodePosition(lineNumber, 1);
+	}
+
+	private updateVisualLineDecorations(selections: readonly VimSelection[]): void {
+		const decorations: IModelDeltaDecoration[] = [];
+		for (const selection of selections) {
+			if (selection.type !== 'linewise') {
+				continue;
+			}
+			const startLine = Math.min(selection.anchorLine, selection.headLine) + 1;
+			const endLine = Math.max(selection.anchorLine, selection.headLine) + 1;
+			decorations.push({
+				range: new Range(startLine, 1, endLine, this.model().getLineMaxColumn(endLine)),
+				options: {
+					description: 'vim-visual-line-selection',
+					className: 'selected-text',
+					isWholeLine: true,
+					shouldFillLineOnLineBreak: true,
+				},
+			});
+		}
+		this.visualLineDecorations.set(decorations);
+	}
 }
 
 function toRange(range: TextRange): Range {
@@ -98,17 +199,6 @@ function toRange(range: TextRange): Range {
 	);
 }
 
-function toSelection(selection: VimSelection): Selection {
-	switch (selection.type) {
-		case 'charwise':
-		case 'blockwise':
-			return new Selection(
-				selection.anchor.row + 1,
-				selection.anchor.column + 1,
-				selection.head.row + 1,
-				selection.head.column + 1
-			);
-		case 'linewise':
-			return new Selection(selection.anchorLine + 1, 1, selection.headLine + 1, 1);
-	}
+function toVSCodePosition(position: VimPosition): VSCodePosition {
+	return new VSCodePosition(position.row + 1, position.column + 1);
 }

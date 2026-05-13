@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"The quick brown\nˇ\nfox"}}
 {"Key":"v"}
 {"Get":{"state":"The quick brown\n«\nˇ»fox","mode":"Visual"}}

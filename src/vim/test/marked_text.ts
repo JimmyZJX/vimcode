@@ -3,12 +3,14 @@
 // - sources: `test::neovim_connection::{parse_state, encode_ranges}` and
 //   `util::test::{marked_text_ranges, generate_marked_text}`
 // - translated concepts: represent editor state as text with inline cursor/selection markers
-// - intentional differences: this helper supports one cursor or one charwise visual selection.
-//   Byte/UTF-8 column fidelity, multiple selections, and visual block markers are future work.
+// - intentional differences: this helper supports the visual marker shapes currently used
+//   by enabled fixtures: one cursor, one charwise/linewise visual range, or one rectangular
+//   visual-block range. Byte/UTF-8 column fidelity and multiple independent selections are
+//   future work.
 
 import { InMemoryVimEditor } from "../editor.js";
 import { Vim } from "../vim.js";
-import { VimMode, charwiseSelection, comparePositions, selectionAnchor, selectionHead } from "../state.js";
+import { Position, VimMode, VimSelection, charwiseSelection, comparePositions, selectionAnchor, selectionHead } from "../state.js";
 
 export const cursorMarker = "ˇ";
 export const visualStartMarker = "«";
@@ -40,7 +42,7 @@ export function parseMarkedText(markedText: string): ParsedMarkedText {
   const visualStartIndex = exactlyOneMarker(markedText, visualStartMarker);
   const visualEndIndex = exactlyOneMarker(markedText, visualEndMarker);
   if (!(visualStartIndex < cursorIndex && cursorIndex < visualEndIndex)) {
-    throw new Error("only forward visual selections with cursor inside the visual markers are supported for now");
+    throw new Error("only single forward visual selections are supported when parsing marked text for now");
   }
 
   const text = markedText
@@ -61,7 +63,7 @@ export function parseMarkedText(markedText: string): ParsedMarkedText {
 
 export function encodeMarkedText({ text, row, column, anchorRow, anchorColumn, mode }: ParsedMarkedText): string {
   if (mode === "visual" && anchorRow !== undefined && anchorColumn !== undefined) {
-    return encodeVisualMarkedText(text, { row: anchorRow, column: anchorColumn }, { row, column });
+    return encodeVisualMarkedText(text, { row: anchorRow, column: anchorColumn }, { row, column }, { row, column });
   }
   return insertMarker(text, { row, column }, cursorMarker);
 }
@@ -86,11 +88,27 @@ export function editorFromMarkedText(markedText: string): { editor: InMemoryVimE
 export function markedTextFromEditor(editor: InMemoryVimEditor, mode: VimMode["kind"] = "normal"): string {
   const selection = editor.getSelections()[0];
   const head = selectionHead(selection);
-  if (mode === "visual") {
-    const anchor = selectionAnchor(selection);
-    return encodeVisualMarkedText(editor.getText(), anchor, head);
+  switch (mode) {
+    case "visual": {
+      const anchor = selectionAnchor(selection);
+      const cursorIsLineStartAcrossLines = selection.type === "charwise"
+        && selection.cursor !== undefined
+        && selection.cursor.column === 0
+        && selection.cursor.row !== anchor.row;
+      const cursor = cursorIsLineStartAcrossLines ? selection.cursor! : head;
+      const end = cursorIsLineStartAcrossLines ? cursor : head;
+      return encodeVisualMarkedText(editor.getText(), anchor, end, cursor);
+    }
+    case "visualLine":
+      return selection.type === "linewise"
+        ? encodeVisualLineSelectionMarkedText(editor.getText(), selection)
+        : encodeVisualLineMarkedText(editor.getText(), head);
+    case "visualBlock":
+      if (selection.type !== "blockwise") return encodeMarkedText({ text: editor.getText(), row: head.row, column: head.column, mode: "normal" });
+      return encodeVisualBlockMarkedText(editor.getText(), selection.anchor, selection.head);
+    default:
+      return encodeMarkedText({ text: editor.getText(), row: head.row, column: head.column, mode: "normal" });
   }
-  return encodeMarkedText({ text: editor.getText(), row: head.row, column: head.column, mode: "normal" });
 }
 
 function exactlyOneMarker(text: string, marker: string): number {
@@ -102,7 +120,7 @@ function exactlyOneMarker(text: string, marker: string): number {
   return index;
 }
 
-function positionBeforeIndex(text: string, index: number): { row: number; column: number } {
+function positionBeforeIndex(text: string, index: number): Position {
   const beforeMarker = text
     .slice(0, index)
     .split(visualStartMarker).join("")
@@ -115,27 +133,112 @@ function positionBeforeIndex(text: string, index: number): { row: number; column
   };
 }
 
-function encodeVisualMarkedText(text: string, anchor: { row: number; column: number }, head: { row: number; column: number }): string {
-  if (comparePositions(anchor, head) > 0) {
-    throw new Error("backward visual selections are not supported by the marked-text encoder yet");
-  }
-  const withEnd = insertMarker(text, visualEndPosition(text, head), visualEndMarker);
-  const withCursor = insertMarker(withEnd, head, cursorMarker);
-  return insertMarker(withCursor, anchor, visualStartMarker);
+function encodeVisualMarkedText(text: string, anchor: Position, head: Position, cursor: Position): string {
+  const start = comparePositions(anchor, head) <= 0 ? anchor : head;
+  const end = comparePositions(anchor, head) <= 0 ? head : anchor;
+  return insertMarkers(text, [
+    { position: start, marker: visualStartMarker },
+    { position: cursor, marker: cursorMarker },
+    { position: end, marker: visualEndMarker },
+  ]);
 }
 
-function visualEndPosition(text: string, head: { row: number; column: number }) {
-  const line = text.split("\n")[head.row] ?? "";
-  return { row: head.row, column: Math.min(head.column + 1, line.length) };
-}
-
-function insertMarker(text: string, pos: { row: number; column: number }, marker: string): string {
+function encodeVisualLineSelectionMarkedText(text: string, selection: Extract<VimSelection, { type: "linewise" }>): string {
+  const cursor = selection.cursor ?? { row: selection.headLine, column: 0 };
   const lines = text.split("\n");
-  if (pos.row < 0 || pos.row >= lines.length) {
-    throw new Error(`row ${pos.row} is outside document with ${lines.length} lines`);
+  const selectedLine = lines[selection.headLine] ?? "";
+  if (selectedLine.length === 0) {
+    if (selection.headLine + 1 >= lines.length) {
+      return insertMarker(text, { row: selection.headLine, column: 0 }, cursorMarker);
+    }
+    const start = { row: selection.headLine, column: 0 };
+    const end = { row: selection.headLine + 1, column: 0 };
+    return insertMarkers(text, [
+      { position: start, marker: visualStartMarker },
+      { position: end, marker: cursorMarker },
+      { position: end, marker: visualEndMarker },
+    ]);
   }
-  const line = lines[pos.row];
-  const clippedColumn = Math.max(0, Math.min(pos.column, line.length));
-  lines[pos.row] = line.slice(0, clippedColumn) + marker + line.slice(clippedColumn);
+  return encodeVisualLineMarkedText(text, cursor);
+}
+
+function encodeVisualLineMarkedText(text: string, cursor: Position): string {
+  const lines = text.split("\n");
+  const line = lines[cursor.row] ?? "";
+  if (line.length === 0 && cursor.row + 1 < lines.length) {
+    const start = { row: cursor.row, column: 0 };
+    const end = { row: cursor.row + 1, column: 0 };
+    return insertMarkers(text, [
+      { position: start, marker: visualStartMarker },
+      { position: end, marker: cursorMarker },
+      { position: end, marker: visualEndMarker },
+    ]);
+  }
+  const start = { row: cursor.row, column: Math.min(cursor.column, line.length) };
+  const end = { row: cursor.row, column: Math.min(start.column + 1, line.length) };
+  return insertMarkers(text, [
+    { position: start, marker: visualStartMarker },
+    { position: end, marker: cursorMarker },
+    { position: end, marker: visualEndMarker },
+  ]);
+}
+
+function encodeVisualBlockMarkedText(text: string, anchor: Position, head: Position): string {
+  const lines = text.split("\n");
+  const startRow = Math.min(anchor.row, head.row);
+  const endRow = Math.max(anchor.row, head.row);
+  const startColumn = Math.min(anchor.column, head.column);
+  const endColumn = Math.max(anchor.column, head.column);
+  const cursorAtStart = head.column < anchor.column;
+  const markers: { position: Position; marker: string }[] = [];
+
+  for (let row = startRow; row <= endRow; row++) {
+    const lineLength = lines[row]?.length ?? 0;
+    if (startColumn >= lineLength) {
+      markers.push({ position: { row, column: lineLength }, marker: cursorMarker });
+      continue;
+    }
+
+    const start = { row, column: startColumn };
+    const end = { row, column: Math.min(endColumn + 1, lineLength) };
+    markers.push({ position: start, marker: visualStartMarker });
+    markers.push({ position: cursorAtStart ? start : end, marker: cursorMarker });
+    markers.push({ position: end, marker: visualEndMarker });
+  }
+
+  return insertMarkers(text, markers);
+}
+
+function insertMarkers(text: string, markers: readonly { position: Position; marker: string }[]): string {
+  const lines = text.split("\n");
+  const byRowAndColumn = new Map<string, string[]>();
+  for (const { position, marker } of markers) {
+    if (position.row < 0 || position.row >= lines.length) {
+      throw new Error(`row ${position.row} is outside document with ${lines.length} lines`);
+    }
+    const line = lines[position.row];
+    const column = Math.max(0, Math.min(position.column, line.length));
+    const key = `${position.row}:${column}`;
+    const existing = byRowAndColumn.get(key) ?? [];
+    existing.push(marker);
+    byRowAndColumn.set(key, existing);
+  }
+
+  for (let row = 0; row < lines.length; row++) {
+    const entries = [...byRowAndColumn.entries()]
+      .map(([key, markersForPosition]) => {
+        const [rawRow, rawColumn] = key.split(":");
+        return { row: Number(rawRow), column: Number(rawColumn), markersForPosition };
+      })
+      .filter(entry => entry.row === row)
+      .sort((a, b) => b.column - a.column);
+    for (const { column, markersForPosition } of entries) {
+      lines[row] = lines[row].slice(0, column) + markersForPosition.join("") + lines[row].slice(column);
+    }
+  }
   return lines.join("\n");
+}
+
+function insertMarker(text: string, pos: Position, marker: string): string {
+  return insertMarkers(text, [{ position: pos, marker }]);
 }

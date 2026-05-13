@@ -125,12 +125,14 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
             ...selection,
             anchorLine: clipPosition(this, position(selection.anchorLine, 0)).row,
             headLine: clipPosition(this, position(selection.headLine, 0)).row,
+            cursor: selection.cursor === undefined ? undefined : clipPosition(this, selection.cursor),
           };
         case "blockwise":
           return {
             ...selection,
             anchor: clipPosition(this, selection.anchor),
             head: clipPosition(this, selection.head),
+            cursor: selection.cursor === undefined ? undefined : clipPosition(this, selection.cursor),
           };
       }
     });

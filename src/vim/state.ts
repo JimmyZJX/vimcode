@@ -19,9 +19,9 @@ export type TextRange = {
 // normalized selection model; Zed stores concrete editor selections plus visual
 // mode state instead of this exact union.
 export type VimSelection =
-  | { type: "charwise"; anchor: Position; head: Position; goalColumn?: number }
-  | { type: "linewise"; anchorLine: number; headLine: number; goalColumn?: number }
-  | { type: "blockwise"; anchor: Position; head: Position; goalColumn?: number };
+  | { type: "charwise"; anchor: Position; head: Position; cursor?: Position; goalColumn?: number }
+  | { type: "linewise"; anchorLine: number; headLine: number; cursor?: Position; goalColumn?: number }
+  | { type: "blockwise"; anchor: Position; head: Position; cursor?: Position; goalColumn?: number };
 
 export type VimDialect = "vim" | "helix";
 

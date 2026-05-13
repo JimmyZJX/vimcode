@@ -8,7 +8,7 @@
 //   append, expression, and read-only registers are future work.
 
 export type RegisterName = '"' | LowercaseLetter;
-export type RegisterKind = "characterwise" | "linewise";
+export type RegisterKind = "characterwise" | "linewise" | "blockwise";
 
 export type RegisterContent = {
   text: string;

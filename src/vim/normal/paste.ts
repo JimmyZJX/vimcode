@@ -22,6 +22,8 @@ export function paste(
 
   if (content.kind === "linewise") {
     pasteLinewise(editor, content.text, { before });
+  } else if (content.kind === "blockwise") {
+    pasteBlockwise(editor, content.text, { before });
   } else {
     pasteCharacterwise(editor, content.text, { before });
   }
@@ -42,6 +44,29 @@ function pasteCharacterwise(
     edits.push({ range: { start: insertAt, end: insertAt }, text });
     selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, positionAfterInsertedText(insertAt, text))));
   }
+  editor.applyEdits(edits, selectionsAfter);
+}
+
+function pasteBlockwise(
+  editor: VimEditorCapabilities,
+  text: string,
+  { before }: { before: boolean }
+): void {
+  const blockLines = text.split("\n");
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+
+  for (const selection of editor.getSelections()) {
+    const head = selectionHead(selection);
+    const column = before ? head.column : head.column;
+    for (let index = 0; index < blockLines.length; index++) {
+      const row = Math.min(head.row + index, editor.lineCount() - 1);
+      const insertAt = { row, column: Math.min(column, editor.lineLength(row)) };
+      edits.push({ range: { start: insertAt, end: insertAt }, text: blockLines[index] });
+    }
+    selectionsAfter.push(charwiseSelection({ row: head.row, column: head.column + blockLines[0].length }));
+  }
+
   editor.applyEdits(edits, selectionsAfter);
 }
 

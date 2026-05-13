@@ -7,7 +7,7 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
-import { Motion, applyMotion, motionForKey } from "./motion.js";
+import { Motion, applyMotionWithGoal, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { changeLines, changeMotion, changeRange } from "./normal/change.js";
 import { deleteCharacters, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
@@ -243,8 +243,15 @@ export class NormalMode {
   private moveSelections(motion: Motion, count: number): void {
     this.editor.setSelections(
       this.editor.getSelections().map((selection) => {
-        const head = applyMotion(this.editor, selectionHead(selection), motion, count);
-        return charwiseSelection(head);
+        const { position, goalColumn } = applyMotionWithGoal(
+          this.editor,
+          selectionHead(selection),
+          motion,
+          count,
+          selection.goalColumn
+        );
+        const nextSelection = charwiseSelection(position);
+        return goalColumn === undefined ? nextSelection : { ...nextSelection, goalColumn };
       })
     );
   }

@@ -108,6 +108,9 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 		if (event.keyCode === KeyCode.BracketLeft) {
 			return 'ctrl-[';
 		}
+		if (event.keyCode === KeyCode.KeyV) {
+			return 'ctrl-v';
+		}
 		return undefined;
 	}
 

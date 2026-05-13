@@ -28,6 +28,24 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 8 });
   });
 
+  it("preserves the target column across vertical motions", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["5", "l", "j", "j"]);
+
+    expect(head(editor)).toEqual({ row: 2, column: 5 });
+  });
+
+  it("resets the target column after non-vertical motions", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["5", "l", "j", "0", "j"]);
+
+    expect(head(editor)).toEqual({ row: 2, column: 0 });
+  });
+
   it("deletes by motion with an operator", () => {
     const editor = new InMemoryVimEditor("one two three");
     const vim = new Vim(editor);
@@ -157,6 +175,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
         type: "charwise",
         anchor: { row: 0, column: 3 },
         head: { row: 0, column: 0 },
+        cursor: { row: 0, column: 0 },
       },
     ]);
     expect(vim.modeName).toBe("vim:visual");
@@ -171,6 +190,26 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("");
     expect(vim.modeName).toBe("vim:normal");
     expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("exits visual-line mode at the motion target", () => {
+    const editor = new InMemoryVimEditor("alpha\nbeta\ngamma");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["l", "l", "V", "j", "<escape>"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 1, column: 2 });
+  });
+
+  it("supports horizontal motions in visual-line mode", () => {
+    const editor = new InMemoryVimEditor("alpha\nbeta\ngamma");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["l", "l", "V", "h", "j", "l", "<escape>"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 1, column: 2 });
   });
 
   it("opens lines above and below using normal VSCode-like edit transactions", () => {

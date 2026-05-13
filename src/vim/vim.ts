@@ -66,7 +66,11 @@ export class Vim {
   onKey(key: string): KeyResult {
     if (this.isEscape(key)) {
       this.normalMode.clearPending();
-      if (this.modeState.kind === "visual") {
+      if (
+        this.modeState.kind === "visual"
+        || this.modeState.kind === "visualLine"
+        || this.modeState.kind === "visualBlock"
+      ) {
         this.visualMode.exit();
         this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
       } else if (this.modeState.kind !== "normal") {
@@ -84,9 +88,17 @@ export class Vim {
       return "not-handled";
     }
 
-    if (this.modeState.kind === "visual") {
+    if (
+      this.modeState.kind === "visual"
+      || this.modeState.kind === "visualLine"
+      || this.modeState.kind === "visualBlock"
+    ) {
       const result = this.visualMode.onKey(key);
-      if (result.exitVisual) {
+      if (result.enterInsert) {
+        this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
+      } else if (result.nextMode !== undefined) {
+        this.modeState = { dialect: this.modeState.dialect, kind: result.nextMode };
+      } else if (result.exitVisual) {
         this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
       }
       return result.keyResult;
@@ -97,8 +109,20 @@ export class Vim {
     }
 
     if (key === "v") {
-      this.visualMode.enter();
+      this.visualMode.enter("charwise");
       this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
+      return "handled";
+    }
+
+    if (key === "V") {
+      this.visualMode.enter("linewise");
+      this.modeState = { dialect: this.modeState.dialect, kind: "visualLine" };
+      return "handled";
+    }
+
+    if (key === "ctrl-v") {
+      this.visualMode.enter("blockwise");
+      this.modeState = { dialect: this.modeState.dialect, kind: "visualBlock" };
       return "handled";
     }
 

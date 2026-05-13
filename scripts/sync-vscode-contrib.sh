@@ -81,6 +81,46 @@ path.write_text(text)
 PY
 fi
 
+# Patch VSCode's cursor rendering event path to allow Vim to provide a visual
+# cursor position separately from the selection's active endpoint. This keeps
+# forward visual selections highlighted as exclusive editor ranges while rendering
+# the cursor on the selected Vim character.
+python3 - "$target_root" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+
+view_events = root / 'src/vs/editor/common/viewEvents.ts'
+text = view_events.read_text()
+if "import { Position } from './core/position.js';" not in text:
+    text = text.replace("import { Range } from './core/range.js';", "import { Position } from './core/position.js';\nimport { Range } from './core/range.js';", 1)
+old = """\tconstructor(\n\t\tpublic readonly selections: Selection[],\n\t\tpublic readonly modelSelections: Selection[],\n\t\tpublic readonly reason: CursorChangeReason\n\t) { }\n"""
+new = """\tconstructor(\n\t\tpublic readonly selections: Selection[],\n\t\tpublic readonly modelSelections: Selection[],\n\t\tpublic readonly reason: CursorChangeReason,\n\t\tpublic readonly cursorPositions: Position[] | undefined = undefined\n\t) { }\n"""
+if old in text:
+    text = text.replace(old, new, 1)
+view_events.write_text(text)
+
+view_cursors = root / 'src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts'
+text = view_cursors.read_text()
+old = """\t\tconst positions: Position[] = [];\n\t\tfor (let i = 0, len = e.selections.length; i < len; i++) {\n\t\t\tpositions[i] = e.selections[i].getPosition();\n\t\t}\n"""
+new = """\t\tconst positions: Position[] = e.cursorPositions ?? [];\n\t\tif (!e.cursorPositions) {\n\t\t\tfor (let i = 0, len = e.selections.length; i < len; i++) {\n\t\t\t\tpositions[i] = e.selections[i].getPosition();\n\t\t\t}\n\t\t}\n"""
+if old in text:
+    text = text.replace(old, new, 1)
+view_cursors.write_text(text)
+
+cursor = root / 'src/vs/editor/common/cursor/cursor.ts'
+text = cursor.read_text()
+old = """\t\t// Let the view get the event first.\n\t\teventsCollector.emitViewEvent(new ViewCursorStateChangedEvent(viewSelections, selections, reason));\n"""
+new = """\t\tconst viewCursorPositions = this._getViewCursorPositionsFromSource(source, selections.length);\n\n\t\t// Let the view get the event first.\n\t\teventsCollector.emitViewEvent(new ViewCursorStateChangedEvent(viewSelections, selections, reason, viewCursorPositions));\n"""
+if old in text:
+    text = text.replace(old, new, 1)
+method = """\n\tprivate _getViewCursorPositionsFromSource(source: string | null | undefined, selectionCount: number): Position[] | undefined {\n\t\tconst prefix = 'vim.cursorPositions:';\n\t\tif (!source?.startsWith(prefix)) {\n\t\t\treturn undefined;\n\t\t}\n\t\tconst rawPositions = source.slice(prefix.length).split(';').filter(Boolean);\n\t\tif (rawPositions.length !== selectionCount) {\n\t\t\treturn undefined;\n\t\t}\n\t\tconst result: Position[] = [];\n\t\tfor (const rawPosition of rawPositions) {\n\t\t\tconst [rawLineNumber, rawColumn] = rawPosition.split(',');\n\t\t\tconst lineNumber = Number(rawLineNumber);\n\t\t\tconst column = Number(rawColumn);\n\t\t\tif (!Number.isFinite(lineNumber) || !Number.isFinite(column)) {\n\t\t\t\treturn undefined;\n\t\t\t}\n\t\t\tresult.push(this._coordinatesConverter.convertModelPositionToViewPosition(new Position(lineNumber, column)));\n\t\t}\n\t\treturn result;\n\t}\n"""
+anchor = """\n\t// -----------------------------------------------------------------------------------------------------------\n\t// ----- handlers beyond this point\n"""
+if "private _getViewCursorPositionsFromSource" not in text:
+    text = text.replace(anchor, method + anchor, 1)
+cursor.write_text(text)
+PY
+
 workbench_common="$target_root/src/vs/workbench/workbench.common.main.ts"
 workbench_import_line="import './contrib/vim/browser/vimStatus.js';"
 if ! grep -Fqx "$workbench_import_line" "$workbench_common"; then
