@@ -1,0 +1,16 @@
+{"Put":{"state":"ˇhello\n"}}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"p"}
+{"Get":{"state":"hello\nˇhello\n","mode":"Normal"}}
+{"Key":"."}
+{"Get":{"state":"hello\nhello\nˇhello\n","mode":"Normal"}}
+{"Put":{"state":"ˇone\ntwo\nthree\n"}}
+{"Key":"d"}
+{"Key":"d"}
+{"Get":{"state":"ˇtwo\nthree\n","mode":"Normal"}}
+{"ReadRegister":{"name":"1","value":"one\n"}}
+{"Key":"\""}
+{"Key":"1"}
+{"Key":"p"}
+{"Get":{"state":"two\nˇone\nthree\n","mode":"Normal"}}

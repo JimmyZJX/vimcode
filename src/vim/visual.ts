@@ -12,7 +12,7 @@ import { positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { cursorAfterDeletingRange, deleteRange } from "./normal/delete.js";
-import { RegisterContent, Registers } from "./registers.js";
+import { RegisterContent, RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { addSurrounds } from "./surrounds.js";
 import {
   KeyResult,
@@ -57,7 +57,6 @@ type BlockwiseVisualState = {
 
 type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualState;
 type PendingTextObject = { around: boolean };
-
 function handled(
   {
     exitVisual = false,
@@ -72,6 +71,8 @@ export class VisualMode {
   private state: VisualState | undefined;
   private pendingTextObject: PendingTextObject | undefined;
   private pendingSurround: { ranges: readonly TextRange[]; linewise: boolean } | undefined;
+  private pendingRegister = false;
+  private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
 
   constructor(
@@ -84,6 +85,8 @@ export class VisualMode {
     const head = selectionHead(selection);
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
+    this.pendingRegister = false;
+    this.selectedRegister = undefined;
     this.countBuffer = "";
     switch (kind) {
       case "charwise":
@@ -105,6 +108,8 @@ export class VisualMode {
     this.state = undefined;
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
+    this.pendingRegister = false;
+    this.selectedRegister = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");
     if (state === undefined) {
@@ -115,6 +120,13 @@ export class VisualMode {
   }
 
   onKey(key: string): VisualKeyResult {
+    if (this.pendingRegister) {
+      this.pendingRegister = false;
+      const registerName = parseRegisterName(key);
+      if (registerName !== undefined) this.selectedRegister = registerName;
+      return handled();
+    }
+
     if (this.pendingSurround !== undefined) {
       const pending = this.pendingSurround;
       this.pendingSurround = undefined;
@@ -135,6 +147,11 @@ export class VisualMode {
 
     if (isCountKey(key, this.countBuffer)) {
       this.countBuffer += key;
+      return handled();
+    }
+
+    if (key === '"') {
+      this.pendingRegister = true;
       return handled();
     }
 
@@ -168,8 +185,11 @@ export class VisualMode {
       return handled({ nextMode: "visualBlock" });
     }
 
-        if (state.kind === "blockwise" && key === "I") {
-      enterBlockInsert(this.editor, this.registers, state, { deleteSelection: false });
+    if (state.kind === "blockwise" && (key === "I" || key === "A")) {
+      enterBlockInsert(this.editor, this.registers, undefined, state, {
+        deleteSelection: false,
+        side: key === "I" ? "start" : "end",
+      });
       this.state = undefined;
       this.editor.setCursorStyle("line");
       return handled({ exitVisual: true, enterInsert: true });
@@ -192,27 +212,27 @@ export class VisualMode {
     }
 
     if (key === "y" || key === "Y") {
-      this.yank(state);
+      this.yank(state, this.takeSelectedRegister());
       this.finishNormalAt(visualStartPosition(state));
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
     if (key === "d" || key === "x") {
-      this.delete(state);
+      this.delete(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("block");
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
     if (key === "c" || key === "s") {
-      this.change(state);
+      this.change(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("line");
       return handled({ exitVisual: true, enterInsert: true, nextMode: "insert" });
     }
 
     if (key === "p" || key === "P") {
-      this.paste(state);
+      this.paste(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("block");
       return handled({ exitVisual: true, nextMode: "normal" });
@@ -255,62 +275,62 @@ export class VisualMode {
     return handled();
   }
 
-  private yank(state: VisualState): void {
+  private yank(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        this.registers.write(undefined, rangeText(this.editor, charwiseVisualRange(this.editor, state)), "characterwise");
+        this.registers.writeYank(registerName, rangeText(this.editor, charwiseVisualRange(this.editor, state)), "characterwise");
         break;
       case "linewise":
-        this.registers.write(undefined, linewiseText(this.editor, state), "linewise");
+        this.registers.writeYank(registerName, linewiseText(this.editor, state), "linewise");
         break;
       case "blockwise":
-        this.registers.write(undefined, blockwiseText(this.editor, state), "blockwise");
+        this.registers.writeYank(registerName, blockwiseText(this.editor, state), "blockwise");
         break;
     }
   }
 
-  private delete(state: VisualState): void {
+  private delete(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
         deleteRange(
           this.editor,
           this.registers,
-          undefined,
+          registerName,
           () => charwiseVisualRange(this.editor, state),
           cursorAfterDeletingRange
         );
         break;
       case "linewise":
-        deleteLinewise(this.editor, this.registers, state);
+        deleteLinewise(this.editor, this.registers, registerName, state);
         break;
       case "blockwise":
-        deleteBlockwise(this.editor, this.registers, state, { collapse: true });
+        deleteBlockwise(this.editor, this.registers, registerName, state, { collapse: true });
         break;
     }
   }
 
-  private change(state: VisualState): void {
+  private change(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
         deleteRange(
           this.editor,
           this.registers,
-          undefined,
+          registerName,
           () => charwiseVisualRange(this.editor, state),
           (_editor, range) => range.start
         );
         break;
       case "linewise":
-        changeLinewise(this.editor, this.registers, state);
+        changeLinewise(this.editor, this.registers, registerName, state);
         break;
       case "blockwise":
-        enterBlockInsert(this.editor, this.registers, state, { deleteSelection: true });
+        enterBlockInsert(this.editor, this.registers, registerName, state, { deleteSelection: true, side: "start" });
         break;
     }
   }
 
-  private paste(state: VisualState): void {
-    const content = this.registers.readContent(undefined);
+  private paste(state: VisualState, registerName: RegisterName | undefined): void {
+    const content = this.registers.readContent(registerName);
     if (content.text.length === 0) return;
 
     switch (state.kind) {
@@ -335,9 +355,31 @@ export class VisualMode {
     this.state = undefined;
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
+    this.pendingRegister = false;
+    this.selectedRegister = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");
     this.editor.setSelections([charwiseSelection(position)]);
+  }
+
+  private takeSelectedRegister(): RegisterName | undefined {
+    const registerName = this.selectedRegister;
+    this.selectedRegister = undefined;
+    return registerName;
+  }
+
+  applyMotion(motion: Motion, count: number): void {
+    if (this.state === undefined) return;
+    this.state = stateAfterMotion(this.editor, this.state, motion, count);
+    this.syncEditorSelection();
+  }
+
+  takeCountForMotion(defaultValue: number): number {
+    return this.takeCount(defaultValue);
+  }
+
+  isExpectingRegisterName(): boolean {
+    return this.pendingRegister;
   }
 
   private takeCount(defaultValue: number): number {
@@ -654,11 +696,12 @@ function linewiseEditRange(editor: VimEditorCapabilities, state: LinewiseVisualS
 function deleteLinewise(
   editor: VimEditorCapabilities,
   registers: Registers,
+  registerName: RegisterName | undefined,
   state: LinewiseVisualState
 ): void {
   const { startLine } = lineBounds(state);
   const deletedLineCount = Math.abs(state.headLine - state.anchorLine) + 1;
-  registers.write(undefined, linewiseText(editor, state), "linewise");
+  registers.writeDelete(registerName, linewiseText(editor, state), "linewise");
   editor.applyEdits(
     [{ range: linewiseEditRange(editor, state), text: "" }],
     [charwiseSelection(linewiseCursorAfterDelete(editor, startLine, state.headColumn, deletedLineCount))]
@@ -668,10 +711,11 @@ function deleteLinewise(
 function changeLinewise(
   editor: VimEditorCapabilities,
   registers: Registers,
+  registerName: RegisterName | undefined,
   state: LinewiseVisualState
 ): void {
   const { startLine } = lineBounds(state);
-  registers.write(undefined, linewiseText(editor, state), "linewise");
+  registers.writeDelete(registerName, linewiseText(editor, state), "linewise");
   editor.applyEdits(
     [{ range: linewiseEditRange(editor, state), text: "\n" }],
     [charwiseSelection({ row: startLine, column: 0 })]
@@ -786,6 +830,7 @@ function pasteOverBlockwise(
 function deleteBlockwise(
   editor: VimEditorCapabilities,
   registers: Registers,
+  registerName: RegisterName | undefined,
   state: BlockwiseVisualState,
   { collapse }: { collapse: boolean }
 ): void {
@@ -802,31 +847,37 @@ function deleteBlockwise(
     edits.push({ range, text: "" });
   }
 
-  registers.write(undefined, deleted.join("\n"), "blockwise");
+  registers.writeDelete(registerName, deleted.join("\n"), "blockwise");
   const selectionsAfter = collapse
     ? [charwiseSelection({ row: startRow, column: startColumn })]
-    : blockInsertSelections(editor, state);
+    : blockInsertSelections(editor, state, { side: "start" });
   editor.applyEdits(edits, selectionsAfter);
 }
 
 function enterBlockInsert(
   editor: VimEditorCapabilities,
   registers: Registers,
+  registerName: RegisterName | undefined,
   state: BlockwiseVisualState,
-  { deleteSelection }: { deleteSelection: boolean }
+  { deleteSelection, side }: { deleteSelection: boolean; side: "start" | "end" }
 ): void {
   if (deleteSelection) {
-    deleteBlockwise(editor, registers, state, { collapse: false });
+    deleteBlockwise(editor, registers, registerName, state, { collapse: false });
   } else {
-    editor.setSelections(blockInsertSelections(editor, state));
+    editor.setSelections(blockInsertSelections(editor, state, { side }));
   }
 }
 
-function blockInsertSelections(editor: VimEditorCapabilities, state: BlockwiseVisualState): VimSelection[] {
-  const { startRow, endRow, startColumn } = blockBounds(state);
+function blockInsertSelections(
+  editor: VimEditorCapabilities,
+  state: BlockwiseVisualState,
+  { side }: { side: "start" | "end" }
+): VimSelection[] {
+  const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
+  const column = side === "start" ? startColumn : endColumn + 1;
   const selections: VimSelection[] = [];
   for (let row = startRow; row <= endRow; row++) {
-    selections.push(charwiseSelection({ row, column: Math.min(startColumn, editor.lineLength(row)) }));
+    selections.push(charwiseSelection({ row, column: Math.min(column, editor.lineLength(row)) }));
   }
   return selections;
 }

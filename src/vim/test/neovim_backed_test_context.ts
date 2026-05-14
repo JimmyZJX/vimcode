@@ -37,10 +37,11 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
     } else if ("ReadRegister" in entry) {
       const currentVim = requireVim(vim, fixture.testCaseId);
       const registerName = parseRegisterName(entry.ReadRegister.name);
-      if (registerName === undefined) {
+      const registerToRead = entry.ReadRegister.name as Parameters<typeof currentVim.readRegister>[0];
+      if (registerName === undefined && !["-", "/", "_", "+", "*"].includes(entry.ReadRegister.name)) {
         throw new Error(`unsupported register ${entry.ReadRegister.name} in ${fixture.testCaseId}`);
       }
-      registers[entry.ReadRegister.name] = currentVim.readRegister(registerName);
+      registers[entry.ReadRegister.name] = currentVim.readRegister(registerName ?? registerToRead);
       expect(registers[entry.ReadRegister.name]).toBe(entry.ReadRegister.value);
     } else {
       const currentEditor = requireEditor(editor, fixture.testCaseId);

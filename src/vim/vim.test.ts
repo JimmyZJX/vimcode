@@ -269,6 +269,19 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("The (quick) brown");
   });
 
+  it("collapses visual-block insert back to one cursor on escape", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["ctrl-v", "j", "I", "x", "<escape>"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("xabc\nxdef");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
+    ]);
+  });
+
   it("opens lines above and below using normal VSCode-like edit transactions", () => {
     const editor = new InMemoryVimEditor("alpha\nbeta");
     const vim = new Vim(editor);

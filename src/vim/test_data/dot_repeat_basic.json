@@ -1,0 +1,16 @@
+{"Put":{"state":"ˇhello"}}
+{"Key":"o"}
+{"Key":"w"}
+{"Key":"o"}
+{"Key":"r"}
+{"Key":"l"}
+{"Key":"d"}
+{"Key":"escape"}
+{"Get":{"state":"hello\nworlˇd","mode":"Normal"}}
+{"Key":"."}
+{"Get":{"state":"hello\nworld\nworlˇd","mode":"Normal"}}
+{"Put":{"state":"ˇabcdef"}}
+{"Key":"x"}
+{"Get":{"state":"ˇbcdef","mode":"Normal"}}
+{"Key":"."}
+{"Get":{"state":"ˇcdef","mode":"Normal"}}

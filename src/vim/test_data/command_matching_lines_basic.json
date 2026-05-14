@@ -1,5 +1,5 @@
-// DISABLED: full matching-lines command fixture includes undo; current command slice covers g/v delete without undo.
 {"Put":{"state":"ˇa\nb\na\nb\na\n"}}
+{"Key":"_"}
 {"Key":":"}
 {"Key":"g"}
 {"Key":"/"}
@@ -8,8 +8,7 @@
 {"Key":"d"}
 {"Key":"enter"}
 {"Get":{"state":"b\nb\nˇ","mode":"Normal"}}
-{"Key":"u"}
-{"Get":{"state":"ˇa\nb\na\nb\na\n","mode":"Normal"}}
+{"Put":{"state":"ˇa\nb\na\nb\na\n"}}
 {"Key":":"}
 {"Key":"v"}
 {"Key":"/"}
@@ -17,4 +16,4 @@
 {"Key":"/"}
 {"Key":"d"}
 {"Key":"enter"}
-{"Get":{"state":"a\na\nˇa","mode":"Normal"}}
+{"Get":{"state":"a\na\nˇa\n","mode":"Normal"}}

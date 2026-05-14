@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: full sentence object fixture includes punctuation/spacing edge cases beyond current first slice.
 {"Put":{"state":"ˇThe quick brown? Fox Jumps! Over the lazy."}}
 {"Key":"c"}
 {"Key":"i"}

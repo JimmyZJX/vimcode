@@ -50,7 +50,7 @@ export function deleteRange(
     selectionsAfter.push(charwiseSelection(cursorForRange(editor, range)));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "characterwise");
+  if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
   editor.applyEdits(edits, selectionsAfter);
 }
 
@@ -86,13 +86,21 @@ export function deleteLines(
     const head = selectionHead(selection);
     const row = head.row;
     const range = lineRange(editor, row, count);
-    copied.push(rangeText(editor, range));
+    copied.push(linewiseContent(editor, row, count));
     edits.push({ range, text: "" });
     selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, row, head.column, count)));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "linewise");
+  if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");
   editor.applyEdits(edits, selectionsAfter);
+}
+
+function linewiseContent(editor: VimEditorCapabilities, row: number, count: number): string {
+  const startRow = Math.max(0, Math.min(row, editor.lineCount() - 1));
+  const endRow = Math.min(startRow + count, editor.lineCount());
+  const lines: string[] = [];
+  for (let current = startRow; current < endRow; current++) lines.push(editor.line(current));
+  return `${lines.join("\n")}\n`;
 }
 
 // Zed: the `normal::DeleteRight` action calls `delete_motion(Motion::Right, ...)`.
@@ -124,6 +132,6 @@ export function deleteCharacters(
     })));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "characterwise");
+  if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
   editor.applyEdits(edits, selectionsAfter);
 }

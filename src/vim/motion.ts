@@ -16,6 +16,24 @@ import {
 // Zed: `motion::Motion`. This first slice keeps only
 // basic model-position motions; missing Zed variants should be added here with
 // provenance as they are translated.
+export type FindMotion =
+  | { type: "findForward"; before: boolean; char: string }
+  | { type: "findBackward"; after: boolean; char: string }
+  | { type: "searchForward"; query: string }
+  | { type: "searchBackward"; query: string };
+
+export function reverseFindMotion(motion: FindMotion): FindMotion {
+  switch (motion.type) {
+    case "findForward":
+      return { type: "findBackward", after: motion.before, char: motion.char };
+    case "findBackward":
+      return { type: "findForward", before: motion.after, char: motion.char };
+    case "searchForward":
+    case "searchBackward":
+      return motion;
+  }
+}
+
 export type Motion =
   | { type: "left" }
   | { type: "wrappingLeft" }
@@ -29,7 +47,8 @@ export type Motion =
   | { type: "endOfDocument" }
   | { type: "nextWordStart"; bigWord: boolean }
   | { type: "nextWordEnd"; bigWord: boolean }
-  | { type: "previousWordStart"; bigWord: boolean };
+  | { type: "previousWordStart"; bigWord: boolean }
+  | FindMotion;
 import { VimEditorCapabilities, clipPosition, normalCursorPosition } from "./editor.js";
 
 // Zed: `motion::register` maps key actions to `Motion` variants once, while
@@ -242,6 +261,14 @@ export function applyMotionOnce(
       return nextWordEnd(editor, clipped, motion.bigWord);
     case "previousWordStart":
       return previousWordStart(editor, clipped, motion.bigWord);
+    case "findForward":
+      return findForward(editor, clipped, motion.char, 1, { before: motion.before }) ?? clipped;
+    case "findBackward":
+      return findBackward(editor, clipped, motion.char, 1, { after: motion.after });
+    case "searchForward":
+      return searchForward(editor, clipped, motion.query) ?? clipped;
+    case "searchBackward":
+      return searchBackward(editor, clipped, motion.query) ?? clipped;
   }
 }
 
@@ -273,6 +300,18 @@ export function applyMotionWithGoal(
   goalColumn?: number,
   { allowEndOfLine = false }: { allowEndOfLine?: boolean } = {}
 ): MotionResult {
+  if (motion.type === "findForward") {
+    return { position: findForward(editor, start, motion.char, count, { before: motion.before }) ?? start };
+  }
+  if (motion.type === "findBackward") {
+    return { position: findBackward(editor, start, motion.char, count, { after: motion.after }) };
+  }
+  if (motion.type === "searchForward") {
+    return { position: searchForward(editor, start, motion.query) ?? start };
+  }
+  if (motion.type === "searchBackward") {
+    return { position: searchBackward(editor, start, motion.query) ?? start };
+  }
   if (motion.type === "up" || motion.type === "down") {
     const targetColumn = goalColumn ?? start.column;
     const rowDelta = motion.type === "up" ? -count : count;
@@ -314,7 +353,114 @@ export function motionRange(
     const rangeEnd = nextPosition(editor, end) ?? end;
     return orderedRange(start, rangeEnd);
   }
+  if (motion.type === "findForward") {
+    const target = findForwardTarget(editor, start, motion.char, count);
+    if (target === undefined) return { start, end: start };
+    return orderedRange(start, motion.before ? target : nextPosition(editor, target) ?? target);
+  }
+  if (motion.type === "findBackward") {
+    const target = findBackwardTarget(editor, start, motion.char, count);
+    if (target === undefined) return { start, end: start };
+    return orderedRange(motion.after ? nextPosition(editor, target) ?? target : target, nextPosition(editor, start) ?? start);
+  }
   return orderedRange(start, end);
+}
+
+function findForward(
+  editor: VimEditorCapabilities,
+  start: Position,
+  char: string,
+  count: number,
+  { before }: { before: boolean }
+): Position | undefined {
+  const target = findForwardTarget(editor, start, char, count);
+  if (target === undefined) return undefined;
+  if (!before) return target;
+  if (target.column > 0) return { row: target.row, column: target.column - 1 };
+  return target;
+}
+
+function findBackward(
+  editor: VimEditorCapabilities,
+  start: Position,
+  char: string,
+  count: number,
+  { after }: { after: boolean }
+): Position {
+  const target = findBackwardTarget(editor, start, char, count);
+  if (target === undefined) return start;
+  if (!after) return target;
+  return { row: target.row, column: Math.min(target.column + 1, Math.max(0, editor.lineLength(target.row) - 1)) };
+}
+
+function findForwardTarget(editor: VimEditorCapabilities, start: Position, char: string, count: number): Position | undefined {
+  const line = editor.line(start.row);
+  let from = Math.min(start.column + 1, line.length);
+  let found = -1;
+  for (let index = 0; index < count; index++) {
+    found = line.indexOf(char, from);
+    if (found < 0) return undefined;
+    from = found + 1;
+  }
+  return { row: start.row, column: found };
+}
+
+function findBackwardTarget(editor: VimEditorCapabilities, start: Position, char: string, count: number): Position | undefined {
+  const line = editor.line(start.row);
+  let from = Math.min(start.column - 1, line.length - 1);
+  let found = -1;
+  for (let index = 0; index < count; index++) {
+    found = line.lastIndexOf(char, from);
+    if (found < 0) return undefined;
+    from = found - 1;
+  }
+  return { row: start.row, column: found };
+}
+
+function searchForward(editor: VimEditorCapabilities, start: Position, query: string): Position | undefined {
+  const text = documentText(editor);
+  const startOffset = offsetOfPosition(editor, start) + 1;
+  const found = findWithWrap(text, query, startOffset);
+  return found === undefined ? undefined : positionOfOffset(editor, found);
+}
+
+function searchBackward(editor: VimEditorCapabilities, start: Position, query: string): Position | undefined {
+  const text = documentText(editor);
+  const startOffset = Math.max(0, offsetOfPosition(editor, start) - 1);
+  const before = text.lastIndexOf(query, startOffset);
+  if (before >= 0) return positionOfOffset(editor, before);
+  const wrapped = text.lastIndexOf(query, text.length - 1);
+  return wrapped >= 0 ? positionOfOffset(editor, wrapped) : undefined;
+}
+
+function documentText(editor: VimEditorCapabilities): string {
+  const lines: string[] = [];
+  for (let row = 0; row < editor.lineCount(); row++) lines.push(editor.line(row));
+  return lines.join("\n");
+}
+
+function findWithWrap(text: string, query: string, startOffset: number): number | undefined {
+  const found = text.indexOf(query, startOffset);
+  if (found >= 0) return found;
+  const wrapped = text.indexOf(query, 0);
+  return wrapped >= 0 ? wrapped : undefined;
+}
+
+function offsetOfPosition(editor: VimEditorCapabilities, position: Position): number {
+  let offset = 0;
+  for (let row = 0; row < position.row; row++) offset += editor.lineLength(row) + 1;
+  return offset + position.column;
+}
+
+function positionOfOffset(editor: VimEditorCapabilities, offset: number): Position {
+  let remaining = offset;
+  for (let row = 0; row < editor.lineCount(); row++) {
+    const lineLength = editor.lineLength(row);
+    if (remaining <= lineLength) return { row, column: remaining };
+    remaining -= lineLength + 1;
+  }
+  const row = editor.lineCount() - 1;
+  return { row, column: Math.max(0, editor.lineLength(row) - 1) };
 }
 
 function currentCharIsWord(editor: VimEditorCapabilities, pos: Position, bigWord: boolean): boolean {

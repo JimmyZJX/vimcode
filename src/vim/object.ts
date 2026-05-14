@@ -11,6 +11,8 @@ import { Position, TextRange } from "./state.js";
 
 export type TextObject =
   | { type: "word"; bigWord: boolean }
+  | { type: "paragraph" }
+  | { type: "sentence" }
   | { type: "surround"; open: string; close: string };
 
 export function textObjectForKey(key: string): TextObject | undefined {
@@ -19,7 +21,11 @@ export function textObjectForKey(key: string): TextObject | undefined {
       return { type: "word", bigWord: false };
     case "W":
       return { type: "word", bigWord: true };
-    case "\"":
+    case "p":
+      return { type: "paragraph" };
+    case "s":
+      return { type: "sentence" };
+    case "\"": 
       return { type: "surround", open: "\"", close: "\"" };
     case "'":
       return { type: "surround", open: "'", close: "'" };
@@ -56,6 +62,10 @@ export function textObjectRange(
   switch (object.type) {
     case "word":
       return wordRange(editor, head, { around, bigWord: object.bigWord });
+    case "paragraph":
+      return paragraphRange(editor, head, { around });
+    case "sentence":
+      return sentenceRange(editor, head, { around });
     case "surround":
       return surroundRange(editor, head, object, { around });
   }
@@ -98,6 +108,63 @@ function wordRange(
     start: { row: head.row, column: startColumn },
     end: { row: head.row, column: endColumn },
   };
+}
+
+function paragraphRange(
+  editor: VimEditorCapabilities,
+  head: Position,
+  { around }: { around: boolean }
+): TextRange {
+  let startRow = head.row;
+  while (startRow > 0 && editor.line(startRow - 1).trim().length > 0) startRow--;
+  let endRow = head.row;
+  while (endRow + 1 < editor.lineCount() && editor.line(endRow + 1).trim().length > 0) endRow++;
+
+  if (around) {
+    if (endRow + 1 < editor.lineCount()) {
+      endRow++;
+    } else {
+      while (startRow > 0 && editor.line(startRow - 1).trim().length === 0) startRow--;
+    }
+  }
+
+  return {
+    start: { row: startRow, column: 0 },
+    end: endRow + 1 < editor.lineCount()
+      ? { row: endRow + 1, column: 0 }
+      : { row: endRow, column: editor.lineLength(endRow) },
+  };
+}
+
+function sentenceRange(
+  editor: VimEditorCapabilities,
+  head: Position,
+  { around }: { around: boolean }
+): TextRange {
+  const text = editor.getText();
+  const offset = offsetOfPosition(editor, head);
+  let start = 0;
+  for (let index = Math.max(0, offset - 1); index >= 0; index--) {
+    if (/[.!?]/.test(text[index])) {
+      start = index + 1;
+      while (start < text.length && /\s/.test(text[start])) start++;
+      break;
+    }
+  }
+
+  let end = text.length;
+  for (let index = offset; index < text.length; index++) {
+    if (/[.!?]/.test(text[index])) {
+      end = index + 1;
+      break;
+    }
+  }
+
+  if (around) {
+    while (end < text.length && /\s/.test(text[end])) end++;
+  }
+
+  return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
 }
 
 function surroundRange(

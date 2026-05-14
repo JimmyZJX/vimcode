@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: full dot-repeat fixture includes linewise paste/case-toggle edge cases beyond current repeat slice.
 {"Put":{"state":"ˇhello"}}
 {"Key":"o"}
 {"Key":"w"}

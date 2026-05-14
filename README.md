@@ -33,7 +33,7 @@ Done in this branch:
   - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
   - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
   - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
-  - Enabled first text-object/search/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
+  - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text plus the charwise, linewise, and rectangular visual marker shapes used by the enabled fixtures.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
@@ -42,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 84 enabled tests.
+  - `npm test -- --runInBand` passes with 115 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -50,9 +50,9 @@ Implemented first-slice behavior:
 - basic key dispatch through `Vim.onKey`
 - counts
 - pending operators
-- first text-object grammar: operator + `i`/`a` + `w`/`W` and simple quote/bracket text objects
-- visual mode slice: charwise `v`, visual-line `V`, and visual-block `ctrl-v` motions plus visual `d`/`x`, `y`, `c`/`s`, `iw`/`iW`, `p`/`P`, block insert, and other-end block movement for the enabled Zed fixtures
-- motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`
+- first text-object grammar: operator + `i`/`a` + `w`/`W`, simple quote/bracket objects, and first paragraph/sentence objects
+- visual mode slice: charwise `v`, visual-line `V`, and visual-block `ctrl-v` motions plus visual `d`/`x`, `y`, `c`/`s`, `iw`/`iW`, `p`/`P`, block `I`/`A` insert, and other-end block movement for the enabled Zed fixtures
+- motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`, `f`, `F`, `t`, `T`, `;`, `,`
 - operators: `d`, `c`, `y`
 - line operators: `dd`, `cc`, `yy`
 - motion operators: `dw`, `de`, `cw`, `ce`, `yw`
@@ -62,6 +62,8 @@ Implemented first-slice behavior:
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
 - simple `/...<enter>` search and `n` repeat for the current forward-search fixture
 - first surround operators: `ys`, `yss`, `ds`, `cs`, and visual `S` for word/motion/quote/bracket ranges
+- first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, and `:` commands for goto, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
+- numbered/special register slice: register `0` and `1`-`9` storage/rotation for linewise deletes, small-delete `-`, black-hole `_`, search `/`, uppercase append registers, counted `p`/`P`, and linewise paste repeat basics
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 
 ## Reference points
@@ -132,19 +134,19 @@ Keep the local `src/vim` structure aligned with Zed's `crates/vim/src` structure
 
 Current alignment:
 
-| Local path | Zed reference | Notes |
-|---|---|---|
-| `src/vim/vim.ts` | `vim.rs`, `vim::Vim` | High-level mode/state coordinator only. Avoid moving normal/visual/motion/object details back into this file. |
-| `src/vim/state.ts` | `state.rs` | Modes, operators, selections, and shared state vocabulary. |
-| `src/vim/motion.ts` | `motion.rs` | `Motion`, key-to-motion mapping, point movement, and motion ranges. Motions should be registered/mapped here once and shared by modes. |
-| `src/vim/normal.ts` | `normal.rs` | Normal-mode dispatch and pending operator grammar. |
-| `src/vim/normal/*` | `normal/*` | Operator/action implementations such as change/delete/yank/paste. |
-| `src/vim/visual.ts` | `visual.rs` | Visual-mode state and visual interpretation of motions/actions. Do not duplicate motion key maps here. |
-| `src/vim/object.ts` | `object.rs` | Text objects. |
-| `src/vim/insert.ts` | `insert.rs` plus insert-related normal commands | Insert-mode behavior and insert command helpers. |
-| `src/vim/registers.ts` | `state::Register` / `VimGlobals.registers` | Local register model until state grows closer to Zed. |
-| `src/vim/test/*` | `test/*` | Neovim-backed harness and fixture machinery. |
-| `src/vim/test_data/*` | `test_data/*` | Fixture-driven compatibility backlog. |
+| Local path             | Zed reference                                   | Notes                                                                                                                                  |
+| ---------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/vim/vim.ts`       | `vim.rs`, `vim::Vim`                            | High-level mode/state coordinator only. Avoid moving normal/visual/motion/object details back into this file.                          |
+| `src/vim/state.ts`     | `state.rs`                                      | Modes, operators, selections, and shared state vocabulary.                                                                             |
+| `src/vim/motion.ts`    | `motion.rs`                                     | `Motion`, key-to-motion mapping, point movement, and motion ranges. Motions should be registered/mapped here once and shared by modes. |
+| `src/vim/normal.ts`    | `normal.rs`                                     | Normal-mode dispatch and pending operator grammar.                                                                                     |
+| `src/vim/normal/*`     | `normal/*`                                      | Operator/action implementations such as change/delete/yank/paste.                                                                      |
+| `src/vim/visual.ts`    | `visual.rs`                                     | Visual-mode state and visual interpretation of motions/actions. Do not duplicate motion key maps here.                                 |
+| `src/vim/object.ts`    | `object.rs`                                     | Text objects.                                                                                                                          |
+| `src/vim/insert.ts`    | `insert.rs` plus insert-related normal commands | Insert-mode behavior and insert command helpers.                                                                                       |
+| `src/vim/registers.ts` | `state::Register` / `VimGlobals.registers`      | Local register model until state grows closer to Zed.                                                                                  |
+| `src/vim/test/*`       | `test/*`                                        | Neovim-backed harness and fixture machinery.                                                                                           |
+| `src/vim/test_data/*`  | `test_data/*`                                   | Fixture-driven compatibility backlog.                                                                                                  |
 
 When translating behavior from Zed, add source comments near the local type/function. Prefer stable API/module references over line numbers.
 
@@ -405,17 +407,31 @@ npm test -- --runInBand
 
 The npm commands may print existing `.npmrc` proxy warnings; those warnings are not currently test failures.
 
-## For Manual testing
+## Manual verification checklist
 
-Run these commands in different terminals
+After syncing into the VSCode checkout and letting the watch build settle, verify these
+areas in a real editor buffer:
+
+(None; all checked)
+
+Known caveats still intentionally not fully covered:
+
+- Full visual search repeat fixture (`test_v_search`) has empty-search forward/backward edge cases still disabled.
+- Full paragraph/sentence object fixtures have blank-line and punctuation edge cases beyond the current first slice.
+- Full `test_r`, `test_replace_mode_with_counts`, and full dot-repeat fixtures include newline/count/linewise paste/case-toggle edge cases beyond the current first slice.
+- Full dot-repeat register fixtures need exact repeat-register semantics for numbered-register paste.
+- VSCode-contrib files are type-checked by the VSCode build after sync, not by the local `npm run build -- --noEmit` command.
+
+Useful local commands after source changes:
 
 ```sh
-npm run watch
-npm run watch-web
-./scripts/code-server.sh
+npm run build -- --noEmit
+npm test -- --runInBand
 ```
 
-and run
+The npm commands may print existing `.npmrc` proxy warnings; those warnings are not currently test failures.
+
+For VSCode manual testing, run the VSCode watch/server commands in separate terminals as usual, then manually run:
 
 ```sh
 ./scripts/sync-vscode-contrib.sh /path/to/vscode

@@ -5,7 +5,7 @@
 // - intentional differences: this first slice writes only an unnamed clipboard string.
 
 import { VimEditorCapabilities, rangeText } from "../editor.js";
-import { Motion, lineRange, motionRange } from "../motion.js";
+import { Motion, motionRange } from "../motion.js";
 import { RegisterName, Registers } from "../registers.js";
 import { TextRange, charwiseSelection, selectionHead } from "../state.js";
 
@@ -32,7 +32,7 @@ export function yankRange(
     copied.push(rangeText(editor, rangeForHead(selectionHead(selection))));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "characterwise");
+  if (copied.length > 0) registers.writeYank(registerName, copied.join("\n"), "characterwise");
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
 }
 
@@ -46,9 +46,17 @@ export function yankLines(
   const copied: string[] = [];
 
   for (const selection of editor.getSelections()) {
-    copied.push(rangeText(editor, lineRange(editor, selectionHead(selection).row, count)));
+    copied.push(linewiseContent(editor, selectionHead(selection).row, count));
   }
 
-  if (copied.length > 0) registers.write(registerName, copied.join("\n"), "linewise");
+  if (copied.length > 0) registers.writeYank(registerName, copied.join(""), "linewise");
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
+}
+
+function linewiseContent(editor: VimEditorCapabilities, row: number, count: number): string {
+  const startRow = Math.max(0, Math.min(row, editor.lineCount() - 1));
+  const endRow = Math.min(startRow + count, editor.lineCount());
+  const lines: string[] = [];
+  for (let current = startRow; current < endRow; current++) lines.push(editor.line(current));
+  return `${lines.join("\n")}\n`;
 }
