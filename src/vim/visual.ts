@@ -103,6 +103,29 @@ export class VisualMode {
     this.syncEditorSelection();
   }
 
+  adoptSelection(selection: VimSelection, { render }: { render: boolean }): boolean {
+    if (selection.type !== "charwise") return false;
+    if (comparePositions(selection.anchor, selection.head) === 0) return false;
+    this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
+    this.pendingRegister = false;
+    this.selectedRegister = undefined;
+    this.countBuffer = "";
+    this.state = externalSelectionToCharwiseState(this.editor, selection);
+    this.editor.setCursorStyle("line");
+    if (render) this.syncEditorSelection();
+    return true;
+  }
+
+  clearState(): void {
+    this.state = undefined;
+    this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
+    this.pendingRegister = false;
+    this.selectedRegister = undefined;
+    this.countBuffer = "";
+  }
+
   exit(): void {
     const state = this.state;
     this.state = undefined;
@@ -393,6 +416,27 @@ export class VisualMode {
 function isCountKey(key: string, countBuffer: string): boolean {
   if (!/^\d$/.test(key)) return false;
   return key !== "0" || countBuffer.length > 0;
+}
+
+function externalSelectionToCharwiseState(editor: VimEditorCapabilities, selection: Extract<VimSelection, { type: "charwise" }>): CharwiseVisualState {
+  if (comparePositions(selection.anchor, selection.head) <= 0) {
+    return {
+      kind: "charwise",
+      anchor: selection.anchor,
+      head: previousVisualPosition(editor, selection.head),
+    };
+  }
+  return {
+    kind: "charwise",
+    anchor: previousVisualPosition(editor, selection.anchor),
+    head: selection.head,
+  };
+}
+
+function previousVisualPosition(editor: VimEditorCapabilities, position: Position): Position {
+  if (position.column > 0) return { row: position.row, column: position.column - 1 };
+  if (position.row > 0) return { row: position.row - 1, column: Math.max(0, editor.lineLength(position.row - 1) - 1) };
+  return position;
 }
 
 function initialCharwiseHead(editor: VimEditorCapabilities, head: Position): Position {

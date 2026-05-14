@@ -1,6 +1,6 @@
 import { InMemoryVimEditor } from "./editor.js";
 import { Vim, runKeys } from "./vim.js";
-import { selectionHead } from "./state.js";
+import { charwiseSelection, selectionHead } from "./state.js";
 
 function head(editor: InMemoryVimEditor) {
   return selectionHead(editor.getSelections()[0]);
@@ -280,6 +280,48 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getSelections()).toEqual([
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
     ]);
+  });
+
+  it("syncs external non-empty selections into visual mode without rewriting editor state", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+    const externalSelection = { type: "charwise" as const, anchor: { row: 0, column: 1 }, head: { row: 0, column: 4 } };
+
+    editor.setSelections([externalSelection]);
+    vim.syncFromEditorState({ render: false });
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([externalSelection]);
+  });
+
+  it("can render an externally-adopted visual selection when Vim takes over", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 4 } }]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      {
+        type: "charwise",
+        anchor: { row: 0, column: 1 },
+        head: { row: 0, column: 4 },
+        cursor: { row: 0, column: 3 },
+      },
+    ]);
+  });
+
+  it("syncs external zero-width selections into normal mode", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "l"]);
+    editor.setSelections([charwiseSelection({ row: 0, column: 2 })]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([charwiseSelection({ row: 0, column: 2 })]);
   });
 
   it("opens lines above and below using normal VSCode-like edit transactions", () => {

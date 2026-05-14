@@ -42,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 115 enabled tests.
+  - `npm test -- --runInBand` passes with 118 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -412,7 +412,10 @@ The npm commands may print existing `.npmrc` proxy warnings; those warnings are 
 After syncing into the VSCode checkout and letting the watch build settle, verify these
 areas in a real editor buffer:
 
-(None; all checked)
+- External VSCode selection sync
+  - With Vim in normal mode, select text with the mouse: Vim status should switch to visual mode and selection should get Vim visual rendering/cursor behavior.
+  - With Vim in visual mode, click to a zero-width cursor or undo/redo to a zero-width selection: Vim status should switch back to normal mode.
+  - External multicursor/selection changes should be translated as plain charwise Vim selections when they do not match Vim's cached semantic state.
 
 Known caveats still intentionally not fully covered:
 

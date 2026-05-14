@@ -12,7 +12,7 @@ import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import { RegisterName, Registers } from "./registers.js";
 import { replaceModeText } from "./replace.js";
-import { KeyResult, Operator, VimMode, selectionHead } from "./state.js";
+import { KeyResult, Operator, VimMode, comparePositions, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
 
 type PendingFind =
@@ -77,6 +77,29 @@ export class Vim {
 
   readRegister(name: RegisterName | undefined): string {
     return this.registers.read(name);
+  }
+
+  syncFromEditorState({ render = true }: { render?: boolean } = {}): void {
+    this.pendingFind = undefined;
+    this.pendingSearch = undefined;
+    this.pendingCommand = undefined;
+    this.normalMode.clearPending();
+    const selections = this.editor.getSelections();
+    const visualSelection = selections.find(selection =>
+      selection.type === "charwise" && comparePositions(selection.anchor, selection.head) !== 0);
+
+    if (visualSelection !== undefined && this.visualMode.adoptSelection(visualSelection, { render })) {
+      this.insertOrigin = undefined;
+      this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
+      return;
+    }
+
+    if (this.isVisualMode()) {
+      this.visualMode.clearState();
+    }
+    this.insertOrigin = undefined;
+    if (render) this.editor.setCursorStyle("block");
+    this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
   }
 
   private isPending(): boolean {

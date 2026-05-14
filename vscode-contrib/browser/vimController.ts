@@ -47,13 +47,15 @@ export class VimController extends Disposable {
 		this.vimPendingContext = VimPendingContext.bindTo(contextKeyService);
 		this.vimOperatorContext = VimOperatorContext.bindTo(contextKeyService);
 		this.vimChordContext = VimChordContext.bindTo(contextKeyService);
+		this.editor.getContainerDomNode().classList.add('vim-cursor-rendering-enabled');
 		this.syncEditorState();
 		this._register(this.editor.onKeyDown(event => this.handleKeyDown(event)));
 		this._register(this.editor.onDidFocusEditorText(() => {
 			this.vimEditor.refreshClipboardFromSystemClipboard();
 			this.syncEditorState();
 		}));
-		this._register(this.editor.onDidChangeModel(() => this.syncEditorState()));
+		this._register(this.editor.onDidChangeCursorSelection(event => this.handleCursorSelectionChanged(event.source)));
+		this._register(this.editor.onDidChangeModel(() => this.handleExternalEditorStateChanged()));
 	}
 
 	getStatus(): VimStatus {
@@ -61,6 +63,7 @@ export class VimController extends Disposable {
 	}
 
 	override dispose(): void {
+		this.editor.getContainerDomNode().classList.remove('vim-cursor-rendering-enabled');
 		this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
 		super.dispose();
 	}
@@ -81,6 +84,24 @@ export class VimController extends Disposable {
 			event.preventDefault();
 			event.stopPropagation();
 		}
+	}
+
+	private handleCursorSelectionChanged(source: string): void {
+		// VSCode-specific synchronization path: unlike Zed, VSCode selection state
+		// can be changed outside the Vim state machine (mouse selections, undo/redo
+		// recovery, multicursor commands, other editor contributions). Ignore changes
+		// that this Vim adapter originated, and otherwise translate the current native
+		// editor state back into the closest Vim mode/state we can represent.
+		if (source.startsWith('vim')) {
+			return;
+		}
+		this.handleExternalEditorStateChanged();
+	}
+
+	private handleExternalEditorStateChanged(): void {
+		this.vimEditor.invalidateCachedSelections();
+		this.vim.syncFromEditorState({ render: false });
+		this.syncEditorState();
 	}
 
 	private syncEditorState(): void {

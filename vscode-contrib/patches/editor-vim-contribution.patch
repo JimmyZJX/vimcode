@@ -1,0 +1,6 @@
+diff --git a/src/vs/editor/editor.all.ts b/src/vs/editor/editor.all.ts
+--- a/src/vs/editor/editor.all.ts
++++ b/src/vs/editor/editor.all.ts
+@@ -1,1 +1,2 @@
++import './contrib/vim/browser/vim.contribution.js';
+ import './contrib/wordHighlighter/browser/wordHighlighter.js';

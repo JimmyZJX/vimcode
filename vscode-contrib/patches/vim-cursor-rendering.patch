@@ -1,0 +1,67 @@
+diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
+--- a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
++++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
+@@ -11,6 +11,7 @@
+ import { IViewCursorRenderData, ViewCursor, CursorPlurality } from './viewCursor.js';
+ import { TextEditorCursorBlinkingStyle, TextEditorCursorStyle, EditorOption } from '../../../common/config/editorOptions.js';
+ import { Position } from '../../../common/core/position.js';
++import { SelectionDirection } from '../../../common/core/selection.js';
+ import {
+ 	editorCursorBackground, editorCursorForeground,
+ 	editorMultiCursorPrimaryForeground, editorMultiCursorPrimaryBackground,
+@@ -36,6 +37,7 @@ export class ViewCursors extends ViewPart {
+ 	private _cursorSmoothCaretAnimation: 'off' | 'explicit' | 'on';
+ 	private _editContextEnabled: boolean;
+ 	private _selectionIsEmpty: boolean;
++	private _vimCursorInsideSelection: boolean;
+ 	private _isComposingInput: boolean;
+ 
+ 	private _isVisible: boolean;
+@@ -67,6 +69,7 @@ export class ViewCursors extends ViewPart {
+ 		this._cursorSmoothCaretAnimation = options.get(EditorOption.cursorSmoothCaretAnimation);
+ 		this._editContextEnabled = options.get(EditorOption.effectiveEditContext);
+ 		this._selectionIsEmpty = true;
++		this._vimCursorInsideSelection = false;
+ 		this._isComposingInput = false;
+ 
+ 		this._isVisible = false;
+@@ -164,8 +167,13 @@ export class ViewCursors extends ViewPart {
+ 		this._onCursorPositionChanged(positions[0], positions.slice(1), e.reason);
+ 
+ 		const selectionIsEmpty = e.selections[0].isEmpty();
+-		if (this._selectionIsEmpty !== selectionIsEmpty) {
++		const vimCursorInsideSelection = this._domNode.domNode.closest('.vim-cursor-rendering-enabled') !== null
++			&& e.cursorPositions === undefined
++			&& e.selections.length > 0
++			&& e.selections.every(selection => !selection.isEmpty() && selection.getDirection() === SelectionDirection.LTR && selection.positionColumn > 1);
++		if (this._selectionIsEmpty !== selectionIsEmpty || this._vimCursorInsideSelection !== vimCursorInsideSelection) {
+ 			this._selectionIsEmpty = selectionIsEmpty;
++			this._vimCursorInsideSelection = vimCursorInsideSelection;
+ 			this._updateDomClassName();
+ 		}
+ 
+@@ -305,6 +313,9 @@ export class ViewCursors extends ViewPart {
+ 		if (!this._selectionIsEmpty) {
+ 			result += ' has-selection';
+ 		}
++		if (this._vimCursorInsideSelection) {
++			result += ' vim-cursor-inside-selection';
++		}
+ 		switch (this._cursorStyle) {
+ 			case TextEditorCursorStyle.Line:
+ 				result += ' cursor-line-style';
+diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css
+--- a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css
++++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css
+@@ -13,6 +13,11 @@
+ 	box-sizing: border-box;
+ }
+ 
++.monaco-editor .cursors-layer.vim-cursor-inside-selection > .cursor {
++	pointer-events: none;
++	transform: translateX(-100%);
++}
++
+ /* -- smooth-caret-animation -- */
+ .monaco-editor .cursors-layer.cursor-smooth-caret-animation > .cursor {
+ 	transition: all 80ms;
