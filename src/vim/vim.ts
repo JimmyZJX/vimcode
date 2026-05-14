@@ -10,6 +10,8 @@ import { VimEditorCapabilities } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
+import { RepeatState } from "./normal/repeat.js";
+import { SearchState } from "./normal/search.js";
 import { RegisterName, Registers } from "./registers.js";
 import { replaceModeText } from "./replace.js";
 import { KeyResult, Operator, VimMode, comparePositions, selectionHead } from "./state.js";
@@ -18,8 +20,6 @@ import { VisualMode } from "./visual.js";
 type PendingFind =
   | { type: "forward"; before: boolean; count: number }
   | { type: "backward"; after: boolean; count: number };
-
-type PendingSearch = { backwards: boolean; query: string };
 
 export type VimStatus = {
   mode: VimMode["kind"];
@@ -37,14 +37,11 @@ export class Vim {
   private readonly registers = new Registers();
   private pendingFind: PendingFind | undefined;
   private lastFind: FindMotion | undefined;
-  private pendingSearch: PendingSearch | undefined;
-  private lastSearch: { query: string; backwards: boolean } | undefined;
+  private readonly searchState = new SearchState();
+  private readonly repeatState = new RepeatState();
   private pendingCommand: string | undefined;
   private replaceCount = 1;
   private insertOrigin: VimMode["kind"] | undefined;
-  private currentRepeat: string[] | undefined;
-  private lastRepeat: string[] | undefined;
-  private replayingRepeat = false;
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
 
@@ -81,7 +78,7 @@ export class Vim {
 
   syncFromEditorState({ render = true }: { render?: boolean } = {}): void {
     this.pendingFind = undefined;
-    this.pendingSearch = undefined;
+    this.searchState.clearPending();
     this.pendingCommand = undefined;
     this.normalMode.clearPending();
     const selections = this.editor.getSelections();
@@ -103,12 +100,12 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.pendingFind !== undefined || this.pendingSearch !== undefined || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingFind !== undefined || this.searchState.isPending() || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
-    if (this.pendingSearch !== undefined) return `${this.pendingSearch.backwards ? "?" : "/"}${this.pendingSearch.query}`;
+    if (this.searchState.isPending()) return this.searchState.pendingChord();
     if (this.pendingFind !== undefined) {
       const findKey = this.pendingFind.type === "forward"
         ? this.pendingFind.before ? "t" : "f"
@@ -126,12 +123,12 @@ export class Vim {
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyResult {
-    if (!this.replayingRepeat) this.maybeFinishRepeat();
+    if (!this.repeatState.isReplaying()) this.repeatState.maybeFinish({ mode: this.modeState.kind, isPending: this.modeState.kind === "normal" && this.normalMode.isPending() });
 
     if (this.isEscape(key)) {
-      if (!this.replayingRepeat && this.currentRepeat !== undefined) this.recordRepeatKey(key);
+      if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
       this.pendingFind = undefined;
-      this.pendingSearch = undefined;
+      this.searchState.clearPending();
       this.pendingCommand = undefined;
       this.normalMode.clearPending();
       if (
@@ -158,8 +155,9 @@ export class Vim {
       return "handled";
     }
 
-    if (this.pendingSearch !== undefined) {
-      this.handlePendingSearchKey(key);
+    if (this.searchState.isPending()) {
+      const motion = this.searchState.handleKey(key, this.registers);
+      if (motion !== undefined) this.applyMotion(motion, 1);
       return "handled";
     }
 
@@ -168,14 +166,14 @@ export class Vim {
       return "handled";
     }
 
-    if (!this.replayingRepeat && this.modeState.kind === "normal" && key === ".") {
-      this.replayLastRepeat(this.normalMode.takeCountForMotion(1));
+    if (!this.repeatState.isReplaying() && this.modeState.kind === "normal" && key === ".") {
+      this.repeatState.replay(this.normalMode.takeCountForMotion(1), key => this.onKey(key));
       return "handled";
     }
 
-    if (!this.replayingRepeat) {
-      this.maybeStartRepeat(key);
-      this.recordRepeatKey(key);
+    if (!this.repeatState.isReplaying()) {
+      this.repeatState.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalMode.pendingChord() });
+      this.repeatState.recordKey(key);
     }
 
     if (this.modeState.kind === "insert") {
@@ -258,35 +256,6 @@ export class Vim {
     return normalResult.keyResult;
   }
 
-  private maybeStartRepeat(key: string): void {
-    if (this.currentRepeat !== undefined || this.modeState.kind !== "normal") return;
-    if (isRepeatableStartKey(key)) this.currentRepeat = [...this.normalMode.pendingChord()];
-  }
-
-  private recordRepeatKey(key: string): void {
-    this.currentRepeat?.push(key);
-  }
-
-  private maybeFinishRepeat(): void {
-    if (this.currentRepeat === undefined) return;
-    if (this.modeState.kind === "normal" && !this.normalMode.isPending()) {
-      this.lastRepeat = this.currentRepeat;
-      this.currentRepeat = undefined;
-    }
-  }
-
-  private replayLastRepeat(count: number): void {
-    if (this.lastRepeat === undefined) return;
-    this.replayingRepeat = true;
-    try {
-      for (let index = 0; index < count; index++) {
-        for (const key of this.lastRepeat) this.onKey(key);
-      }
-    } finally {
-      this.replayingRepeat = false;
-    }
-  }
-
   private collapseToFirstCursor(): void {
     const firstSelection = this.editor.getSelections()[0];
     if (firstSelection === undefined) return;
@@ -295,7 +264,8 @@ export class Vim {
 
   private handleSharedMotionKey(key: string): boolean {
     if (key === "n" || key === "N") {
-      this.repeatSearch({ reversed: key === "N" });
+      const motion = this.searchState.repeat({ reversed: key === "N" });
+      if (motion !== undefined) this.applyMotion(motion, 1);
       return true;
     }
 
@@ -323,7 +293,7 @@ export class Vim {
     }
 
     if (key === "/" || key === "?") {
-      this.pendingSearch = { backwards: key === "?", query: "" };
+      this.searchState.start(key === "?");
       return true;
     }
 
@@ -374,33 +344,6 @@ export class Vim {
     }
   }
 
-  private repeatSearch({ reversed }: { reversed: boolean }): void {
-    if (this.lastSearch === undefined) return;
-    const backwards = reversed ? !this.lastSearch.backwards : this.lastSearch.backwards;
-    this.applyMotion({ type: backwards ? "searchBackward" : "searchForward", query: this.lastSearch.query }, 1);
-  }
-
-  private handlePendingSearchKey(key: string): void {
-    const pending = this.pendingSearch;
-    if (pending === undefined) return;
-    if (key === "enter") {
-      const query = pending.query.length > 0 ? pending.query : this.lastSearch?.query;
-      const backwards = pending.query.length > 0 ? pending.backwards : this.lastSearch?.backwards ?? pending.backwards;
-      this.pendingSearch = undefined;
-      if (query !== undefined && query.length > 0) {
-        this.lastSearch = { query, backwards };
-        this.registers.writeSearch(query);
-        this.applyMotion({ type: backwards ? "searchBackward" : "searchForward", query }, 1);
-      }
-      return;
-    }
-    if (key === "backspace") {
-      this.pendingSearch = { ...pending, query: pending.query.slice(0, -1) };
-      return;
-    }
-    this.pendingSearch = { ...pending, query: pending.query + (key === "space" ? " " : key) };
-  }
-
   private applyMotion(motion: Motion, count: number): void {
     if (this.modeState.kind === "normal") {
       const enterInsert = this.normalMode.applyMotion(motion, count);
@@ -433,22 +376,6 @@ export class Vim {
   private isEscape(key: string): boolean {
     return key === "<escape>" || key === "escape" || key === "ctrl-[";
   }
-}
-
-function isRepeatableStartKey(key: string): boolean {
-  return key === "x"
-    || key === "p"
-    || key === "P"
-    || key === "d"
-    || key === "c"
-    || key === "r"
-    || key === "R"
-    || key === "o"
-    || key === "O"
-    || key === "i"
-    || key === "a"
-    || key === "I"
-    || key === "A";
 }
 
 // Local test helper, analogous in spirit to Zed's test harness helpers in

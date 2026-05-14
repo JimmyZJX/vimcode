@@ -9,8 +9,8 @@ import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
 import { Motion, applyMotionWithGoal, lineRange, motionRange, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
-import { changeLines, changeMotion, changeRange } from "./normal/change.js";
-import { deleteCharacters, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
+import { changeLineRange, changeLines, changeMotion, changeRange } from "./normal/change.js";
+import { deleteCharacters, deleteLineRange, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
 import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion, yankRange } from "./normal/yank.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
@@ -127,6 +127,9 @@ export class NormalMode {
       this.pendingPrefix = undefined;
       if (key === "g") {
         const count = this.takeCount(1);
+        if (this.pendingOperator !== undefined) {
+          return handled({ enterInsert: this.applyLinewiseOperatorToRow(count - 1) });
+        }
         this.moveToLine(count - 1);
         this.selectedRegister = undefined;
         return handled();
@@ -179,7 +182,11 @@ export class NormalMode {
 
     if (key === "G") {
       const maybeLine = this.takeCount(undefined);
-      this.moveToLine(maybeLine === undefined ? this.editor.lineCount() - 1 : maybeLine - 1);
+      const targetRow = maybeLine === undefined ? this.editor.lineCount() - 1 : maybeLine - 1;
+      if (this.pendingOperator !== undefined) {
+        return handled({ enterInsert: this.applyLinewiseOperatorToRow(targetRow) });
+      }
+      this.moveToLine(targetRow);
       this.selectedRegister = undefined;
       return handled();
     }
@@ -405,13 +412,38 @@ export class NormalMode {
     const registerName = this.takeSelectedRegister();
     switch (operator) {
       case "change":
-        changeMotion(this.editor, this.registers, registerName, motion, count);
-        return true;
+        return changeMotion(this.editor, this.registers, registerName, motion, count);
       case "delete":
         deleteMotion(this.editor, this.registers, registerName, motion, count);
         return false;
       case "yank":
         yankMotion(this.editor, this.registers, registerName, motion, count);
+        return false;
+    }
+  }
+
+  private applyLinewiseOperatorToRow(targetRow: number): boolean {
+    const pending = this.pendingOperator;
+    this.pendingOperator = undefined;
+    if (pending === undefined) return false;
+
+    const registerName = this.takeSelectedRegister();
+    const rows = this.editor.getSelections().map(selection => {
+      const head = selectionHead(selection);
+      return {
+        startRow: Math.min(head.row, Math.max(0, Math.min(targetRow, this.editor.lineCount() - 1))),
+        endRow: Math.max(head.row, Math.max(0, Math.min(targetRow, this.editor.lineCount() - 1))),
+        column: head.column,
+      };
+    });
+
+    switch (pending.operator) {
+      case "change":
+        return changeLineRange(this.editor, this.registers, registerName, rows);
+      case "delete":
+        deleteLineRange(this.editor, this.registers, registerName, rows);
+        return false;
+      case "yank":
         return false;
     }
   }
@@ -454,7 +486,7 @@ export class NormalMode {
 
   private isCountKey(key: string): boolean {
     if (!/^\d$/.test(key)) return false;
-    return key !== "0" || this.countBuffer.length > 0 || this.pendingOperator !== undefined;
+    return key !== "0" || this.countBuffer.length > 0;
   }
 
   private takeSelectedRegister(): RegisterName | undefined {

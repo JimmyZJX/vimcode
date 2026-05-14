@@ -42,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 118 enabled tests.
+  - `npm test -- --runInBand` passes with 133 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -53,7 +53,7 @@ Implemented first-slice behavior:
 - first text-object grammar: operator + `i`/`a` + `w`/`W`, simple quote/bracket objects, and first paragraph/sentence objects
 - visual mode slice: charwise `v`, visual-line `V`, and visual-block `ctrl-v` motions plus visual `d`/`x`, `y`, `c`/`s`, `iw`/`iW`, `p`/`P`, block `I`/`A` insert, and other-end block movement for the enabled Zed fixtures
 - motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`, `f`, `F`, `t`, `T`, `;`, `,`
-- operators: `d`, `c`, `y`
+- operators: `d`, `c`, `y`, including expanded basic `d`/`c` coverage for `0`, `h`, `l`, `$`, vertical linewise motions, `gg`, `G`, and `cc`
 - line operators: `dd`, `cc`, `yy`
 - motion operators: `dw`, `de`, `cw`, `ce`, `yw`
 - insert commands: `i`, `a`, `I`, `A`, `o`, `O`

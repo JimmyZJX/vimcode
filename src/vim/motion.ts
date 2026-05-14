@@ -340,6 +340,12 @@ export function motionRange(
   count: number
 ): TextRange {
   const end = applyMotion(editor, start, motion, count);
+  if (motion.type === "right") {
+    return {
+      start,
+      end: { row: start.row, column: Math.min(start.column + count, editor.lineLength(start.row)) },
+    };
+  }
   if (motion.type === "endOfLine") {
     return orderedRange(start, { row: end.row, column: editor.lineLength(end.row) });
   }

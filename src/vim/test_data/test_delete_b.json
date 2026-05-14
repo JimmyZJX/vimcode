@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: cross-line previous-word operator edge cases still need Zed-accurate exclusive motion handling.
 {"Put":{"state":"Teˇst Test"}}
 {"Key":"d"}
 {"Key":"b"}

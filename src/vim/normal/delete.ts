@@ -16,6 +16,8 @@ import {
   selectionHead,
 } from "../state.js";
 
+export type LinewiseOperationRange = { startRow: number; endRow: number; column: number };
+
 // Zed: `normal::delete::Vim::delete_motion`.
 export function deleteMotion(
   editor: VimEditorCapabilities,
@@ -24,6 +26,16 @@ export function deleteMotion(
   motion: Motion,
   count: number
 ): void {
+  if (motion.type === "up" || motion.type === "down") {
+    const ranges = editor.getSelections().map(selection => {
+      const head = selectionHead(selection);
+      const targetRow = Math.max(0, Math.min(head.row + (motion.type === "up" ? -count : count), editor.lineCount() - 1));
+      return targetRow === head.row ? undefined : { startRow: Math.min(head.row, targetRow), endRow: Math.max(head.row, targetRow), column: head.column };
+    }).filter(range => range !== undefined);
+    deleteLineRange(editor, registers, registerName, ranges);
+    return;
+  }
+
   deleteRange(editor, registers, registerName, (head) => motionRange(editor, head, motion, count));
 }
 
@@ -69,6 +81,29 @@ export function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: T
     row: range.start.row,
     column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
   });
+}
+
+export function deleteLineRange(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  ranges: readonly LinewiseOperationRange[]
+): void {
+  if (ranges.length === 0) return;
+
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+  const copied: string[] = [];
+
+  for (const rangeInfo of ranges) {
+    const range = lineRange(editor, rangeInfo.startRow, rangeInfo.endRow - rangeInfo.startRow + 1);
+    copied.push(linewiseContent(editor, rangeInfo.startRow, rangeInfo.endRow - rangeInfo.startRow + 1));
+    edits.push({ range, text: "" });
+    selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, rangeInfo.startRow, rangeInfo.column, rangeInfo.endRow - rangeInfo.startRow + 1)));
+  }
+
+  if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");
+  editor.applyEdits(edits, selectionsAfter);
 }
 
 // Zed: `Motion::CurrentLine` flowing into `normal::delete::Vim::delete_motion`.

@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: vertical change indentation-preservation edge cases are not fully Zed-accurate yet.
 {"Put":{"state":"The quick\nbrown ˇfox\njumps over"}}
 {"Key":"c"}
 {"Key":"k"}
