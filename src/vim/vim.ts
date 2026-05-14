@@ -10,7 +10,7 @@ import { VimEditorCapabilities } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
-import { RepeatState } from "./normal/repeat.js";
+import { MacroState, RepeatState } from "./normal/repeat.js";
 import { SearchState } from "./normal/search.js";
 import { RegisterName, Registers } from "./registers.js";
 import { replaceModeText } from "./replace.js";
@@ -39,6 +39,7 @@ export class Vim {
   private lastFind: FindMotion | undefined;
   private readonly searchState = new SearchState();
   private readonly repeatState = new RepeatState();
+  private readonly macroState = new MacroState();
   private pendingCommand: string | undefined;
   private replaceCount = 1;
   private insertOrigin: VimMode["kind"] | undefined;
@@ -127,6 +128,7 @@ export class Vim {
 
     if (this.isEscape(key)) {
       if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
+      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
       this.pendingFind = undefined;
       this.searchState.clearPending();
       this.pendingCommand = undefined;
@@ -150,18 +152,55 @@ export class Vim {
       return "handled";
     }
 
+    if (this.modeState.kind === "normal" && this.macroState.wantsRecordRegister()) {
+      this.macroState.handleRecordRegister(key);
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && this.macroState.wantsReplayRegister()) {
+      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
+      this.macroState.replayRegisterKey(key, key => this.onKey(key));
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && this.macroState.isRecording() && key === "q") {
+      this.macroState.stopRecording();
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && key === "q") {
+      this.macroState.startRecordingPrefix();
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && key === "@") {
+      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
+      this.macroState.startReplayPrefix(this.normalMode.takeCountForMotion(1));
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && key === "Q") {
+      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
+      this.macroState.replayLast(this.normalMode.takeCountForMotion(1), key => this.onKey(key));
+      return "handled";
+    }
+
+    if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
+
     if (this.pendingCommand !== undefined) {
       this.handlePendingCommandKey(key);
       return "handled";
     }
 
     if (this.searchState.isPending()) {
+      if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
       const motion = this.searchState.handleKey(key, this.registers);
       if (motion !== undefined) this.applyMotion(motion, 1);
       return "handled";
     }
 
     if (this.pendingFind !== undefined) {
+      if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
       this.handlePendingFindKey(key);
       return "handled";
     }

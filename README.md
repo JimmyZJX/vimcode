@@ -32,7 +32,7 @@ Done in this branch:
   - Existing passing local fixtures remain enabled.
   - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
   - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
-  - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_change_w`, `test_change_e`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
+  - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_delete_b`, `test_change_w`, `test_change_e`, `test_change_b`, `test_change_j`, `test_change_k`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
   - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text plus the charwise, linewise, and rectangular visual marker shapes used by the enabled fixtures.
@@ -42,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 133 enabled tests.
+  - `npm test -- --runInBand` passes with 143 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -62,7 +62,8 @@ Implemented first-slice behavior:
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
 - simple `/...<enter>` search and `n` repeat for the current forward-search fixture
 - first surround operators: `ys`, `yss`, `ds`, `cs`, and visual `S` for word/motion/quote/bracket ranges
-- first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, and `:` commands for goto, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
+- first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, count override for repeated operator motions, and `:` commands for goto, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
+- first macro slice: `q{register}` recording, `@{register}` / `@@` replay, counted replay, and `Q` replay-last for focused fixtures
 - numbered/special register slice: register `0` and `1`-`9` storage/rotation for linewise deletes, small-delete `-`, black-hole `_`, search `/`, uppercase append registers, counted `p`/`P`, and linewise paste repeat basics
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 
@@ -421,8 +422,9 @@ Known caveats still intentionally not fully covered:
 
 - Full visual search repeat fixture (`test_v_search`) has empty-search forward/backward edge cases still disabled.
 - Full paragraph/sentence object fixtures have blank-line and punctuation edge cases beyond the current first slice.
-- Full `test_r`, `test_replace_mode_with_counts`, and full dot-repeat fixtures include newline/count/linewise paste/case-toggle edge cases beyond the current first slice.
+- Full `test_r`, `test_replace_mode_with_counts`, and full dot-repeat fixtures include newline and Zed Put-with-preserved-repeat-state cases beyond the current first slice.
 - Full dot-repeat register fixtures need exact repeat-register semantics for numbered-register paste.
+- Full macro replay fixtures still need richer replay-while-recording and macro/dot interaction semantics.
 - VSCode-contrib files are type-checked by the VSCode build after sync, not by the local `npm run build -- --noEmit` command.
 
 Useful local commands after source changes:

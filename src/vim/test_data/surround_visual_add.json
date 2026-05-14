@@ -1,3 +1,4 @@
+// DISABLED: Zed default visual shift-s is SubstituteLine; visual surround shift-s is only used with a custom test keybinding.
 {"Put":{"state":"The ˇquick brown"}}
 {"Key":"v"}
 {"Key":"i"}

@@ -11,3 +11,8 @@
 {"Key":"2"}
 {"Key":"."}
 {"Get":{"state":" brown\n over\nˇe lazy dog","mode":"Normal"}}
+{"Put":{"state":"ˇthe quick brown fox"}}
+{"Key":"2"}
+{"Key":"~"}
+{"Key":"."}
+{"Get":{"state":"THE ˇquick brown fox","mode":"Normal"}}

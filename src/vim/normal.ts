@@ -15,6 +15,7 @@ import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion, yankRange } from "./normal/yank.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
+import { toggleCaseCharacters } from "./normal/convert.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
 import { KeyResult, Operator, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
@@ -23,7 +24,7 @@ type PendingOperator = {
   count: number;
 };
 
-type PendingPrefix = "g" | "register";
+type PendingPrefix = "g" | "register" | "indent";
 type PendingTextObject = { around: boolean };
 type PendingSurround =
   | { type: "addTarget"; count: number }
@@ -123,6 +124,16 @@ export class NormalMode {
       return handled();
     }
 
+    if (this.pendingPrefix === "indent") {
+      this.pendingPrefix = undefined;
+      if (key === ">") {
+        this.indentCurrentLines();
+        return handled();
+      }
+      this.clearPending();
+      return handled();
+    }
+
     if (this.pendingPrefix === "g") {
       this.pendingPrefix = undefined;
       if (key === "g") {
@@ -150,6 +161,11 @@ export class NormalMode {
 
     if (key === '"') {
       this.pendingPrefix = "register";
+      return handled();
+    }
+
+    if (key === ">") {
+      this.pendingPrefix = "indent";
       return handled();
     }
 
@@ -244,8 +260,21 @@ export class NormalMode {
       case "r":
         this.pendingReplaceCount = this.takeCount(1);
         return handled();
+      case "s": {
+        const count = this.takeCount(1);
+        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count);
+        enterInsertAtSelections(this.editor, (pos) => pos);
+        return handled({ enterInsert: true });
+      }
+      case "S":
+        this.handleLineOperator("change");
+        return handled({ enterInsert: true });
       case "x":
         deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
+        return handled();
+      case "~":
+        toggleCaseCharacters(this.editor, this.takeCount(1));
+        this.selectedRegister = undefined;
         return handled();
       case "p":
         paste(this.editor, this.registers, this.takeSelectedRegister(), { before: false, count: this.takeCount(1) });
@@ -319,6 +348,17 @@ export class NormalMode {
         return charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow));
       })
     );
+  }
+
+  private indentCurrentLines(): void {
+    const edits = this.editor.getSelections().map(selection => {
+      const row = selectionHead(selection).row;
+      return { range: { start: { row, column: 0 }, end: { row, column: 0 } }, text: "    " };
+    });
+    this.editor.applyEdits(edits, this.editor.getSelections().map(selection => {
+      const head = selectionHead(selection);
+      return charwiseSelection({ row: head.row, column: head.column + 4 });
+    }));
   }
 
   private handleReplaceKey(key: string): void {

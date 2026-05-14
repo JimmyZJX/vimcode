@@ -369,6 +369,10 @@ export function motionRange(
     if (target === undefined) return { start, end: start };
     return orderedRange(motion.after ? nextPosition(editor, target) ?? target : target, nextPosition(editor, start) ?? start);
   }
+  if (motion.type === "previousWordStart" && end.row < start.row && start.column === 0) {
+    const lastIncludedRow = start.row - 1;
+    return orderedRange(end, { row: lastIncludedRow, column: editor.lineLength(lastIncludedRow) });
+  }
   return orderedRange(start, end);
 }
 

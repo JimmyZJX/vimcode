@@ -69,9 +69,10 @@ export function changeLineRange(
       ? { start: { row: startRow, column: 0 }, end: { row: endRow + 1, column: 0 } }
       : { start: { row: startRow, column: 0 }, end: { row: endRow, column: editor.lineLength(endRow) } };
     const indent = indentation(editor.line(startRow));
-    const replacement = startRow === 0 && endRow === editor.lineCount() - 1
+    const deletingWholeDocument = startRow === 0 && endRow === editor.lineCount() - 1;
+    const replacement = deletingWholeDocument
       ? ""
-      : startRow === 0 || endRow + 1 < editor.lineCount() ? `${indent}\n` : "";
+      : endRow + 1 < editor.lineCount() ? `${indent}\n` : indent;
     edits.push({ range, text: replacement });
     selectionsAfter.push({ type: "charwise" as const, anchor: { row: startRow, column: indent.length }, head: { row: startRow, column: indent.length } });
   }

@@ -74,7 +74,7 @@ export class VimController extends Disposable {
 			return;
 		}
 
-		if (this.vim.mode.kind === 'insert' && !isEscapeKey(key)) {
+		if ((this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') && !isEscapeKey(key)) {
 			return;
 		}
 
@@ -90,9 +90,9 @@ export class VimController extends Disposable {
 		// VSCode-specific synchronization path: unlike Zed, VSCode selection state
 		// can be changed outside the Vim state machine (mouse selections, undo/redo
 		// recovery, multicursor commands, other editor contributions). Ignore changes
-		// that this Vim adapter originated, and otherwise translate the current native
-		// editor state back into the closest Vim mode/state we can represent.
-		if (source.startsWith('vim')) {
+		// that this Vim adapter originated, and also ignore native cursor movement while
+		// insert/replace mode is intentionally letting VSCode handle typed input.
+		if (source.startsWith('vim') || this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
 			return;
 		}
 		this.handleExternalEditorStateChanged();

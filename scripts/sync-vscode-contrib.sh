@@ -118,6 +118,35 @@ import re
 import sys
 root = Path(sys.argv[1])
 
+view_cursor = root / 'src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts'
+text = view_cursor.read_text()
+original = text
+if "private _renderPosition: Position | null;" not in text:
+    text = text.replace(
+        "\tprivate _position: Position;\n\tprivate _pluralityClass: string;",
+        "\tprivate _position: Position;\n\tprivate _renderPosition: Position | null;\n\tprivate _pluralityClass: string;",
+        1,
+    )
+if "this._renderPosition = null;" not in text:
+    text = text.replace(
+        "\t\tthis._position = new Position(1, 1);\n\t\tthis._pluralityClass = '';",
+        "\t\tthis._position = new Position(1, 1);\n\t\tthis._renderPosition = null;\n\t\tthis._pluralityClass = '';",
+        1,
+    )
+text = re.sub(
+    r"\tpublic onCursorPositionChanged\(position: Position, pauseAnimation: boolean(?:, renderPosition: Position \| undefined = undefined)?\): boolean \{.*?\n\t\}\n\n\t/\*\*\n\t \* If `this\._position` is inside a grapheme, returns the position where the grapheme starts\.",
+    "\tpublic onCursorPositionChanged(position: Position, pauseAnimation: boolean, renderPosition: Position | undefined = undefined): boolean {\n\t\tif (pauseAnimation) {\n\t\t\tthis._domNode.domNode.style.transitionProperty = 'none';\n\t\t} else {\n\t\t\tthis._domNode.domNode.style.transitionProperty = '';\n\t\t}\n\t\tthis._position = position;\n\t\tthis._renderPosition = renderPosition ?? null;\n\t\treturn true;\n\t}\n\n\t/**\n\t * If the render cursor position is inside a grapheme, returns the position where the grapheme starts.",
+    text,
+    flags=re.S,
+)
+text = text.replace(
+    "\t\tconst { lineNumber, column } = this._position;",
+    "\t\tconst { lineNumber, column } = this._renderPosition ?? this._position;",
+    1,
+)
+if text != original:
+    view_cursor.write_text(text)
+
 view_cursors = root / 'src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts'
 text = view_cursors.read_text()
 original = text
@@ -125,9 +154,10 @@ original = text
 # Normalize imports from all earlier versions of the patch.
 text = text.replace("import { Selection, SelectionDirection } from '../../../common/core/selection.js';\n", "")
 text = text.replace("import { SelectionDirection } from '../../../common/core/selection.js';\n", "")
+text = text.replace("import { Selection } from '../../../common/core/selection.js';\n", "")
 text = text.replace(
     "import { Position } from '../../../common/core/position.js';",
-    "import { Position } from '../../../common/core/position.js';\nimport { SelectionDirection } from '../../../common/core/selection.js';",
+    "import { Position } from '../../../common/core/position.js';\nimport { Selection, SelectionDirection } from '../../../common/core/selection.js';",
     1,
 )
 
@@ -139,58 +169,72 @@ text = re.sub(
     flags=re.S,
 )
 
-if "private _vimCursorInsideSelection: boolean;" not in text:
-    text = text.replace(
-        "\tprivate _selectionIsEmpty: boolean;\n\tprivate _isComposingInput: boolean;",
-        "\tprivate _selectionIsEmpty: boolean;\n\tprivate _vimCursorInsideSelection: boolean;\n\tprivate _isComposingInput: boolean;",
-        1,
-    )
 
-if "this._vimCursorInsideSelection = false;" not in text:
-    text = text.replace(
-        "\t\tthis._selectionIsEmpty = true;\n\t\tthis._isComposingInput = false;",
-        "\t\tthis._selectionIsEmpty = true;\n\t\tthis._vimCursorInsideSelection = false;\n\t\tthis._isComposingInput = false;",
-        1,
-    )
+# Remove old CSS-class based cursor render state if a previous sync inserted it.
+text = text.replace("\tprivate _vimCursorInsideSelection: boolean;\n", "")
+text = text.replace("\t\tthis._vimCursorInsideSelection = false;\n", "")
 
-# Normalize cursor position collection to native positions; Vim's visual cursor is CSS-only.
+# Normalize cursor position collection to native positions. Vim visual cursor
+# rendering is represented as an optional render-position override, not as a
+# model cursor position change.
 text = re.sub(
     r"\t\tconst positions: Position\[\] = e\.cursorPositions \?\? \[\];\n\t\tif \(!e\.cursorPositions\) \{\n\t\t\tfor \(let i = 0, len = e\.selections\.length; i < len; i\+\+\) \{\n\t\t\t\tpositions\[i\] = .*?;\n\t\t\t\}\n\t\t\}\n",
-    "\t\tconst positions: Position[] = e.cursorPositions ?? [];\n\t\tif (!e.cursorPositions) {\n\t\t\tfor (let i = 0, len = e.selections.length; i < len; i++) {\n\t\t\t\tpositions[i] = e.selections[i].getPosition();\n\t\t\t}\n\t\t}\n",
+    "\t\tconst positions: Position[] = [];\n\t\tfor (let i = 0, len = e.selections.length; i < len; i++) {\n\t\t\tpositions[i] = e.selections[i].getPosition();\n\t\t}\n",
     text,
     flags=re.S,
 )
 text = text.replace(
     "\t\tconst positions: Position[] = [];\n\t\tfor (let i = 0, len = e.selections.length; i < len; i++) {\n\t\t\tpositions[i] = e.selections[i].getPosition();\n\t\t}\n",
-    "\t\tconst positions: Position[] = e.cursorPositions ?? [];\n\t\tif (!e.cursorPositions) {\n\t\t\tfor (let i = 0, len = e.selections.length; i < len; i++) {\n\t\t\t\tpositions[i] = e.selections[i].getPosition();\n\t\t\t}\n\t\t}\n",
+    "\t\tconst positions: Position[] = [];\n\t\tfor (let i = 0, len = e.selections.length; i < len; i++) {\n\t\t\tpositions[i] = e.selections[i].getPosition();\n\t\t}\n",
     1,
 )
-
-text = text.replace(
-    "\t\tthis._onCursorPositionChanged(positions[0], positions.slice(1), e.reason);",
-    "\t\tthis._onCursorPositionChanged(positions[0], positions.slice(1), e.reason, e.cursorPositions !== undefined);",
-    1,
+text = re.sub(
+    r"\t\tthis\._onCursorPositionChanged\(positions\[0\], positions\.slice\(1\), e\.reason(?:, e\.cursorPositions !== undefined)?\);",
+    "\t\tconst renderPositions = e.cursorPositions ?? (this._domNode.domNode.closest('.vim-cursor-rendering-enabled') !== null\n\t\t\t? e.selections.map(selection => this._vimRenderCursorPosition(selection))\n\t\t\t: undefined);\n\t\tthis._onCursorPositionChanged(positions[0], positions.slice(1), e.reason, e.cursorPositions !== undefined, renderPositions?.[0], renderPositions?.slice(1));",
+    text,
+    count=1,
 )
 text = text.replace(
     "\tprivate _onCursorPositionChanged(position: Position, secondaryPositions: Position[], reason: CursorChangeReason): void {\n\t\tconst pauseAnimation = (",
-    "\tprivate _onCursorPositionChanged(position: Position, secondaryPositions: Position[], reason: CursorChangeReason, forcePauseAnimation = false): void {\n\t\tconst pauseAnimation = forcePauseAnimation || (",
+    "\tprivate _onCursorPositionChanged(position: Position, secondaryPositions: Position[], reason: CursorChangeReason, forcePauseAnimation = false, renderPosition: Position | undefined = undefined, secondaryRenderPositions: Position[] | undefined = undefined): void {\n\t\tconst pauseAnimation = forcePauseAnimation || (",
     1,
 )
-
 text = re.sub(
-    r"\t\tconst selectionIsEmpty = e\.selections\[0\]\.isEmpty\(\);\n(?:\t\tconst vimCursorInsideSelection = .*?\n)?\t\tif \(this\._selectionIsEmpty !== selectionIsEmpty(?: \|\| this\._vimCursorInsideSelection !== vimCursorInsideSelection)?\) \{\n\t\t\tthis\._selectionIsEmpty = selectionIsEmpty;\n(?:\t\t\tthis\._vimCursorInsideSelection = vimCursorInsideSelection;\n)?\t\t\tthis\._updateDomClassName\(\);\n\t\t\}\n",
-    "\t\tconst selectionIsEmpty = e.selections[0].isEmpty();\n\t\tconst vimCursorInsideSelection = this._domNode.domNode.closest('.vim-cursor-rendering-enabled') !== null\n\t\t\t&& e.cursorPositions === undefined\n\t\t\t&& e.selections.length > 0\n\t\t\t&& e.selections.every(selection => !selection.isEmpty() && selection.getDirection() === SelectionDirection.LTR && selection.positionColumn > 1);\n\t\tif (this._selectionIsEmpty !== selectionIsEmpty || this._vimCursorInsideSelection !== vimCursorInsideSelection) {\n\t\t\tthis._selectionIsEmpty = selectionIsEmpty;\n\t\t\tthis._vimCursorInsideSelection = vimCursorInsideSelection;\n\t\t\tthis._updateDomClassName();\n\t\t}\n",
+    r"\tprivate _onCursorPositionChanged\(position: Position, secondaryPositions: Position\[\], reason: CursorChangeReason, forcePauseAnimation = false\): void \{\n\t\tconst pauseAnimation = forcePauseAnimation \|\| \(",
+    "\tprivate _onCursorPositionChanged(position: Position, secondaryPositions: Position[], reason: CursorChangeReason, forcePauseAnimation = false, renderPosition: Position | undefined = undefined, secondaryRenderPositions: Position[] | undefined = undefined): void {\n\t\tconst pauseAnimation = forcePauseAnimation || (",
+    text,
+    count=1,
+)
+text = text.replace(
+    "\t\tthis._primaryCursor.onCursorPositionChanged(position, pauseAnimation);",
+    "\t\tthis._primaryCursor.onCursorPositionChanged(position, pauseAnimation, renderPosition);",
+    1,
+)
+text = text.replace(
+    "\t\t\tthis._secondaryCursors[i].onCursorPositionChanged(secondaryPositions[i], pauseAnimation);",
+    "\t\t\tthis._secondaryCursors[i].onCursorPositionChanged(secondaryPositions[i], pauseAnimation, secondaryRenderPositions?.[i]);",
+    1,
+)
+text = re.sub(
+    r"\t\tconst selectionIsEmpty = e\.selections\[0\]\.isEmpty\(\);\n\t\tconst vimCursorInsideSelection = .*?\n\t\tif \(this\._selectionIsEmpty !== selectionIsEmpty \|\| this\._vimCursorInsideSelection !== vimCursorInsideSelection\) \{\n\t\t\tthis\._selectionIsEmpty = selectionIsEmpty;\n\t\t\tthis\._vimCursorInsideSelection = vimCursorInsideSelection;\n\t\t\tthis\._updateDomClassName\(\);\n\t\t\}\n",
+    "\t\tconst selectionIsEmpty = e.selections[0].isEmpty();\n\t\tif (this._selectionIsEmpty !== selectionIsEmpty) {\n\t\t\tthis._selectionIsEmpty = selectionIsEmpty;\n\t\t\tthis._updateDomClassName();\n\t\t}\n",
     text,
     flags=re.S,
 )
-
 class_chunk = "\t\tif (this._vimCursorInsideSelection) {\n\t\t\tresult += ' vim-cursor-inside-selection';\n\t\t}\n"
 text = text.replace(class_chunk, "")
-text = text.replace(
-    "\t\tif (!this._selectionIsEmpty) {\n\t\t\tresult += ' has-selection';\n\t\t}\n",
-    "\t\tif (!this._selectionIsEmpty) {\n\t\t\tresult += ' has-selection';\n\t\t}\n" + class_chunk,
-    1,
-)
+method = """
+\tprivate _vimRenderCursorPosition(selection: Selection): Position {
+\t\tif (selection.isEmpty() || selection.getDirection() !== SelectionDirection.LTR || selection.positionColumn <= 1) {
+\t\t\treturn selection.getPosition();
+\t\t}
+\t\treturn new Position(selection.positionLineNumber, selection.positionColumn - 1);
+\t}
+
+"""
+anchor = "\tpublic override onDecorationsChanged(e: viewEvents.ViewDecorationsChangedEvent): boolean {\n"
+if "private _vimRenderCursorPosition" not in text:
+    text = text.replace(anchor, method + anchor, 1)
 
 if text != original:
     view_cursors.write_text(text)
@@ -198,15 +242,12 @@ if text != original:
 view_cursors_css = root / 'src/vs/editor/browser/viewParts/viewCursors/viewCursors.css'
 text = view_cursors_css.read_text()
 original = text
-css = ".monaco-editor .cursors-layer.vim-cursor-inside-selection > .cursor {\n\tpointer-events: none;\n\ttransform: translateX(-100%);\n}\n"
 text = re.sub(
-    r"\.monaco-editor \.cursors-layer\.vim-cursor-inside-selection > \.cursor \{[^}]*\}\n*",
+    r"\.monaco-editor \.cursors-layer\.vim-cursor-inside-selection(?:\.cursor-block-style)? > \.cursor \{[^}]*\}\n*",
     "",
     text,
     flags=re.S,
 )
-marker = "/* -- smooth-caret-animation -- */"
-text = text.replace(marker, css + "\n" + marker, 1)
 if text != original:
     view_cursors_css.write_text(text)
 PY

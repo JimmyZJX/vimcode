@@ -71,9 +71,12 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	setSelections(selections: readonly VimSelection[]): void {
 		const lowered = this.lowerSelections(selections);
+		const source = lowered.cursorPositions.length > 0
+			? `vim.cursorPositions:${lowered.cursorPositions.map(position => `${position.lineNumber},${position.column}`).join(';')}`
+			: 'vim';
 		this.updateVisualLineDecorations(selections);
 		this.rememberSelections(selections, lowered.selections);
-		this.editor.setSelections(lowered.selections, 'vim');
+		this.editor.setSelections(lowered.selections, source);
 	}
 
 	setCursorStyle(style: CursorStyle): void {
@@ -140,15 +143,18 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return matches;
 	}
 
-	private lowerSelections(selections: readonly VimSelection[]): { selections: Selection[] } {
+	private lowerSelections(selections: readonly VimSelection[]): { selections: Selection[]; cursorPositions: VSCodePosition[] } {
 		const loweredSelections: Selection[] = [];
+		const cursorPositions: VSCodePosition[] = [];
 		for (const selection of selections) {
-			loweredSelections.push(...this.lowerSelection(selection));
+			const lowered = this.lowerSelection(selection);
+			loweredSelections.push(...lowered.selections);
+			cursorPositions.push(...lowered.cursorPositions);
 		}
-		return { selections: loweredSelections };
+		return { selections: loweredSelections, cursorPositions };
 	}
 
-	private lowerSelection(selection: VimSelection): Selection[] {
+	private lowerSelection(selection: VimSelection): { selections: Selection[]; cursorPositions: VSCodePosition[] } {
 		switch (selection.type) {
 			case 'charwise': {
 				const vscodeSelection = new Selection(
@@ -157,25 +163,26 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 					selection.head.row + 1,
 					selection.head.column + 1
 				);
-				return [vscodeSelection];
+				return { selections: [vscodeSelection], cursorPositions: [] };
 			}
 			case 'linewise': {
 				const cursor = this.linewiseCursorPosition(selection);
 				const vscodeSelection = new Selection(cursor.lineNumber, cursor.column, cursor.lineNumber, cursor.column);
-				return [vscodeSelection];
+				return { selections: [vscodeSelection], cursorPositions: [] };
 			}
 			case 'blockwise':
 				return this.lowerBlockwiseSelection(selection);
 		}
 	}
 
-	private lowerBlockwiseSelection(selection: Extract<VimSelection, { type: 'blockwise' }>): Selection[] {
+	private lowerBlockwiseSelection(selection: Extract<VimSelection, { type: 'blockwise' }>): { selections: Selection[]; cursorPositions: VSCodePosition[] } {
 		const startRow = Math.min(selection.anchor.row, selection.head.row);
 		const endRow = Math.max(selection.anchor.row, selection.head.row);
 		const startColumn = Math.min(selection.anchor.column, selection.head.column);
 		const endColumn = Math.max(selection.anchor.column, selection.head.column);
 		const cursorAtStart = selection.head.column < selection.anchor.column;
 		const selections: Selection[] = [];
+		const cursorPositions: VSCodePosition[] = [];
 
 		for (let row = startRow; row <= endRow; row++) {
 			const lineLength = this.lineLength(row);
@@ -184,9 +191,13 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			const positionColumn = cursorAtStart ? selectionStartColumn : selectionEndColumn;
 			const anchorColumn = cursorAtStart ? selectionEndColumn : selectionStartColumn;
 			selections.push(new Selection(row + 1, anchorColumn, row + 1, positionColumn));
+			const cursorColumn = cursorAtStart
+				? Math.min(startColumn, lineLength) + 1
+				: Math.min(endColumn, Math.max(0, lineLength - 1)) + 1;
+			cursorPositions.push(new VSCodePosition(row + 1, cursorColumn));
 		}
 
-		return selections;
+		return { selections, cursorPositions };
 	}
 
 	private linewiseCursorPosition(selection: Extract<VimSelection, { type: 'linewise' }>): VSCodePosition {

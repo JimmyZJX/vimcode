@@ -219,8 +219,10 @@ export class VisualMode {
     }
 
     if (key === "S") {
-      this.pendingSurround = surroundTargetForState(this.editor, state);
-      return handled();
+      substituteLineForState(this.editor, this.registers, this.takeSelectedRegister(), state);
+      this.state = undefined;
+      this.editor.setCursorStyle("line");
+      return handled({ exitVisual: true, enterInsert: true, nextMode: "insert" });
     }
 
     if (key === "i" || key === "a") {
@@ -667,14 +669,37 @@ function inclusiveHeadForRangeEnd(editor: VimEditorCapabilities, range: TextRang
   return { row: range.end.row, column: 0 };
 }
 
-function surroundTargetForState(editor: VimEditorCapabilities, state: VisualState): { ranges: readonly TextRange[]; linewise: boolean } {
+function substituteLineForState(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  state: VisualState
+): void {
   switch (state.kind) {
-    case "charwise":
-      return { ranges: [charwiseVisualRange(editor, state)], linewise: false };
+    case "charwise": {
+      const range = charwiseVisualRange(editor, state);
+      const lineState: LinewiseVisualState = {
+        kind: "linewise",
+        anchorLine: range.start.row,
+        headLine: range.end.row,
+        headColumn: range.start.column,
+      };
+      changeLinewise(editor, registers, registerName, lineState);
+      return;
+    }
     case "linewise":
-      return { ranges: [linewiseEditRange(editor, state)], linewise: true };
-    case "blockwise":
-      return { ranges: blockRanges(editor, state), linewise: false };
+      changeLinewise(editor, registers, registerName, state);
+      return;
+    case "blockwise": {
+      const { startRow, endRow } = blockBounds(state);
+      changeLinewise(editor, registers, registerName, {
+        kind: "linewise",
+        anchorLine: startRow,
+        headLine: endRow,
+        headColumn: 0,
+      });
+      return;
+    }
   }
 }
 

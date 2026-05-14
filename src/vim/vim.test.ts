@@ -154,14 +154,24 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
-  it("ignores unsupported normal-mode keys instead of inserting them", () => {
+  it("substitutes characters with s", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor);
 
-    runKeys(vim, ["s"]);
+    runKeys(vim, ["s", "X", "<escape>"]);
 
-    expect(editor.getText()).toBe("one two");
+    expect(editor.getText()).toBe("Xne two");
     expect(vim.modeName).toBe("vim:normal");
+  });
+
+  it("stays in insert mode while typing", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["i", "X"]);
+
+    expect(editor.getText()).toBe("Xone");
+    expect(vim.modeName).toBe("vim:insert");
   });
 
   it("extends visual selections backward", () => {
@@ -264,7 +274,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const editor = new InMemoryVimEditor("The quick brown");
     const vim = new Vim(editor);
 
-    runKeys(vim, ["w", "v", "i", "w", "S", ")"]);
+    runKeys(vim, ["w", "y", "s", "i", "w", ")"]);
 
     expect(editor.getText()).toBe("The (quick) brown");
   });
