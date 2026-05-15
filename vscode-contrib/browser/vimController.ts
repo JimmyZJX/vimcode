@@ -81,7 +81,12 @@ export class VimController extends Disposable {
 		}
 
 		const result = this.vim.onKey(key);
-		this.syncEditorState();
+		if (!this.vim.status.pending) {
+			this.vimEditor.revealPrimaryCursorIfOutsideViewport();
+			this.syncEditorState();
+		} else {
+			this.syncStatus();
+		}
 		if (result === 'handled') {
 			event.preventDefault();
 			event.stopPropagation();
@@ -107,6 +112,10 @@ export class VimController extends Disposable {
 	}
 
 	private syncEditorState(): void {
+		this.syncStatus();
+	}
+
+	private syncStatus(): void {
 		const status = this.vim.status;
 		this.vimModeContext.set(status.mode);
 		this.vimNormalContext.set(status.mode === 'normal');

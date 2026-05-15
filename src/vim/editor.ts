@@ -38,6 +38,7 @@ export interface VimEditorCapabilities {
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[]): void;
 
   executeHostCommand(command: HostCommand): void;
+  revealPrimaryCursorIfOutsideViewport(): void;
   revealCurrentLine(target: HostRevealTarget): void;
   executeFoldCommand(command: HostFoldCommand): void;
   moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
@@ -170,6 +171,8 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   executeHostCommand(_command: HostCommand): void {}
+
+  revealPrimaryCursorIfOutsideViewport(): void {}
 
   revealCurrentLine(_target: HostRevealTarget): void {}
 

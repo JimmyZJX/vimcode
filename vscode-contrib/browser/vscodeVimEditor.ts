@@ -116,6 +116,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 	}
 
+	revealPrimaryCursorIfOutsideViewport(): void {
+		const position = this.editor.getPosition();
+		if (position === null) {
+			return;
+		}
+		this.editor.revealPositionInCenterIfOutsideViewport(position);
+	}
+
 	revealCurrentLine(target: HostRevealTarget): void {
 		const position = this.editor.getPosition();
 		if (position === null) {
@@ -166,11 +174,16 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): void {
 		this.invalidateCachedSelections();
-		this.editor.trigger('vim', 'editorScroll', {
+		const viewModel = this.editor._getViewModel();
+		const visibleRange = viewModel?.getCompletelyVisibleViewRange();
+		const visibleLineCount = visibleRange === undefined
+			? 1
+			: Math.max(1, visibleRange.endLineNumber - visibleRange.startLineNumber + 1);
+		const pageLineCount = halfPage ? Math.max(1, Math.round(visibleLineCount / 2)) : visibleLineCount;
+		this.editor.trigger('vim', 'cursorMove', {
 			to: direction,
-			by: halfPage ? 'halfPage' : 'page',
-			value: count,
-			revealCursor: true,
+			by: 'wrappedLine',
+			value: pageLineCount * count,
 			select: extend,
 		});
 	}

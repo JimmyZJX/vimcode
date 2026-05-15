@@ -11,7 +11,9 @@ import { enterNormalMode, insertText } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import { MarkState } from "./normal/mark.js";
+import { NormalChordResolver } from "./normal/chord.js";
 import { MacroState, RepeatState } from "./normal/repeat.js";
+import { handleHostAction } from "./normal/scroll.js";
 import { SearchState } from "./normal/search.js";
 import { RegisterName, Registers } from "./registers.js";
 import { replaceModeText } from "./replace.js";
@@ -40,9 +42,9 @@ export class Vim {
   private readonly registers = new Registers();
   private pendingFind: PendingFind | undefined;
   private pendingUnmatched: PendingUnmatched | undefined;
-  private pendingZ = false;
   private lastFind: FindMotion | undefined;
   private readonly markState = new MarkState();
+  private readonly normalChordResolver = new NormalChordResolver();
   private readonly searchState = new SearchState();
   private readonly repeatState = new RepeatState();
   private readonly macroState = new MacroState();
@@ -86,7 +88,7 @@ export class Vim {
   syncFromEditorState({ render = true }: { render?: boolean } = {}): void {
     this.pendingFind = undefined;
     this.pendingUnmatched = undefined;
-    this.pendingZ = false;
+    this.normalChordResolver.clearPending();
     this.markState.clearPending();
     this.searchState.clearPending();
     this.pendingCommand = undefined;
@@ -110,14 +112,14 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.pendingZ || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
     if (this.searchState.isPending()) return this.searchState.pendingChord();
     if (this.markState.isPending()) return this.markState.pendingChord();
-    if (this.pendingZ) return "z";
+    if (this.normalChordResolver.isPending()) return this.normalChordResolver.pendingChord();
     if (this.pendingUnmatched !== undefined) return this.pendingUnmatched.direction === "forward" ? "]" : "[";
     if (this.pendingFind !== undefined) {
       const findKey = this.pendingFind.type === "forward"
@@ -234,15 +236,18 @@ export class Vim {
       return "handled";
     }
 
-    if (this.modeState.kind === "normal" && this.pendingZ) {
-      this.pendingZ = false;
-      this.handleZKey(key);
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && !this.normalMode.isPending() && key === "z") {
-      this.pendingZ = true;
-      return "handled";
+    if (this.modeState.kind === "normal" && !this.normalMode.isPending()) {
+      const chordResolution = this.normalChordResolver.handleKey(key);
+      switch (chordResolution.kind) {
+        case "pending":
+          return "handled";
+        case "action":
+          handleHostAction(this.editor, chordResolution.action, defaultValue => this.takeCountForMotion(defaultValue));
+          this.syncFromEditorState({ render: false });
+          return "handled";
+        case "noMatch":
+          break;
+      }
     }
 
     if (this.modeState.kind === "normal" && !this.normalMode.isPending() && key === "m") {
@@ -260,10 +265,6 @@ export class Vim {
         direction: key === "]" ? "forward" : "backward",
         count: this.takeCountForMotion(1),
       };
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && !this.normalMode.isPending() && this.handleHostKey(key)) {
       return "handled";
     }
 
@@ -361,90 +362,6 @@ export class Vim {
     const firstSelection = this.editor.getSelections()[0];
     if (firstSelection === undefined) return;
     this.editor.setSelections([{ type: "charwise", anchor: selectionHead(firstSelection), head: selectionHead(firstSelection) }]);
-  }
-
-  private handleZKey(key: string): void {
-    switch (key) {
-      case "z":
-        this.editor.revealCurrentLine("center");
-        return;
-      case "t":
-        this.editor.revealCurrentLine("top");
-        return;
-      case "b":
-        this.editor.revealCurrentLine("bottom");
-        return;
-      case "a":
-        this.editor.executeFoldCommand("toggle");
-        return;
-      case "o":
-        this.editor.executeFoldCommand("open");
-        return;
-      case "c":
-        this.editor.executeFoldCommand("close");
-        return;
-      case "O":
-        this.editor.executeFoldCommand("openRecursive");
-        return;
-      case "C":
-        this.editor.executeFoldCommand("closeRecursive");
-        return;
-      case "R":
-        this.editor.executeFoldCommand("openAll");
-        return;
-      case "M":
-        this.editor.executeFoldCommand("closeAll");
-        return;
-      default:
-        return;
-    }
-  }
-
-  private handleHostKey(key: string): boolean {
-    switch (key) {
-      case "ctrl-o":
-        this.executeHostCommand("navigateBack");
-        return true;
-      case "ctrl-i":
-        this.executeHostCommand("navigateForward");
-        return true;
-      case "u":
-        this.executeHostCommand("undo");
-        return true;
-      case "ctrl-r":
-        this.executeHostCommand("redo");
-        return true;
-      case "ctrl-y":
-        this.editor.scrollByLines("up", this.takeCountForMotion(1));
-        return true;
-      case "ctrl-e":
-        this.editor.scrollByLines("down", this.takeCountForMotion(1));
-        return true;
-      case "ctrl-u":
-        this.moveByHostPage("up", { halfPage: true });
-        return true;
-      case "ctrl-d":
-        this.moveByHostPage("down", { halfPage: true });
-        return true;
-      case "ctrl-b":
-        this.moveByHostPage("up", { halfPage: false });
-        return true;
-      case "ctrl-f":
-        this.moveByHostPage("down", { halfPage: false });
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  private executeHostCommand(command: Parameters<VimEditorCapabilities["executeHostCommand"]>[0]): void {
-    this.editor.executeHostCommand(command);
-    this.syncFromEditorState({ render: false });
-  }
-
-  private moveByHostPage(direction: "up" | "down", { halfPage }: { halfPage: boolean }): void {
-    this.editor.moveByPages(direction, this.takeCountForMotion(1), { halfPage, extend: false });
-    this.syncFromEditorState({ render: false });
   }
 
   private handleSharedMotionKey(key: string): boolean {
