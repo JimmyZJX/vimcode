@@ -5,7 +5,7 @@
 // - intentional differences: this first slice uses simple text ranges and the unnamed
 //   clipboard string; linewise, register, visual, and multicursor fidelity are incomplete.
 
-import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
+import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
 import { Motion, lineRange, linewiseCursorAfterDelete, motionRange } from "../motion.js";
 import { RegisterName, Registers } from "../registers.js";
 import {
@@ -44,7 +44,8 @@ export function deleteRange(
   registers: Registers,
   registerName: RegisterName | undefined,
   rangeForHead: (head: ReturnType<typeof selectionHead>) => TextEdit["range"],
-  cursorForRange: (editor: VimEditorCapabilities, range: TextEdit["range"]) => ReturnType<typeof selectionHead> = cursorAfterDeletingRange
+  cursorForRange: (editor: VimEditorCapabilities, range: TextEdit["range"]) => ReturnType<typeof selectionHead> = cursorAfterDeletingRange,
+  options: ApplyEditsOptions = {}
 ): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
@@ -63,7 +64,7 @@ export function deleteRange(
   }
 
   if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, options);
 }
 
 export function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: TextEdit["range"]) {

@@ -69,6 +69,20 @@ export class NormalMode {
     return this.pendingPrefix === "register";
   }
 
+  hasPendingNonCount(): boolean {
+    return this.pendingOperator !== undefined
+      || this.pendingPrefix !== undefined
+      || this.pendingTextObject !== undefined
+      || this.pendingSurround !== undefined
+      || this.pendingReplaceCount !== undefined
+      || this.selectedRegister !== undefined;
+  }
+
+  selectRegisterKey(key: string): void {
+    const registerName = parseRegisterName(key);
+    if (registerName !== undefined) this.selectedRegister = registerName;
+  }
+
   pendingChord(): string {
     const count = this.countBuffer;
     const operator = this.pendingOperator === undefined ? "" : keyForOperator(this.pendingOperator.operator);
@@ -136,26 +150,7 @@ export class NormalMode {
 
     if (this.pendingPrefix === "g") {
       this.pendingPrefix = undefined;
-      if (key === "g") {
-        const count = this.takeCount(1);
-        if (this.pendingOperator !== undefined) {
-          return handled({ enterInsert: this.applyLinewiseOperatorToRow(count - 1) });
-        }
-        this.moveToLine(count - 1);
-        this.selectedRegister = undefined;
-        return handled();
-      }
-      if ((key === "j" || key === "k") && this.pendingOperator === undefined) {
-        const count = this.takeCount(1);
-        const motion: Motion = { type: key === "j" ? "down" : "up" };
-        const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: true, extend: false });
-        if (hostSelections === undefined) this.moveSelections(motion, count);
-        else this.editor.setSelections(hostSelections);
-        this.selectedRegister = undefined;
-        return handled();
-      }
-      this.clearPending();
-      return handled();
+      return this.handleGKey(key);
     }
 
     if (this.isCountKey(key)) {
@@ -322,6 +317,31 @@ export class NormalMode {
     }
   }
 
+  handleGKey(key: string): NormalKeyResult {
+    if (key === "g") {
+      const count = this.takeCount(1);
+      if (this.pendingOperator !== undefined) {
+        return handled({ enterInsert: this.applyLinewiseOperatorToRow(count - 1) });
+      }
+      this.moveToLine(count - 1);
+      this.selectedRegister = undefined;
+      return handled();
+    }
+
+    if ((key === "j" || key === "k") && this.pendingOperator === undefined) {
+      const count = this.takeCount(1);
+      const motion: Motion = { type: key === "j" ? "down" : "up" };
+      const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: true, extend: false });
+      if (hostSelections === undefined) this.moveSelections(motion, count);
+      else this.editor.setSelections(hostSelections);
+      this.selectedRegister = undefined;
+      return handled();
+    }
+
+    this.clearPending();
+    return handled();
+  }
+
   private moveSelections(motion: Motion, count: number): void {
     this.editor.setSelections(
       this.editor.getSelections().map((selection) => {
@@ -465,6 +485,10 @@ export class NormalMode {
     const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
     if (hostSelections !== undefined) {
       return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, hostSelections);
+    }
+    if (motion.type === "startOfDocument") {
+      const targetSelections = sourceSelections.map(selection => charwiseSelection({ row: Math.min(count - 1, this.editor.lineCount() - 1), column: selectionHead(selection).column }));
+      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections);
     }
     switch (operator) {
       case "change":

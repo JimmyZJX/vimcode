@@ -21,6 +21,7 @@ export type HostCommand = "navigateBack" | "navigateForward" | "undo" | "redo";
 export type HostDirection = "up" | "down";
 export type HostRevealTarget = "top" | "center" | "bottom";
 export type HostFoldCommand = "toggle" | "open" | "close" | "openRecursive" | "closeRecursive" | "openAll" | "closeAll";
+export type ApplyEditsOptions = { selectionsBefore?: readonly VimSelection[] };
 
 // Zed: `vim::Vim::update_editor` is the closest
 // equivalent boundary, but it closes over Zed's concrete `Editor`. This interface
@@ -35,9 +36,10 @@ export interface VimEditorCapabilities {
   setSelections(selections: readonly VimSelection[]): void;
   setCursorStyle(style: CursorStyle): void;
 
-  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[]): void;
+  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options?: ApplyEditsOptions): void;
 
   executeHostCommand(command: HostCommand): void;
+  executeNativeCommand(command: string): void;
   revealPrimaryCursorIfOutsideViewport(): void;
   revealCurrentLine(target: HostRevealTarget): void;
   executeFoldCommand(command: HostFoldCommand): void;
@@ -162,7 +164,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.cursorStyle = style;
   }
 
-  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[]): void {
+  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], _options: ApplyEditsOptions = {}): void {
     const sortedEdits = [...edits].sort((a, b) => -comparePositions(a.range.start, b.range.start));
     for (const edit of sortedEdits) {
       this.replace(edit.range, edit.text);
@@ -171,6 +173,8 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   executeHostCommand(_command: HostCommand): void {}
+
+  executeNativeCommand(_command: string): void {}
 
   revealPrimaryCursorIfOutsideViewport(): void {}
 

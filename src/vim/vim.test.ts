@@ -202,6 +202,28 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("lets visual l reach end of line and delete the newline", () => {
+    const editor = new InMemoryVimEditor("ab\ncd");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["l", "v", "l", "d"]);
+
+    expect(editor.getText()).toBe("acd");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
+  it("lets visual $ select through the newline", () => {
+    const editor = new InMemoryVimEditor("ab\ncd");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "$", "d"]);
+
+    expect(editor.getText()).toBe("cd");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
   it("exits visual-line mode at the motion target", () => {
     const editor = new InMemoryVimEditor("alpha\nbeta\ngamma");
     const vim = new Vim(editor);
@@ -332,6 +354,17 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.getSelections()).toEqual([charwiseSelection({ row: 0, column: 2 })]);
+  });
+
+  it("clips external end-of-line cursors when syncing into normal mode", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    editor.setSelections([charwiseSelection({ row: 0, column: 6 })]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([charwiseSelection({ row: 0, column: 5 })]);
   });
 
   it("opens lines above and below using normal VSCode-like edit transactions", () => {

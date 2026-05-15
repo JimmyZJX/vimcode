@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: VSCode-native undo/redo behavior; requires VSCode integration testing rather than core fixture replay.
 {"Put":{"state":"ˇThe quick brown fox jumps over the lazy dog."}}
 {"Key":"shift-r"}
 {"Key":"O"}

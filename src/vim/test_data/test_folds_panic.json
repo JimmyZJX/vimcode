@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: VSCode-native folding behavior; requires VSCode integration testing rather than core fixture replay.
 {"SetOption":{"value":"foldmethod=manual"}}
 {"Put":{"state":"fn boop() {\n  ˇbarp()\n  bazp()\n}\n"}}
 {"Key":"shift-v"}

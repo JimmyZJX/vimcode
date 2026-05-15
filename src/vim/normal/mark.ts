@@ -32,6 +32,17 @@ export class MarkState {
     }
   }
 
+  createMark(editor: VimEditorCapabilities, key: string): void {
+    this.marks.set(key, selectionHead(editor.getSelections()[0]));
+  }
+
+  jumpMotion(editor: VimEditorCapabilities, key: string, { line }: { line: boolean }): Motion | undefined {
+    const target = this.markForJump(key);
+    if (target === undefined) return undefined;
+    this.previousContext = selectionHead(editor.getSelections()[0]);
+    return { type: "jump", position: target, line };
+  }
+
   startCreate(): void {
     this.pending = { type: "create" };
   }
@@ -51,15 +62,11 @@ export class MarkState {
 
     switch (pending.type) {
       case "create": {
-        this.marks.set(key, selectionHead(editor.getSelections()[0]));
+        this.createMark(editor, key);
         return undefined;
       }
-      case "jump": {
-        const target = this.markForJump(key);
-        if (target === undefined) return undefined;
-        this.previousContext = selectionHead(editor.getSelections()[0]);
-        return { type: "jump", position: target, line: pending.line };
-      }
+      case "jump":
+        return this.jumpMotion(editor, key, { line: pending.line });
     }
   }
 

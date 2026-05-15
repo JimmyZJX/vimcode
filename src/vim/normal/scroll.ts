@@ -84,18 +84,6 @@ function handleHostKey(
     case "ctrl-e":
       editor.scrollByLines("down", takeCount(1));
       return;
-    case "ctrl-u":
-      editor.moveByPages("up", takeCount(1), { halfPage: true, extend: false });
-      return;
-    case "ctrl-d":
-      editor.moveByPages("down", takeCount(1), { halfPage: true, extend: false });
-      return;
-    case "ctrl-b":
-      editor.moveByPages("up", takeCount(1), { halfPage: false, extend: false });
-      return;
-    case "ctrl-f":
-      editor.moveByPages("down", takeCount(1), { halfPage: false, extend: false });
-      return;
     default:
       return;
   }

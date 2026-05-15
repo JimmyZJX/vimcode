@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: VSCode-native viewport/display movement; requires VSCode integration testing rather than core fixture replay.
 {"Put":{"state":"abc\ndeˇf\nparagraph\nthe second\nthird and\nfinal"}}
 {"Key":"shift-l"}
 {"Get":{"state":"abc\ndef\nparagraph\nthe second\nthird and\nfiˇnal","mode":"Normal"}}

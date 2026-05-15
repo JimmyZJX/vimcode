@@ -259,7 +259,7 @@ export function applyMotionOnce(
     case "endOfLine":
       return endOfLine(editor, clipped.row);
     case "startOfDocument":
-      return position(0, 0);
+      return normalCursorPosition(editor, { row: 0, column: clipped.column });
     case "endOfDocument":
       return endOfLine(editor, editor.lineCount() - 1);
     case "nextWordStart":
@@ -330,6 +330,10 @@ export function applyMotionWithGoal(
 ): MotionResult {
   if (motion.type === "findForward") {
     return { position: findForward(editor, start, motion.char, count, { before: motion.before }) ?? start };
+  }
+  if (motion.type === "startOfDocument") {
+    const row = Math.max(0, Math.min(count - 1, editor.lineCount() - 1));
+    return { position: normalCursorPosition(editor, { row, column: start.column }) };
   }
   if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
     return { position: applyMotionOnce(editor, start, motion) };

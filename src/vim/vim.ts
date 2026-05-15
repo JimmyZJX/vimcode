@@ -6,18 +6,19 @@
 //   from the VSCode patch / tests.
 
 import { LineRange, executeCommand } from "./command.js";
-import { VimEditorCapabilities } from "./editor.js";
+import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import { MarkState } from "./normal/mark.js";
-import { NormalChordResolver } from "./normal/chord.js";
+import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { MacroState, RepeatState } from "./normal/repeat.js";
 import { handleHostAction } from "./normal/scroll.js";
 import { SearchState } from "./normal/search.js";
 import { RegisterName, Registers } from "./registers.js";
 import { replaceModeText } from "./replace.js";
-import { KeyResult, Operator, VimMode, comparePositions, selectionHead } from "./state.js";
+import { SharedAction, SharedActionResolver } from "./shared_action.js";
+import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
 
 type PendingFind =
@@ -44,6 +45,7 @@ export class Vim {
   private pendingUnmatched: PendingUnmatched | undefined;
   private lastFind: FindMotion | undefined;
   private readonly markState = new MarkState();
+  private readonly sharedActionResolver = new SharedActionResolver();
   private readonly normalChordResolver = new NormalChordResolver();
   private readonly searchState = new SearchState();
   private readonly repeatState = new RepeatState();
@@ -88,6 +90,7 @@ export class Vim {
   syncFromEditorState({ render = true }: { render?: boolean } = {}): void {
     this.pendingFind = undefined;
     this.pendingUnmatched = undefined;
+    this.sharedActionResolver.clearPending();
     this.normalChordResolver.clearPending();
     this.markState.clearPending();
     this.searchState.clearPending();
@@ -108,17 +111,19 @@ export class Vim {
     }
     this.insertOrigin = undefined;
     if (render) this.editor.setCursorStyle("block");
+    this.editor.setSelections(selections.map(selection => charwiseSelection(normalCursorPosition(this.editor, selectionHead(selection)))));
     this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
   }
 
   private isPending(): boolean {
-    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.sharedActionResolver.isPending() || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
     if (this.searchState.isPending()) return this.searchState.pendingChord();
     if (this.markState.isPending()) return this.markState.pendingChord();
+    if (this.sharedActionResolver.isPending()) return this.sharedActionResolver.pendingChord();
     if (this.normalChordResolver.isPending()) return this.normalChordResolver.pendingChord();
     if (this.pendingUnmatched !== undefined) return this.pendingUnmatched.direction === "forward" ? "]" : "[";
     if (this.pendingFind !== undefined) {
@@ -236,14 +241,30 @@ export class Vim {
       return "handled";
     }
 
-    if (this.modeState.kind === "normal" && !this.normalMode.isPending()) {
+    if (this.isMotionMode() && !this.modeIsExpectingRegisterName() && this.shouldResolveSharedAction(key)) {
+      const sharedResolution = this.sharedActionResolver.handleKey(key);
+      switch (sharedResolution.kind) {
+        case "pending":
+          return "handled";
+        case "action":
+          this.handleSharedAction(sharedResolution.action);
+          return "handled";
+        case "cancelled":
+          return "handled";
+        case "noMatch":
+          break;
+      }
+    }
+
+    if (this.modeState.kind === "normal" && this.shouldResolveNormalChord()) {
       const chordResolution = this.normalChordResolver.handleKey(key);
       switch (chordResolution.kind) {
         case "pending":
           return "handled";
         case "action":
-          handleHostAction(this.editor, chordResolution.action, defaultValue => this.takeCountForMotion(defaultValue));
-          this.syncFromEditorState({ render: false });
+          this.handleNormalChordAction(chordResolution.action);
+          return "handled";
+        case "cancelled":
           return "handled";
         case "noMatch":
           break;
@@ -362,6 +383,56 @@ export class Vim {
     const firstSelection = this.editor.getSelections()[0];
     if (firstSelection === undefined) return;
     this.editor.setSelections([{ type: "charwise", anchor: selectionHead(firstSelection), head: selectionHead(firstSelection) }]);
+  }
+
+  private shouldResolveSharedAction(key: string): boolean {
+    if (this.sharedActionResolver.isPending()) return true;
+    if (this.modeState.kind !== "normal") return true;
+    return !this.normalMode.hasPendingNonCount();
+  }
+
+  private shouldResolveNormalChord(): boolean {
+    return !this.normalMode.hasPendingNonCount() || this.normalChordResolver.isPending();
+  }
+
+  private handleSharedAction(action: SharedAction): void {
+    switch (action.type) {
+      case "motion":
+        switch (action.key) {
+          case "gg":
+            this.applyMotion({ type: "startOfDocument" }, this.takeCountForMotion(1));
+            return;
+          case "gj":
+            this.applyMotion({ type: "down" }, this.takeCountForMotion(1));
+            return;
+          case "gk":
+            this.applyMotion({ type: "up" }, this.takeCountForMotion(1));
+            return;
+        }
+      case "page":
+        this.editor.moveByPages(
+          action.key === "ctrl-u" || action.key === "ctrl-b" ? "up" : "down",
+          this.takeCountForMotion(1),
+          { halfPage: action.key === "ctrl-u" || action.key === "ctrl-d", extend: this.isVisualMode() });
+        if (this.isVisualMode()) this.visualMode.adoptSelectionFromHost();
+        else this.syncFromEditorState({ render: false });
+        return;
+      case "native":
+        this.editor.executeNativeCommand(action.command);
+        this.syncFromEditorState({ render: false });
+        return;
+    }
+  }
+
+  private handleNormalChordAction(action: NormalChordAction): void {
+    switch (action.type) {
+      case "host":
+      case "z":
+        handleHostAction(this.editor, action, defaultValue => this.takeCountForMotion(defaultValue));
+        this.syncFromEditorState({ render: false });
+        return;
+
+    }
   }
 
   private handleSharedMotionKey(key: string): boolean {

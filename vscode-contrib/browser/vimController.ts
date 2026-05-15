@@ -137,17 +137,39 @@ function shiftedDigitKey(digit: number): string {
 	return shiftedDigits[digit] ?? String(digit);
 }
 
+function isSupportedCtrlKey(key: string): boolean {
+	switch (key) {
+		case 'ctrl-b':
+		case 'ctrl-d':
+		case 'ctrl-e':
+		case 'ctrl-f':
+		case 'ctrl-i':
+		case 'ctrl-o':
+		case 'ctrl-r':
+		case 'ctrl-u':
+		case 'ctrl-v':
+		case 'ctrl-y':
+			return true;
+		default:
+			return false;
+	}
+}
+
 function keyFromEvent(event: IKeyboardEvent): string | undefined {
 	if (event.altKey || event.metaKey) {
 		return undefined;
 	}
 	if (event.ctrlKey) {
+		if (event.shiftKey) {
+			return undefined;
+		}
 		if (event.keyCode === KeyCode.BracketLeft) {
 			return 'ctrl-[';
 		}
 		if (event.keyCode >= KeyCode.KeyA && event.keyCode <= KeyCode.KeyZ) {
 			const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
-			return `ctrl-${letter}`;
+			const key = `ctrl-${letter}`;
+			return isSupportedCtrlKey(key) ? key : undefined;
 		}
 		return undefined;
 	}

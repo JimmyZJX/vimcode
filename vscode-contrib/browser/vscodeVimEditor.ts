@@ -6,7 +6,7 @@ import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, PositionAffinity } from '../../../common/model.js';
 import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from '../common/state.js';
-import { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
+import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
@@ -85,7 +85,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.editor.updateOptions({ cursorStyle: style === 'line' ? 'line' : style === 'block' ? 'block' : 'underline' });
 	}
 
-	applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[]): void {
+	applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
+		const selectionsBefore = options.selectionsBefore;
+		if (selectionsBefore !== undefined) {
+			const loweredBefore = this.lowerSelections(selectionsBefore);
+			this.updateVisualLineDecorations(selectionsBefore);
+			this.rememberSelections(selectionsBefore, loweredBefore.selections);
+			this.editor.setSelections(loweredBefore.selections, 'vim.undoBefore');
+		}
 		this.editor.pushUndoStop();
 		const vscodeEdits: IIdentifiedSingleEditOperation[] = edits.map(edit => ({
 			range: toRange(edit.range),
@@ -114,6 +121,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				this.editor.trigger('vim', 'redo', null);
 				return;
 		}
+	}
+
+	executeNativeCommand(command: string): void {
+		this.invalidateCachedSelections();
+		this.commandService.executeCommand(command);
 	}
 
 	revealPrimaryCursorIfOutsideViewport(): void {
@@ -265,7 +277,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 					selection.head.row + 1,
 					selection.head.column + 1
 				);
-				return { selections: [vscodeSelection], cursorPositions: [] };
+				return {
+					selections: [vscodeSelection],
+					cursorPositions: selection.cursor === undefined ? [] : [toVSCodePosition(selection.cursor)],
+				};
 			}
 			case 'linewise': {
 				const cursor = this.linewiseCursorPosition(selection);

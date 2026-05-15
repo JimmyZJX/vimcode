@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: VSCode-native viewport/display movement; requires VSCode integration testing rather than core fixture replay.
 {"Put":{"state":"helloˇ world."}}
 {"Key":"i"}
 {"Key":"ctrl-o"}

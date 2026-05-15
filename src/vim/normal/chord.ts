@@ -12,6 +12,7 @@ export type NormalChordAction =
 export type NormalChordResolution =
   | { kind: "pending"; chord: string }
   | { kind: "action"; action: NormalChordAction }
+  | { kind: "cancelled" }
   | { kind: "noMatch" };
 
 const bindings: ReadonlyMap<string, NormalChordAction> = new Map([
@@ -21,10 +22,6 @@ const bindings: ReadonlyMap<string, NormalChordAction> = new Map([
   ["ctrl-r", { type: "host", key: "ctrl-r" }],
   ["ctrl-y", { type: "host", key: "ctrl-y" }],
   ["ctrl-e", { type: "host", key: "ctrl-e" }],
-  ["ctrl-u", { type: "host", key: "ctrl-u" }],
-  ["ctrl-d", { type: "host", key: "ctrl-d" }],
-  ["ctrl-b", { type: "host", key: "ctrl-b" }],
-  ["ctrl-f", { type: "host", key: "ctrl-f" }],
   ["z z", { type: "z", key: "z" }],
   ["z t", { type: "z", key: "t" }],
   ["z b", { type: "z", key: "b" }],
@@ -74,7 +71,8 @@ export class NormalChordResolver {
       return { kind: "pending", chord };
     }
 
+    const hadPending = this.pendingKeys.length > 0;
     this.pendingKeys = [];
-    return { kind: "noMatch" };
+    return hadPending ? { kind: "cancelled" } : { kind: "noMatch" };
   }
 }
