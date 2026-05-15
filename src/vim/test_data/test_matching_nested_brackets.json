@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"<Button onClick=ˇ{() => {}}></Button>"}}
 {"Key":"%"}
 {"Get":{"state":"<Button onClick={() => {}ˇ}></Button>","mode":"Normal"}}

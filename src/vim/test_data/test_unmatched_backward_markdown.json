@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Exec":{"command":"set filetype=markdown"}}
 {"Put":{"state":"```rs\nimpl Worktree {\n    pub async fn open_buffers(&self, path: &Path) -> impl Iterator<&Buffer> {\nˇ    }\n}\n```\n"}}
 {"Key":"["}

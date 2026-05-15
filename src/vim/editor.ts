@@ -14,7 +14,13 @@ import {
   comparePositions,
   orderedRange,
   position,
+  selectionHead,
 } from "./state.js";
+
+export type HostCommand = "navigateBack" | "navigateForward" | "undo" | "redo";
+export type HostDirection = "up" | "down";
+export type HostRevealTarget = "top" | "center" | "bottom";
+export type HostFoldCommand = "toggle" | "open" | "close" | "openRecursive" | "closeRecursive" | "openAll" | "closeAll";
 
 // Zed: `vim::Vim::update_editor` is the closest
 // equivalent boundary, but it closes over Zed's concrete `Editor`. This interface
@@ -30,6 +36,13 @@ export interface VimEditorCapabilities {
   setCursorStyle(style: CursorStyle): void;
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[]): void;
+
+  executeHostCommand(command: HostCommand): void;
+  revealCurrentLine(target: HostRevealTarget): void;
+  executeFoldCommand(command: HostFoldCommand): void;
+  moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
+  moveByPages(direction: HostDirection, count: number, options: { halfPage: boolean; extend: boolean }): void;
+  scrollByLines(direction: HostDirection, count: number): void;
 
   readClipboard(): string;
   writeClipboard(text: string): void;
@@ -58,6 +71,12 @@ export function normalCursorPosition(
 
 export function rangeText(editor: VimEditorCapabilities, range: TextRange): string {
   return editor.getText(range);
+}
+
+function exclusiveVisualHead(editor: VimEditorCapabilities, head: Position): Position {
+  const lineLength = editor.lineLength(head.row);
+  if (lineLength === 0) return head;
+  return { row: head.row, column: Math.min(head.column + 1, lineLength) };
 }
 
 // Zed: `test::vim_test_context::VimTestContext` and
@@ -148,6 +167,47 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       this.replace(edit.range, edit.text);
     }
     this.setSelections(selectionsAfter);
+  }
+
+  executeHostCommand(_command: HostCommand): void {}
+
+  revealCurrentLine(_target: HostRevealTarget): void {}
+
+  executeFoldCommand(_command: HostFoldCommand): void {}
+
+  moveByViewLines(direction: HostDirection, count: number, { extend }: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined {
+    // The in-memory editor has no VSCode view model, hidden ranges, or soft-wrap data.
+    // Use a deliberately naive model-row approximation for non-extending movements so
+    // host-motion callers such as [dj] are testable without a real VSCode instance.
+    // Extending visual selections keep the core fallback because Vim's inclusive visual
+    // semantics are richer than this fake host can approximate faithfully.
+    if (extend) return undefined;
+    return this.modelRowSelections(direction, count, { extend });
+  }
+
+  moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): void {
+    const pageSize = Math.max(1, Math.floor(this.lineCount() / (halfPage ? 2 : 1)));
+    this.setSelections(this.modelRowSelections(direction, count * pageSize, { extend }));
+  }
+
+  scrollByLines(_direction: HostDirection, _count: number): void {}
+
+  private modelRowSelections(direction: HostDirection, count: number, { extend }: { extend: boolean }): readonly VimSelection[] {
+    return this.selections.map(selection => {
+      const head = selection.type === "charwise" ? selection.cursor ?? selection.head : selectionHead(selection);
+      const goalColumn = selection.goalColumn ?? (extend && selection.type === "charwise" && selection.cursor !== undefined ? head.column + 1 : head.column);
+      const rowDelta = direction === "up" ? -count : count;
+      const next = normalCursorPosition(this, { row: head.row + rowDelta, column: goalColumn });
+      if (extend && selection.type === "charwise") {
+        return {
+          ...selection,
+          head: exclusiveVisualHead(this, next),
+          cursor: next,
+          goalColumn,
+        };
+      }
+      return { ...charwiseSelection(next), goalColumn };
+    });
   }
 
   readClipboard(): string {

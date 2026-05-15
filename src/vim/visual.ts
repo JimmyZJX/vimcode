@@ -9,7 +9,7 @@
 
 import { VimEditorCapabilities, rangeText } from "./editor.js";
 import { positionAfterInsertedText } from "./insert.js";
-import { applyMotionWithGoal, Motion, motionForKey } from "./motion.js";
+import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { cursorAfterDeletingRange, deleteRange } from "./normal/delete.js";
 import { RegisterContent, RegisterName, Registers, parseRegisterName } from "./registers.js";
@@ -72,6 +72,7 @@ export class VisualMode {
   private pendingTextObject: PendingTextObject | undefined;
   private pendingSurround: { ranges: readonly TextRange[]; linewise: boolean } | undefined;
   private pendingRegister = false;
+  private pendingPrefix: "g" | undefined;
   private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
 
@@ -86,6 +87,7 @@ export class VisualMode {
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingRegister = false;
+    this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
     this.countBuffer = "";
     switch (kind) {
@@ -109,6 +111,7 @@ export class VisualMode {
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingRegister = false;
+    this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
     this.countBuffer = "";
     this.state = externalSelectionToCharwiseState(this.editor, selection);
@@ -122,6 +125,7 @@ export class VisualMode {
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingRegister = false;
+    this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
     this.countBuffer = "";
   }
@@ -132,6 +136,7 @@ export class VisualMode {
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingRegister = false;
+    this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");
@@ -170,6 +175,21 @@ export class VisualMode {
 
     if (isCountKey(key, this.countBuffer)) {
       this.countBuffer += key;
+      return handled();
+    }
+
+    if (this.pendingPrefix === "g") {
+      this.pendingPrefix = undefined;
+      if (key === "j" || key === "k") {
+        this.applyVisualMotion(state, { type: key === "j" ? "down" : "up" }, this.takeCount(1), { displayLine: true });
+        return handled({ nextMode: "visual" });
+      }
+      this.exit();
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+
+    if (key === "g") {
+      this.pendingPrefix = "g";
       return handled();
     }
 
@@ -265,8 +285,7 @@ export class VisualMode {
 
     const motion = visualMotionForKey(key);
     if (motion !== undefined) {
-      this.state = stateAfterMotion(this.editor, state, motion, this.takeCount(1));
-      this.syncEditorSelection();
+      this.applyVisualMotion(state, motion, this.takeCount(1), { displayLine: false });
       return handled();
     }
 
@@ -371,9 +390,28 @@ export class VisualMode {
     }
   }
 
+  private applyVisualMotion(state: VisualState, motion: Motion, count: number, { displayLine }: { displayLine: boolean }): void {
+    if (state.kind === "charwise") {
+      const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine, extend: true });
+      if (hostSelections !== undefined) {
+        this.editor.setSelections(hostSelections);
+        this.adoptSelectionFromHost();
+        return;
+      }
+    }
+
+    this.state = stateAfterMotion(this.editor, state, motion, count);
+    this.syncEditorSelection();
+  }
+
   private syncEditorSelection(): void {
     if (this.state === undefined) return;
     this.editor.setSelections([visualStateToEditorSelection(this.editor, this.state)]);
+  }
+
+  private adoptSelectionFromHost(): void {
+    const selection = this.editor.getSelections()[0];
+    if (selection?.type === "charwise") this.adoptSelection(selection, { render: false });
   }
 
   private finishNormalAt(position: Position): void {
@@ -381,6 +419,7 @@ export class VisualMode {
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingRegister = false;
+    this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");

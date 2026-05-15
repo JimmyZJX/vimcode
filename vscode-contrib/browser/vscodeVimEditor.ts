@@ -1,11 +1,12 @@
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
-import { IIdentifiedSingleEditOperation, IModelDeltaDecoration } from '../../../common/model.js';
-import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, charwiseSelection } from '../common/state.js';
-import { VimEditorCapabilities } from '../common/editor.js';
+import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, PositionAffinity } from '../../../common/model.js';
+import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from '../common/state.js';
+import { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
@@ -15,7 +16,8 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	constructor(
 		private readonly editor: ICodeEditor,
-		private readonly clipboard: VSCodeVimClipboard
+		private readonly clipboard: VSCodeVimClipboard,
+		private readonly commandService: ICommandService
 	) {
 		this.visualLineDecorations = editor.createDecorationsCollection();
 	}
@@ -94,6 +96,93 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.rememberSelections(selectionsAfter, lowered.selections);
 		this.editor.executeEdits('vim', vscodeEdits, lowered.selections);
 		this.editor.pushUndoStop();
+	}
+
+	executeHostCommand(command: HostCommand): void {
+		this.invalidateCachedSelections();
+		switch (command) {
+			case 'navigateBack':
+				this.commandService.executeCommand('workbench.action.navigateBack');
+				return;
+			case 'navigateForward':
+				this.commandService.executeCommand('workbench.action.navigateForward');
+				return;
+			case 'undo':
+				this.editor.trigger('vim', 'undo', null);
+				return;
+			case 'redo':
+				this.editor.trigger('vim', 'redo', null);
+				return;
+		}
+	}
+
+	revealCurrentLine(target: HostRevealTarget): void {
+		const position = this.editor.getPosition();
+		if (position === null) {
+			return;
+		}
+		this.editor.trigger('vim', 'revealLine', {
+			lineNumber: position.lineNumber - 1,
+			at: target,
+		});
+	}
+
+	executeFoldCommand(command: HostFoldCommand): void {
+		this.invalidateCachedSelections();
+		this.editor.trigger('vim', foldCommandId(command), null);
+	}
+
+	moveByViewLines(direction: HostDirection, count: number, { displayLine, extend }: { displayLine: boolean; extend: boolean }): readonly VimSelection[] {
+		// This is a pure query over VSCode's internal view model. It uses the same
+		// model<->view coordinate conversion that native cursor movement uses, so
+		// folded ranges and soft wraps are represented without moving the live cursor.
+		const viewModel = this.editor._getViewModel();
+		if (viewModel === null) {
+			return this.getSelections();
+		}
+		const converter = viewModel.coordinatesConverter;
+		const lineCount = viewModel.model.getLineCount();
+		return this.getSelections().map(selection => {
+			const head = selection.type === 'charwise' ? selection.cursor ?? selection.head : selectionHead(selection);
+			const modelPosition = new VSCodePosition(head.row + 1, head.column + 1);
+			const viewPosition = converter.convertModelPositionToViewPosition(modelPosition, PositionAffinity.None, false, direction === 'down');
+			const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
+			const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
+			const viewColumn = Math.max(viewModel.getLineMinColumn(viewLine), Math.min(viewPosition.column, viewModel.getLineMaxColumn(viewLine)));
+			const target = converter.convertViewPositionToModelPosition(new VSCodePosition(viewLine, viewColumn));
+			const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
+			const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
+			const targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
+			if (extend && selection.type === 'charwise') {
+				return {
+					...selection,
+					head: exclusiveVisualHead(this, targetPosition),
+					cursor: targetPosition,
+				};
+			}
+			return charwiseSelection(targetPosition);
+		});
+	}
+
+	moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): void {
+		this.invalidateCachedSelections();
+		this.editor.trigger('vim', 'editorScroll', {
+			to: direction,
+			by: halfPage ? 'halfPage' : 'page',
+			value: count,
+			revealCursor: true,
+			select: extend,
+		});
+	}
+
+	scrollByLines(direction: HostDirection, count: number): void {
+		this.editor.trigger('vim', 'editorScroll', {
+			to: direction,
+			by: 'wrappedLine',
+			value: count,
+			revealCursor: false,
+			select: false,
+		});
 	}
 
 	readClipboard(): string {
@@ -227,6 +316,33 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			});
 		}
 		this.visualLineDecorations.set(decorations);
+	}
+}
+
+function exclusiveVisualHead(editor: VSCodeVimEditor, head: VimPosition): VimPosition {
+	const lineLength = editor.lineLength(head.row);
+	if (lineLength === 0) {
+		return head;
+	}
+	return { row: head.row, column: Math.min(head.column + 1, lineLength) };
+}
+
+function foldCommandId(command: HostFoldCommand): string {
+	switch (command) {
+		case 'toggle':
+			return 'editor.toggleFold';
+		case 'open':
+			return 'editor.unfold';
+		case 'close':
+			return 'editor.fold';
+		case 'openRecursive':
+			return 'editor.unfoldRecursively';
+		case 'closeRecursive':
+			return 'editor.foldRecursively';
+		case 'openAll':
+			return 'editor.unfoldAll';
+		case 'closeAll':
+			return 'editor.foldAll';
 	}
 }
 

@@ -42,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 143 enabled tests.
+  - `npm test -- --runInBand` passes with 154 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -52,7 +52,7 @@ Implemented first-slice behavior:
 - pending operators
 - first text-object grammar: operator + `i`/`a` + `w`/`W`, simple quote/bracket objects, and first paragraph/sentence objects
 - visual mode slice: charwise `v`, visual-line `V`, and visual-block `ctrl-v` motions plus visual `d`/`x`, `y`, `c`/`s`, `iw`/`iW`, `p`/`P`, block `I`/`A` insert, and other-end block movement for the enabled Zed fixtures
-- motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`, `f`, `F`, `t`, `T`, `;`, `,`
+- motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`, `f`, `F`, `t`, `T`, `;`, `,`, `%`, `]}`, `])`, `[{`, `[(`, and local mark jumps
 - operators: `d`, `c`, `y`, including expanded basic `d`/`c` coverage for `0`, `h`, `l`, `$`, vertical linewise motions, `gg`, `G`, and `cc`
 - line operators: `dd`, `cc`, `yy`
 - motion operators: `dw`, `de`, `cw`, `ce`, `yw`
@@ -64,6 +64,7 @@ Implemented first-slice behavior:
 - first surround operators: `ys`, `yss`, `ds`, `cs`, and visual `S` for word/motion/quote/bracket ranges
 - first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, count override for repeated operator motions, and `:` commands for goto, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
 - first macro slice: `q{register}` recording, `@{register}` / `@@` replay, counted replay, and `Q` replay-last for focused fixtures
+- first VSCode-hosted command slice: normal-mode `u`/`ctrl-r`, `ctrl-o`/`ctrl-i`, `gj`/`gk`, folded-line `j`/`k`, `ctrl-y`/`ctrl-e`, and `ctrl-u`/`ctrl-d`/`ctrl-b`/`ctrl-f` delegate to host editor/workbench capabilities
 - numbered/special register slice: register `0` and `1`-`9` storage/rotation for linewise deletes, small-delete `-`, black-hole `_`, search `/`, uppercase append registers, counted `p`/`P`, and linewise paste repeat basics
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 
@@ -425,6 +426,7 @@ Known caveats still intentionally not fully covered:
 - Full `test_r`, `test_replace_mode_with_counts`, and full dot-repeat fixtures include newline and Zed Put-with-preserved-repeat-state cases beyond the current first slice.
 - Full dot-repeat register fixtures need exact repeat-register semantics for numbered-register paste.
 - Full macro replay fixtures still need richer replay-while-recording and macro/dot interaction semantics.
+- Full matching/jump fixtures still need language-aware matching for comments, tags, preprocessor directives, visual builtin marks, and the jumplist.
 - VSCode-contrib files are type-checked by the VSCode build after sync, not by the local `npm run build -- --noEmit` command.
 
 Useful local commands after source changes:

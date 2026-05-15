@@ -34,6 +34,10 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
     } else if ("SetOption" in entry) {
       // Zed fixtures may contain Neovim UI options (e.g. wrap/columns) that do
       // not affect the model-buffer semantics supported by this harness yet.
+    } else if ("Exec" in entry) {
+      // Some Zed fixtures set filetype or other Neovim-local state. The current
+      // model-buffer harness ignores those unless a fixture explicitly needs a
+      // language-aware capability.
     } else if ("ReadRegister" in entry) {
       const currentVim = requireVim(vim, fixture.testCaseId);
       const registerName = parseRegisterName(entry.ReadRegister.name);

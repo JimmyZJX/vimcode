@@ -3,6 +3,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { Vim, VimStatus } from '../common/vim.js';
@@ -35,11 +36,12 @@ export class VimController extends Disposable {
 	constructor(
 		private readonly editor: ICodeEditor,
 		contextKeyService: IContextKeyService,
-		clipboardService: IClipboardService
+		clipboardService: IClipboardService,
+		commandService: ICommandService
 	) {
 		super();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
-		this.vimEditor = new VSCodeVimEditor(editor, this.vimClipboard);
+		this.vimEditor = new VSCodeVimEditor(editor, this.vimClipboard, commandService);
 		this.vim = new Vim(this.vimEditor);
 		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
 		this.vimNormalContext = VimNormalContext.bindTo(contextKeyService);
@@ -134,8 +136,9 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 		if (event.keyCode === KeyCode.BracketLeft) {
 			return 'ctrl-[';
 		}
-		if (event.keyCode === KeyCode.KeyV) {
-			return 'ctrl-v';
+		if (event.keyCode >= KeyCode.KeyA && event.keyCode <= KeyCode.KeyZ) {
+			const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
+			return `ctrl-${letter}`;
 		}
 		return undefined;
 	}

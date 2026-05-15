@@ -8,6 +8,7 @@
 import {
   Position,
   TextRange,
+  VimSelection,
   comparePositions,
   orderedRange,
   position,
@@ -48,6 +49,10 @@ export type Motion =
   | { type: "nextWordStart"; bigWord: boolean }
   | { type: "nextWordEnd"; bigWord: boolean }
   | { type: "previousWordStart"; bigWord: boolean }
+  | { type: "matching" }
+  | { type: "unmatchedForward"; char: string }
+  | { type: "unmatchedBackward"; char: string }
+  | { type: "jump"; position: Position; line: boolean }
   | FindMotion;
 import { VimEditorCapabilities, clipPosition, normalCursorPosition } from "./editor.js";
 
@@ -86,6 +91,8 @@ export function motionForKey(key: string): Motion | undefined {
       return { type: "previousWordStart", bigWord: false };
     case "B":
       return { type: "previousWordStart", bigWord: true };
+    case "%":
+      return { type: "matching" };
     default:
       return undefined;
   }
@@ -261,6 +268,14 @@ export function applyMotionOnce(
       return nextWordEnd(editor, clipped, motion.bigWord);
     case "previousWordStart":
       return previousWordStart(editor, clipped, motion.bigWord);
+    case "matching":
+      return matching(editor, clipped);
+    case "unmatchedForward":
+      return unmatched(editor, clipped, motion.char, "forward");
+    case "unmatchedBackward":
+      return unmatched(editor, clipped, motion.char, "backward");
+    case "jump":
+      return motion.line ? firstNonWhitespace(editor, motion.position.row) : normalCursorPosition(editor, motion.position);
     case "findForward":
       return findForward(editor, clipped, motion.char, 1, { before: motion.before }) ?? clipped;
     case "findBackward":
@@ -283,6 +298,19 @@ export function applyMotion(
   return applyMotionWithGoal(editor, start, motion, count).position;
 }
 
+// VSCode-specific motion capability hook. Zed computes display/fold-aware motion
+// directly against its DisplaySnapshot. Locally, the core asks the host for
+// view-line motion targets when a motion is inherently view-dependent.
+export function hostViewLineSelectionsForMotion(
+  editor: VimEditorCapabilities,
+  motion: Motion,
+  count: number,
+  options: { displayLine: boolean; extend: boolean }
+): readonly VimSelection[] | undefined {
+  if (motion.type !== "up" && motion.type !== "down") return undefined;
+  return editor.moveByViewLines(motion.type === "down" ? "down" : "up", count, options);
+}
+
 export type MotionResult = {
   position: Position;
   goalColumn?: number;
@@ -302,6 +330,9 @@ export function applyMotionWithGoal(
 ): MotionResult {
   if (motion.type === "findForward") {
     return { position: findForward(editor, start, motion.char, count, { before: motion.before }) ?? start };
+  }
+  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+    return { position: applyMotionOnce(editor, start, motion) };
   }
   if (motion.type === "findBackward") {
     return { position: findBackward(editor, start, motion.char, count, { after: motion.after }) };
@@ -358,6 +389,9 @@ export function motionRange(
   if (motion.type === "nextWordEnd") {
     const rangeEnd = nextPosition(editor, end) ?? end;
     return orderedRange(start, rangeEnd);
+  }
+  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+    return orderedRange(start, end);
   }
   if (motion.type === "findForward") {
     const target = findForwardTarget(editor, start, motion.char, count);
@@ -447,6 +481,145 @@ function documentText(editor: VimEditorCapabilities): string {
   const lines: string[] = [];
   for (let row = 0; row < editor.lineCount(); row++) lines.push(editor.line(row));
   return lines.join("\n");
+}
+
+// Zed: `motion::matching`, reached from `Motion::Matching`. This local version is
+// text-based and intentionally limited to bracket pairs; Zed also uses syntax-aware
+// bracket ranges, comments, tags, preprocessor directives, and optional quote matching.
+function matching(editor: VimEditorCapabilities, start: Position): Position {
+  const text = documentText(editor);
+  const startOffset = offsetOfPosition(editor, start);
+  const lineStart = offsetOfPosition(editor, { row: start.row, column: 0 });
+  const lineEnd = lineStart + editor.lineLength(start.row);
+  const bracketOffset = bracketOffsetForMatching(text, startOffset, lineEnd);
+  if (bracketOffset === undefined) return start;
+  const matchOffset = matchingBracketOffset(text, bracketOffset);
+  return matchOffset === undefined ? start : normalCursorPosition(editor, positionOfOffset(editor, matchOffset));
+}
+
+function bracketOffsetForMatching(text: string, startOffset: number, lineEnd: number): number | undefined {
+  for (let offset = startOffset; offset <= lineEnd && offset < text.length; offset++) {
+    if (bracketPair(text[offset]) !== undefined) return offset;
+  }
+  return undefined;
+}
+
+function matchingBracketOffset(text: string, bracketOffset: number): number | undefined {
+  const bracket = bracketPair(text[bracketOffset]);
+  if (bracket === undefined) return undefined;
+  const { open, close, direction } = bracket;
+  let depth = 0;
+
+  if (direction === "forward") {
+    for (let offset = bracketOffset; offset < text.length; offset++) {
+      const char = text[offset];
+      if (char === open) depth++;
+      if (char === close) {
+        depth--;
+        if (depth === 0) return offset;
+      }
+    }
+  } else {
+    for (let offset = bracketOffset; offset >= 0; offset--) {
+      const char = text[offset];
+      if (char === close) depth++;
+      if (char === open) {
+        depth--;
+        if (depth === 0) return offset;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function unmatched(editor: VimEditorCapabilities, start: Position, char: string, direction: "forward" | "backward"): Position {
+  const pair = pairForTarget(char);
+  if (pair === undefined) return start;
+  const text = documentText(editor);
+  const startOffset = offsetOfPosition(editor, start);
+  const matchOffset = direction === "forward"
+    ? unmatchedForwardOffset(text, startOffset, pair)
+    : unmatchedBackwardOffset(text, startOffset, pair);
+  return matchOffset === undefined ? start : normalCursorPosition(editor, positionOfOffset(editor, matchOffset));
+}
+
+function unmatchedForwardOffset(text: string, startOffset: number, { open, close }: { open: string; close: string }): number | undefined {
+  let depth = unmatchedDepthBefore(text, startOffset, { open, close });
+  for (let offset = startOffset; offset < text.length; offset++) {
+    const char = text[offset];
+    if (char === open) depth++;
+    if (char === close) {
+      if (depth <= 1) return offset;
+      depth--;
+    }
+  }
+  return undefined;
+}
+
+function unmatchedDepthBefore(text: string, startOffset: number, { open, close }: { open: string; close: string }): number {
+  let depth = 0;
+  for (let offset = 0; offset < startOffset; offset++) {
+    const char = text[offset];
+    if (char === open) depth++;
+    if (char === close && depth > 0) depth--;
+  }
+  return depth;
+}
+
+function unmatchedBackwardOffset(text: string, startOffset: number, { open, close }: { open: string; close: string }): number | undefined {
+  let depth = 0;
+  for (let offset = startOffset; offset >= 0; offset--) {
+    const char = text[offset];
+    if (char === close) depth++;
+    if (char === open) {
+      if (depth === 0) return offset;
+      depth--;
+    }
+  }
+  return undefined;
+}
+
+function pairForTarget(char: string): { open: string; close: string } | undefined {
+  switch (char) {
+    case "(":
+    case ")":
+      return { open: "(", close: ")" };
+    case "[":
+    case "]":
+      return { open: "[", close: "]" };
+    case "{":
+    case "}":
+      return { open: "{", close: "}" };
+    case "<":
+    case ">":
+      return { open: "<", close: ">" };
+    default:
+      return undefined;
+  }
+}
+
+function bracketPair(char: string | undefined): { open: string; close: string; direction: "forward" | "backward" } | undefined {
+  switch (char) {
+    case "(":
+      return { open: "(", close: ")", direction: "forward" };
+    case ")":
+      return { open: "(", close: ")", direction: "backward" };
+    case "[":
+      return { open: "[", close: "]", direction: "forward" };
+    case "]":
+      return { open: "[", close: "]", direction: "backward" };
+    case "{":
+      return { open: "{", close: "}", direction: "forward" };
+    case "}":
+      return { open: "{", close: "}", direction: "backward" };
+    case "<":
+      return { open: "<", close: ">", direction: "forward" };
+    case ">":
+      return { open: "<", close: ">", direction: "backward" };
+    default:
+      return undefined;
+  }
 }
 
 function findWithWrap(text: string, query: string, startOffset: number): number | undefined {

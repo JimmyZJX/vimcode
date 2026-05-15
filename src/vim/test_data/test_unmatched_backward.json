@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"func (a string) {\n    do(something(with<Types>.anˇd_arrays[0, 2]))\n}"}}
 {"Key":"["}
 {"Key":"{"}

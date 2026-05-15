@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: markdown fenced-code unmatched-forward fixture needs language-aware filtering beyond current text-based bracket matching.
 {"Exec":{"command":"set filetype=markdown"}}
 {"Put":{"state":"```rs\nimpl Worktree {\n    pub async fn open_buffers(&self, path: &Path) -> impl Iterator<&Buffer> {\nˇ    }\n}\n```\n"}}
 {"Key":"]"}

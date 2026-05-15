@@ -20,6 +20,8 @@ export type NeovimFixtureEntry = {
   Get: { state: string; mode: NeovimMode };
 } | {
   SetOption: { value: string };
+} | {
+  Exec: { command: string };
 };
 
 export type EnabledNeovimFixture = {
@@ -102,7 +104,8 @@ function parseEntry(line: string): NeovimFixtureEntry {
     | { Key: string }
     | { ReadRegister: { name: string; value: string } }
     | { Get: { state: string; mode: string } }
-    | { SetOption: { value: string } };
+    | { SetOption: { value: string } }
+    | { Exec: { command: string } };
 
   if ("Get" in entry) {
     return { Get: { state: entry.Get.state, mode: normalizeMode(entry.Get.mode) } };

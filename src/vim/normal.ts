@@ -7,7 +7,7 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
-import { Motion, applyMotionWithGoal, lineRange, motionRange, motionForKey } from "./motion.js";
+import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { changeLineRange, changeLines, changeMotion, changeRange } from "./normal/change.js";
 import { deleteCharacters, deleteLineRange, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
@@ -17,7 +17,7 @@ import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
 import { toggleCaseCharacters } from "./normal/convert.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
-import { KeyResult, Operator, TextRange, charwiseSelection, selectionHead } from "./state.js";
+import { KeyResult, Operator, TextRange, VimSelection, charwiseSelection, selectionHead } from "./state.js";
 
 type PendingOperator = {
   operator: Operator;
@@ -142,6 +142,15 @@ export class NormalMode {
           return handled({ enterInsert: this.applyLinewiseOperatorToRow(count - 1) });
         }
         this.moveToLine(count - 1);
+        this.selectedRegister = undefined;
+        return handled();
+      }
+      if ((key === "j" || key === "k") && this.pendingOperator === undefined) {
+        const count = this.takeCount(1);
+        const motion: Motion = { type: key === "j" ? "down" : "up" };
+        const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: true, extend: false });
+        if (hostSelections === undefined) this.moveSelections(motion, count);
+        else this.editor.setSelections(hostSelections);
         this.selectedRegister = undefined;
         return handled();
       }
@@ -303,7 +312,9 @@ export class NormalMode {
     this.pendingOperator = undefined;
 
     if (pending === undefined) {
-      this.moveSelections(motion, count);
+      const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
+      if (hostSelections === undefined) this.moveSelections(motion, count);
+      else this.editor.setSelections(hostSelections);
       this.selectedRegister = undefined;
       return false;
     } else {
@@ -450,6 +461,11 @@ export class NormalMode {
   // or `normal::yank::Vim::yank_motion`.
   private applyOperatorToMotion(operator: Operator, motion: Motion, count: number): boolean {
     const registerName = this.takeSelectedRegister();
+    const sourceSelections = this.editor.getSelections();
+    const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
+    if (hostSelections !== undefined) {
+      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, hostSelections);
+    }
     switch (operator) {
       case "change":
         return changeMotion(this.editor, this.registers, registerName, motion, count);
@@ -458,6 +474,35 @@ export class NormalMode {
         return false;
       case "yank":
         yankMotion(this.editor, this.registers, registerName, motion, count);
+        return false;
+    }
+  }
+
+  private applyOperatorToLinewiseSelections(
+    operator: Operator,
+    registerName: RegisterName | undefined,
+    sourceSelections: readonly VimSelection[],
+    targetSelections: readonly VimSelection[]
+  ): boolean {
+    const rows = sourceSelections.flatMap((selection, index) => {
+      const head = selectionHead(selection);
+      const target = selectionHead(targetSelections[index] ?? selection);
+      if (head.row === target.row) return [];
+      return [{
+        startRow: Math.min(head.row, target.row),
+        endRow: Math.max(head.row, target.row),
+        column: head.column,
+      }];
+    });
+    if (rows.length === 0) return false;
+
+    switch (operator) {
+      case "change":
+        return changeLineRange(this.editor, this.registers, registerName, rows);
+      case "delete":
+        deleteLineRange(this.editor, this.registers, registerName, rows);
+        return false;
+      case "yank":
         return false;
     }
   }

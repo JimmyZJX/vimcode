@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: full comment/template percent fixture includes Liquid-style delimiters beyond current text-based bracket matching slice.
 {"Put":{"state":"// ˇconsole.log(var);"}}
 {"Key":"%"}
 {"Get":{"state":"// console.log(varˇ);","mode":"Normal"}}
