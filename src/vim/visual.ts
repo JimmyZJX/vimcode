@@ -25,7 +25,8 @@ import {
   selectionHead,
 } from "./state.js";
 
-type VisualResultMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock";
+export type VisualResultMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock";
+export type RestoredVisualMode = "visual" | "visualLine" | "visualBlock";
 
 export type VisualKeyResult = {
   keyResult: KeyResult;
@@ -69,6 +70,7 @@ function handled(
 
 export class VisualMode {
   private state: VisualState | undefined;
+  private lastState: VisualState | undefined;
   private pendingTextObject: PendingTextObject | undefined;
   private pendingSurround: { ranges: readonly TextRange[]; linewise: boolean } | undefined;
   private pendingRegister = false;
@@ -132,6 +134,7 @@ export class VisualMode {
 
   exit(): void {
     const state = this.state;
+    if (state !== undefined) this.rememberState(state);
     this.state = undefined;
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
@@ -229,6 +232,7 @@ export class VisualMode {
     }
 
     if (state.kind === "blockwise" && (key === "I" || key === "A")) {
+      this.rememberState(state);
       enterBlockInsert(this.editor, this.registers, undefined, state, {
         deleteSelection: false,
         side: key === "I" ? "start" : "end",
@@ -239,6 +243,7 @@ export class VisualMode {
     }
 
     if (key === "S") {
+      this.rememberState(state);
       substituteLineForState(this.editor, this.registers, this.takeSelectedRegister(), state);
       this.state = undefined;
       this.editor.setCursorStyle("line");
@@ -250,8 +255,8 @@ export class VisualMode {
       return handled();
     }
 
-    if (state.kind === "blockwise" && (key === "o" || key === "O")) {
-      this.state = key === "o" ? flipBlockOtherEndRowAware(state) : flipBlockOtherEnd(state);
+    if (key === "o" || key === "O") {
+      this.state = otherEndState(state, { rowAware: key === "o" });
       this.syncEditorSelection();
       return handled();
     }
@@ -263,6 +268,7 @@ export class VisualMode {
     }
 
     if (key === "d" || key === "x") {
+      this.rememberState(state);
       this.delete(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("block");
@@ -270,6 +276,7 @@ export class VisualMode {
     }
 
     if (key === "c" || key === "s") {
+      this.rememberState(state);
       this.change(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("line");
@@ -277,6 +284,7 @@ export class VisualMode {
     }
 
     if (key === "p" || key === "P") {
+      this.rememberState(state);
       this.paste(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("block");
@@ -416,7 +424,21 @@ export class VisualMode {
     if (selection?.type === "charwise") this.adoptSelection(selection, { render: false });
   }
 
+  restoreLastSelection(): RestoredVisualMode | undefined {
+    const lastState = this.lastState;
+    if (lastState === undefined) return undefined;
+    const currentState = this.state;
+    if (currentState !== undefined) this.rememberState(currentState);
+    this.state = lastState;
+    this.lastState = currentState;
+    this.clearPendingInteraction();
+    this.editor.setCursorStyle("line");
+    this.syncEditorSelection();
+    return modeForState(lastState);
+  }
+
   private finishNormalAt(position: Position): void {
+    if (this.state !== undefined) this.rememberState(this.state);
     this.state = undefined;
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
@@ -432,6 +454,19 @@ export class VisualMode {
     const registerName = this.selectedRegister;
     this.selectedRegister = undefined;
     return registerName;
+  }
+
+  private clearPendingInteraction(): void {
+    this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
+    this.pendingRegister = false;
+    this.pendingPrefix = undefined;
+    this.selectedRegister = undefined;
+    this.countBuffer = "";
+  }
+
+  private rememberState(state: VisualState): void {
+    this.lastState = cloneVisualState(state);
   }
 
   applyMotion(motion: Motion, count: number): void {
@@ -635,6 +670,17 @@ function stateToBlockwise(state: VisualState): BlockwiseVisualState {
   }
 }
 
+function otherEndState(state: VisualState, { rowAware }: { rowAware: boolean }): VisualState {
+  switch (state.kind) {
+    case "charwise":
+      return { ...state, anchor: state.head, head: state.anchor, goalColumn: state.anchor.column };
+    case "linewise":
+      return { ...state, anchorLine: state.headLine, headLine: state.anchorLine };
+    case "blockwise":
+      return rowAware ? flipBlockOtherEndRowAware(state) : flipBlockOtherEnd(state);
+  }
+}
+
 function flipBlockOtherEndRowAware(state: BlockwiseVisualState): BlockwiseVisualState {
   return { ...state, anchor: state.head, head: state.anchor, goalColumn: state.anchor.column };
 }
@@ -646,6 +692,28 @@ function flipBlockOtherEnd(state: BlockwiseVisualState): BlockwiseVisualState {
     head: { row: state.head.row, column: state.anchor.column },
     goalColumn: state.anchor.column,
   };
+}
+
+function modeForState(state: VisualState): RestoredVisualMode {
+  switch (state.kind) {
+    case "charwise":
+      return "visual";
+    case "linewise":
+      return "visualLine";
+    case "blockwise":
+      return "visualBlock";
+  }
+}
+
+function cloneVisualState(state: VisualState): VisualState {
+  switch (state.kind) {
+    case "charwise":
+      return { ...state, anchor: { ...state.anchor }, head: { ...state.head } };
+    case "linewise":
+      return { ...state };
+    case "blockwise":
+      return { ...state, anchor: { ...state.anchor }, head: { ...state.head } };
+  }
 }
 
 function visualStateToEditorSelection(editor: VimEditorCapabilities, state: VisualState): VimSelection {
@@ -789,6 +857,13 @@ function visualStartPosition(state: VisualState): Position {
 function visualExitPosition(editor: VimEditorCapabilities, state: VisualState): Position {
   switch (state.kind) {
     case "charwise":
+      if (
+        editor.lineLength(state.anchor.row) === 0
+        && state.head.row === state.anchor.row + 1
+        && state.head.column === 0
+      ) {
+        return state.anchor;
+      }
       return normalCursorPosition(editor, state.head);
     case "linewise":
       return linewiseCursor(editor, state);

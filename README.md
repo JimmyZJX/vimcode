@@ -33,7 +33,7 @@ Done in this branch:
   - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
   - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
   - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_delete_b`, `test_change_w`, `test_change_e`, `test_change_b`, `test_change_j`, `test_change_k`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
-  - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_backwards_n`, `test_d_search`, `test_gn`, `test_search_skipping`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
+  - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_backwards_n`, `test_d_search`, `test_gn`, `test_cgn_repeat`, `test_dgn_repeat`, `test_search_skipping`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, `test_gv`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text plus the charwise, linewise, and rectangular visual marker shapes used by the enabled fixtures.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
@@ -42,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 163 enabled tests.
+  - `npm test -- --runInBand` passes with 166 enabled tests.
 
 Implemented first-slice behavior:
 

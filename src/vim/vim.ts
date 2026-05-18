@@ -248,11 +248,14 @@ export class Vim {
       const sharedResolution = this.sharedActionResolver.handleKey(key);
       switch (sharedResolution.kind) {
         case "pending":
+          if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
           return "handled";
         case "action":
+          if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
           this.handleSharedAction(sharedResolution.action);
           return "handled";
         case "cancelled":
+          if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
           if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
             this.normalMode.clearPending();
           }
@@ -424,6 +427,11 @@ export class Vim {
         if (this.isVisualMode()) this.visualMode.adoptSelectionFromHost();
         else this.syncFromEditorState({ render: false });
         return;
+      case "restoreVisualSelection": {
+        const nextMode = this.visualMode.restoreLastSelection();
+        if (nextMode !== undefined) this.modeState = { dialect: this.modeState.dialect, kind: nextMode };
+        return;
+      }
       case "searchSelection":
         this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
         return;
