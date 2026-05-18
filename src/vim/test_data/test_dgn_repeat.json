@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: dgn repeat needs richer gn dot-repeat grouping.
 {"Put":{"state":"aaˇ aa aa aa aa"}}
 {"Key":"/"}
 {"Key":"a"}

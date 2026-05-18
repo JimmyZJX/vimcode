@@ -20,8 +20,8 @@ import {
 export type FindMotion =
   | { type: "findForward"; before: boolean; char: string }
   | { type: "findBackward"; after: boolean; char: string }
-  | { type: "searchForward"; query: string }
-  | { type: "searchBackward"; query: string };
+  | { type: "searchForward"; query: string; options?: SearchOptions }
+  | { type: "searchBackward"; query: string; options?: SearchOptions };
 
 export function reverseFindMotion(motion: FindMotion): FindMotion {
   switch (motion.type) {
@@ -30,8 +30,9 @@ export function reverseFindMotion(motion: FindMotion): FindMotion {
     case "findBackward":
       return { type: "findForward", before: motion.after, char: motion.char };
     case "searchForward":
+      return { ...motion, type: "searchBackward" };
     case "searchBackward":
-      return motion;
+      return { ...motion, type: "searchForward" };
   }
 }
 
@@ -53,8 +54,10 @@ export type Motion =
   | { type: "unmatchedForward"; char: string }
   | { type: "unmatchedBackward"; char: string }
   | { type: "jump"; position: Position; line: boolean }
+  | { type: "searchMatch"; range: TextRange }
   | FindMotion;
 import { VimEditorCapabilities, clipPosition, normalCursorPosition } from "./editor.js";
+import { SearchOptions } from "./search.js";
 
 // Zed: `motion::register` maps key actions to `Motion` variants once, while
 // `vim::Vim::motion` dispatches those motions by mode. This is the local
@@ -276,14 +279,16 @@ export function applyMotionOnce(
       return unmatched(editor, clipped, motion.char, "backward");
     case "jump":
       return motion.line ? firstNonWhitespace(editor, motion.position.row) : normalCursorPosition(editor, motion.position);
+    case "searchMatch":
+      return normalCursorPosition(editor, motion.range.start);
     case "findForward":
       return findForward(editor, clipped, motion.char, 1, { before: motion.before }) ?? clipped;
     case "findBackward":
       return findBackward(editor, clipped, motion.char, 1, { after: motion.after });
     case "searchForward":
-      return searchForward(editor, clipped, motion.query) ?? clipped;
+      return searchForward(editor, clipped, motion.query, motion.options) ?? clipped;
     case "searchBackward":
-      return searchBackward(editor, clipped, motion.query) ?? clipped;
+      return searchBackward(editor, clipped, motion.query, motion.options) ?? clipped;
   }
 }
 
@@ -335,17 +340,17 @@ export function applyMotionWithGoal(
     const row = Math.max(0, Math.min(count - 1, editor.lineCount() - 1));
     return { position: normalCursorPosition(editor, { row, column: start.column }) };
   }
-  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump" || motion.type === "searchMatch") {
     return { position: applyMotionOnce(editor, start, motion) };
   }
   if (motion.type === "findBackward") {
     return { position: findBackward(editor, start, motion.char, count, { after: motion.after }) };
   }
   if (motion.type === "searchForward") {
-    return { position: searchForward(editor, start, motion.query) ?? start };
+    return { position: searchForward(editor, start, motion.query, motion.options) ?? start };
   }
   if (motion.type === "searchBackward") {
-    return { position: searchBackward(editor, start, motion.query) ?? start };
+    return { position: searchBackward(editor, start, motion.query, motion.options) ?? start };
   }
   if (motion.type === "up" || motion.type === "down") {
     const targetColumn = goalColumn ?? start.column;
@@ -397,6 +402,9 @@ export function motionRange(
   if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
     return orderedRange(start, end);
   }
+  if (motion.type === "searchMatch") {
+    return motion.range;
+  }
   if (motion.type === "findForward") {
     const target = findForwardTarget(editor, start, motion.char, count);
     if (target === undefined) return { start, end: start };
@@ -406,6 +414,16 @@ export function motionRange(
     const target = findBackwardTarget(editor, start, motion.char, count);
     if (target === undefined) return { start, end: start };
     return orderedRange(motion.after ? nextPosition(editor, target) ?? target : target, nextPosition(editor, start) ?? start);
+  }
+  if (motion.type === "searchForward" || motion.type === "searchBackward") {
+    const target = editor.findSearchMatch(
+      motion.query,
+      start,
+      motion.type === "searchForward" ? "forward" : "backward",
+      motion.options
+    );
+    if (target === undefined) return { start, end: start };
+    return orderedRange(start, target.start);
   }
   if (motion.type === "previousWordStart" && end.row < start.row && start.column === 0) {
     const lastIncludedRow = start.row - 1;
@@ -465,20 +483,12 @@ function findBackwardTarget(editor: VimEditorCapabilities, start: Position, char
   return { row: start.row, column: found };
 }
 
-function searchForward(editor: VimEditorCapabilities, start: Position, query: string): Position | undefined {
-  const text = documentText(editor);
-  const startOffset = offsetOfPosition(editor, start) + 1;
-  const found = findWithWrap(text, query, startOffset);
-  return found === undefined ? undefined : positionOfOffset(editor, found);
+function searchForward(editor: VimEditorCapabilities, start: Position, query: string, options: SearchOptions = {}): Position | undefined {
+  return editor.findSearchMatch(query, start, "forward", options)?.start;
 }
 
-function searchBackward(editor: VimEditorCapabilities, start: Position, query: string): Position | undefined {
-  const text = documentText(editor);
-  const startOffset = Math.max(0, offsetOfPosition(editor, start) - 1);
-  const before = text.lastIndexOf(query, startOffset);
-  if (before >= 0) return positionOfOffset(editor, before);
-  const wrapped = text.lastIndexOf(query, text.length - 1);
-  return wrapped >= 0 ? positionOfOffset(editor, wrapped) : undefined;
+function searchBackward(editor: VimEditorCapabilities, start: Position, query: string, options: SearchOptions = {}): Position | undefined {
+  return editor.findSearchMatch(query, start, "backward", options)?.start;
 }
 
 function documentText(editor: VimEditorCapabilities): string {
@@ -624,13 +634,6 @@ function bracketPair(char: string | undefined): { open: string; close: string; d
     default:
       return undefined;
   }
-}
-
-function findWithWrap(text: string, query: string, startOffset: number): number | undefined {
-  const found = text.indexOf(query, startOffset);
-  if (found >= 0) return found;
-  const wrapped = text.indexOf(query, 0);
-  return wrapped >= 0 ? wrapped : undefined;
 }
 
 function offsetOfPosition(editor: VimEditorCapabilities, position: Position): number {

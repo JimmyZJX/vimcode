@@ -14,7 +14,7 @@ Done in this branch:
   - `src/vim/state.ts` — modes/operators/selections/state vocabulary, corresponding to Zed `state` module.
   - `src/vim/motion.ts` — `Motion` and basic motion behavior, corresponding to Zed `motion` module.
   - `src/vim/normal.ts` — normal-mode key dispatch, corresponding to Zed `normal` module plus `assets/keymaps/vim.json`.
-  - `src/vim/normal/{change,delete,yank,paste}.ts` — first operator implementations, corresponding to Zed `normal/*` modules.
+  - `src/vim/normal/{change,delete,yank,paste,search}.ts` — first operator/search implementations, corresponding to Zed `normal/*` modules.
   - `src/vim/object.ts` — first text-object support, corresponding to Zed `object::Object`.
   - `src/vim/surrounds.ts` — first Vim surround operators, corresponding to Zed `surrounds` module.
   - `src/vim/visual.ts` — first charwise visual-mode support, corresponding to Zed `visual` module.
@@ -33,7 +33,7 @@ Done in this branch:
   - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
   - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
   - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_delete_b`, `test_change_w`, `test_change_e`, `test_change_b`, `test_change_j`, `test_change_k`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
-  - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
+  - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_backwards_n`, `test_d_search`, `test_gn`, `test_search_skipping`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text plus the charwise, linewise, and rectangular visual marker shapes used by the enabled fixtures.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
@@ -42,7 +42,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 154 enabled tests.
+  - `npm test -- --runInBand` passes with 163 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -60,7 +60,7 @@ Implemented first-slice behavior:
 - `x`
 - very basic normal and visual `p` / `P`
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
-- simple `/...<enter>` search and `n` repeat for the current forward-search fixture
+- `/...<enter>` and `?...<enter>` regex search with smart-case matching, `n`/`N` repeat, `*`/`#` word search, and search-as-operator ranges through a VSCode-native search capability boundary; native Find highlights are shown while typing the query, seeded with the last query while empty, and cleared after the Vim search commits
 - first surround operators: `ys`, `yss`, `ds`, `cs`, and visual `S` for word/motion/quote/bracket ranges
 - first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, count override for repeated operator motions, and `:` commands for goto, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
 - first macro slice: `q{register}` recording, `@{register}` / `@@` replay, counted replay, and `Q` replay-last for focused fixtures
@@ -142,7 +142,8 @@ Current alignment:
 | `src/vim/state.ts`     | `state.rs`                                      | Modes, operators, selections, and shared state vocabulary.                                                                             |
 | `src/vim/motion.ts`    | `motion.rs`                                     | `Motion`, key-to-motion mapping, point movement, and motion ranges. Motions should be registered/mapped here once and shared by modes. |
 | `src/vim/normal.ts`    | `normal.rs`                                     | Normal-mode dispatch and pending operator grammar.                                                                                     |
-| `src/vim/normal/*`     | `normal/*`                                      | Operator/action implementations such as change/delete/yank/paste.                                                                      |
+| `src/vim/normal/*`     | `normal/*`                                      | Operator/action implementations such as change/delete/yank/paste/search.                                                               |
+| `src/vim/search.ts`    | `search::BufferSearchBar`                       | Adapter-neutral search types and fake model-buffer matching; production search is delegated to VSCode.                                  |
 | `src/vim/visual.ts`    | `visual.rs`                                     | Visual-mode state and visual interpretation of motions/actions. Do not duplicate motion key maps here.                                 |
 | `src/vim/object.ts`    | `object.rs`                                     | Text objects.                                                                                                                          |
 | `src/vim/insert.ts`    | `insert.rs` plus insert-related normal commands | Insert-mode behavior and insert command helpers.                                                                                       |

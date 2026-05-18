@@ -1,12 +1,15 @@
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { EditorOption } from '../../../common/config/editorOptions.js';
+import { CommonFindController, FindStartFocusAction } from '../../find/browser/findController.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
-import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, PositionAffinity } from '../../../common/model.js';
+import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
 import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from '../common/state.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
+import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
@@ -210,6 +213,51 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		});
 	}
 
+	updateSearch(query: string, _direction: SearchDirection, options: SearchOptions = {}): void {
+		const controller = CommonFindController.get(this.editor);
+		if (controller === null) {
+			return;
+		}
+		void controller.start({
+			forceRevealReplace: false,
+			seedSearchStringFromSelection: 'none',
+			seedSearchStringFromNonEmptySelection: false,
+			seedSearchStringFromGlobalClipboard: false,
+			shouldFocus: FindStartFocusAction.NoFocusChange,
+			shouldAnimate: false,
+			updateSearchScope: false,
+			loop: true,
+		}, {
+			searchString: query,
+			isRegex: options.regex ?? false,
+			wholeWord: options.wholeWord ?? false,
+			matchCase: options.caseSensitive ?? true,
+		});
+	}
+
+	findSearchMatch(query: string, start: VimPosition, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
+		if (query.length === 0) {
+			return undefined;
+		}
+		const model = this.model();
+		const wordSeparators = options.wholeWord === true ? this.editor.getOption(EditorOption.wordSeparators) : null;
+		if (options.includeStart === true) {
+			const containingMatch = findContainingSearchMatch(model, query, start, options, wordSeparators);
+			if (containingMatch !== undefined) {
+				return containingMatch;
+			}
+		}
+		const startPosition = searchStartPosition(model, start, direction, options);
+		const match = direction === 'forward'
+			? model.findNextMatch(query, startPosition, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false)
+			: model.findPreviousMatch(query, startPosition, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false);
+		return match === null ? undefined : fromRange(match.range);
+	}
+
+	clearSearchHighlights(): void {
+		CommonFindController.get(this.editor)?.closeFindWidget();
+	}
+
 	readClipboard(): string {
 		return this.clipboard.readText();
 	}
@@ -372,6 +420,49 @@ function foldCommandId(command: HostFoldCommand): string {
 		case 'closeAll':
 			return 'editor.foldAll';
 	}
+}
+
+function findContainingSearchMatch(
+	model: ITextModel,
+	query: string,
+	position: VimPosition,
+	options: SearchOptions,
+	wordSeparators: string | null
+): SearchMatch | undefined {
+	const offset = model.getOffsetAt(toVSCodePosition(position));
+	const match = model.findPreviousMatch(
+		query,
+		model.getPositionAt(Math.min(model.getValueLength(), offset + 1)),
+		options.regex ?? false,
+		options.caseSensitive ?? true,
+		wordSeparators,
+		false
+	);
+	if (match === null) {
+		return undefined;
+	}
+	const startOffset = model.getOffsetAt(match.range.getStartPosition());
+	const endOffset = model.getOffsetAt(match.range.getEndPosition());
+	return startOffset <= offset && offset < Math.max(startOffset + 1, endOffset)
+		? fromRange(match.range)
+		: undefined;
+}
+
+function searchStartPosition(model: ITextModel, position: VimPosition, direction: SearchDirection, options: SearchOptions): VSCodePosition {
+	const offset = model.getOffsetAt(toVSCodePosition(position));
+	const shiftedOffset = options.includeStart === true
+		? offset
+		: direction === 'forward'
+			? Math.min(model.getValueLength(), offset + 1)
+			: Math.max(0, offset - 1);
+	return model.getPositionAt(shiftedOffset);
+}
+
+function fromRange(range: Range): TextRange {
+	return {
+		start: { row: range.startLineNumber - 1, column: range.startColumn - 1 },
+		end: { row: range.endLineNumber - 1, column: range.endColumn - 1 },
+	};
 }
 
 function toRange(range: TextRange): Range {

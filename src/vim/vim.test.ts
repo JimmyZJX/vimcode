@@ -376,6 +376,29 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("alpha\ny\nx\nbeta");
   });
 
+  it("supports smart-case search", () => {
+    const lowerCaseSearchEditor = new InMemoryVimEditor("foo FOO foo");
+    const lowerCaseSearchVim = new Vim(lowerCaseSearchEditor);
+
+    runKeys(lowerCaseSearchVim, ["/", "f", "o", "o", "enter"]);
+    expect(head(lowerCaseSearchEditor)).toEqual({ row: 0, column: 4 });
+
+    const upperCaseSearchEditor = new InMemoryVimEditor("foo FOO Foo");
+    const upperCaseSearchVim = new Vim(upperCaseSearchEditor);
+
+    runKeys(upperCaseSearchVim, ["/", "F", "o", "o", "enter"]);
+    expect(head(upperCaseSearchEditor)).toEqual({ row: 0, column: 8 });
+  });
+
+  it("treats Vim search queries as regexes", () => {
+    const editor = new InMemoryVimEditor("foo axc abc");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/", "a", ".", "c", "enter"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+  });
+
   it("supports gg and G line motions", () => {
     const editor = new InMemoryVimEditor("  alpha\n  beta\n  gamma");
     const vim = new Vim(editor);

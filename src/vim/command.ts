@@ -36,6 +36,11 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
     return;
   }
 
+  if (trimmedRest === "noh" || trimmedRest === "nohlsearch") {
+    editor.clearSearchHighlights();
+    return;
+  }
+
   if (trimmedRest === "j" || trimmedRest === "join") {
     joinRange(editor, range ?? currentLineRange(editor, 2));
     return;

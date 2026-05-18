@@ -14,11 +14,11 @@ import { MarkState } from "./normal/mark.js";
 import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { MacroState, RepeatState } from "./normal/repeat.js";
 import { handleHostAction } from "./normal/scroll.js";
-import { SearchState } from "./normal/search.js";
+import { SearchState, searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, Registers } from "./registers.js";
 import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
-import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, selectionHead } from "./state.js";
+import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
 
 type PendingFind =
@@ -123,7 +123,7 @@ export class Vim {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
     if (this.searchState.isPending()) return this.searchState.pendingChord();
     if (this.markState.isPending()) return this.markState.pendingChord();
-    if (this.sharedActionResolver.isPending()) return this.sharedActionResolver.pendingChord();
+    if (this.sharedActionResolver.isPending()) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}${this.sharedActionResolver.pendingChord()}`;
     if (this.normalChordResolver.isPending()) return this.normalChordResolver.pendingChord();
     if (this.pendingUnmatched !== undefined) return this.pendingUnmatched.direction === "forward" ? "]" : "[";
     if (this.pendingFind !== undefined) {
@@ -213,8 +213,11 @@ export class Vim {
 
     if (this.searchState.isPending()) {
       if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
-      const motion = this.searchState.handleKey(key, this.registers);
-      if (motion !== undefined) this.applyMotion(motion, 1);
+      const motion = this.searchState.handleKey(key, this.registers, this.editor);
+      if (motion !== undefined) {
+        this.applyMotion(motion, 1);
+        this.editor.clearSearchHighlights();
+      }
       return "handled";
     }
 
@@ -250,6 +253,9 @@ export class Vim {
           this.handleSharedAction(sharedResolution.action);
           return "handled";
         case "cancelled":
+          if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
+            this.normalMode.clearPending();
+          }
           return "handled";
         case "noMatch":
           break;
@@ -388,6 +394,7 @@ export class Vim {
   private shouldResolveSharedAction(key: string): boolean {
     if (this.sharedActionResolver.isPending()) return true;
     if (this.modeState.kind !== "normal") return true;
+    if (this.normalMode.pendingOperatorName() !== undefined) return key === "g";
     return !this.normalMode.hasPendingNonCount();
   }
 
@@ -416,6 +423,9 @@ export class Vim {
           { halfPage: action.key === "ctrl-u" || action.key === "ctrl-d", extend: this.isVisualMode() });
         if (this.isVisualMode()) this.visualMode.adoptSelectionFromHost();
         else this.syncFromEditorState({ render: false });
+        return;
+      case "searchSelection":
+        this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
         return;
       case "native":
         this.editor.executeNativeCommand(action.command);
@@ -466,7 +476,16 @@ export class Vim {
     }
 
     if (key === "/" || key === "?") {
-      this.searchState.start(key === "?");
+      this.searchState.start(key === "?", this.editor);
+      return true;
+    }
+
+    if ((key === "*" || key === "#") && this.modeState.kind === "normal") {
+      const motion = searchUnderCursorMotion(this.editor, this.searchState, this.registers, { backwards: key === "#" });
+      if (motion !== undefined) {
+        this.applyMotion(motion, this.takeCountForMotion(1));
+        this.editor.clearSearchHighlights();
+      }
       return true;
     }
 
@@ -514,6 +533,32 @@ export class Vim {
       this.editor.setSelections([{ type: "charwise", anchor: { row, column: 0 }, head: { row, column: 0 } }]);
       for (const key of keys) this.onKey(key);
       if (this.modeState.kind === "insert") this.onKey("<escape>");
+    }
+  }
+
+  private applySearchSelection({ reversed, count }: { reversed: boolean; count: number }): void {
+    const includeStart = this.modeState.kind === "normal";
+    const range = this.searchState.matchRangeForSelection(this.editor, { reversed, count, includeStart });
+    if (range === undefined) return;
+    if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
+      const enterInsert = this.normalMode.applyMotion({ type: "searchMatch", range }, 1);
+      if (enterInsert) this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
+      return;
+    }
+
+    const currentSelection = this.editor.getSelections()[0];
+    if (this.isVisualMode() && currentSelection?.type === "charwise") {
+      const currentRange = rangeOfSelection(currentSelection);
+      this.editor.setSelections([reversed
+        ? { type: "charwise", anchor: currentRange.end, head: range.start }
+        : { type: "charwise", anchor: currentRange.start, head: range.end }]);
+    } else {
+      this.editor.setSelections([reversed
+        ? { type: "charwise", anchor: range.end, head: range.start }
+        : { type: "charwise", anchor: range.start, head: range.end }]);
+    }
+    if (this.visualMode.adoptSelection(this.editor.getSelections()[0], { render: true })) {
+      this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
     }
   }
 

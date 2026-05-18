@@ -488,7 +488,7 @@ export class NormalMode {
     }
     if (motion.type === "startOfDocument") {
       const targetSelections = sourceSelections.map(selection => charwiseSelection({ row: Math.min(count - 1, this.editor.lineCount() - 1), column: selectionHead(selection).column }));
-      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections);
+      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections, { includeSameRow: true });
     }
     switch (operator) {
       case "change":
@@ -506,12 +506,13 @@ export class NormalMode {
     operator: Operator,
     registerName: RegisterName | undefined,
     sourceSelections: readonly VimSelection[],
-    targetSelections: readonly VimSelection[]
+    targetSelections: readonly VimSelection[],
+    { includeSameRow = false }: { includeSameRow?: boolean } = {}
   ): boolean {
     const rows = sourceSelections.flatMap((selection, index) => {
       const head = selectionHead(selection);
       const target = selectionHead(targetSelections[index] ?? selection);
-      if (head.row === target.row) return [];
+      if (!includeSameRow && head.row === target.row) return [];
       return [{
         startRow: Math.min(head.row, target.row),
         endRow: Math.max(head.row, target.row),

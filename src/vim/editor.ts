@@ -16,6 +16,7 @@ import {
   position,
   selectionHead,
 } from "./state.js";
+import { SearchDirection, SearchMatch, SearchOptions, findSearchMatchInText } from "./search.js";
 
 export type HostCommand = "navigateBack" | "navigateForward" | "undo" | "redo";
 export type HostDirection = "up" | "down";
@@ -46,6 +47,14 @@ export interface VimEditorCapabilities {
   moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
   moveByPages(direction: HostDirection, count: number, options: { halfPage: boolean; extend: boolean }): void;
   scrollByLines(direction: HostDirection, count: number): void;
+
+  // Zed: `normal::search` integrates with `BufferSearchBar` so search motions,
+  // highlights, and find-widget state share one source of truth. Locally, the
+  // fake editor implements this as a model-buffer query while VSCode backs it
+  // with the native find controller/model.
+  updateSearch(query: string, direction: SearchDirection, options?: SearchOptions): void;
+  findSearchMatch(query: string, start: Position, direction: SearchDirection, options?: SearchOptions): SearchMatch | undefined;
+  clearSearchHighlights(): void;
 
   readClipboard(): string;
   writeClipboard(text: string): void;
@@ -199,6 +208,14 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   scrollByLines(_direction: HostDirection, _count: number): void {}
 
+  updateSearch(_query: string, _direction: SearchDirection, _options: SearchOptions = {}): void {}
+
+  findSearchMatch(query: string, start: Position, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
+    return findSearchMatchInText(this.getText(), query, offsetOfPosition(this, start), direction, options)?.range;
+  }
+
+  clearSearchHighlights(): void {}
+
   private modelRowSelections(direction: HostDirection, count: number, { extend }: { extend: boolean }): readonly VimSelection[] {
     return this.selections.map(selection => {
       const head = selection.type === "charwise" ? selection.cursor ?? selection.head : selectionHead(selection);
@@ -236,4 +253,10 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       ...replacementLines
     );
   }
+}
+
+function offsetOfPosition(editor: VimEditorCapabilities, pos: Position): number {
+  let offset = 0;
+  for (let row = 0; row < pos.row; row++) offset += editor.lineLength(row) + 1;
+  return offset + pos.column;
 }
