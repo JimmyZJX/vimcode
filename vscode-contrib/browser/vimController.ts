@@ -163,8 +163,15 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 		if (event.shiftKey) {
 			return undefined;
 		}
-		if (event.keyCode === KeyCode.BracketLeft) {
-			return 'ctrl-[';
+		switch (event.keyCode) {
+			case KeyCode.LeftArrow:
+				return 'ctrl-left';
+			case KeyCode.RightArrow:
+				return 'ctrl-right';
+			case KeyCode.BracketLeft:
+				return 'ctrl-[';
+			default:
+				break;
 		}
 		if (event.keyCode >= KeyCode.KeyA && event.keyCode <= KeyCode.KeyZ) {
 			const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
@@ -185,6 +192,14 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 	}
 
 	switch (event.keyCode) {
+		case KeyCode.LeftArrow:
+			return 'left';
+		case KeyCode.RightArrow:
+			return 'right';
+		case KeyCode.UpArrow:
+			return 'up';
+		case KeyCode.DownArrow:
+			return 'down';
 		case KeyCode.Escape:
 			return '<escape>';
 		case KeyCode.Enter:

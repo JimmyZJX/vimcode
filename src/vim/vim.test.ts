@@ -28,6 +28,47 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 8 });
   });
 
+  it("supports arrow keys as Vim motions", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["right", "right", "down", "left", "up"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
+  it("supports ctrl-left and ctrl-right as word motions", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["ctrl-right", "ctrl-right", "ctrl-left"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+  });
+
+  it("uses ctrl-right as an operator-pending motion", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d", "ctrl-right"]);
+
+    expect(editor.getText()).toBe("two three");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("uses ctrl-right as a visual motion", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "ctrl-right"]);
+
+    expect(editor.getSelections()[0]).toMatchObject({
+      type: "charwise",
+      anchor: { row: 0, column: 0 },
+      cursor: { row: 0, column: 3 },
+    });
+  });
+
   it("preserves the target column across vertical motions", () => {
     const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
     const vim = new Vim(editor);

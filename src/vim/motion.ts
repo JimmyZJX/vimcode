@@ -71,6 +71,10 @@ export function motionForKey(key: string): Motion | undefined {
     case "l":
     case "right":
       return { type: "right" };
+    case "ctrl-left":
+      return { type: "previousWordStart", bigWord: false };
+    case "ctrl-right":
+      return { type: "nextWordStart", bigWord: false };
     case "k":
     case "up":
       return { type: "up" };
