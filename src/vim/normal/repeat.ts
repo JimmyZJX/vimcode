@@ -138,6 +138,7 @@ function isRepeatableStartKey(key: string): boolean {
     || key === "r"
     || key === "R"
     || key === "~"
+    || key === "g"
     || key === "o"
     || key === "O"
     || key === "i"

@@ -16,7 +16,8 @@ import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion } from "./normal/yank.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
-import { toggleCaseCharacters } from "./normal/convert.js";
+import { ConvertTarget, convertRanges, toggleCaseCharacters } from "./normal/convert.js";
+import { joinLines } from "./normal/join.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
 import { KeyResult, Operator, TextRange, VimSelection, charwiseSelection, selectionHead } from "./state.js";
 
@@ -27,6 +28,8 @@ type PendingOperator = {
 
 type PendingPrefix = "g" | "register" | "indent";
 type PendingTextObject = { around: boolean };
+type PendingConvert = { target: ConvertTarget; count: number };
+type PendingConvertTextObject = PendingConvert & { around: boolean };
 type PendingSurround =
   | { type: "addTarget"; count: number }
   | { type: "addObject"; around: boolean; count: number }
@@ -38,10 +41,14 @@ type PendingSurround =
 export type NormalKeyResult = {
   keyResult: KeyResult;
   enterInsert: boolean;
+  insertCount: number;
+  insertSeparator: string;
 };
 
-function handled({ enterInsert = false }: { enterInsert?: boolean } = {}): NormalKeyResult {
-  return { keyResult: "handled", enterInsert };
+function handled(
+  { enterInsert = false, insertCount = 1, insertSeparator = "" }: { enterInsert?: boolean; insertCount?: number; insertSeparator?: string } = {}
+): NormalKeyResult {
+  return { keyResult: "handled", enterInsert, insertCount, insertSeparator };
 }
 
 export class NormalMode {
@@ -49,6 +56,8 @@ export class NormalMode {
   private pendingOperator: PendingOperator | undefined;
   private pendingPrefix: PendingPrefix | undefined;
   private pendingTextObject: PendingTextObject | undefined;
+  private pendingConvert: PendingConvert | undefined;
+  private pendingConvertTextObject: PendingConvertTextObject | undefined;
   private pendingSurround: PendingSurround | undefined;
   private pendingReplaceCount: number | undefined;
   private selectedRegister: RegisterName | undefined;
@@ -59,7 +68,7 @@ export class NormalMode {
   ) {}
 
   isPending(): boolean {
-    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingSurround !== undefined || this.pendingReplaceCount !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
+    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingConvert !== undefined || this.pendingConvertTextObject !== undefined || this.pendingSurround !== undefined || this.pendingReplaceCount !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
   }
 
   pendingOperatorName(): Operator | undefined {
@@ -74,6 +83,8 @@ export class NormalMode {
     return this.pendingOperator !== undefined
       || this.pendingPrefix !== undefined
       || this.pendingTextObject !== undefined
+      || this.pendingConvert !== undefined
+      || this.pendingConvertTextObject !== undefined
       || this.pendingSurround !== undefined
       || this.pendingReplaceCount !== undefined
       || this.selectedRegister !== undefined;
@@ -88,6 +99,8 @@ export class NormalMode {
     const count = this.countBuffer;
     const operator = this.pendingOperator === undefined ? "" : keyForOperator(this.pendingOperator.operator);
     if (this.pendingTextObject !== undefined) return `${count}${operator}${this.pendingTextObject.around ? "a" : "i"}`;
+    if (this.pendingConvertTextObject !== undefined) return `${count}g${keyForConvertTarget(this.pendingConvertTextObject.target)}${this.pendingConvertTextObject.around ? "a" : "i"}`;
+    if (this.pendingConvert !== undefined) return `${count}g${keyForConvertTarget(this.pendingConvert.target)}`;
     if (this.pendingSurround !== undefined) return `${count}${operator}s`;
     if (this.pendingPrefix === "register") return `${count}${operator}\"`;
     if (this.pendingPrefix === "g") return `${count}g`;
@@ -101,6 +114,8 @@ export class NormalMode {
     this.pendingOperator = undefined;
     this.pendingPrefix = undefined;
     this.pendingTextObject = undefined;
+    this.pendingConvert = undefined;
+    this.pendingConvertTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingReplaceCount = undefined;
     this.selectedRegister = undefined;
@@ -117,6 +132,21 @@ export class NormalMode {
 
     if (this.pendingSurround !== undefined) {
       return handled({ enterInsert: this.handleSurroundKey(key) });
+    }
+
+    if (this.pendingConvertTextObject !== undefined) {
+      const object = textObjectForKey(key);
+      if (object === undefined) {
+        this.clearPending();
+        return handled();
+      }
+      this.handleConvertTextObject(object);
+      return handled();
+    }
+
+    if (this.pendingConvert !== undefined) {
+      this.handleConvertKey(key);
+      return handled();
     }
 
     if (this.pendingTextObject !== undefined) {
@@ -235,33 +265,45 @@ export class NormalMode {
     }
 
     switch (key) {
-      case "i":
+      case "i": {
+        const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => pos);
-        return handled({ enterInsert: true });
-      case "a":
+        return handled({ enterInsert: true, insertCount });
+      }
+      case "a": {
+        const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => ({
           row: pos.row,
           column: Math.min(pos.column + 1, this.editor.lineLength(pos.row)),
         }));
-        return handled({ enterInsert: true });
-      case "I":
+        return handled({ enterInsert: true, insertCount });
+      }
+      case "I": {
+        const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => firstNonWhitespace(this.editor.line(pos.row), pos.row));
-        return handled({ enterInsert: true });
-      case "A":
+        return handled({ enterInsert: true, insertCount });
+      }
+      case "A": {
+        const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
         enterInsertAtSelections(this.editor, (pos) => ({ row: pos.row, column: this.editor.lineLength(pos.row) }));
-        return handled({ enterInsert: true });
-      case "o":
+        return handled({ enterInsert: true, insertCount });
+      }
+      case "o": {
+        const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
         openLine(this.editor, { above: false });
-        return handled({ enterInsert: true });
-      case "O":
+        return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
+      }
+      case "O": {
+        const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
         openLine(this.editor, { above: true });
-        return handled({ enterInsert: true });
+        return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
+      }
       case "r":
         this.pendingReplaceCount = this.takeCount(1);
         return handled();
@@ -274,6 +316,9 @@ export class NormalMode {
       case "S":
         this.handleLineOperator("change");
         return handled({ enterInsert: true });
+      case "J":
+        this.joinFromSelections({ insertWhitespace: true });
+        return handled();
       case "x":
         deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
         return handled();
@@ -329,6 +374,16 @@ export class NormalMode {
       return handled();
     }
 
+    if ((key === "u" || key === "U" || key === "~") && this.pendingOperator === undefined) {
+      this.pendingConvert = { target: convertTargetForKey(key), count: this.takeCount(1) };
+      return handled();
+    }
+
+    if (key === "J" && this.pendingOperator === undefined) {
+      this.joinFromSelections({ insertWhitespace: false });
+      return handled();
+    }
+
     if ((key === "j" || key === "k") && this.pendingOperator === undefined) {
       const count = this.takeCount(1);
       const motion: Motion = { type: key === "j" ? "down" : "up" };
@@ -380,6 +435,15 @@ export class NormalMode {
         return charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow));
       })
     );
+  }
+
+  private joinFromSelections({ insertWhitespace }: { insertWhitespace: boolean }): void {
+    const count = this.takeCount(1);
+    for (const selection of this.editor.getSelections()) {
+      joinLines(this.editor, selectionHead(selection).row, count <= 1 ? 1 : count - 1, { insertWhitespace });
+      break;
+    }
+    this.selectedRegister = undefined;
   }
 
   private indentCurrentLines(): void {
@@ -453,6 +517,55 @@ export class NormalMode {
         return false;
       }
     }
+  }
+
+  private handleConvertKey(key: string): void {
+    const pending = this.pendingConvert;
+    this.pendingConvert = undefined;
+    if (pending === undefined) return;
+
+    if (key === "i" || key === "a") {
+      this.pendingConvertTextObject = { ...pending, around: key === "a" };
+      return;
+    }
+
+    if (key === keyForConvertTarget(pending.target)) {
+      this.convertCurrentLines(pending.target, pending.count * this.takeCount(1));
+      return;
+    }
+
+    const motion = motionForKey(key);
+    if (motion === undefined) {
+      this.clearPending();
+      return;
+    }
+
+    const count = pending.count * this.takeCount(1);
+    const ranges = this.editor.getSelections().map(selection => motionRange(this.editor, selectionHead(selection), motion, count));
+    const cursors = this.editor.getSelections().map(selection => selectionHead(selection));
+    convertRanges(this.editor, ranges, pending.target, (_range, index) => cursors[index] ?? _range.start);
+  }
+
+  private handleConvertTextObject(object: TextObject): void {
+    const pending = this.pendingConvertTextObject;
+    this.pendingConvertTextObject = undefined;
+    if (pending === undefined) return;
+
+    const objectCount = this.takeCount(1);
+    const ranges = this.editor.getSelections().map(selection =>
+      textObjectRange(this.editor, selectionHead(selection), object, {
+        around: pending.around,
+        count: pending.count * objectCount,
+      }));
+    convertRanges(this.editor, ranges, pending.target);
+  }
+
+  private convertCurrentLines(target: ConvertTarget, count: number): void {
+    const ranges = this.editor.getSelections().map(selection => {
+      const row = selectionHead(selection).row;
+      return lineRange(this.editor, row, count);
+    });
+    convertRanges(this.editor, ranges, target);
   }
 
   private handleTextObject(object: TextObject, around: boolean): boolean {
@@ -611,6 +724,30 @@ function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: num
 
 function isOperatorKey(key: string): boolean {
   return key === "d" || key === "c" || key === "y";
+}
+
+function convertTargetForKey(key: string): ConvertTarget {
+  switch (key) {
+    case "u":
+      return "lower";
+    case "U":
+      return "upper";
+    case "~":
+      return "toggle";
+    default:
+      throw new Error(`not a convert key: ${key}`);
+  }
+}
+
+function keyForConvertTarget(target: ConvertTarget): string {
+  switch (target) {
+    case "lower":
+      return "u";
+    case "upper":
+      return "U";
+    case "toggle":
+      return "~";
+  }
 }
 
 function keyForOperator(operator: Operator): string {

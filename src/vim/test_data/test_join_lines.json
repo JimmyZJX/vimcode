@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"ˇone\ntwo\nthree\nfour\nfive\nsix\n"}}
 {"Key":"shift-j"}
 {"Get":{"state":"oneˇ two\nthree\nfour\nfive\nsix\n","mode":"Normal"}}

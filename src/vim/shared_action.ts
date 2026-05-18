@@ -6,6 +6,8 @@
 
 export type SharedAction =
   | { type: "motion"; key: "gg" | "gj" | "gk" }
+  | { type: "normalGKey"; key: "u" | "U" | "~" | "J" }
+  | { type: "insertAtPrevious" }
   | { type: "page"; key: "ctrl-d" | "ctrl-u" | "ctrl-f" | "ctrl-b" }
   | { type: "restoreVisualSelection" }
   | { type: "searchSelection"; reversed: boolean }
@@ -22,6 +24,11 @@ const bindings: ReadonlyMap<string, SharedAction> = new Map([
   ["g j", { type: "motion", key: "gj" }],
   ["g k", { type: "motion", key: "gk" }],
   ["g v", { type: "restoreVisualSelection" }],
+  ["g i", { type: "insertAtPrevious" }],
+  ["g u", { type: "normalGKey", key: "u" }],
+  ["g U", { type: "normalGKey", key: "U" }],
+  ["g ~", { type: "normalGKey", key: "~" }],
+  ["g J", { type: "normalGKey", key: "J" }],
   ["g n", { type: "searchSelection", reversed: false }],
   ["g N", { type: "searchSelection", reversed: true }],
   ["ctrl-d", { type: "page", key: "ctrl-d" }],

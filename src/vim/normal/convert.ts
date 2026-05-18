@@ -5,13 +5,15 @@
 // - intentional differences: this slice only handles simple model-buffer characterwise
 //   normal-mode conversion; motion/object/visual conversions remain future work.
 
-import { VimEditorCapabilities, normalCursorPosition } from "../editor.js";
-import { TextEdit, charwiseSelection, selectionHead } from "../state.js";
+import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
+import { TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from "../state.js";
+
+export type ConvertTarget = "lower" | "upper" | "toggle";
 
 // Zed: `normal::convert::Vim::convert_motion` with `ConvertTarget::OppositeCase`.
 export function toggleCaseCharacters(editor: VimEditorCapabilities, count: number): void {
   const edits: TextEdit[] = [];
-  const selectionsAfter = [];
+  const selectionsAfter: VimSelection[] = [];
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
@@ -34,6 +36,32 @@ export function toggleCaseCharacters(editor: VimEditorCapabilities, count: numbe
   }
 
   editor.applyEdits(edits, selectionsAfter);
+}
+
+export function convertRanges(
+  editor: VimEditorCapabilities,
+  ranges: readonly TextRange[],
+  target: ConvertTarget,
+  cursorForRange: (range: TextRange, index: number) => TextRange["start"] = range => range.start
+): void {
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+  ranges.forEach((range, index) => {
+    edits.push({ range, text: convertText(rangeText(editor, range), target) });
+    selectionsAfter.push(charwiseSelection(cursorForRange(range, index)));
+  });
+  editor.applyEdits(edits, selectionsAfter);
+}
+
+function convertText(text: string, target: ConvertTarget): string {
+  switch (target) {
+    case "lower":
+      return text.toLocaleLowerCase();
+    case "upper":
+      return text.toLocaleUpperCase();
+    case "toggle":
+      return toggleCase(text);
+  }
 }
 
 function toggleCase(text: string): string {

@@ -76,7 +76,7 @@ export class VimController extends Disposable {
 			return;
 		}
 
-		if ((this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') && !isEscapeKey(key)) {
+		if ((this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') && !isEscapeKey(key) && key !== 'ctrl-r' && key !== 'ctrl-w' && key !== 'ctrl-u' && !this.vim.status.pending) {
 			return;
 		}
 
@@ -148,6 +148,7 @@ function isSupportedCtrlKey(key: string): boolean {
 		case 'ctrl-r':
 		case 'ctrl-u':
 		case 'ctrl-v':
+		case 'ctrl-w':
 		case 'ctrl-y':
 			return true;
 		default:
@@ -168,6 +169,10 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 				return 'ctrl-left';
 			case KeyCode.RightArrow:
 				return 'ctrl-right';
+			case KeyCode.Home:
+				return 'ctrl-home';
+			case KeyCode.End:
+				return 'ctrl-end';
 			case KeyCode.BracketLeft:
 				return 'ctrl-[';
 			default:
@@ -200,6 +205,10 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 			return 'up';
 		case KeyCode.DownArrow:
 			return 'down';
+		case KeyCode.Home:
+			return 'home';
+		case KeyCode.End:
+			return 'end';
 		case KeyCode.Escape:
 			return '<escape>';
 		case KeyCode.Enter:

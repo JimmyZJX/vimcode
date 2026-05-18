@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: full fixture includes dot-repeat of g~; conversion motions are covered by focused tests and object fixture.
 {"Put":{"state":"ˇabc def"}}
 {"Key":"g"}
 {"Key":"shift-u"}

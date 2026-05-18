@@ -58,6 +58,30 @@ export function openLine(editor: VimEditorCapabilities, { above }: { above: bool
 
 // Zed: `vim::Vim::switch_mode`. The cursor-left behavior when leaving insert
 // mode mirrors the normal-mode cursor fixup, but is simplified.
+export function deleteToBeginningOfLine(editor: VimEditorCapabilities): void {
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+  for (const selection of editor.getSelections()) {
+    const head = selectionHead(selection);
+    const start = { row: head.row, column: 0 };
+    edits.push({ range: { start, end: head }, text: "" });
+    selectionsAfter.push(charwiseSelection(start));
+  }
+  editor.applyEdits(edits, selectionsAfter);
+}
+
+export function deleteToPreviousWord(editor: VimEditorCapabilities): void {
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+  for (const selection of editor.getSelections()) {
+    const head = selectionHead(selection);
+    const start = previousWordStart(editor.line(head.row), head);
+    edits.push({ range: { start, end: head }, text: "" });
+    selectionsAfter.push(charwiseSelection(start));
+  }
+  editor.applyEdits(edits, selectionsAfter);
+}
+
 export function enterNormalMode(
   editor: VimEditorCapabilities,
   { moveLeft }: { moveLeft: boolean }
@@ -70,6 +94,13 @@ export function enterNormalMode(
       return charwiseSelection(normalCursorPosition(editor, target));
     })
   );
+}
+
+function previousWordStart(line: string, head: Position): Position {
+  let column = head.column;
+  while (column > 0 && /\s/.test(line[column - 1])) column--;
+  while (column > 0 && !/\s/.test(line[column - 1])) column--;
+  return { row: head.row, column };
 }
 
 export function firstNonWhitespace(line: string, row: number): Position {

@@ -11,7 +11,9 @@ import { VimEditorCapabilities, normalCursorPosition, rangeText } from "./editor
 import { positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
+import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { cursorAfterDeletingRange, deleteRange } from "./normal/delete.js";
+import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { addSurrounds } from "./surrounds.js";
 import {
@@ -188,6 +190,14 @@ export class VisualMode {
         this.applyVisualMotion(state, { type: key === "j" ? "down" : "up" }, this.takeCount(1), { displayLine: true });
         return handled({ nextMode: "visual" });
       }
+      if (key === "J") {
+        this.join(state, { insertWhitespace: false });
+        return handled({ exitVisual: true, nextMode: "normal" });
+      }
+      if (key === "u" || key === "U" || key === "~") {
+        this.convert(state, convertTargetForKey(key));
+        return handled({ exitVisual: true, nextMode: "normal" });
+      }
       this.exit();
       return handled({ exitVisual: true, nextMode: "normal" });
     }
@@ -249,6 +259,16 @@ export class VisualMode {
       this.state = undefined;
       this.editor.setCursorStyle("line");
       return handled({ exitVisual: true, enterInsert: true, nextMode: "insert" });
+    }
+
+    if (key === "J") {
+      this.join(state, { insertWhitespace: true });
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+
+    if (key === "u" || key === "U" || key === "~") {
+      this.convert(state, convertTargetForKey(key));
+      return handled({ exitVisual: true, nextMode: "normal" });
     }
 
     if (key === "i" || key === "a") {
@@ -387,6 +407,31 @@ export class VisualMode {
         enterBlockInsert(this.editor, this.registers, registerName, state, { deleteSelection: true, side: "start" });
         break;
     }
+  }
+
+  joinSelections({ insertWhitespace }: { insertWhitespace: boolean }): void {
+    if (this.state === undefined) return;
+    this.join(this.state, { insertWhitespace });
+  }
+
+  private join(state: VisualState, { insertWhitespace }: { insertWhitespace: boolean }): void {
+    this.rememberState(state);
+    const { startRow, endRow } = visualLineBounds(this.editor, state);
+    joinLines(this.editor, startRow, Math.max(1, endRow - startRow), { insertWhitespace });
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+  }
+
+  convertSelections(target: ConvertTarget): void {
+    if (this.state === undefined) return;
+    this.convert(this.state, target);
+  }
+
+  private convert(state: VisualState, target: ConvertTarget): void {
+    this.rememberState(state);
+    convertRanges(this.editor, visualConvertRanges(this.editor, state), target);
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
   }
 
   private paste(state: VisualState, registerName: RegisterName | undefined): void {
@@ -858,6 +903,24 @@ function substituteLineForState(
         headColumn: 0,
       });
       return;
+    }
+  }
+}
+
+function visualLineBounds(editor: VimEditorCapabilities, state: VisualState): { startRow: number; endRow: number } {
+  switch (state.kind) {
+    case "charwise": {
+      const range = charwiseVisualRange(editor, state);
+      const endRow = range.end.column === 0 && range.end.row > range.start.row ? range.end.row - 1 : range.end.row;
+      return { startRow: range.start.row, endRow };
+    }
+    case "linewise": {
+      const { startLine, endLine } = lineBounds(state);
+      return { startRow: startLine, endRow: endLine };
+    }
+    case "blockwise": {
+      const { startRow, endRow } = blockBounds(state);
+      return { startRow, endRow };
     }
   }
 }

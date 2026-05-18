@@ -47,6 +47,7 @@ export type Motion =
   | { type: "firstNonWhitespace" }
   | { type: "endOfLine" }
   | { type: "startOfDocument" }
+  | { type: "startOfFile" }
   | { type: "endOfDocument" }
   | { type: "nextWordStart"; bigWord: boolean }
   | { type: "nextWordEnd"; bigWord: boolean }
@@ -82,10 +83,16 @@ export function motionForKey(key: string): Motion | undefined {
     case "down":
       return { type: "down" };
     case "0":
+    case "home":
       return { type: "startOfLine" };
+    case "ctrl-home":
+      return { type: "startOfFile" };
+    case "ctrl-end":
+      return { type: "endOfDocument" };
     case "^":
       return { type: "firstNonWhitespace" };
     case "$":
+    case "end":
       return { type: "endOfLine" };
     case "w":
       return { type: "nextWordStart", bigWord: false };
@@ -268,6 +275,8 @@ export function applyMotionOnce(
       return endOfLine(editor, clipped.row);
     case "startOfDocument":
       return normalCursorPosition(editor, { row: 0, column: clipped.column });
+    case "startOfFile":
+      return position(0, 0);
     case "endOfDocument":
       return endOfLine(editor, editor.lineCount() - 1);
     case "nextWordStart":
@@ -348,6 +357,9 @@ export function applyMotionWithGoal(
   if (motion.type === "startOfDocument") {
     const row = Math.max(0, Math.min(count - 1, editor.lineCount() - 1));
     return { position: normalCursorPosition(editor, { row, column: start.column }) };
+  }
+  if (motion.type === "startOfFile") {
+    return { position: position(0, 0) };
   }
   if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump" || motion.type === "searchMatch") {
     return { position: applyMotionOnce(editor, start, motion) };

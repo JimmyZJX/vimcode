@@ -69,6 +69,101 @@ describe("Zed-inspired Vim core smoke tests", () => {
     });
   });
 
+  it("supports home and end as line motions", () => {
+    const editor = new InMemoryVimEditor("abc def");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["end", "home"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("supports ctrl-home and ctrl-end as document motions", () => {
+    const editor = new InMemoryVimEditor("abc\ndef\nghi");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["ctrl-end", "ctrl-home"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("uses end as an operator-pending motion", () => {
+    const editor = new InMemoryVimEditor("abc def");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d", "end"]);
+
+    expect(editor.getText()).toBe("");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("uses end as a visual motion", () => {
+    const editor = new InMemoryVimEditor("abc def");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "end"]);
+
+    expect(editor.getSelections()[0]).toMatchObject({
+      type: "charwise",
+      anchor: { row: 0, column: 0 },
+      cursor: { row: 0, column: 7 },
+    });
+  });
+
+  it("supports case-conversion motions", () => {
+    const editor = new InMemoryVimEditor("abc def");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["g", "U", "w", "g", "u", "w", "g", "~", "w"]);
+
+    expect(editor.getText()).toBe("ABC def");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("supports join-lines commands", () => {
+    const editor = new InMemoryVimEditor("one\ntwo\nthree");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["J", "g", "J"]);
+
+    expect(editor.getText()).toBe("one twothree");
+    expect(head(editor)).toEqual({ row: 0, column: 7 });
+  });
+
+  it("supports insert-mode ctrl-w and ctrl-u", () => {
+    const editor = new InMemoryVimEditor("hello brave world");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["A", "ctrl-w", "y", "o", "u", "ctrl-u", "h", "i", "<escape>"]);
+
+    expect(editor.getText()).toBe("hi");
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
+  it("supports counted insert and replace sessions", () => {
+    const insertEditor = new InMemoryVimEditor("hello");
+    const insertVim = new Vim(insertEditor);
+    runKeys(insertVim, ["3", "i", "-", "<escape>"]);
+    expect(insertEditor.getText()).toBe("---hello");
+    expect(head(insertEditor)).toEqual({ row: 0, column: 2 });
+
+    const replaceEditor = new InMemoryVimEditor("hello");
+    const replaceVim = new Vim(replaceEditor);
+    runKeys(replaceVim, ["3", "R", "a", "b", "c", "<escape>"]);
+    expect(replaceEditor.getText()).toBe("abcabcabc");
+    expect(head(replaceEditor)).toEqual({ row: 0, column: 8 });
+  });
+
+  it("supports gi at the previous insert position", () => {
+    const editor = new InMemoryVimEditor("one two\nthree fr");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["G", "$", "i", "o", "<escape>", "k", "g", "i", "u", "<escape>"]);
+
+    expect(editor.getText()).toBe("one two\nthree four");
+    expect(head(editor)).toEqual({ row: 1, column: 8 });
+  });
+
   it("preserves the target column across vertical motions", () => {
     const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
     const vim = new Vim(editor);

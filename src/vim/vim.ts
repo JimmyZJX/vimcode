@@ -7,7 +7,7 @@
 
 import { LineRange, executeCommand } from "./command.js";
 import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
-import { enterNormalMode, insertText } from "./insert.js";
+import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import { MarkState } from "./normal/mark.js";
@@ -15,7 +15,7 @@ import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { MacroState, RepeatState } from "./normal/repeat.js";
 import { handleHostAction } from "./normal/scroll.js";
 import { SearchState, searchUnderCursorMotion } from "./normal/search.js";
-import { RegisterName, Registers } from "./registers.js";
+import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
 import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, rangeOfSelection, selectionHead } from "./state.js";
@@ -51,7 +51,11 @@ export class Vim {
   private readonly repeatState = new RepeatState();
   private readonly macroState = new MacroState();
   private pendingCommand: string | undefined;
-  private replaceCount = 1;
+  private pendingInsertRegister = false;
+  private insertRepeatCount = 1;
+  private insertRepeatText = "";
+  private insertRepeatSeparator = "";
+  private lastInsertPosition: ReturnType<typeof selectionHead> | undefined;
   private insertOrigin: VimMode["kind"] | undefined;
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
@@ -95,6 +99,7 @@ export class Vim {
     this.markState.clearPending();
     this.searchState.clearPending();
     this.pendingCommand = undefined;
+    this.pendingInsertRegister = false;
     this.normalMode.clearPending();
     const selections = this.editor.getSelections();
     const visualSelection = selections.find(selection =>
@@ -116,11 +121,12 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.sharedActionResolver.isPending() || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.sharedActionResolver.isPending() || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || this.pendingInsertRegister || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
+    if (this.pendingInsertRegister) return "ctrl-r";
     if (this.searchState.isPending()) return this.searchState.pendingChord();
     if (this.markState.isPending()) return this.markState.pendingChord();
     if (this.sharedActionResolver.isPending()) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}${this.sharedActionResolver.pendingChord()}`;
@@ -145,6 +151,11 @@ export class Vim {
   onKey(key: string): KeyResult {
     if (!this.repeatState.isReplaying()) this.repeatState.maybeFinish({ mode: this.modeState.kind, isPending: this.modeState.kind === "normal" && this.normalMode.isPending() });
 
+    if (this.pendingInsertRegister) {
+      this.handlePendingInsertRegisterKey(key);
+      return "handled";
+    }
+
     if (this.isEscape(key)) {
       if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
       if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
@@ -161,6 +172,7 @@ export class Vim {
         this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
       } else if (this.modeState.kind !== "normal") {
         const modeBeforeEscape = this.modeState.kind;
+        if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") this.finishInsertOrReplaceSession(modeBeforeEscape);
         enterNormalMode(this.editor, { moveLeft: modeBeforeEscape === "insert" || modeBeforeEscape === "replace" });
         if (modeBeforeEscape === "insert" && this.insertOrigin === "visualBlock") {
           this.collapseToFirstCursor();
@@ -248,7 +260,10 @@ export class Vim {
       const sharedResolution = this.sharedActionResolver.handleKey(key);
       switch (sharedResolution.kind) {
         case "pending":
-          if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
+          if (!this.repeatState.isReplaying()) {
+            this.repeatState.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalMode.pendingChord() });
+            this.repeatState.recordKey(key);
+          }
           return "handled";
         case "action":
           if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
@@ -309,8 +324,21 @@ export class Vim {
     }
 
     if (this.modeState.kind === "insert") {
+      if (key === "ctrl-r") {
+        this.pendingInsertRegister = true;
+        return "handled";
+      }
+      if (key === "ctrl-w") {
+        deleteToPreviousWord(this.editor);
+        return "handled";
+      }
+      if (key === "ctrl-u") {
+        deleteToBeginningOfLine(this.editor);
+        return "handled";
+      }
       if (key.length === 1 || key === "\n") {
         insertText(this.editor, key);
+        this.insertRepeatText += key;
         return "handled";
       }
       return "not-handled";
@@ -318,7 +346,9 @@ export class Vim {
 
     if (this.modeState.kind === "replace") {
       if (key.length === 1 || key === "\n" || key === "enter") {
-        replaceModeText(this.editor, key, this.replaceCount);
+        const text = key === "enter" ? "\n" : key;
+        replaceModeText(this.editor, text, 1);
+        this.insertRepeatText += text;
         return "handled";
       }
       return "not-handled";
@@ -374,7 +404,7 @@ export class Vim {
     }
 
     if (key === "R") {
-      this.replaceCount = this.normalMode.takeCountForMotion(1);
+      this.startInsertOrReplaceSession({ count: this.normalMode.takeCountForMotion(1), separator: "" });
       this.editor.setCursorStyle("block");
       this.modeState = { dialect: this.modeState.dialect, kind: "replace" };
       return "handled";
@@ -383,9 +413,44 @@ export class Vim {
     const normalResult = this.normalMode.onKey(key);
     if (normalResult.enterInsert) {
       this.insertOrigin = this.modeState.kind;
+      this.startInsertOrReplaceSession({ count: normalResult.insertCount, separator: normalResult.insertSeparator });
       this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
     }
     return normalResult.keyResult;
+  }
+
+  private enterInsertAtPrevious(): void {
+    const position = this.lastInsertPosition;
+    if (position !== undefined) this.editor.setSelections([charwiseSelection(position)]);
+    this.editor.setCursorStyle("line");
+    this.insertOrigin = this.modeState.kind;
+    this.startInsertOrReplaceSession({ count: this.takeCountForMotion(1), separator: "" });
+    this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
+  }
+
+  private startInsertOrReplaceSession({ count, separator }: { count: number; separator: string }): void {
+    this.insertRepeatCount = count;
+    this.insertRepeatText = "";
+    this.insertRepeatSeparator = separator;
+  }
+
+  private finishInsertOrReplaceSession(mode: "insert" | "replace"): void {
+    this.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
+    if (this.insertRepeatCount <= 1 || this.insertRepeatText.length === 0) {
+      this.clearInsertOrReplaceSession();
+      return;
+    }
+    const repeatedText = Array.from({ length: this.insertRepeatCount - 1 }, () => `${this.insertRepeatSeparator}${this.insertRepeatText}`).join("");
+    if (mode === "replace") replaceModeText(this.editor, repeatedText, 1);
+    else insertText(this.editor, repeatedText);
+    this.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
+    this.clearInsertOrReplaceSession();
+  }
+
+  private clearInsertOrReplaceSession(): void {
+    this.insertRepeatCount = 1;
+    this.insertRepeatText = "";
+    this.insertRepeatSeparator = "";
   }
 
   private collapseToFirstCursor(): void {
@@ -419,6 +484,17 @@ export class Vim {
             this.applyMotion({ type: "up", displayLine: true }, this.takeCountForMotion(1));
             return;
         }
+      case "normalGKey":
+        if (this.modeState.kind === "normal") {
+          this.normalMode.handleGKey(action.key);
+        } else if (this.isVisualMode() && action.key === "J") {
+          this.visualMode.joinSelections({ insertWhitespace: false });
+          this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+        }
+        return;
+      case "insertAtPrevious":
+        if (this.modeState.kind === "normal") this.enterInsertAtPrevious();
+        return;
       case "page": {
         const selections = this.editor.moveByPages(
           action.key === "ctrl-u" || action.key === "ctrl-b" ? "up" : "down",
@@ -516,6 +592,14 @@ export class Vim {
   private repeatFind({ reversed }: { reversed: boolean }): void {
     if (this.lastFind === undefined) return;
     this.applyMotion(reversed ? reverseFindMotion(this.lastFind) : this.lastFind, this.takeCountForMotion(1));
+  }
+
+  private handlePendingInsertRegisterKey(key: string): void {
+    this.pendingInsertRegister = false;
+    if (this.isEscape(key)) return;
+    const registerName = parseRegisterName(key);
+    if (registerName === undefined) return;
+    insertText(this.editor, this.registers.read(registerName));
   }
 
   private handlePendingCommandKey(key: string): void {

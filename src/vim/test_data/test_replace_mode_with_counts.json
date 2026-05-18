@@ -1,4 +1,3 @@
-// DISABLED: replace-mode count repeats the whole replace input sequence; current replace-mode slice repeats individual chars.
 {"Put":{"state":"ˇhello\n"}}
 {"Key":"3"}
 {"Key":"shift-r"}
