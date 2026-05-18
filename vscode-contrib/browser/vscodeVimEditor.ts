@@ -7,7 +7,7 @@ import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
-import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from '../common/state.js';
+import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, selectionHead } from '../common/state.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
@@ -171,7 +171,8 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			const viewPosition = converter.convertModelPositionToViewPosition(modelPosition, PositionAffinity.None, false, direction === 'down');
 			const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
 			const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
-			const viewColumn = Math.max(viewModel.getLineMinColumn(viewLine), Math.min(viewPosition.column, viewModel.getLineMaxColumn(viewLine)));
+			const goal = viewGoalForSelection(selection.goal, viewPosition);
+			const viewColumn = viewColumnForGoal(viewModel, viewLine, goal);
 			const target = converter.convertViewPositionToModelPosition(new VSCodePosition(viewLine, viewColumn));
 			const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
 			const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
@@ -181,26 +182,21 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 					...selection,
 					head: exclusiveVisualHead(this, targetPosition),
 					cursor: targetPosition,
+					goal,
 				};
 			}
-			return charwiseSelection(targetPosition);
+			return { ...charwiseSelection(targetPosition), goal };
 		});
 	}
 
-	moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): void {
-		this.invalidateCachedSelections();
+	moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): readonly VimSelection[] {
 		const viewModel = this.editor._getViewModel();
 		const visibleRange = viewModel?.getCompletelyVisibleViewRange();
 		const visibleLineCount = visibleRange === undefined
 			? 1
 			: Math.max(1, visibleRange.endLineNumber - visibleRange.startLineNumber + 1);
 		const pageLineCount = halfPage ? Math.max(1, Math.round(visibleLineCount / 2)) : visibleLineCount;
-		this.editor.trigger('vim', 'cursorMove', {
-			to: direction,
-			by: 'wrappedLine',
-			value: pageLineCount * count,
-			select: extend,
-		});
+		return this.moveByViewLines(direction, pageLineCount * count, { displayLine: true, extend });
 	}
 
 	scrollByLines(direction: HostDirection, count: number): void {
@@ -401,6 +397,30 @@ function exclusiveVisualHead(editor: VSCodeVimEditor, head: VimPosition): VimPos
 		return head;
 	}
 	return { row: head.row, column: Math.min(head.column + 1, lineLength) };
+}
+
+type ViewModelLike = NonNullable<ReturnType<ICodeEditor['_getViewModel']>>;
+
+function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: VSCodePosition): VimSelectionGoal {
+	if (goal?.type === 'endOfLine') {
+		return goal;
+	}
+	if (goal?.type === 'viewColumn') {
+		return goal;
+	}
+	if (goal?.type === 'modelColumn') {
+		return { type: 'viewColumn', column: goal.column + 1 };
+	}
+	return { type: 'viewColumn', column: viewPosition.column };
+}
+
+function viewColumnForGoal(viewModel: ViewModelLike, viewLine: number, goal: VimSelectionGoal): number {
+	const minColumn = viewModel.getLineMinColumn(viewLine);
+	const maxColumn = viewModel.getLineMaxColumn(viewLine);
+	if (goal.type === 'endOfLine') {
+		return Math.max(minColumn, maxColumn - 1);
+	}
+	return Math.max(minColumn, Math.min(goal.column, maxColumn));
 }
 
 function foldCommandId(command: HostFoldCommand): string {

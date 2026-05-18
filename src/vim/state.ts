@@ -14,14 +14,24 @@ export type TextRange = {
   end: Position;
 };
 
+// Zed: `SelectionGoal`. Vertical motions carry a horizontal goal separately from
+// the clipped cursor position, so moving through short lines can return to the
+// intended column on longer lines. `modelColumn` is used by the model-buffer core,
+// `viewColumn` by the VSCode view-model adapter, and `endOfLine` mirrors Zed's
+// `HorizontalPosition(f64::INFINITY)` behavior for `$`.
+export type VimSelectionGoal =
+  | { type: "modelColumn"; column: number }
+  | { type: "viewColumn"; column: number }
+  | { type: "endOfLine" };
+
 // Zed: `state::RecordedSelection` and `visual` module selection handling.
 // This is a local
 // normalized selection model; Zed stores concrete editor selections plus visual
 // mode state instead of this exact union.
 export type VimSelection =
-  | { type: "charwise"; anchor: Position; head: Position; cursor?: Position; goalColumn?: number }
-  | { type: "linewise"; anchorLine: number; headLine: number; cursor?: Position; goalColumn?: number }
-  | { type: "blockwise"; anchor: Position; head: Position; cursor?: Position; goalColumn?: number };
+  | { type: "charwise"; anchor: Position; head: Position; cursor?: Position; goal?: VimSelectionGoal }
+  | { type: "linewise"; anchorLine: number; headLine: number; cursor?: Position; goal?: VimSelectionGoal }
+  | { type: "blockwise"; anchor: Position; head: Position; cursor?: Position; goal?: VimSelectionGoal };
 
 export type VimDialect = "vim" | "helix";
 

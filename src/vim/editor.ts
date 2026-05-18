@@ -10,6 +10,7 @@ import {
   TextEdit,
   TextRange,
   VimSelection,
+  VimSelectionGoal,
   charwiseSelection,
   comparePositions,
   orderedRange,
@@ -45,7 +46,7 @@ export interface VimEditorCapabilities {
   revealCurrentLine(target: HostRevealTarget): void;
   executeFoldCommand(command: HostFoldCommand): void;
   moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
-  moveByPages(direction: HostDirection, count: number, options: { halfPage: boolean; extend: boolean }): void;
+  moveByPages(direction: HostDirection, count: number, options: { halfPage: boolean; extend: boolean }): readonly VimSelection[] | undefined;
   scrollByLines(direction: HostDirection, count: number): void;
 
   // Zed: `normal::search` integrates with `BufferSearchBar` so search motions,
@@ -201,9 +202,9 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     return this.modelRowSelections(direction, count, { extend });
   }
 
-  moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): void {
+  moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): readonly VimSelection[] {
     const pageSize = Math.max(1, Math.floor(this.lineCount() / (halfPage ? 2 : 1)));
-    this.setSelections(this.modelRowSelections(direction, count * pageSize, { extend }));
+    return this.modelRowSelections(direction, count * pageSize, { extend });
   }
 
   scrollByLines(_direction: HostDirection, _count: number): void {}
@@ -219,18 +220,19 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private modelRowSelections(direction: HostDirection, count: number, { extend }: { extend: boolean }): readonly VimSelection[] {
     return this.selections.map(selection => {
       const head = selection.type === "charwise" ? selection.cursor ?? selection.head : selectionHead(selection);
-      const goalColumn = selection.goalColumn ?? (extend && selection.type === "charwise" && selection.cursor !== undefined ? head.column + 1 : head.column);
+      const goal = selection.goal ?? modelGoalForHead(head, { extend: extend && selection.type === "charwise" && selection.cursor !== undefined });
       const rowDelta = direction === "up" ? -count : count;
-      const next = normalCursorPosition(this, { row: head.row + rowDelta, column: goalColumn });
+      const row = Math.max(0, Math.min(head.row + rowDelta, this.lineCount() - 1));
+      const next = normalCursorPosition(this, { row, column: modelColumnForGoal(this, row, goal) });
       if (extend && selection.type === "charwise") {
         return {
           ...selection,
           head: exclusiveVisualHead(this, next),
           cursor: next,
-          goalColumn,
+          goal,
         };
       }
-      return { ...charwiseSelection(next), goalColumn };
+      return { ...charwiseSelection(next), goal };
     });
   }
 
@@ -252,6 +254,21 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       ordered.end.row - ordered.start.row + 1,
       ...replacementLines
     );
+  }
+}
+
+function modelGoalForHead(head: Position, { extend }: { extend: boolean }): VimSelectionGoal {
+  return { type: "modelColumn", column: extend ? head.column + 1 : head.column };
+}
+
+function modelColumnForGoal(editor: VimEditorCapabilities, row: number, goal: VimSelectionGoal): number {
+  const maxColumn = Math.max(0, editor.lineLength(row) - 1);
+  switch (goal.type) {
+    case "endOfLine":
+      return maxColumn;
+    case "modelColumn":
+    case "viewColumn":
+      return Math.min(goal.column, maxColumn);
   }
 }
 

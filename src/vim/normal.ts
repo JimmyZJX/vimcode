@@ -346,15 +346,15 @@ export class NormalMode {
   private moveSelections(motion: Motion, count: number): void {
     this.editor.setSelections(
       this.editor.getSelections().map((selection) => {
-        const { position, goalColumn } = applyMotionWithGoal(
+        const { position, goal } = applyMotionWithGoal(
           this.editor,
           selectionHead(selection),
           motion,
           count,
-          selection.goalColumn
+          selection.goal
         );
         const nextSelection = charwiseSelection(position);
-        return goalColumn === undefined ? nextSelection : { ...nextSelection, goalColumn };
+        return goal === undefined ? nextSelection : { ...nextSelection, goal };
       })
     );
   }

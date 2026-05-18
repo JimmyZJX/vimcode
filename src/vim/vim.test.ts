@@ -46,6 +46,33 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 2, column: 0 });
   });
 
+  it("preserves the target column across half-page motions", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nx\nabcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["5", "l", "ctrl-d", "ctrl-d"]);
+
+    expect(head(editor)).toEqual({ row: 3, column: 5 });
+  });
+
+  it("preserves the end-of-line goal across vertical motions", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nabcdefghi");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["$", "j", "j"]);
+
+    expect(head(editor)).toEqual({ row: 2, column: 8 });
+  });
+
+  it("preserves the end-of-line goal across half-page motions", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nx\nabcdefghi");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["$", "ctrl-d", "ctrl-d"]);
+
+    expect(head(editor)).toEqual({ row: 3, column: 8 });
+  });
+
   it("deletes by motion with an operator", () => {
     const editor = new InMemoryVimEditor("one two three");
     const vim = new Vim(editor);

@@ -413,20 +413,21 @@ export class Vim {
             this.applyMotion({ type: "startOfDocument" }, this.takeCountForMotion(1));
             return;
           case "gj":
-            this.applyMotion({ type: "down" }, this.takeCountForMotion(1));
+            this.applyMotion({ type: "down", displayLine: true }, this.takeCountForMotion(1));
             return;
           case "gk":
-            this.applyMotion({ type: "up" }, this.takeCountForMotion(1));
+            this.applyMotion({ type: "up", displayLine: true }, this.takeCountForMotion(1));
             return;
         }
-      case "page":
-        this.editor.moveByPages(
+      case "page": {
+        const selections = this.editor.moveByPages(
           action.key === "ctrl-u" || action.key === "ctrl-b" ? "up" : "down",
           this.takeCountForMotion(1),
           { halfPage: action.key === "ctrl-u" || action.key === "ctrl-d", extend: this.isVisualMode() });
+        if (selections !== undefined) this.editor.setSelections(selections);
         if (this.isVisualMode()) this.visualMode.adoptSelectionFromHost();
-        else this.syncFromEditorState({ render: false });
         return;
+      }
       case "restoreVisualSelection": {
         const nextMode = this.visualMode.restoreLastSelection();
         if (nextMode !== undefined) this.modeState = { dialect: this.modeState.dialect, kind: nextMode };

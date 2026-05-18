@@ -9,6 +9,7 @@ import {
   Position,
   TextRange,
   VimSelection,
+  VimSelectionGoal,
   comparePositions,
   orderedRange,
   position,
@@ -40,8 +41,8 @@ export type Motion =
   | { type: "left" }
   | { type: "wrappingLeft" }
   | { type: "right" }
-  | { type: "up" }
-  | { type: "down" }
+  | { type: "up"; displayLine?: boolean }
+  | { type: "down"; displayLine?: boolean }
   | { type: "startOfLine" }
   | { type: "firstNonWhitespace" }
   | { type: "endOfLine" }
@@ -313,24 +314,28 @@ export function hostViewLineSelectionsForMotion(
   options: { displayLine: boolean; extend: boolean }
 ): readonly VimSelection[] | undefined {
   if (motion.type !== "up" && motion.type !== "down") return undefined;
-  return editor.moveByViewLines(motion.type === "down" ? "down" : "up", count, options);
+  return editor.moveByViewLines(motion.type === "down" ? "down" : "up", count, {
+    ...options,
+    displayLine: motion.displayLine ?? options.displayLine,
+  });
 }
 
 export type MotionResult = {
   position: Position;
-  goalColumn?: number;
+  goal?: VimSelectionGoal;
 };
 
 // Zed: vertical movement preserves a `SelectionGoal` through repeated up/down
 // motions. This is the local model-position equivalent: while moving vertically,
 // remember the original target column even when shorter lines temporarily clip the
-// cursor. Non-vertical motions clear the goal.
+// cursor. Non-vertical motions clear the goal, except `$` which sets an explicit
+// end-of-line goal.
 export function applyMotionWithGoal(
   editor: VimEditorCapabilities,
   start: Position,
   motion: Motion,
   count: number,
-  goalColumn?: number,
+  goal?: VimSelectionGoal,
   { allowEndOfLine = false }: { allowEndOfLine?: boolean } = {}
 ): MotionResult {
   if (motion.type === "findForward") {
@@ -353,13 +358,13 @@ export function applyMotionWithGoal(
     return { position: searchBackward(editor, start, motion.query, motion.options) ?? start };
   }
   if (motion.type === "up" || motion.type === "down") {
-    const targetColumn = goalColumn ?? start.column;
+    const nextGoal = goal ?? { type: "modelColumn", column: start.column };
     const rowDelta = motion.type === "up" ? -count : count;
     const row = Math.max(0, Math.min(start.row + rowDelta, editor.lineCount() - 1));
-    const maxColumn = allowEndOfLine ? editor.lineLength(row) : Math.max(0, editor.lineLength(row) - 1);
+    const column = modelColumnForGoal(editor, row, nextGoal, { allowEndOfLine });
     return {
-      position: { row, column: Math.min(targetColumn, maxColumn) },
-      goalColumn: targetColumn,
+      position: { row, column },
+      goal: nextGoal,
     };
   }
 
@@ -367,7 +372,23 @@ export function applyMotionWithGoal(
   for (let i = 0; i < count; i++) {
     current = applyMotionOnce(editor, current, motion);
   }
-  return { position: current };
+  return { position: current, goal: motion.type === "endOfLine" ? { type: "endOfLine" } : undefined };
+}
+
+function modelColumnForGoal(
+  editor: VimEditorCapabilities,
+  row: number,
+  goal: VimSelectionGoal,
+  { allowEndOfLine }: { allowEndOfLine: boolean }
+): number {
+  const maxColumn = allowEndOfLine ? editor.lineLength(row) : Math.max(0, editor.lineLength(row) - 1);
+  switch (goal.type) {
+    case "endOfLine":
+      return maxColumn;
+    case "modelColumn":
+    case "viewColumn":
+      return Math.min(goal.column, maxColumn);
+  }
 }
 
 // Zed: `motion::Motion::range` / `motion::Motion::expand_selection` decide

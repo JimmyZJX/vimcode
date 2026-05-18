@@ -20,6 +20,7 @@ import {
   TextEdit,
   TextRange,
   VimSelection,
+  VimSelectionGoal,
   charwiseSelection,
   comparePositions,
   selectionHead,
@@ -39,7 +40,7 @@ type CharwiseVisualState = {
   kind: "charwise";
   anchor: Position;
   head: Position; // Vim cursor position; inclusive.
-  goalColumn?: number;
+  goal?: VimSelectionGoal;
 };
 
 type LinewiseVisualState = {
@@ -53,7 +54,7 @@ type BlockwiseVisualState = {
   kind: "blockwise";
   anchor: Position;
   head: Position;
-  goalColumn?: number;
+  goal?: VimSelectionGoal;
 };
 
 type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualState;
@@ -476,8 +477,7 @@ export class VisualMode {
 
   applyMotion(motion: Motion, count: number): void {
     if (this.state === undefined) return;
-    this.state = stateAfterMotion(this.editor, this.state, motion, count);
-    this.syncEditorSelection();
+    this.applyVisualMotion(this.state, motion, count, { displayLine: (motion.type === "up" || motion.type === "down") && motion.displayLine === true });
   }
 
   takeCountForMotion(defaultValue: number): number {
@@ -507,12 +507,14 @@ function externalSelectionToCharwiseState(editor: VimEditorCapabilities, selecti
       kind: "charwise",
       anchor: selection.anchor,
       head: previousVisualPosition(editor, selection.head),
+      goal: selection.goal,
     };
   }
   return {
     kind: "charwise",
     anchor: previousVisualPosition(editor, selection.anchor),
     head: selection.head,
+    goal: selection.goal,
   };
 }
 
@@ -574,17 +576,18 @@ function charwiseStateAfterMotion(
 ): CharwiseVisualState {
   if (motion.type === "right") {
     const head = charwiseRight(editor, state.head);
-    return { ...state, head, goalColumn: head.column };
+    return { ...state, head, goal: undefined };
   }
   if (motion.type === "endOfLine") {
     const head = { row: state.head.row, column: editor.lineLength(state.head.row) };
-    return { ...state, head, goalColumn: head.column };
+    return { ...state, head, goal: { type: "endOfLine" } };
   }
-  const result = applyMotionWithGoal(editor, state.head, motion, 1, state.goalColumn);
+  const result = applyMotionWithGoal(editor, state.head, motion, 1, state.goal);
+  const head = adjustCharwiseMotionHead(editor, state.head, result.position, motion);
   return {
     ...state,
-    head: adjustCharwiseMotionHead(editor, state.head, result.position, motion),
-    goalColumn: result.goalColumn ?? result.position.column,
+    head,
+    goal: result.goal ?? (motion.type === "nextWordStart" ? { type: "modelColumn", column: result.position.column } : undefined),
   };
 }
 
@@ -620,15 +623,15 @@ function blockwiseStateAfterMotion(
   state: BlockwiseVisualState,
   motion: Motion
 ): BlockwiseVisualState {
-  const { position, goalColumn } = applyMotionWithGoal(
+  const { position, goal } = applyMotionWithGoal(
     editor,
     state.head,
     motion,
     1,
-    state.goalColumn,
+    state.goal,
     { allowEndOfLine: true }
   );
-  return { ...state, head: position, goalColumn: goalColumn ?? position.column };
+  return { ...state, head: position, goal };
 }
 
 function adjustCharwiseMotionHead(
@@ -688,7 +691,7 @@ function stateToBlockwise(state: VisualState): BlockwiseVisualState {
 function otherEndState(state: VisualState, { rowAware }: { rowAware: boolean }): VisualState {
   switch (state.kind) {
     case "charwise":
-      return { ...state, anchor: state.head, head: state.anchor, goalColumn: state.anchor.column };
+      return { ...state, anchor: state.head, head: state.anchor, goal: { type: "modelColumn", column: state.anchor.column } };
     case "linewise":
       return { ...state, anchorLine: state.headLine, headLine: state.anchorLine };
     case "blockwise":
@@ -697,7 +700,7 @@ function otherEndState(state: VisualState, { rowAware }: { rowAware: boolean }):
 }
 
 function flipBlockOtherEndRowAware(state: BlockwiseVisualState): BlockwiseVisualState {
-  return { ...state, anchor: state.head, head: state.anchor, goalColumn: state.anchor.column };
+  return { ...state, anchor: state.head, head: state.anchor, goal: { type: "modelColumn", column: state.anchor.column } };
 }
 
 function flipBlockOtherEnd(state: BlockwiseVisualState): BlockwiseVisualState {
@@ -705,7 +708,7 @@ function flipBlockOtherEnd(state: BlockwiseVisualState): BlockwiseVisualState {
     ...state,
     anchor: { row: state.anchor.row, column: state.head.column },
     head: { row: state.head.row, column: state.anchor.column },
-    goalColumn: state.anchor.column,
+    goal: { type: "modelColumn", column: state.anchor.column },
   };
 }
 
@@ -723,12 +726,16 @@ function modeForState(state: VisualState): RestoredVisualMode {
 function cloneVisualState(state: VisualState): VisualState {
   switch (state.kind) {
     case "charwise":
-      return { ...state, anchor: { ...state.anchor }, head: { ...state.head } };
+      return { ...state, anchor: { ...state.anchor }, head: { ...state.head }, goal: cloneGoal(state.goal) };
     case "linewise":
       return { ...state };
     case "blockwise":
-      return { ...state, anchor: { ...state.anchor }, head: { ...state.head } };
+      return { ...state, anchor: { ...state.anchor }, head: { ...state.head }, goal: cloneGoal(state.goal) };
   }
+}
+
+function cloneGoal(goal: VimSelectionGoal | undefined): VimSelectionGoal | undefined {
+  return goal === undefined ? undefined : { ...goal };
 }
 
 function visualStateToEditorSelection(editor: VimEditorCapabilities, state: VisualState): VimSelection {
@@ -743,7 +750,7 @@ function visualStateToEditorSelection(editor: VimEditorCapabilities, state: Visu
         cursor: linewiseCursor(editor, state),
       };
     case "blockwise":
-      return { type: "blockwise", anchor: state.anchor, head: state.head, cursor: state.head };
+      return { type: "blockwise", anchor: state.anchor, head: state.head, cursor: state.head, goal: state.goal };
   }
 }
 
@@ -754,6 +761,7 @@ function charwiseStateToEditorSelection(editor: VimEditorCapabilities, state: Ch
       anchor: state.anchor,
       head: exclusiveVisualHead(editor, state.head),
       cursor: state.head,
+      goal: state.goal,
     };
   }
 
@@ -762,6 +770,7 @@ function charwiseStateToEditorSelection(editor: VimEditorCapabilities, state: Ch
     anchor: exclusiveVisualHead(editor, state.anchor),
     head: state.head,
     cursor: state.head,
+    goal: state.goal,
   };
 }
 
