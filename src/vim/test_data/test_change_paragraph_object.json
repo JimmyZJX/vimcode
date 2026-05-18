@@ -1,4 +1,3 @@
-// DISABLED: full paragraph object fixture includes blank-line edge cases beyond current first slice.
 {"Put":{"state":"ˇThe quick brown fox jumps over the lazy dog."}}
 {"Key":"c"}
 {"Key":"i"}

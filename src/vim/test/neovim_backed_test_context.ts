@@ -25,10 +25,15 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
   let vim: Vim | undefined;
   const registers: Record<string, string> = {};
 
+  let step = 0;
+  let currentScenario: string[] = [];
   for (const entry of fixture.entries) {
+    step++;
     if ("Put" in entry) {
+      currentScenario = [`Put ${entry.Put.state}`];
       ({ editor, vim } = editorFromMarkedText(entry.Put.state));
     } else if ("Key" in entry) {
+      currentScenario.push(`Key ${entry.Key}`);
       const currentVim = requireVim(vim, fixture.testCaseId);
       runKeys(currentVim, [keyForLocalVim(entry.Key)]);
     } else if ("SetOption" in entry) {
@@ -50,10 +55,15 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
     } else {
       const currentEditor = requireEditor(editor, fixture.testCaseId);
       const currentVim = requireVim(vim, fixture.testCaseId);
-      expect({ mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor, currentVim.mode.kind) }).toEqual({
-        mode: entry.Get.mode,
-        markedText: entry.Get.state,
-      });
+      const actual = { mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor, currentVim.mode.kind) };
+      const expected = { mode: entry.Get.mode, markedText: entry.Get.state };
+      try {
+        expect(actual).toEqual(expected);
+      } catch (error) {
+        throw new Error(
+          `fixture ${fixture.testCaseId} mismatch at step ${step}\n${currentScenario.join("\n")}\n${(error as Error).message}`
+        );
+      }
     }
   }
 

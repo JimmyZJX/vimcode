@@ -57,13 +57,13 @@ export function textObjectRange(
   editor: VimEditorCapabilities,
   head: Position,
   object: TextObject,
-  { around }: { around: boolean }
+  { around, count = 1 }: { around: boolean; count?: number }
 ): TextRange {
   switch (object.type) {
     case "word":
-      return wordRange(editor, head, { around, bigWord: object.bigWord });
+      return wordRange(editor, head, { around, bigWord: object.bigWord, count });
     case "paragraph":
-      return paragraphRange(editor, head, { around });
+      return paragraphRange(editor, head, { around, count });
     case "sentence":
       return sentenceRange(editor, head, { around });
     case "surround":
@@ -74,66 +74,85 @@ export function textObjectRange(
 function wordRange(
   editor: VimEditorCapabilities,
   head: Position,
-  { around, bigWord }: { around: boolean; bigWord: boolean }
+  { around, bigWord, count }: { around: boolean; bigWord: boolean; count: number }
 ): TextRange {
-  const line = editor.line(head.row);
-  if (line.length === 0) return { start: head, end: head };
+  const text = editor.getText();
+  if (text.length === 0) return { start: head, end: head };
 
-  const wordColumn = Math.min(head.column, Math.max(0, line.length - 1));
+  const headOffset = Math.min(offsetOfPosition(editor, head), Math.max(0, text.length - 1));
+  if (!around && count === 1 && isWhitespace(text[headOffset])) {
+    return whitespaceRange(editor, text, headOffset);
+  }
+  const firstUnit = wordUnitAtOrAfter(text, headOffset, bigWord);
+  if (firstUnit === undefined) return { start: head, end: head };
 
-  const wordClass = charClass(line[wordColumn], bigWord);
-  let startColumn = wordColumn;
-  while (startColumn > 0 && charClass(line[startColumn - 1], bigWord) === wordClass) {
-    startColumn--;
+  let endUnit = firstUnit;
+  for (let index = 1; index < count; index++) {
+    const nextUnit = nextWordUnit(text, endUnit.end, bigWord);
+    if (nextUnit === undefined) break;
+    endUnit = nextUnit;
   }
 
-  let endColumn = wordColumn + 1;
-  while (endColumn < line.length && charClass(line[endColumn], bigWord) === wordClass) {
-    endColumn++;
+  let start = firstUnit.start;
+  let end = endUnit.end;
+  if (around || count > 1) {
+    const expanded = expandWordRangeWhitespace(text, { start, end }, { preferTrailing: around, stopAtNewline: around && start === firstUnit.start && firstUnit.start > 0 });
+    start = expanded.start;
+    end = expanded.end;
   }
 
-  if (around) {
-    if (endColumn < line.length && isWhitespace(line[endColumn])) {
-      while (endColumn < line.length && isWhitespace(line[endColumn])) {
-        endColumn++;
-      }
-    } else {
-      while (startColumn > 0 && isWhitespace(line[startColumn - 1])) {
-        startColumn--;
-      }
-    }
-  }
-
-  return {
-    start: { row: head.row, column: startColumn },
-    end: { row: head.row, column: endColumn },
-  };
+  return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
 }
 
 function paragraphRange(
   editor: VimEditorCapabilities,
   head: Position,
-  { around }: { around: boolean }
+  { around, count }: { around: boolean; count: number }
 ): TextRange {
-  let startRow = head.row;
-  while (startRow > 0 && editor.line(startRow - 1).trim().length > 0) startRow--;
-  let endRow = head.row;
-  while (endRow + 1 < editor.lineCount() && editor.line(endRow + 1).trim().length > 0) endRow++;
+  let startRow = startOfParagraph(editor, head.row);
+  let endRow = endOfParagraph(editor, head.row);
 
-  if (around) {
-    if (endRow + 1 < editor.lineCount()) {
-      endRow++;
+  for (let index = 0; index < count; index++) {
+    if (!around) break;
+
+    if (paragraphEndsAtEof(editor, endRow)) {
+      if (isBlankLine(editor, head.row)) return { start: head, end: head };
+      if (startRow > 0) startRow = startOfParagraph(editor, startRow - 1);
     } else {
-      while (startRow > 0 && editor.line(startRow - 1).trim().length === 0) startRow--;
+      let nextRow = endRow + 1;
+      if (index > 0) nextRow++;
+      endRow = endOfParagraph(editor, Math.min(nextRow, editor.lineCount() - 1));
     }
   }
 
   return {
     start: { row: startRow, column: 0 },
-    end: endRow + 1 < editor.lineCount()
-      ? { row: endRow + 1, column: 0 }
-      : { row: endRow, column: editor.lineLength(endRow) },
+    end: { row: endRow, column: editor.lineLength(endRow) },
   };
+}
+
+function startOfParagraph(editor: VimEditorCapabilities, row: number): number {
+  const currentIsBlank = isBlankLine(editor, row);
+  for (let current = row - 1; current >= 0; current--) {
+    if (isBlankLine(editor, current) !== currentIsBlank) return current + 1;
+  }
+  return 0;
+}
+
+function endOfParagraph(editor: VimEditorCapabilities, row: number): number {
+  const currentIsBlank = isBlankLine(editor, row);
+  for (let current = row + 1; current < editor.lineCount(); current++) {
+    if (isBlankLine(editor, current) !== currentIsBlank) return current - 1;
+  }
+  return editor.lineCount() - 1;
+}
+
+function paragraphEndsAtEof(editor: VimEditorCapabilities, endRow: number): boolean {
+  return endRow >= editor.lineCount() - 1;
+}
+
+function isBlankLine(editor: VimEditorCapabilities, row: number): boolean {
+  return editor.line(row).trim().length === 0;
 }
 
 function sentenceRange(
@@ -276,6 +295,63 @@ function surroundingMarkers(
   return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
 }
 
+
+type WordUnit = { start: number; end: number };
+
+function whitespaceRange(editor: VimEditorCapabilities, text: string, offset: number): TextRange {
+  let start = offset;
+  while (start > 0 && isWhitespace(text[start - 1]) && text[start - 1] !== "\n") start--;
+  let end = offset + 1;
+  while (end < text.length && isWhitespace(text[end]) && text[end - 1] !== "\n" && text[end] !== "\n") end++;
+  return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
+}
+
+function wordUnitAtOrAfter(text: string, offset: number, bigWord: boolean): WordUnit | undefined {
+  const containing = wordUnitAt(text, offset, bigWord);
+  if (containing !== undefined) return containing;
+  return nextWordUnit(text, offset, bigWord);
+}
+
+function wordUnitAt(text: string, offset: number, bigWord: boolean): WordUnit | undefined {
+  if (offset < 0 || offset >= text.length || isWhitespace(text[offset])) return undefined;
+  const unitClass = charClass(text[offset], bigWord);
+  let start = offset;
+  while (start > 0 && !isWhitespace(text[start - 1]) && charClass(text[start - 1], bigWord) === unitClass) start--;
+  let end = offset + 1;
+  while (end < text.length && !isWhitespace(text[end]) && charClass(text[end], bigWord) === unitClass) end++;
+  return { start, end };
+}
+
+function nextWordUnit(text: string, offset: number, bigWord: boolean): WordUnit | undefined {
+  for (let index = Math.max(0, offset); index < text.length; index++) {
+    if (!isWhitespace(text[index])) return wordUnitAt(text, index, bigWord);
+  }
+  return undefined;
+}
+
+function expandWordRangeWhitespace(
+  text: string,
+  range: { start: number; end: number },
+  { preferTrailing, stopAtNewline }: { preferTrailing: boolean; stopAtNewline: boolean }
+): { start: number; end: number } {
+  let { start, end } = range;
+  let includedTrailingWhitespace = false;
+  while (end < text.length && isWhitespace(text[end]) && !(stopAtNewline && text[end] === "\n")) {
+    includedTrailingWhitespace = true;
+    end++;
+  }
+  if ((!preferTrailing || !includedTrailingWhitespace) && !isFirstWordOnLine(text, start)) {
+    while (start > 0 && isWhitespace(text[start - 1]) && !(stopAtNewline && text[start - 1] === "\n")) start--;
+  }
+  return { start, end };
+}
+
+function isFirstWordOnLine(text: string, start: number): boolean {
+  for (let index = start - 1; index >= 0 && text[index] !== "\n"; index--) {
+    if (!isWhitespace(text[index])) return false;
+  }
+  return true;
+}
 
 function isEscapedInText(text: string, index: number): boolean {
   let backslashes = 0;

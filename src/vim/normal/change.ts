@@ -74,7 +74,8 @@ export function changeLineRange(
       ? ""
       : endRow + 1 < editor.lineCount() ? `${indent}\n` : indent;
     edits.push({ range, text: replacement });
-    selectionsAfter.push({ type: "charwise" as const, anchor: { row: startRow, column: indent.length }, head: { row: startRow, column: indent.length } });
+    const cursorRow = rangeInfo.cursorRow ?? startRow;
+    selectionsAfter.push({ type: "charwise" as const, anchor: { row: cursorRow, column: indent.length }, head: { row: cursorRow, column: indent.length } });
   }
 
   if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");

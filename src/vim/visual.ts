@@ -316,12 +316,17 @@ export class VisualMode {
       return handled();
     }
 
-    if (this.editor.lineLength(state.anchor.row) === 0) {
+    if (object.type !== "paragraph" && this.editor.lineLength(state.anchor.row) === 0) {
       this.syncEditorSelection();
       return handled();
     }
 
-    const range = textObjectRange(this.editor, state.head, object, { around: pendingTextObject.around });
+    const range = textObjectRange(this.editor, visualObjectHead(this.editor, state), object, { around: pendingTextObject.around, count: this.takeCount(1) });
+    if (object.type === "paragraph") {
+      this.state = paragraphLinewiseStateForRange(this.editor, range);
+      this.syncEditorSelection();
+      return handled({ nextMode: "visualLine" });
+    }
     this.state = charwiseStateForRange(this.editor, range);
     this.syncEditorSelection();
     return handled();
@@ -522,6 +527,16 @@ function initialCharwiseHead(editor: VimEditorCapabilities, head: Position): Pos
     return { row: head.row + 1, column: 0 };
   }
   return head;
+}
+
+function visualObjectHead(editor: VimEditorCapabilities, state: CharwiseVisualState): Position {
+  if (isForwardCharwiseVisualState(state)
+    && editor.lineLength(state.anchor.row) === 0
+    && state.head.row === state.anchor.row + 1
+    && state.head.column === 0) {
+    return state.anchor;
+  }
+  return state.head;
 }
 
 function visualMotionForKey(key: string): Motion | undefined {
@@ -781,6 +796,16 @@ function charwiseStateForRange(editor: VimEditorCapabilities, range: TextRange):
     kind: "charwise",
     anchor: range.start,
     head: inclusiveHeadForRangeEnd(editor, range),
+  };
+}
+
+function paragraphLinewiseStateForRange(editor: VimEditorCapabilities, range: TextRange): LinewiseVisualState {
+  const endLineLength = editor.lineLength(range.end.row);
+  return {
+    kind: "linewise",
+    anchorLine: range.start.row,
+    headLine: range.end.row,
+    headColumn: range.start.row === range.end.row || endLineLength === 0 ? 0 : 1,
   };
 }
 

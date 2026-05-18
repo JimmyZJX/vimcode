@@ -9,10 +9,11 @@ import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
 import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
-import { changeLineRange, changeLines, changeMotion, changeRange } from "./normal/change.js";
-import { deleteCharacters, deleteLineRange, deleteLines, deleteMotion, deleteRange } from "./normal/delete.js";
+import { changeLineRange, changeLines, changeMotion } from "./normal/change.js";
+import { deleteCharacters, deleteLineRange, deleteLines, deleteMotion } from "./normal/delete.js";
+import { applyTextObjectOperator } from "./normal/object.js";
 import { paste } from "./normal/paste.js";
-import { yankLines, yankMotion, yankRange } from "./normal/yank.js";
+import { yankLines, yankMotion } from "./normal/yank.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
 import { toggleCaseCharacters } from "./normal/convert.js";
@@ -456,24 +457,16 @@ export class NormalMode {
 
   private handleTextObject(object: TextObject, around: boolean): boolean {
     const pending = this.pendingOperator;
+    const objectCount = this.takeCount(1);
     this.pendingTextObject = undefined;
     this.pendingOperator = undefined;
     if (pending === undefined) {
       return false;
     }
 
+    const count = pending.count * objectCount;
     const registerName = this.takeSelectedRegister();
-    switch (pending.operator) {
-      case "change":
-        changeRange(this.editor, this.registers, registerName, (head) => textObjectRange(this.editor, head, object, { around }));
-        return true;
-      case "delete":
-        deleteRange(this.editor, this.registers, registerName, (head) => textObjectRange(this.editor, head, object, { around }));
-        return false;
-      case "yank":
-        yankRange(this.editor, this.registers, registerName, (head) => textObjectRange(this.editor, head, object, { around }));
-        return false;
-    }
+    return applyTextObjectOperator(this.editor, this.registers, registerName, pending.operator, object, { around, count });
   }
 
   // Zed: `normal::Vim::normal_motion` dispatches active operators to

@@ -92,6 +92,9 @@ export function markedTextFromEditor(editor: InMemoryVimEditor, mode: VimMode["k
   switch (mode) {
     case "visual": {
       const anchor = selectionAnchor(selection);
+      if (selection.type === "charwise" && comparePositions(anchor, head) === 0) {
+        return encodeMarkedText({ text: editor.getText(), row: head.row, column: head.column, mode: "normal" });
+      }
       const cursorIsLineStartAcrossLines = selection.type === "charwise"
         && selection.cursor !== undefined
         && selection.cursor.column === 0
@@ -148,6 +151,15 @@ function encodeVisualLineSelectionMarkedText(text: string, selection: Extract<Vi
   const cursor = selection.cursor ?? { row: selection.headLine, column: 0 };
   const lines = text.split("\n");
   const selectedLine = lines[selection.headLine] ?? "";
+  if (selection.anchorLine !== selection.headLine) {
+    const start = { row: Math.min(selection.anchorLine, selection.headLine), column: 0 };
+    const end = cursor;
+    return insertMarkers(text, [
+      { position: start, marker: visualStartMarker },
+      { position: cursor, marker: cursorMarker },
+      { position: end, marker: visualEndMarker },
+    ]);
+  }
   if (selectedLine.length === 0) {
     if (selection.headLine + 1 >= lines.length) {
       return insertMarker(text, { row: selection.headLine, column: 0 }, cursorMarker);

@@ -16,7 +16,7 @@ import {
   selectionHead,
 } from "../state.js";
 
-export type LinewiseOperationRange = { startRow: number; endRow: number; column: number };
+export type LinewiseOperationRange = { startRow: number; endRow: number; column: number; cursorRow?: number };
 
 // Zed: `normal::delete::Vim::delete_motion`.
 export function deleteMotion(
@@ -44,7 +44,7 @@ export function deleteRange(
   registers: Registers,
   registerName: RegisterName | undefined,
   rangeForHead: (head: ReturnType<typeof selectionHead>) => TextEdit["range"],
-  cursorForRange: (editor: VimEditorCapabilities, range: TextEdit["range"]) => ReturnType<typeof selectionHead> = cursorAfterDeletingRange,
+  cursorForRange: (editor: VimEditorCapabilities, range: TextEdit["range"], head: ReturnType<typeof selectionHead>) => ReturnType<typeof selectionHead> = cursorAfterDeletingRange,
   options: ApplyEditsOptions = {}
 ): void {
   const edits: TextEdit[] = [];
@@ -60,7 +60,7 @@ export function deleteRange(
     }
     copied.push(rangeText(editor, range));
     edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(cursorForRange(editor, range)));
+    selectionsAfter.push(charwiseSelection(cursorForRange(editor, range, head)));
   }
 
   if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
@@ -100,7 +100,7 @@ export function deleteLineRange(
     const range = lineRange(editor, rangeInfo.startRow, rangeInfo.endRow - rangeInfo.startRow + 1);
     copied.push(linewiseContent(editor, rangeInfo.startRow, rangeInfo.endRow - rangeInfo.startRow + 1));
     edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, rangeInfo.startRow, rangeInfo.column, rangeInfo.endRow - rangeInfo.startRow + 1)));
+    selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, rangeInfo.cursorRow ?? rangeInfo.startRow, rangeInfo.column, rangeInfo.endRow - rangeInfo.startRow + 1)));
   }
 
   if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");
