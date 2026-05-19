@@ -17,6 +17,8 @@ import { yankLines, yankMotion } from "./normal/yank.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
 import { ConvertTarget, convertRanges, toggleCaseCharacters } from "./normal/convert.js";
+import { IndentDirection, currentLineRanges, indentRanges } from "./normal/indent.js";
+import { incrementNumbers } from "./normal/increment.js";
 import { joinLines } from "./normal/join.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
 import { KeyResult, Operator, TextRange, VimSelection, charwiseSelection, selectionHead } from "./state.js";
@@ -30,6 +32,8 @@ type PendingPrefix = "g" | "register" | "indent";
 type PendingTextObject = { around: boolean };
 type PendingConvert = { target: ConvertTarget; count: number };
 type PendingConvertTextObject = PendingConvert & { around: boolean };
+type PendingIndent = { direction: IndentDirection; count: number };
+type PendingIndentTextObject = PendingIndent & { around: boolean };
 type PendingSurround =
   | { type: "addTarget"; count: number }
   | { type: "addObject"; around: boolean; count: number }
@@ -58,6 +62,8 @@ export class NormalMode {
   private pendingTextObject: PendingTextObject | undefined;
   private pendingConvert: PendingConvert | undefined;
   private pendingConvertTextObject: PendingConvertTextObject | undefined;
+  private pendingIndent: PendingIndent | undefined;
+  private pendingIndentTextObject: PendingIndentTextObject | undefined;
   private pendingSurround: PendingSurround | undefined;
   private pendingReplaceCount: number | undefined;
   private selectedRegister: RegisterName | undefined;
@@ -68,7 +74,7 @@ export class NormalMode {
   ) {}
 
   isPending(): boolean {
-    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingConvert !== undefined || this.pendingConvertTextObject !== undefined || this.pendingSurround !== undefined || this.pendingReplaceCount !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
+    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingConvert !== undefined || this.pendingConvertTextObject !== undefined || this.pendingIndent !== undefined || this.pendingIndentTextObject !== undefined || this.pendingSurround !== undefined || this.pendingReplaceCount !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
   }
 
   pendingOperatorName(): Operator | undefined {
@@ -85,6 +91,8 @@ export class NormalMode {
       || this.pendingTextObject !== undefined
       || this.pendingConvert !== undefined
       || this.pendingConvertTextObject !== undefined
+      || this.pendingIndent !== undefined
+      || this.pendingIndentTextObject !== undefined
       || this.pendingSurround !== undefined
       || this.pendingReplaceCount !== undefined
       || this.selectedRegister !== undefined;
@@ -101,6 +109,8 @@ export class NormalMode {
     if (this.pendingTextObject !== undefined) return `${count}${operator}${this.pendingTextObject.around ? "a" : "i"}`;
     if (this.pendingConvertTextObject !== undefined) return `${count}g${keyForConvertTarget(this.pendingConvertTextObject.target)}${this.pendingConvertTextObject.around ? "a" : "i"}`;
     if (this.pendingConvert !== undefined) return `${count}g${keyForConvertTarget(this.pendingConvert.target)}`;
+    if (this.pendingIndentTextObject !== undefined) return `${count}${keyForIndentDirection(this.pendingIndentTextObject.direction)}${this.pendingIndentTextObject.around ? "a" : "i"}`;
+    if (this.pendingIndent !== undefined) return `${count}${keyForIndentDirection(this.pendingIndent.direction)}`;
     if (this.pendingSurround !== undefined) return `${count}${operator}s`;
     if (this.pendingPrefix === "register") return `${count}${operator}\"`;
     if (this.pendingPrefix === "g") return `${count}g`;
@@ -116,6 +126,8 @@ export class NormalMode {
     this.pendingTextObject = undefined;
     this.pendingConvert = undefined;
     this.pendingConvertTextObject = undefined;
+    this.pendingIndent = undefined;
+    this.pendingIndentTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingReplaceCount = undefined;
     this.selectedRegister = undefined;
@@ -149,6 +161,21 @@ export class NormalMode {
       return handled();
     }
 
+    if (this.pendingIndentTextObject !== undefined) {
+      const object = textObjectForKey(key);
+      if (object === undefined) {
+        this.clearPending();
+        return handled();
+      }
+      this.handleIndentTextObject(object);
+      return handled();
+    }
+
+    if (this.pendingIndent !== undefined) {
+      this.handleIndentKey(key);
+      return handled();
+    }
+
     if (this.pendingTextObject !== undefined) {
       const object = textObjectForKey(key);
       if (object === undefined) {
@@ -166,16 +193,6 @@ export class NormalMode {
         return handled();
       }
       this.selectedRegister = registerName;
-      return handled();
-    }
-
-    if (this.pendingPrefix === "indent") {
-      this.pendingPrefix = undefined;
-      if (key === ">") {
-        this.indentCurrentLines();
-        return handled();
-      }
-      this.clearPending();
       return handled();
     }
 
@@ -199,8 +216,8 @@ export class NormalMode {
       return handled();
     }
 
-    if (key === ">") {
-      this.pendingPrefix = "indent";
+    if (key === ">" || key === "<" || key === "=") {
+      this.pendingIndent = { direction: indentDirectionForKey(key), count: this.takeCount(1) };
       return handled();
     }
 
@@ -318,6 +335,12 @@ export class NormalMode {
         return handled({ enterInsert: true });
       case "J":
         this.joinFromSelections({ insertWhitespace: true });
+        return handled();
+      case "ctrl-a":
+        incrementNumbers(this.editor, this.takeCount(1));
+        return handled();
+      case "ctrl-x":
+        incrementNumbers(this.editor, -this.takeCount(1));
         return handled();
       case "x":
         deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
@@ -437,6 +460,45 @@ export class NormalMode {
     );
   }
 
+  private handleIndentKey(key: string): void {
+    const pending = this.pendingIndent;
+    this.pendingIndent = undefined;
+    if (pending === undefined) return;
+
+    if (key === "i" || key === "a") {
+      this.pendingIndentTextObject = { ...pending, around: key === "a" };
+      return;
+    }
+
+    if (key === keyForIndentDirection(pending.direction)) {
+      indentRanges(this.editor, currentLineRanges(this.editor, pending.count * this.takeCount(1)), pending.direction);
+      return;
+    }
+
+    const motion = motionForKey(key);
+    if (motion === undefined) {
+      this.clearPending();
+      return;
+    }
+    const count = pending.count * this.takeCount(1);
+    const ranges = this.editor.getSelections().map(selection => motionRange(this.editor, selectionHead(selection), motion, count));
+    indentRanges(this.editor, ranges, pending.direction);
+  }
+
+  private handleIndentTextObject(object: TextObject): void {
+    const pending = this.pendingIndentTextObject;
+    this.pendingIndentTextObject = undefined;
+    if (pending === undefined) return;
+
+    const objectCount = this.takeCount(1);
+    const ranges = this.editor.getSelections().map(selection =>
+      textObjectRange(this.editor, selectionHead(selection), object, {
+        around: pending.around,
+        count: pending.count * objectCount,
+      }));
+    indentRanges(this.editor, ranges, pending.direction);
+  }
+
   private joinFromSelections({ insertWhitespace }: { insertWhitespace: boolean }): void {
     const count = this.takeCount(1);
     for (const selection of this.editor.getSelections()) {
@@ -444,17 +506,6 @@ export class NormalMode {
       break;
     }
     this.selectedRegister = undefined;
-  }
-
-  private indentCurrentLines(): void {
-    const edits = this.editor.getSelections().map(selection => {
-      const row = selectionHead(selection).row;
-      return { range: { start: { row, column: 0 }, end: { row, column: 0 } }, text: "    " };
-    });
-    this.editor.applyEdits(edits, this.editor.getSelections().map(selection => {
-      const head = selectionHead(selection);
-      return charwiseSelection({ row: head.row, column: head.column + 4 });
-    }));
   }
 
   private handleReplaceKey(key: string): void {
@@ -691,6 +742,10 @@ export class NormalMode {
     return this.takeCount(defaultValue);
   }
 
+  takeCountForRepeat(): number | undefined {
+    return this.takeCount(undefined);
+  }
+
   private takeCount(defaultValue: number): number;
   private takeCount(defaultValue: undefined): number | undefined;
   private takeCount(defaultValue: number | undefined): number | undefined {
@@ -724,6 +779,30 @@ function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: num
 
 function isOperatorKey(key: string): boolean {
   return key === "d" || key === "c" || key === "y";
+}
+
+function indentDirectionForKey(key: string): IndentDirection {
+  switch (key) {
+    case ">":
+      return "in";
+    case "<":
+      return "out";
+    case "=":
+      return "auto";
+    default:
+      throw new Error(`not an indent key: ${key}`);
+  }
+}
+
+function keyForIndentDirection(direction: IndentDirection): string {
+  switch (direction) {
+    case "in":
+      return ">";
+    case "out":
+      return "<";
+    case "auto":
+      return "=";
+  }
 }
 
 function convertTargetForKey(key: string): ConvertTarget {

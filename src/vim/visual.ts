@@ -12,6 +12,9 @@ import { positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
+import { IndentDirection, indentRanges, visualIndentRanges } from "./normal/indent.js";
+import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
+import { incrementNumbers } from "./normal/increment.js";
 import { cursorAfterDeletingRange, deleteRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, Registers, parseRegisterName } from "./registers.js";
@@ -36,6 +39,7 @@ export type VisualKeyResult = {
   exitVisual: boolean;
   enterInsert: boolean;
   nextMode?: VisualResultMode;
+  repeatAction?: { selection: RecordedSelection; action: VisualRepeatAction };
 };
 
 type CharwiseVisualState = {
@@ -66,9 +70,10 @@ function handled(
     exitVisual = false,
     enterInsert = false,
     nextMode,
-  }: { exitVisual?: boolean; enterInsert?: boolean; nextMode?: VisualResultMode } = {}
+    repeatAction,
+  }: { exitVisual?: boolean; enterInsert?: boolean; nextMode?: VisualResultMode; repeatAction?: { selection: RecordedSelection; action: VisualRepeatAction } } = {}
 ): VisualKeyResult {
-  return { keyResult: "handled", exitVisual, enterInsert, nextMode };
+  return { keyResult: "handled", exitVisual, enterInsert, nextMode, repeatAction };
 }
 
 export class VisualMode {
@@ -266,6 +271,20 @@ export class VisualMode {
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
+    if (key === ">" || key === "<" || key === "=") {
+      const direction = indentDirectionForKey(key);
+      const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction);
+      this.indent(state, direction);
+      return handled({ exitVisual: true, nextMode: "normal", repeatAction });
+    }
+
+    if (key === "ctrl-a" || key === "ctrl-x") {
+      incrementNumbers(this.editor, (key === "ctrl-a" ? 1 : -1) * this.takeCount(1));
+      this.state = undefined;
+      this.editor.setCursorStyle("block");
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+
     if (key === "u" || key === "U" || key === "~") {
       this.convert(state, convertTargetForKey(key));
       return handled({ exitVisual: true, nextMode: "normal" });
@@ -434,6 +453,15 @@ export class VisualMode {
     this.editor.setCursorStyle("block");
   }
 
+  private indent(state: VisualState, direction: IndentDirection): void {
+    this.rememberState(state);
+    const cursor = visualIndentCursor(this.editor, state, direction);
+    indentRanges(this.editor, visualIndentRanges(this.editor, [visualStateToEditorSelection(this.editor, state)]), direction);
+    this.editor.setSelections([charwiseSelection(cursor)]);
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+  }
+
   private paste(state: VisualState, registerName: RegisterName | undefined): void {
     const content = this.registers.readContent(registerName);
     if (content.text.length === 0) return;
@@ -538,6 +566,19 @@ export class VisualMode {
     const count = Number(this.countBuffer);
     this.countBuffer = "";
     return count;
+  }
+}
+
+function indentDirectionForKey(key: string): IndentDirection {
+  switch (key) {
+    case ">":
+      return "in";
+    case "<":
+      return "out";
+    case "=":
+      return "auto";
+    default:
+      throw new Error(`not a visual indent key: ${key}`);
   }
 }
 
@@ -918,6 +959,34 @@ function substituteLineForState(
       return;
     }
   }
+}
+
+function visualIndentCursor(editor: VimEditorCapabilities, state: VisualState, direction: IndentDirection): Position {
+  const start = visualStartPosition(state);
+  switch (direction) {
+    case "in":
+      return { row: start.row, column: start.column + 4 };
+    case "out":
+      return { row: start.row, column: Math.max(0, start.column - Math.min(4, leadingWhitespaceLength(editor.line(start.row)))) };
+    case "auto":
+      return start;
+  }
+}
+
+function leadingWhitespaceLength(line: string): number {
+  return /^\s*/.exec(line)?.[0].length ?? 0;
+}
+
+function visualIndentRepeatActionForState(
+  editor: VimEditorCapabilities,
+  state: VisualState,
+  direction: IndentDirection
+): { selection: RecordedSelection; action: VisualRepeatAction } {
+  const { startRow, endRow } = visualLineBounds(editor, state);
+  return {
+    selection: { type: "visualLine", rows: Math.max(0, endRow - startRow) },
+    action: { type: "indent", direction },
+  };
 }
 
 function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {

@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: full increment fixture includes dot-repeat and larger count/range edge cases; focused decimal ctrl-a/ctrl-x coverage lives in vim.test.ts.
 {"Put":{"state":"1ˇ2\n"}}
 {"Key":"ctrl-a"}
 {"Get":{"state":"1ˇ3\n","mode":"Normal"}}

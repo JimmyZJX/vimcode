@@ -1,14 +1,27 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - source: crates/vim/src/normal/repeat.rs and repeat/macro state in `state::VimGlobals`
-// - translated concepts: record and replay the last repeatable normal-mode key sequence,
-//   plus first named macro recording/replay
-// - intentional differences: this records small key sequences rather than Zed's full action
-//   recording system. Register-for-dot and complex repeat grouping remain future work.
+// - translated concepts: record and replay the last repeatable action, including a first
+//   `RecordedSelection`-style visual action shape, plus first named macro replay
+// - intentional differences: key-based actions are still stored as small key sequences;
+//   visual actions are modeled explicitly only for the actions currently implemented.
+
+import { IndentDirection } from "./indent.js";
+
+export type RecordedSelection =
+  | { type: "none" }
+  | { type: "visualLine"; rows: number };
+
+export type VisualRepeatAction =
+  | { type: "indent"; direction: IndentDirection };
+
+export type RepeatAction =
+  | { type: "keys"; keys: readonly string[] }
+  | { type: "visual"; selection: RecordedSelection; action: VisualRepeatAction };
 
 export class RepeatState {
   private current: string[] | undefined;
-  private last: string[] | undefined;
+  private last: RepeatAction | undefined;
   private replaying = false;
 
   isReplaying(): boolean {
@@ -24,20 +37,41 @@ export class RepeatState {
     this.current?.push(key);
   }
 
+  recordCompleted(keys: readonly string[]): void {
+    this.current = undefined;
+    this.last = { type: "keys", keys: [...keys] };
+  }
+
+  recordVisualAction(selection: RecordedSelection, action: VisualRepeatAction): void {
+    this.current = undefined;
+    this.last = { type: "visual", selection, action };
+  }
+
   maybeFinish({ mode, isPending }: { mode: string; isPending: boolean }): void {
     if (this.current === undefined) return;
     if (mode === "normal" && !isPending) {
-      this.last = this.current;
+      this.last = { type: "keys", keys: this.current };
       this.current = undefined;
     }
   }
 
-  replay(count: number, runKey: (key: string) => void): void {
+  replay(
+    count: number | undefined,
+    { runKey, runVisualAction }: { runKey: (key: string) => void; runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => void }
+  ): void {
     if (this.last === undefined) return;
-    const keys = count === 1 ? this.last : keysWithCountOverride(this.last, count);
     this.replaying = true;
     try {
-      for (const key of keys) runKey(key);
+      switch (this.last.type) {
+        case "keys": {
+          const keys = count === undefined ? this.last.keys : keysWithCountOverride(this.last.keys, count);
+          for (const key of keys) runKey(key);
+          break;
+        }
+        case "visual":
+          runVisualAction(this.last.selection, this.last.action);
+          break;
+      }
     } finally {
       this.replaying = false;
     }

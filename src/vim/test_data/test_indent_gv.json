@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: gv after indent restores visual cursor/selection with Zed display-map exactness beyond current marker model.
 {"SetOption":{"value":"shiftwidth=4"}}
 {"Put":{"state":"ˇhello\nworld\n"}}
 {"Key":"v"}

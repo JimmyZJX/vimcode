@@ -135,6 +135,16 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("abc def");
   });
 
+  it("dot-repeats g~ conversion motions", () => {
+    const editor = new InMemoryVimEditor("abc def");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["g", "~", "w", "."]);
+
+    expect(editor.getText()).toBe("abc def");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
   it("supports join-lines commands", () => {
     const editor = new InMemoryVimEditor("one\ntwo\nthree");
     const vim = new Vim(editor);
@@ -143,6 +153,48 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(editor.getText()).toBe("one twothree");
     expect(head(editor)).toEqual({ row: 0, column: 7 });
+  });
+
+  it("supports indent operators and visual indent", () => {
+    const editor = new InMemoryVimEditor("one\n  two\nthree");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [">", ">", "j", "<", "<", "V", "j", ">"]);
+
+    expect(editor.getText()).toBe("    one\n    two\n    three");
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
+  it("dot-repeats visual indent from the start of downward selections", () => {
+    const editor = new InMemoryVimEditor("one\ntwo\nthree");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "j", ">", "."]);
+
+    expect(editor.getText()).toBe("        one\n        two\nthree");
+    expect(head(editor).row).toBe(0);
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
+  it("dot-repeats visual indent from the start of upward selections", () => {
+    const editor = new InMemoryVimEditor("one\ntwo\nthree");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["j", "v", "k", ">", "."]);
+
+    expect(editor.getText()).toBe("        one\n        two\nthree");
+    expect(head(editor).row).toBe(0);
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
+  it("supports decimal increment and decrement", () => {
+    const editor = new InMemoryVimEditor("count 9");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["ctrl-a", "2", "ctrl-x"]);
+
+    expect(editor.getText()).toBe("count 8");
+    expect(head(editor)).toEqual({ row: 0, column: 6 });
   });
 
   it("supports insert-mode ctrl-w and ctrl-u", () => {

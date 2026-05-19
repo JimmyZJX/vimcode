@@ -139,6 +139,7 @@ function shiftedDigitKey(digit: number): string {
 
 function isSupportedCtrlKey(key: string): boolean {
 	switch (key) {
+		case 'ctrl-a':
 		case 'ctrl-b':
 		case 'ctrl-d':
 		case 'ctrl-e':
@@ -149,6 +150,7 @@ function isSupportedCtrlKey(key: string): boolean {
 		case 'ctrl-u':
 		case 'ctrl-v':
 		case 'ctrl-w':
+		case 'ctrl-x':
 		case 'ctrl-y':
 			return true;
 		default:

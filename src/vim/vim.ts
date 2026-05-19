@@ -12,11 +12,12 @@ import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import { MarkState } from "./normal/mark.js";
 import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
-import { MacroState, RepeatState } from "./normal/repeat.js";
+import { MacroState, RecordedSelection, RepeatState, VisualRepeatAction } from "./normal/repeat.js";
 import { handleHostAction } from "./normal/scroll.js";
 import { SearchState, searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
+import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
 import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, rangeOfSelection, selectionHead } from "./state.js";
@@ -150,7 +151,7 @@ export class Vim {
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyResult {
-    if (!this.repeatState.isReplaying()) this.repeatState.maybeFinish({ mode: this.modeState.kind, isPending: this.modeState.kind === "normal" && this.normalMode.isPending() });
+    if (!this.repeatState.isReplaying()) this.repeatState.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
 
     if (this.pendingInsertRegister) {
       this.handlePendingInsertRegisterKey(key);
@@ -267,7 +268,10 @@ export class Vim {
           }
           return "handled";
         case "action":
-          if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
+          if (!this.repeatState.isReplaying()) {
+            this.repeatState.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalMode.pendingChord() });
+            this.repeatState.recordKey(key);
+          }
           this.handleSharedAction(sharedResolution.action);
           return "handled";
         case "cancelled":
@@ -315,7 +319,10 @@ export class Vim {
     }
 
     if (!this.repeatState.isReplaying() && this.modeState.kind === "normal" && key === ".") {
-      this.repeatState.replay(this.normalMode.takeCountForMotion(1), key => this.onKey(key));
+      this.repeatState.replay(this.normalMode.takeCountForRepeat(), {
+        runKey: key => this.onKey(key),
+        runVisualAction: (selection, action) => this.replayVisualAction(selection, action),
+      });
       return "handled";
     }
 
@@ -371,6 +378,9 @@ export class Vim {
       || this.modeState.kind === "visualBlock"
     ) {
       const result = this.visualMode.onKey(key);
+      if (result.repeatAction !== undefined && !this.repeatState.isReplaying()) {
+        this.repeatState.recordVisualAction(result.repeatAction.selection, result.repeatAction.action);
+      }
       if (result.enterInsert) {
         this.insertOrigin = this.modeState.kind;
         this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
@@ -630,6 +640,22 @@ export class Vim {
       this.editor.setSelections([{ type: "charwise", anchor: { row, column: 0 }, head: { row, column: 0 } }]);
       for (const key of keys) this.onKey(key);
       if (this.modeState.kind === "insert") this.onKey("<escape>");
+    }
+  }
+
+  private replayVisualAction(selection: RecordedSelection, action: VisualRepeatAction): void {
+    switch (action.type) {
+      case "indent": {
+        const startRow = selectionHead(this.editor.getSelections()[0]).row;
+        const rows = selection.type === "visualLine" ? selection.rows : 0;
+        const endRow = Math.min(this.editor.lineCount() - 1, startRow + rows);
+        indentRanges(
+          this.editor,
+          [{ start: { row: startRow, column: 0 }, end: { row: endRow, column: this.editor.lineLength(endRow) } }],
+          action.direction
+        );
+        return;
+      }
     }
   }
 
