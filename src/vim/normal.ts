@@ -351,6 +351,7 @@ export class NormalMode {
         incrementNumbers(this.editor, -this.takeCount(1));
         return handled();
       case "x":
+      case "delete":
         deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
         return handled();
       case "~":

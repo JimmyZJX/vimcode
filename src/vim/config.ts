@@ -31,6 +31,7 @@ export type VimConfiguration = {
   operatorPendingModeKeyBindings: readonly VimKeyRemapping[];
   operatorPendingModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
   handleKeys: Readonly<Record<string, boolean>>;
+  useCtrlKeys: boolean;
   useSystemClipboard: boolean;
 };
 
@@ -45,6 +46,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   operatorPendingModeKeyBindings: [],
   operatorPendingModeKeyBindingsNonRecursive: [],
   handleKeys: {},
+  useCtrlKeys: true,
   useSystemClipboard: false,
 };
 
@@ -86,9 +88,16 @@ export type NormalizedRemapping = {
   recursive: boolean;
 };
 
+export type AmbiguousRemapConflict = {
+  mode: VimRemapMode;
+  shorter: readonly string[];
+  longer: readonly string[];
+};
+
 export class RemapResolver {
   private pendingKeys: string[] = [];
   private readonly mappingsByMode: Record<VimRemapMode, readonly NormalizedRemapping[]>;
+  private readonly conflicts: readonly AmbiguousRemapConflict[];
 
   constructor(private readonly config: VimConfiguration) {
     this.mappingsByMode = {
@@ -105,6 +114,7 @@ export class RemapResolver {
       operatorPending: normalizeRemappings(config.leader, config.operatorPendingModeKeyBindings, true)
         .concat(normalizeRemappings(config.leader, config.operatorPendingModeKeyBindingsNonRecursive, false)),
     };
+    this.conflicts = ambiguousRemapConflicts(this.mappingsByMode);
   }
 
   isPending(): boolean {
@@ -113,6 +123,14 @@ export class RemapResolver {
 
   hasMappings(mode: VimRemapMode): boolean {
     return this.mappingsByMode[mode].length > 0;
+  }
+
+  hasMappingStartingWith(mode: VimRemapMode, key: string): boolean {
+    return this.mappingsByMode[mode].some(mapping => mapping.before[0] === normalizeKey(key, this.config.leader));
+  }
+
+  ambiguousConflicts(): readonly AmbiguousRemapConflict[] {
+    return this.conflicts;
   }
 
   handleKeyOverride(key: string): boolean | undefined {
@@ -197,6 +215,8 @@ export function normalizeKey(key: string, leader: string): string {
   if (normalized === "<cr>" || normalized === "<enter>" || normalized === "<return>") return "enter";
   if (normalized === "<esc>" || normalized === "<escape>") return "<escape>";
   if (normalized === "<bs>" || normalized === "<backspace>") return "backspace";
+  if (normalized === "<del>" || normalized === "<delete>") return "delete";
+  if (normalized === "<ins>" || normalized === "<insert>") return "insert";
   if (normalized === "<tab>") return "tab";
   if (normalized === "<left>") return "left";
   if (normalized === "<right>") return "right";
@@ -238,4 +258,25 @@ function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | 
     if (predicate(items[index])) return items[index];
   }
   return undefined;
+}
+
+function ambiguousRemapConflicts(
+  mappingsByMode: Record<VimRemapMode, readonly NormalizedRemapping[]>
+): readonly AmbiguousRemapConflict[] {
+  const conflicts: AmbiguousRemapConflict[] = [];
+  for (const [mode, mappings] of Object.entries(mappingsByMode) as [VimRemapMode, readonly NormalizedRemapping[]][]) {
+    for (const shorter of mappings) {
+      for (const longer of mappings) {
+        if (shorter === longer) continue;
+        if (isPrefixOrEqual(shorter.before, longer.before) && shorter.before.length < longer.before.length) {
+          conflicts.push({ mode, shorter: shorter.before, longer: longer.before });
+        }
+      }
+    }
+  }
+  return conflicts;
+}
+
+function isPrefixOrEqual(prefix: readonly string[], full: readonly string[]): boolean {
+  return prefix.length <= full.length && prefix.every((key, index) => key === full[index]);
 }

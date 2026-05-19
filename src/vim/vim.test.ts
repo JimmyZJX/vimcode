@@ -61,6 +61,41 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.handleKeyOverride("ctrl-x")).toBeUndefined();
   });
 
+  it("uses vim.useCtrlKeys for unmapped built-in Ctrl keys", () => {
+    const vim = new Vim(new InMemoryVimEditor("one\ntwo"), { useCtrlKeys: false });
+
+    expect(vim.shouldHandleKey("ctrl-d")).toBe(false);
+    expect(vim.shouldHandleKey("ctrl-h")).toBe(false);
+  });
+
+  it("lets handleKeys force Ctrl key handling", () => {
+    const vim = new Vim(new InMemoryVimEditor("one\ntwo"), {
+      useCtrlKeys: false,
+      handleKeys: { "<C-d>": true },
+    });
+
+    expect(vim.shouldHandleKey("ctrl-d")).toBe(true);
+  });
+
+  it("handles mapped Ctrl keys even when they are not built-in Vim commands", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      useCtrlKeys: false,
+      normalModeKeyBindingsNonRecursive: [{ before: ["<C-h>"], after: ["l"] }],
+    });
+
+    expect(vim.shouldHandleKey("ctrl-h")).toBe(true);
+    runKeys(vim, ["ctrl-h"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
+  it("does not handle unmapped unsupported Ctrl keys by default", () => {
+    const vim = new Vim(new InMemoryVimEditor("abc"));
+
+    expect(vim.shouldHandleKey("ctrl-h")).toBe(false);
+  });
+
   it("moves in normal mode and inserts through the editor capability interface", () => {
     const editor = new InMemoryVimEditor("abc");
     const vim = new Vim(editor);
@@ -87,6 +122,10 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(normalizeKey("<C-[>", "\\")).toBe("ctrl-[");
     expect(normalizeKey("<C-Right>", "\\")).toBe("ctrl-right");
     expect(normalizeKey("<S-u>", "\\")).toBe("U");
+    expect(normalizeKey("<Del>", "\\")).toBe("delete");
+    expect(normalizeKey("<Delete>", "\\")).toBe("delete");
+    expect(normalizeKey("<Ins>", "\\")).toBe("insert");
+    expect(normalizeKey("<Insert>", "\\")).toBe("insert");
     expect(normalizeKey("<space>", "\\")).toBe("space");
     expect(normalizeKey("<leader>", "space")).toBe("space");
   });
@@ -152,6 +191,58 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
+  it("runs remap after-keys before commands like VSCodeVim", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [
+        { before: ["q"], after: ["l"], commands: [":2"] },
+      ],
+    });
+
+    runKeys(vim, ["q"]);
+
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
+  });
+
+  it("guards recursive remaps whose rhs starts with lhs", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      normalModeKeyBindings: [{ before: ["h"], after: ["h", "l"] }],
+    });
+
+    runKeys(vim, ["l", "h"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
+  it("keeps non-recursive remaps non-recursive even when rhs starts with lhs", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["h"], after: ["h", "l"] }],
+    });
+
+    runKeys(vim, ["l", "h"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
+  it("executes short ambiguous remaps immediately and exposes conflicts for logging", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [
+        { before: ["q"], after: ["l"] },
+        { before: ["q", "q"], after: ["l", "l"] },
+      ],
+    });
+
+    runKeys(vim, ["q"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+    expect(vim.ambiguousRemapConflicts()).toEqual([
+      { mode: "normal", shorter: ["q"], longer: ["q", "q"] },
+    ]);
+  });
+
   it("prefers later duplicate remaps like VSCodeVim", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor, {
@@ -186,6 +277,28 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["right", "right", "down", "left", "up"]);
 
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
+  it("supports delete key as normal-mode delete-right", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["delete"]);
+
+    expect(editor.getText()).toBe("bc");
+    expect(vim.readRegister(undefined)).toBe("a");
+  });
+
+  it("uses VSCodeVim delete-key notation in remaps", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["<Del>"], after: ["l"] }],
+    });
+
+    runKeys(vim, ["delete"]);
+
+    expect(editor.getText()).toBe("abc");
     expect(head(editor)).toEqual({ row: 0, column: 1 });
   });
 

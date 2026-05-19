@@ -144,6 +144,14 @@ Compatibility policy:
 Migration priorities and backlog:
 
 1. **Remap compatibility is a migration blocker.** Existing VSCodeVim users often carry substantial mode-specific remaps, so `vimcode` should be highly compatible here. The current core runs mostly synchronously inside patched VSCode, so we can avoid some of VSCodeVim's async extension-host race conditions, but behavior should still match user expectations for recursive vs non-recursive mappings, ambiguous prefixes, command mappings, and `vim.handleKeys` / `vim.useCtrlKeys` interactions.
+   Tracked remap gaps:
+   - `vim.useCtrlKeys`: imported configs often map keys such as `<C-h>`, `<C-j>`, `<C-k>`, and `<C-l>`. Ctrl-key interception should be mapping-aware and compatible with `vim.handleKeys`.
+   - Remaps with both `after` and `commands`: VSCodeVim executes `after` first, then `commands`; keep this ordering compatible.
+   - Recursive mapping edge cases: VSCodeVim has guards for RHS starting with LHS, recursive map depth, and force-stop behavior. Track these even if the patched synchronous architecture can keep the implementation simpler.
+   - Command-line mode mappings: VSCodeVim supports `vim.commandLineModeKeyBindings*`; `vimcode` currently handles `:` input as a pending command string rather than a full command-line mode.
+   - Key notation parity: expand toward VSCodeVim `Notation.NormalizeKey`, including `<Del>`, `<Insert>`, shifted/control variants, and exact arrow/control notation behavior.
+   - `<Plug>` and plugin default mappings: VSCodeVim uses plug mappings for plugins such as Surround and EasyMotion. Model these when plugin compatibility work begins.
+   - Ambiguous mappings without timeout: we probably do not want VSCodeVim's timeout machinery, but need a deliberate policy for mappings such as `a -> ...` and `ab -> ...` so users understand and can resolve differences.
 2. **Core Vim completeness is high priority.** The disabled Zed fixture backlog is the main source of known core gaps. Prioritize user-visible editing semantics such as repeat/register/macro fidelity, visual selection exactness, text-object edge cases, marks/jumps, undo grouping, unicode/display-column behavior, folds/wrap integration, and VSCode-native movement semantics.
 3. **Settings incompatibilities should be tracked, but not prioritized yet.** Keep registering settings we actively read so autocomplete works, and keep a compatibility matrix for ignored or unsupported VSCodeVim settings. Do not spend migration time implementing low-value settings before remaps and core editing behavior are solid.
 4. **Plugin-style integrations are important but later.** Keep EasyMotion, Sneak, HighlightedYank, Commentary, ReplaceWithRegister, CamelCaseMotion/subword motions, and extra text objects in the backlog. Implement them as modules over explicit adapter capabilities rather than one-off key hacks.

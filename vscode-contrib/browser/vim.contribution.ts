@@ -5,6 +5,7 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
@@ -65,6 +66,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			description: nls.localize('vim.leader', "Leader key used by VSCodeVim-compatible remappings."),
 		},
+		'vim.useCtrlKeys': {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			description: nls.localize('vim.useCtrlKeys', "Enable Vim Ctrl key commands that override common VS Code operations."),
+		},
 		'vim.handleKeys': {
 			type: 'object',
 			default: {},
@@ -91,9 +98,10 @@ class VimContribution extends VimController implements IEditorContribution {
 		@ICommandService commandService: ICommandService,
 		@IConfigurationService configurationService: IConfigurationService,
 		@IExtensionManagementService extensionManagementService: IExtensionManagementService,
-		@INotificationService notificationService: INotificationService
+		@INotificationService notificationService: INotificationService,
+		@ILogService logService: ILogService
 	) {
-		super(editor, contextKeyService, clipboardService, commandService, configurationService, extensionManagementService, notificationService);
+		super(editor, contextKeyService, clipboardService, commandService, configurationService, extensionManagementService, notificationService, logService);
 	}
 }
 

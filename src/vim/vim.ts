@@ -6,7 +6,7 @@
 //   from the VSCode patch / tests.
 
 import { LineRange, executeCommand } from "./command.js";
-import { NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
+import { AmbiguousRemapConflict, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
 import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
@@ -106,6 +106,10 @@ export class Vim {
     return this.registers.read(name);
   }
 
+  ambiguousRemapConflicts(): readonly AmbiguousRemapConflict[] {
+    return this.remapResolver.ambiguousConflicts();
+  }
+
   handleKeyOverride(key: string): boolean | undefined {
     return this.remapResolver.handleKeyOverride(key);
   }
@@ -114,6 +118,15 @@ export class Vim {
     const handleOverride = this.handleKeyOverride(key);
     if (handleOverride === false) return false;
     if (handleOverride === true) return true;
+
+    if (isCtrlKey(key) && !this.remapResolver.isPending()) {
+      const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key);
+      if (!isMapped) {
+        if (!this.configuration.useCtrlKeys) return false;
+        if (!isBuiltInCtrlKey(key)) return false;
+      }
+    }
+
     return !((this.modeState.kind === "insert" || this.modeState.kind === "replace")
       && !this.shouldHandleInsertKey(key)
       && !this.status.pending);
@@ -563,8 +576,11 @@ export class Vim {
   }
 
   private executeRemapping(mapping: NormalizedRemapping): void {
+    const skipFirstRecursiveKey = mapping.recursive && isPrefixOrEqual(mapping.before, mapping.after);
+    for (const [index, key] of mapping.after.entries()) {
+      this.onKeyInternal(key, { allowRemap: mapping.recursive && !(skipFirstRecursiveKey && index === 0) });
+    }
     for (const command of mapping.commands) this.executeMappedCommand(command);
-    for (const key of mapping.after) this.onKeyInternal(key, { allowRemap: mapping.recursive });
   }
 
   private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
@@ -833,6 +849,40 @@ export class Vim {
 
   private isEscape(key: string): boolean {
     return key === "<escape>" || key === "escape" || key === "ctrl-[";
+  }
+}
+
+function isPrefixOrEqual(prefix: readonly string[], full: readonly string[]): boolean {
+  return prefix.length <= full.length && prefix.every((key, index) => key === full[index]);
+}
+
+function isCtrlKey(key: string): boolean {
+  return key.startsWith("ctrl-");
+}
+
+function isBuiltInCtrlKey(key: string): boolean {
+  switch (key) {
+    case "ctrl-a":
+    case "ctrl-b":
+    case "ctrl-d":
+    case "ctrl-e":
+    case "ctrl-f":
+    case "ctrl-i":
+    case "ctrl-o":
+    case "ctrl-r":
+    case "ctrl-u":
+    case "ctrl-v":
+    case "ctrl-w":
+    case "ctrl-x":
+    case "ctrl-y":
+    case "ctrl-[":
+    case "ctrl-left":
+    case "ctrl-right":
+    case "ctrl-home":
+    case "ctrl-end":
+      return true;
+    default:
+      return false;
   }
 }
 

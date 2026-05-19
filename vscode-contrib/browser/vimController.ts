@@ -8,9 +8,10 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
-import { VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
+import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimStatus } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
@@ -38,6 +39,7 @@ export class VimController extends Disposable {
 	private readonly vimOperatorContext: IContextKey<string>;
 	private readonly vimChordContext: IContextKey<string>;
 	private enabled = false;
+	private lastAmbiguousRemapWarningSignature = '';
 	private readonly originalCursorStyle = this.editor.getRawOptions().cursorStyle;
 	private readonly _onDidChangeStatus = this._register(new Emitter<VimStatus>());
 	readonly onDidChangeStatus: Event<VimStatus> = this._onDidChangeStatus.event;
@@ -49,7 +51,8 @@ export class VimController extends Disposable {
 		commandService: ICommandService,
 		private readonly configurationService: IConfigurationService,
 		private readonly extensionManagementService: IExtensionManagementService,
-		private readonly notificationService: INotificationService
+		private readonly notificationService: INotificationService,
+		private readonly logService: ILogService
 	) {
 		super();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
@@ -95,10 +98,24 @@ export class VimController extends Disposable {
 		this.editor.getContainerDomNode().classList.toggle('vim-cursor-rendering-enabled', enabled);
 		if (enabled) {
 			this.warnIfVSCodeVimInstalled();
+			this.logAmbiguousRemapConflicts();
 			this.syncEditorState();
 		} else {
 			this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
 			this.syncDisabledStatus();
+		}
+	}
+
+	private logAmbiguousRemapConflicts(): void {
+		const conflicts = this.vim.ambiguousRemapConflicts();
+		const messages = [...new Set(conflicts.map(conflict =>
+			`vim.${conflict.mode} remap ${formatKeySequence(conflict.shorter)} shadows longer remap ${formatKeySequence(conflict.longer)}. vimcode executes the shorter mapping immediately and does not wait for ambiguous-map timeout.`
+		))];
+		const signature = messages.join('\n');
+		if (signature === this.lastAmbiguousRemapWarningSignature) return;
+		this.lastAmbiguousRemapWarningSignature = signature;
+		for (const message of messages) {
+			this.logService.warn(`[vimcode] ${message}`);
 		}
 	}
 
@@ -118,9 +135,13 @@ export class VimController extends Disposable {
 
 	private readVimCompatibilityConfiguration(): Partial<VimConfiguration> {
 		const vimConfig = this.configurationService.getValue<Record<string, unknown>>('vim') ?? {};
+		const useCtrlKeys = this.configurationService.getValue<unknown>('vim.useCtrlKeys');
 		const useSystemClipboard = this.configurationService.getValue<unknown>('vim.useSystemClipboard');
 		return {
 			leader: typeof vimConfig.leader === 'string' ? vimConfig.leader : undefined,
+			useCtrlKeys: typeof useCtrlKeys === 'boolean'
+				? useCtrlKeys
+				: typeof vimConfig.useCtrlKeys === 'boolean' ? vimConfig.useCtrlKeys : undefined,
 			useSystemClipboard: typeof useSystemClipboard === 'boolean'
 				? useSystemClipboard
 				: typeof vimConfig.useSystemClipboard === 'boolean' ? vimConfig.useSystemClipboard : undefined,
@@ -254,6 +275,10 @@ class ClipboardTransaction implements VimSystemClipboard {
 	}
 }
 
+function formatKeySequence(keys: readonly string[]): string {
+	return keys.join(' ');
+}
+
 function readHandleKeys(value: unknown): Record<string, boolean> {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
 	return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'));
@@ -281,35 +306,26 @@ function shiftedDigitKey(digit: number): string {
 }
 
 function readRemapCommands(commands: unknown[]): VimKeyRemapping['commands'] {
-	return commands.flatMap(command => {
-		if (typeof command === 'string') return [command];
-		if (typeof command !== 'object' || command === null) return [];
+	const result: VimCommandMapping[] = [];
+	for (const command of commands) {
+		if (typeof command === 'string') {
+			result.push(command);
+			continue;
+		}
+		if (typeof command !== 'object' || command === null) {
+			continue;
+		}
 		const commandObject = command as { command?: unknown; args?: unknown };
-		return typeof commandObject.command === 'string'
-			? [{ command: commandObject.command, args: Array.isArray(commandObject.args) ? commandObject.args : commandObject.args === undefined ? undefined : [commandObject.args] }]
-			: [];
-	});
-}
-
-function isSupportedCtrlKey(key: string): boolean {
-	switch (key) {
-		case 'ctrl-a':
-		case 'ctrl-b':
-		case 'ctrl-d':
-		case 'ctrl-e':
-		case 'ctrl-f':
-		case 'ctrl-i':
-		case 'ctrl-o':
-		case 'ctrl-r':
-		case 'ctrl-u':
-		case 'ctrl-v':
-		case 'ctrl-w':
-		case 'ctrl-x':
-		case 'ctrl-y':
-			return true;
-		default:
-			return false;
+		if (typeof commandObject.command === 'string') {
+			result.push({
+				command: commandObject.command,
+				args: Array.isArray(commandObject.args)
+					? commandObject.args
+					: commandObject.args === undefined ? undefined : [commandObject.args],
+			});
+		}
 	}
+	return result;
 }
 
 function keyFromEvent(event: IKeyboardEvent): string | undefined {
@@ -336,8 +352,7 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 		}
 		if (event.keyCode >= KeyCode.KeyA && event.keyCode <= KeyCode.KeyZ) {
 			const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
-			const key = `ctrl-${letter}`;
-			return isSupportedCtrlKey(key) ? key : undefined;
+			return `ctrl-${letter}`;
 		}
 		return undefined;
 	}
@@ -371,6 +386,10 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 			return 'enter';
 		case KeyCode.Backspace:
 			return 'backspace';
+		case KeyCode.Delete:
+			return 'delete';
+		case KeyCode.Insert:
+			return 'insert';
 		case KeyCode.Space:
 			return 'space';
 		case KeyCode.Semicolon:
