@@ -20,7 +20,7 @@ export function incrementNumbers(editor: VimEditorCapabilities, delta: number): 
       continue;
     }
 
-    const nextValue = String(Number(target.text) + delta);
+    const nextValue = incrementDecimalText(target.text, delta);
     edits.push({
       range: { start: { row: head.row, column: target.start }, end: { row: head.row, column: target.end } },
       text: nextValue,
@@ -32,6 +32,17 @@ export function incrementNumbers(editor: VimEditorCapabilities, delta: number): 
   else editor.applyEdits(edits, selectionsAfter);
 }
 
+function incrementDecimalText(text: string, delta: number): string {
+  const negative = text.startsWith("-");
+  const digits = negative ? text.slice(1) : text;
+  const next = Number(text) + delta;
+  const nextNegative = next < 0;
+  const absolute = String(Math.abs(next));
+  const shouldPad = digits.startsWith("0") && absolute.length <= digits.length;
+  const padded = shouldPad ? absolute.padStart(digits.length, "0") : absolute;
+  return nextNegative ? `-${padded}` : padded;
+}
+
 type DecimalTarget = { start: number; end: number; text: string };
 
 function findDecimalNumber(line: string, column: number): DecimalTarget | undefined {
@@ -39,7 +50,9 @@ function findDecimalNumber(line: string, column: number): DecimalTarget | undefi
   for (const match of line.matchAll(regex)) {
     const start = match.index ?? 0;
     const end = start + match[0].length;
-    if (column <= end) return { start, end, text: match[0] };
+    if (column < end && !(column === end - 1 && line[end] === "." && /\d/.test(line[end + 1] ?? ""))) {
+      return { start, end, text: match[0] };
+    }
   }
   return undefined;
 }

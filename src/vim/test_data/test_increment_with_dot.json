@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"1ˇ.2\n"}}
 {"Key":"ctrl-a"}
 {"Get":{"state":"1.ˇ3\n","mode":"Normal"}}

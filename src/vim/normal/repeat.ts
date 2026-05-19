@@ -173,6 +173,8 @@ function isRepeatableStartKey(key: string): boolean {
     || key === "R"
     || key === "~"
     || key === "g"
+    || key === "ctrl-a"
+    || key === "ctrl-x"
     || key === "o"
     || key === "O"
     || key === "i"
@@ -185,6 +187,10 @@ function keysWithCountOverride(keys: readonly string[], count: number): readonly
   const { index: afterPrefix } = consumeCount(keys, 0);
   const firstCommandKey = keys[afterPrefix];
   if (firstCommandKey === undefined) return keys;
+
+  if (firstCommandKey === "ctrl-a" || firstCommandKey === "ctrl-x") {
+    return withCountPrefix([firstCommandKey, ...keys.slice(afterPrefix + 1)], count);
+  }
 
   if (isOperatorKey(firstCommandKey)) {
     const { index: afterMotionCount } = consumeCount(keys, afterPrefix + 1);
