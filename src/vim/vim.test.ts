@@ -120,6 +120,21 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("supports visual case conversion", () => {
+    const editor = new InMemoryVimEditor("abc def");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "w", "g", "U"]);
+
+    expect(editor.getText()).toBe("ABC def");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+
+    runKeys(vim, ["v", "w", "u"]);
+
+    expect(editor.getText()).toBe("abc def");
+  });
+
   it("supports join-lines commands", () => {
     const editor = new InMemoryVimEditor("one\ntwo\nthree");
     const vim = new Vim(editor);

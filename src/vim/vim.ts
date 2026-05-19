@@ -16,6 +16,7 @@ import { MacroState, RepeatState } from "./normal/repeat.js";
 import { handleHostAction } from "./normal/scroll.js";
 import { SearchState, searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, Registers, parseRegisterName } from "./registers.js";
+import { ConvertTarget } from "./normal/convert.js";
 import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
 import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, rangeOfSelection, selectionHead } from "./state.js";
@@ -490,6 +491,9 @@ export class Vim {
         } else if (this.isVisualMode() && action.key === "J") {
           this.visualMode.joinSelections({ insertWhitespace: false });
           this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+        } else if (this.isVisualMode() && (action.key === "u" || action.key === "U" || action.key === "~")) {
+          this.visualMode.convertSelections(convertTargetForKey(action.key));
+          this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
         }
         return;
       case "insertAtPrevious":
@@ -686,6 +690,17 @@ export class Vim {
 
   private isEscape(key: string): boolean {
     return key === "<escape>" || key === "escape" || key === "ctrl-[";
+  }
+}
+
+function convertTargetForKey(key: "u" | "U" | "~"): ConvertTarget {
+  switch (key) {
+    case "u":
+      return "lower";
+    case "U":
+      return "upper";
+    case "~":
+      return "toggle";
   }
 }
 

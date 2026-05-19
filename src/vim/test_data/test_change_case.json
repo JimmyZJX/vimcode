@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: full fixture starts from pre-existing visual selections and includes unicode column fidelity beyond current harness coverage.
 {"Put":{"state":"ˇabC\n"}}
 {"Key":"~"}
 {"Get":{"state":"AˇbC\n","mode":"Normal"}}

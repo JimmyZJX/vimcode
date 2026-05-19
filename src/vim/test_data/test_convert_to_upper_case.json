@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: fixture starts from pre-existing visual selections, which the current fixture harness does not restore as Vim visual mode.
 {"Put":{"state":"a😀C«dÉ1*fˇ»\n"}}
 {"Key":"shift-u"}
 {"Get":{"state":"a😀CˇDÉ1*F\n","mode":"Normal"}}

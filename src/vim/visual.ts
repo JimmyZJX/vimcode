@@ -541,6 +541,19 @@ export class VisualMode {
   }
 }
 
+function convertTargetForKey(key: string): ConvertTarget {
+  switch (key) {
+    case "u":
+      return "lower";
+    case "U":
+      return "upper";
+    case "~":
+      return "toggle";
+    default:
+      throw new Error(`not a visual convert key: ${key}`);
+  }
+}
+
 function isCountKey(key: string, countBuffer: string): boolean {
   if (!/^\d$/.test(key)) return false;
   return key !== "0" || countBuffer.length > 0;
@@ -903,6 +916,28 @@ function substituteLineForState(
         headColumn: 0,
       });
       return;
+    }
+  }
+}
+
+function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
+  switch (state.kind) {
+    case "charwise":
+      return [charwiseVisualRange(editor, state)];
+    case "linewise": {
+      const { startLine, endLine } = lineBounds(state);
+      return [{ start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } }];
+    }
+    case "blockwise": {
+      const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
+      const ranges = [];
+      for (let row = startRow; row <= endRow; row++) {
+        ranges.push({
+          start: { row, column: Math.min(startColumn, editor.lineLength(row)) },
+          end: { row, column: Math.min(endColumn + 1, editor.lineLength(row)) },
+        });
+      }
+      return ranges;
     }
   }
 }
