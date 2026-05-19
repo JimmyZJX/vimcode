@@ -1,10 +1,36 @@
 import { layeredConfigValue, normalizeKey } from "./config.js";
+import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
 import { Vim, runKeys } from "./vim.js";
+import type { VimSystemClipboard } from "./registers.js";
 import { charwiseSelection, selectionHead } from "./state.js";
 
 function head(editor: InMemoryVimEditor) {
   return selectionHead(editor.getSelections()[0]);
+}
+
+async function runKeysAsync(vim: Vim, keys: readonly string[], clipboard: VimSystemClipboard): Promise<void> {
+  for (const key of keys) {
+    await vim.onKeyAsync(key, { clipboard });
+  }
+}
+
+class FakeAsyncClipboard implements VimSystemClipboard {
+  readCount = 0;
+  writes: string[] = [];
+
+  constructor(public text: string) {}
+
+  async readText(): Promise<string> {
+    this.readCount++;
+    await Promise.resolve();
+    return this.text;
+  }
+
+  writeText(text: string): void {
+    this.text = text;
+    this.writes.push(text);
+  }
 }
 
 describe("Zed-inspired Vim core smoke tests", () => {
@@ -109,6 +135,49 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["q"]);
 
     expect(head(editor)).toEqual({ row: 1, column: 0 });
+  });
+
+  it("passes VSCodeVim-style command remap args to native commands", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [
+        { before: ["q"], commands: [{ command: "workbench.action.openSettings", args: ["vim.enabled"] }] },
+      ],
+    });
+
+    runKeys(vim, ["q"]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.openSettings", args: ["vim.enabled"] },
+    ]);
+  });
+
+  it("prefers later duplicate remaps like VSCodeVim", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [
+        { before: ["q"], after: ["w"] },
+        { before: ["q"], after: ["e"] },
+      ],
+    });
+
+    runKeys(vim, ["q"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 2 });
+  });
+
+  it("lets base remap settings override layered defaults with the same lhs", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: layeredConfigValue({
+        normalModeKeyBindingsNonRecursive__team: [{ before: ["q"], after: ["w"] }],
+        normalModeKeyBindingsNonRecursive: [{ before: ["q"], after: ["e"] }],
+      }, "normalModeKeyBindingsNonRecursive") as VimKeyRemapping[],
+    });
+
+    runKeys(vim, ["q"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 2 });
   });
 
   it("supports arrow keys as Vim motions", () => {
@@ -441,6 +510,101 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["\"", "a", "y", "w", "G", "$", "\"", "a", "p"]);
 
     expect(editor.getText()).toBe("one twoone ");
+  });
+
+  it("reads system clipboard registers asynchronously only when they are used", async () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard(" TWO");
+
+    await runKeysAsync(vim, ["$", "\"", "+"], clipboard);
+    expect(clipboard.readCount).toBe(0);
+
+    await runKeysAsync(vim, ["p"], clipboard);
+
+    expect(editor.getText()).toBe("one TWO");
+    expect(clipboard.readCount).toBe(1);
+  });
+
+  it("uses the system clipboard for the default register when configured", async () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, { useSystemClipboard: true });
+    const clipboard = new FakeAsyncClipboard(" TWO");
+
+    await runKeysAsync(vim, ["$", "p"], clipboard);
+
+    expect(editor.getText()).toBe("one TWO");
+    expect(clipboard.readCount).toBe(1);
+  });
+
+  it("writes default yanks to the system clipboard when configured", async () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor, { useSystemClipboard: true });
+    const clipboard = new FakeAsyncClipboard("");
+
+    await runKeysAsync(vim, ["y", "w"], clipboard);
+
+    expect(clipboard.writes).toEqual(["one "]);
+    expect(vim.readRegister(undefined)).toBe("one ");
+  });
+
+  it("keeps explicit named registers independent of useSystemClipboard", async () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor, { useSystemClipboard: true });
+    const clipboard = new FakeAsyncClipboard("CLIP");
+
+    await runKeysAsync(vim, ["\"", "a", "y", "w", "G", "$", "\"", "a", "p"], clipboard);
+
+    expect(editor.getText()).toBe("one twoone ");
+    expect(clipboard.readCount).toBe(0);
+  });
+
+  it("restores the full pasted text with visual p gv y clipboard-preserving remaps", async () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      useSystemClipboard: true,
+      visualModeKeyBindingsNonRecursive: [{ before: ["p"], after: ["p", "g", "v", "y"] }],
+    });
+    const clipboard = new FakeAsyncClipboard("defgh");
+
+    await runKeysAsync(vim, ["v", "e", "p"], clipboard);
+
+    expect(editor.getText()).toBe("defgh");
+    expect(clipboard.writes).toEqual(["abc", "defgh"]);
+  });
+
+  it("does not fall back to the unnamed register when the system clipboard is empty", async () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard("");
+
+    runKeys(vim, ["y", "w", "$", "\"", "+"]);
+    await runKeysAsync(vim, ["p"], clipboard);
+
+    expect(editor.getText()).toBe("one");
+    expect(clipboard.readCount).toBe(1);
+  });
+
+  it("writes explicit system clipboard registers through the async clipboard context", async () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard("");
+
+    await runKeysAsync(vim, ["\"", "+", "y", "w"], clipboard);
+
+    expect(clipboard.writes).toEqual(["one "]);
+    expect(vim.readRegister(undefined)).toBe("one ");
+  });
+
+  it("inserts from system clipboard registers in insert mode", async () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard(" two");
+
+    await runKeysAsync(vim, ["A", "ctrl-r", "+", "<escape>"], clipboard);
+
+    expect(editor.getText()).toBe("one two");
+    expect(clipboard.readCount).toBe(1);
   });
 
   it("shows unfinished chords using Vim keys rather than semantic names", () => {

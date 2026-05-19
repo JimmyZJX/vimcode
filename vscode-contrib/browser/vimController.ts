@@ -1,13 +1,17 @@
 import { IKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
+import * as nls from '../../../../nls.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
+import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimStatus } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
@@ -21,16 +25,19 @@ const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
 
 export class VimController extends Disposable {
 	public static readonly ID = 'editor.contrib.vim';
+	private static warnedAboutVSCodeVim = false;
 
 	private readonly vimClipboard: VSCodeVimClipboard;
 	private readonly vimEditor: VSCodeVimEditor;
 	private readonly vim: Vim;
+	private readonly asyncKeyQueue = new AsyncKeyQueue();
 	private readonly vimModeContext: IContextKey<string>;
 	private readonly vimNormalContext: IContextKey<boolean>;
 	private readonly vimInsertContext: IContextKey<boolean>;
 	private readonly vimPendingContext: IContextKey<boolean>;
 	private readonly vimOperatorContext: IContextKey<string>;
 	private readonly vimChordContext: IContextKey<string>;
+	private enabled = false;
 	private readonly originalCursorStyle = this.editor.getRawOptions().cursorStyle;
 	private readonly _onDidChangeStatus = this._register(new Emitter<VimStatus>());
 	readonly onDidChangeStatus: Event<VimStatus> = this._onDidChangeStatus.event;
@@ -40,11 +47,13 @@ export class VimController extends Disposable {
 		contextKeyService: IContextKeyService,
 		clipboardService: IClipboardService,
 		commandService: ICommandService,
-		private readonly configurationService: IConfigurationService
+		private readonly configurationService: IConfigurationService,
+		private readonly extensionManagementService: IExtensionManagementService,
+		private readonly notificationService: INotificationService
 	) {
 		super();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
-		this.vimEditor = new VSCodeVimEditor(editor, this.vimClipboard, commandService);
+		this.vimEditor = new VSCodeVimEditor(editor, commandService);
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration());
 		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
 		this.vimNormalContext = VimNormalContext.bindTo(contextKeyService);
@@ -52,18 +61,17 @@ export class VimController extends Disposable {
 		this.vimPendingContext = VimPendingContext.bindTo(contextKeyService);
 		this.vimOperatorContext = VimOperatorContext.bindTo(contextKeyService);
 		this.vimChordContext = VimChordContext.bindTo(contextKeyService);
-		this.editor.getContainerDomNode().classList.add('vim-cursor-rendering-enabled');
-		this.syncEditorState();
+		this.updateEnabledState();
 		this._register(this.editor.onKeyDown(event => this.handleKeyDown(event)));
-		this._register(this.editor.onDidFocusEditorText(() => {
-			this.vimEditor.refreshClipboardFromSystemClipboard();
-			this.syncEditorState();
-		}));
+		this._register(this.editor.onDidFocusEditorText(() => this.syncEditorState()));
 		this._register(this.editor.onDidChangeCursorSelection(event => this.handleCursorSelectionChanged(event.source)));
 		this._register(this.editor.onDidChangeModel(() => this.handleExternalEditorStateChanged()));
+		this._register(this.extensionManagementService.onDidInstallExtensions(() => {
+			if (this.enabled) this.warnIfVSCodeVimInstalled();
+		}));
 		this._register(this.configurationService.onDidChangeConfiguration(() => {
 			this.vim.setConfiguration(this.readVimCompatibilityConfiguration());
-			this.syncStatus();
+			this.updateEnabledState();
 		}));
 	}
 
@@ -77,10 +85,45 @@ export class VimController extends Disposable {
 		super.dispose();
 	}
 
+	private isEnabled(): boolean {
+		return this.configurationService.getValue<unknown>('vim.enabled') === true;
+	}
+
+	private updateEnabledState(): void {
+		const enabled = this.isEnabled();
+		this.enabled = enabled;
+		this.editor.getContainerDomNode().classList.toggle('vim-cursor-rendering-enabled', enabled);
+		if (enabled) {
+			this.warnIfVSCodeVimInstalled();
+			this.syncEditorState();
+		} else {
+			this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
+			this.syncDisabledStatus();
+		}
+	}
+
+	private warnIfVSCodeVimInstalled(): void {
+		if (VimController.warnedAboutVSCodeVim) return;
+		this.extensionManagementService.getInstalled().then(extensions => {
+			const hasVSCodeVim = extensions.some(extension => extension.identifier.id.toLowerCase() === 'vscodevim.vim');
+			if (hasVSCodeVim && this.enabled && !VimController.warnedAboutVSCodeVim) {
+				VimController.warnedAboutVSCodeVim = true;
+				this.notificationService.warn(nls.localize(
+					'vim.vscodevimConflict',
+					"vimcode is enabled while the VSCodeVim extension is installed. Disable one of them to avoid conflicting Vim key handling."
+				));
+			}
+		}, () => undefined);
+	}
+
 	private readVimCompatibilityConfiguration(): Partial<VimConfiguration> {
 		const vimConfig = this.configurationService.getValue<Record<string, unknown>>('vim') ?? {};
+		const useSystemClipboard = this.configurationService.getValue<unknown>('vim.useSystemClipboard');
 		return {
 			leader: typeof vimConfig.leader === 'string' ? vimConfig.leader : undefined,
+			useSystemClipboard: typeof useSystemClipboard === 'boolean'
+				? useSystemClipboard
+				: typeof vimConfig.useSystemClipboard === 'boolean' ? vimConfig.useSystemClipboard : undefined,
 			handleKeys: readHandleKeys(layeredConfigValue(vimConfig, 'handleKeys')),
 			normalModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindings')),
 			normalModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindingsNonRecursive')),
@@ -94,34 +137,32 @@ export class VimController extends Disposable {
 	}
 
 	private handleKeyDown(event: IKeyboardEvent): void {
+		if (!this.enabled) {
+			return;
+		}
 		const key = keyFromEvent(event);
-		if (!key) {
+		if (!key || !this.vim.shouldHandleKey(key)) {
 			return;
 		}
 
-		const handleOverride = this.vim.handleKeyOverride(key);
-		if (handleOverride === false) {
-			return;
-		}
-
-		if (handleOverride !== true && (this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') && !this.vim.shouldHandleInsertKey(key) && !this.vim.status.pending) {
-			return;
-		}
-
-		const result = this.vim.onKey(key);
-		if (!this.vim.status.pending) {
-			this.vimEditor.revealPrimaryCursorIfOutsideViewport();
-			this.syncEditorState();
-		} else {
-			this.syncStatus();
-		}
-		if (result === 'handled') {
-			event.preventDefault();
-			event.stopPropagation();
-		}
+		event.preventDefault();
+		event.stopPropagation();
+		void this.asyncKeyQueue.enqueue(async () => {
+			const clipboard = new ClipboardTransaction(this.vimClipboard);
+			await clipboard.with(async () => {
+				await this.vim.onKeyAsync(key, { clipboard });
+			});
+			if (!this.vim.status.pending) {
+				this.vimEditor.revealPrimaryCursorIfOutsideViewport();
+				this.syncEditorState();
+			} else {
+				this.syncStatus();
+			}
+		}).then(undefined, () => this.syncStatus());
 	}
 
 	private handleCursorSelectionChanged(source: string): void {
+		if (!this.enabled) return;
 		// VSCode-specific synchronization path: unlike Zed, VSCode selection state
 		// can be changed outside the Vim state machine (mouse selections, undo/redo
 		// recovery, multicursor commands, other editor contributions). Ignore changes
@@ -134,16 +175,34 @@ export class VimController extends Disposable {
 	}
 
 	private handleExternalEditorStateChanged(): void {
+		if (!this.enabled) return;
 		this.vimEditor.invalidateCachedSelections();
 		this.vim.syncFromEditorState({ render: false });
 		this.syncEditorState();
 	}
 
 	private syncEditorState(): void {
+		if (!this.enabled) {
+			this.syncDisabledStatus();
+			return;
+		}
 		this.syncStatus();
 	}
 
+	private syncDisabledStatus(): void {
+		this.vimModeContext.set('disabled');
+		this.vimNormalContext.set(false);
+		this.vimInsertContext.set(false);
+		this.vimPendingContext.set(false);
+		this.vimOperatorContext.set('');
+		this.vimChordContext.set('');
+	}
+
 	private syncStatus(): void {
+		if (!this.enabled) {
+			this.syncDisabledStatus();
+			return;
+		}
 		const status = this.vim.status;
 		this.vimModeContext.set(status.mode);
 		this.vimNormalContext.set(status.mode === 'normal');
@@ -153,6 +212,45 @@ export class VimController extends Disposable {
 		this.vimChordContext.set(status.chord);
 		this.vimEditor.setCursorStyle(status.mode === 'insert' ? 'line' : 'block');
 		this._onDidChangeStatus.fire(status);
+	}
+}
+
+class AsyncKeyQueue {
+	private tail: Promise<void> = Promise.resolve();
+
+	enqueue(task: () => Promise<void>): Promise<void> {
+		const next = this.tail.then(task, task);
+		this.tail = next.then(undefined, () => undefined);
+		return next;
+	}
+}
+
+class ClipboardTransaction implements VimSystemClipboard {
+	private contents: string | undefined;
+	private pendingWrite: string | undefined;
+
+	constructor(private readonly clipboard: VSCodeVimClipboard) { }
+
+	async readText(): Promise<string> {
+		if (this.contents === undefined) {
+			this.contents = await this.clipboard.readTextAsync();
+		}
+		return this.contents;
+	}
+
+	writeText(text: string): void {
+		this.contents = text;
+		this.pendingWrite = text;
+	}
+
+	async with<T>(task: () => Promise<T>): Promise<T> {
+		try {
+			return await task();
+		} finally {
+			if (this.pendingWrite !== undefined) {
+				await this.clipboard.writeTextAsync(this.pendingWrite);
+			}
+		}
 	}
 }
 
@@ -170,20 +268,27 @@ function readRemaps(value: unknown): VimKeyRemapping[] {
 		return [{
 			before: remap.before,
 			after: Array.isArray(remap.after) && remap.after.every(key => typeof key === 'string') ? remap.after : undefined,
-			commands: Array.isArray(remap.commands) ? remap.commands.filter(command => typeof command === 'string' || typeof command === 'object') as VimKeyRemapping['commands'] : undefined,
+			commands: Array.isArray(remap.commands) ? readRemapCommands(remap.commands) : undefined,
 			silent: typeof remap.silent === 'boolean' ? remap.silent : undefined,
 			recursive: typeof remap.recursive === 'boolean' ? remap.recursive : undefined,
 		}];
 	});
 }
 
-function isEscapeKey(key: string): boolean {
-	return key === '<escape>' || key === 'escape' || key === 'ctrl-[';
-}
-
 function shiftedDigitKey(digit: number): string {
 	const shiftedDigits = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
 	return shiftedDigits[digit] ?? String(digit);
+}
+
+function readRemapCommands(commands: unknown[]): VimKeyRemapping['commands'] {
+	return commands.flatMap(command => {
+		if (typeof command === 'string') return [command];
+		if (typeof command !== 'object' || command === null) return [];
+		const commandObject = command as { command?: unknown; args?: unknown };
+		return typeof commandObject.command === 'string'
+			? [{ command: commandObject.command, args: Array.isArray(commandObject.args) ? commandObject.args : commandObject.args === undefined ? undefined : [commandObject.args] }]
+			: [];
+	});
 }
 
 function isSupportedCtrlKey(key: string): boolean {

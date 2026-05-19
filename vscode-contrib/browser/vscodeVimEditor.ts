@@ -10,7 +10,6 @@ import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, Posi
 import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, selectionHead } from '../common/state.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
-import { VSCodeVimClipboard } from './vscodeClipboard.js';
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
@@ -19,7 +18,6 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	constructor(
 		private readonly editor: ICodeEditor,
-		private readonly clipboard: VSCodeVimClipboard,
 		private readonly commandService: ICommandService
 	) {
 		this.visualLineDecorations = editor.createDecorationsCollection();
@@ -126,9 +124,9 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 	}
 
-	executeNativeCommand(command: string): void {
+	executeNativeCommand(command: string, args: readonly unknown[] = []): void {
 		this.invalidateCachedSelections();
-		this.commandService.executeCommand(command);
+		this.commandService.executeCommand(command, ...args);
 	}
 
 	revealPrimaryCursorIfOutsideViewport(): void {
@@ -252,18 +250,6 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	clearSearchHighlights(): void {
 		CommonFindController.get(this.editor)?.closeFindWidget();
-	}
-
-	readClipboard(): string {
-		return this.clipboard.readText();
-	}
-
-	writeClipboard(text: string): void {
-		this.clipboard.writeText(text);
-	}
-
-	refreshClipboardFromSystemClipboard(): void {
-		this.clipboard.refreshFromSystemClipboard();
 	}
 
 	invalidateCachedSelections(): void {

@@ -8,7 +8,7 @@ import { VimMode } from "./state.js";
 
 export type VimRemapMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock" | "operatorPending";
 
-export type VimCommandMapping = string | { command: string; args?: unknown[] };
+export type VimCommandMapping = string | { command: string; args?: unknown | unknown[] };
 
 export type VimKeyRemapping = {
   before: readonly string[];
@@ -31,6 +31,7 @@ export type VimConfiguration = {
   operatorPendingModeKeyBindings: readonly VimKeyRemapping[];
   operatorPendingModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
   handleKeys: Readonly<Record<string, boolean>>;
+  useSystemClipboard: boolean;
 };
 
 export const defaultVimConfiguration: VimConfiguration = {
@@ -44,6 +45,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   operatorPendingModeKeyBindings: [],
   operatorPendingModeKeyBindingsNonRecursive: [],
   handleKeys: {},
+  useSystemClipboard: false,
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {
@@ -128,7 +130,7 @@ export class RemapResolver {
   handleKey(mode: VimRemapMode, key: string): RemapResolution {
     const keys = [...this.pendingKeys, key];
     const mappings = this.mappingsByMode[mode];
-    const exact = mappings.find(mapping => sameKeys(mapping.before, keys));
+    const exact = findLast(mappings, mapping => sameKeys(mapping.before, keys));
     if (exact !== undefined) {
       this.pendingKeys = [];
       return { kind: "matched", mapping: exact };
@@ -229,4 +231,11 @@ function sameKeys(left: readonly string[], right: readonly string[]): boolean {
 
 function isPrefix(prefix: readonly string[], full: readonly string[]): boolean {
   return prefix.length < full.length && prefix.every((key, index) => key === full[index]);
+}
+
+function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
+  for (let index = items.length - 1; index >= 0; index--) {
+    if (predicate(items[index])) return items[index];
+  }
+  return undefined;
 }

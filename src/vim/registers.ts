@@ -5,8 +5,9 @@
 // - translated concepts: unnamed, named/append, numbered, small-delete, search, and
 //   black-hole register storage
 // - intentional differences: this slice implements the in-memory semantics needed by
-//   current fixtures. System clipboard, expression, and read-only file/alternate registers
-//   remain future work.
+//   current fixtures. System clipboard registers are integrated through a per-dispatch
+//   async transaction supplied by the VSCode adapter; expression and read-only
+//   file/alternate registers remain future work.
 
 export type RegisterName = '"' | LowercaseLetter | UppercaseLetter | DigitRegister | "_" | "-" | "/" | "+" | "*";
 export type RegisterKind = "characterwise" | "linewise" | "blockwise";
@@ -15,6 +16,11 @@ export type RegisterContent = {
   text: string;
   kind: RegisterKind;
 };
+
+export interface VimSystemClipboard {
+  readText(): Promise<string>;
+  writeText(text: string): void;
+}
 
 type LowercaseLetter =
   | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m"
@@ -29,21 +35,47 @@ export class Registers {
   private unnamed: RegisterContent = emptyRegister;
   private smallDelete: RegisterContent = emptyRegister;
   private search: RegisterContent = emptyRegister;
+  private systemClipboard: RegisterContent | undefined;
   private readonly named = new Map<LowercaseLetter, RegisterContent>();
   private readonly numbered = new Map<DigitRegister, RegisterContent>();
+  private activeClipboard: VimSystemClipboard | undefined;
+  private useSystemClipboard = false;
+
+  setUseSystemClipboard(useSystemClipboard: boolean): void {
+    this.useSystemClipboard = useSystemClipboard;
+  }
 
   read(name: RegisterName | undefined): string {
     return this.readContent(name).text;
   }
 
   readContent(name: RegisterName | undefined): RegisterContent {
+    if (this.usesSystemClipboardRegister(name)) return this.systemClipboard ?? this.unnamed;
     if (name === undefined || name === '"') return this.unnamed;
     if (name === "_") return emptyRegister;
     if (name === "-") return this.smallDelete;
     if (name === "/") return this.search;
-    if (name === "+" || name === "*") return this.unnamed;
+    if (isSystemClipboardRegister(name)) return this.systemClipboard ?? this.unnamed;
     if (isDigitRegister(name)) return this.numbered.get(name) ?? emptyRegister;
     return this.named.get(lowercaseRegister(name)) ?? emptyRegister;
+  }
+
+  async refreshSystemClipboardRegister(name: RegisterName | undefined): Promise<void> {
+    if (!this.usesSystemClipboardRegister(name) || this.activeClipboard === undefined) return;
+    this.systemClipboard = {
+      text: await this.activeClipboard.readText(),
+      kind: this.systemClipboard?.kind ?? "characterwise",
+    };
+  }
+
+  async withSystemClipboard<T>(clipboard: VimSystemClipboard | undefined, f: () => Promise<T>): Promise<T> {
+    const previous = this.activeClipboard;
+    this.activeClipboard = clipboard;
+    try {
+      return await f();
+    } finally {
+      this.activeClipboard = previous;
+    }
   }
 
   write(name: RegisterName | undefined, text: string, kind: RegisterKind = "characterwise"): void {
@@ -60,13 +92,12 @@ export class Registers {
     }
 
     this.unnamed = content;
+    if (this.usesSystemClipboardRegister(name)) this.writeSystemClipboard(content);
     if (name !== undefined && name !== '"') {
       if (isDigitRegister(name)) this.numbered.set(name, content);
       else if (name === "-") this.smallDelete = content;
       else if (name === "/") this.search = content;
-      else if (name === "+" || name === "*") {
-        // Keep unnamed authoritative for clipboard-like registers in this slice.
-      } else this.named.set(name, content);
+      else if (!isSystemClipboardRegister(name)) this.named.set(name, content);
     }
   }
 
@@ -85,6 +116,7 @@ export class Registers {
 
     if (name === undefined) {
       this.unnamed = content;
+      if (this.usesSystemClipboardRegister(name)) this.writeSystemClipboard(content);
       if (kind === "linewise" || text.includes("\n")) {
         this.pushNumberedDelete(content);
       } else {
@@ -98,6 +130,15 @@ export class Registers {
 
   writeSearch(query: string): void {
     this.search = { text: query, kind: "characterwise" };
+  }
+
+  private writeSystemClipboard(content: RegisterContent): void {
+    this.systemClipboard = content;
+    this.activeClipboard?.writeText(content.text);
+  }
+
+  private usesSystemClipboardRegister(name: RegisterName | undefined): boolean {
+    return isSystemClipboardRegister(name) || (name === undefined && this.useSystemClipboard);
   }
 
   private pushNumberedDelete(content: RegisterContent): void {
@@ -116,6 +157,10 @@ export function parseRegisterName(key: string): RegisterName | undefined {
   if (/^[a-z]$/.test(key)) return key as LowercaseLetter;
   if (/^[A-Z]$/.test(key)) return key as UppercaseLetter;
   return undefined;
+}
+
+export function isSystemClipboardRegister(name: RegisterName | undefined): name is "+" | "*" {
+  return name === "+" || name === "*";
 }
 
 function isDigitRegister(name: RegisterName): name is DigitRegister {

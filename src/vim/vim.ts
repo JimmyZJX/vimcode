@@ -16,7 +16,8 @@ import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { MacroState, RecordedSelection, RepeatState, VisualRepeatAction } from "./normal/repeat.js";
 import { handleHostAction } from "./normal/scroll.js";
 import { SearchState, searchUnderCursorMotion } from "./normal/search.js";
-import { RegisterName, Registers, parseRegisterName } from "./registers.js";
+import { RegisterName, Registers, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
+import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
@@ -68,6 +69,7 @@ export class Vim {
   constructor(private readonly editor: VimEditorCapabilities, configuration: Partial<VimConfiguration> = {}) {
     this.configuration = mergeVimConfiguration(configuration);
     this.remapResolver = new RemapResolver(this.configuration);
+    this.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.editor.setCursorStyle("block");
     this.normalMode = new NormalMode(editor, this.registers);
     this.visualMode = new VisualMode(editor, this.registers);
@@ -76,6 +78,7 @@ export class Vim {
   setConfiguration(configuration: Partial<VimConfiguration>): void {
     this.configuration = mergeVimConfiguration(configuration);
     this.remapResolver = new RemapResolver(this.configuration);
+    this.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
   }
 
   get mode(): VimMode {
@@ -105,6 +108,15 @@ export class Vim {
 
   handleKeyOverride(key: string): boolean | undefined {
     return this.remapResolver.handleKeyOverride(key);
+  }
+
+  shouldHandleKey(key: string): boolean {
+    const handleOverride = this.handleKeyOverride(key);
+    if (handleOverride === false) return false;
+    if (handleOverride === true) return true;
+    return !((this.modeState.kind === "insert" || this.modeState.kind === "replace")
+      && !this.shouldHandleInsertKey(key)
+      && !this.status.pending);
   }
 
   shouldHandleInsertKey(key: string): boolean {
@@ -177,6 +189,29 @@ export class Vim {
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyResult {
     return this.onKeyInternal(key, { allowRemap: true });
+  }
+
+  async onKeyAsync(key: string, { clipboard }: { clipboard?: VimSystemClipboard } = {}): Promise<KeyResult> {
+    return this.registers.withSystemClipboard(clipboard, async () => {
+      await this.refreshSystemClipboardRegisterForKey(key);
+      return this.onKeyInternal(key, { allowRemap: true });
+    });
+  }
+
+  private async refreshSystemClipboardRegisterForKey(key: string): Promise<void> {
+    const registerToRead = this.systemClipboardRegisterToReadForKey(key);
+    if (registerToRead !== undefined) await this.registers.refreshSystemClipboardRegister(registerToRead.registerName);
+  }
+
+  private systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
+    if (this.pendingInsertRegister) {
+      const registerName = parseRegisterName(key);
+      return isSystemClipboardRegister(registerName) ? { registerName } : undefined;
+    }
+
+    if (this.modeState.kind === "normal") return this.normalMode.systemClipboardRegisterToReadForKey(key);
+    if (this.isVisualMode()) return this.visualMode.systemClipboardRegisterToReadForKey(key);
+    return undefined;
   }
 
   private onKeyInternal(key: string, { allowRemap }: { allowRemap: boolean }): KeyResult {
@@ -542,7 +577,7 @@ export class Vim {
     if (command.command.startsWith(":")) {
       executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range) });
     } else {
-      this.editor.executeNativeCommand(command.command);
+      this.editor.executeNativeCommand(command.command, commandArgs(command));
     }
   }
 
@@ -799,6 +834,11 @@ export class Vim {
   private isEscape(key: string): boolean {
     return key === "<escape>" || key === "escape" || key === "ctrl-[";
   }
+}
+
+function commandArgs(command: { args?: unknown | unknown[] }): readonly unknown[] {
+  if (command.args === undefined) return [];
+  return Array.isArray(command.args) ? command.args : [command.args];
 }
 
 function convertTargetForKey(key: "u" | "U" | "~"): ConvertTarget {

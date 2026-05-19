@@ -41,7 +41,7 @@ export interface VimEditorCapabilities {
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options?: ApplyEditsOptions): void;
 
   executeHostCommand(command: HostCommand): void;
-  executeNativeCommand(command: string): void;
+  executeNativeCommand(command: string, args?: readonly unknown[]): void;
   revealPrimaryCursorIfOutsideViewport(): void;
   revealCurrentLine(target: HostRevealTarget): void;
   executeFoldCommand(command: HostFoldCommand): void;
@@ -56,9 +56,6 @@ export interface VimEditorCapabilities {
   updateSearch(query: string, direction: SearchDirection, options?: SearchOptions): void;
   findSearchMatch(query: string, start: Position, direction: SearchDirection, options?: SearchOptions): SearchMatch | undefined;
   clearSearchHighlights(): void;
-
-  readClipboard(): string;
-  writeClipboard(text: string): void;
 }
 
 // Zed: clipping is usually handled by display-map/editor helpers such as
@@ -99,8 +96,8 @@ function exclusiveVisualHead(editor: VimEditorCapabilities, head: Position): Pos
 export class InMemoryVimEditor implements VimEditorCapabilities {
   private lines: string[];
   private selections: VimSelection[];
-  private clipboard = "";
   public cursorStyle: CursorStyle = "block";
+  public readonly nativeCommands: { command: string; args: readonly unknown[] }[] = [];
 
   constructor(text = "") {
     this.lines = text.split("\n");
@@ -184,7 +181,9 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   executeHostCommand(_command: HostCommand): void {}
 
-  executeNativeCommand(_command: string): void {}
+  executeNativeCommand(command: string, args: readonly unknown[] = []): void {
+    this.nativeCommands.push({ command, args });
+  }
 
   revealPrimaryCursorIfOutsideViewport(): void {}
 
@@ -234,14 +233,6 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       }
       return { ...charwiseSelection(next), goal };
     });
-  }
-
-  readClipboard(): string {
-    return this.clipboard;
-  }
-
-  writeClipboard(text: string): void {
-    this.clipboard = text;
   }
 
   private replace(range: TextRange, text: string): void {

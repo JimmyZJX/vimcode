@@ -141,6 +141,16 @@ Compatibility policy:
 - Preserve a small, testable core. VSCode-only rendering and command APIs should live behind adapter capabilities.
 - Track unsupported VSCodeVim settings/commands explicitly in this README or a future compatibility matrix.
 
+Migration priorities and backlog:
+
+1. **Remap compatibility is a migration blocker.** Existing VSCodeVim users often carry substantial mode-specific remaps, so `vimcode` should be highly compatible here. The current core runs mostly synchronously inside patched VSCode, so we can avoid some of VSCodeVim's async extension-host race conditions, but behavior should still match user expectations for recursive vs non-recursive mappings, ambiguous prefixes, command mappings, and `vim.handleKeys` / `vim.useCtrlKeys` interactions.
+2. **Core Vim completeness is high priority.** The disabled Zed fixture backlog is the main source of known core gaps. Prioritize user-visible editing semantics such as repeat/register/macro fidelity, visual selection exactness, text-object edge cases, marks/jumps, undo grouping, unicode/display-column behavior, folds/wrap integration, and VSCode-native movement semantics.
+3. **Settings incompatibilities should be tracked, but not prioritized yet.** Keep registering settings we actively read so autocomplete works, and keep a compatibility matrix for ignored or unsupported VSCodeVim settings. Do not spend migration time implementing low-value settings before remaps and core editing behavior are solid.
+4. **Plugin-style integrations are important but later.** Keep EasyMotion, Sneak, HighlightedYank, Commentary, ReplaceWithRegister, CamelCaseMotion/subword motions, and extra text objects in the backlog. Implement them as modules over explicit adapter capabilities rather than one-off key hacks.
+5. **Command-line compatibility belongs in the backlog.** The current Ex command subset is useful, but VSCodeVim parity for `:normal`, `:nohl`, `:registers`, `:marks`, write/quit-style commands, richer substitute/search flags, and clear unsupported-command reporting remains tracked work.
+6. **Digraphs are low priority but probably tractable.** Keep digraph insert/find/replace fixtures in the backlog; they are not migration-critical for current users, but may be a relatively self-contained improvement.
+7. **VSCode-native behavior needs integration tests.** Undo/redo, folds, wrapped lines, viewport scrolling, native search UI, multi-cursor lowering, and cursor rendering require patched-VSCode verification in addition to the in-memory/Neovim fixture harness.
+
 ## Integration model
 
 The intended stack is:

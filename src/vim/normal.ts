@@ -14,7 +14,7 @@ import { deleteCharacters, deleteLineRange, deleteLines, deleteMotion } from "./
 import { applyTextObjectOperator } from "./normal/object.js";
 import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion } from "./normal/yank.js";
-import { RegisterName, Registers, parseRegisterName } from "./registers.js";
+import { RegisterName, Registers, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
 import { ConvertTarget, convertRanges, toggleCaseCharacters } from "./normal/convert.js";
 import { IndentDirection, currentLineRanges, indentRanges } from "./normal/indent.js";
@@ -83,6 +83,14 @@ export class NormalMode {
 
   isExpectingRegisterName(): boolean {
     return this.pendingPrefix === "register";
+  }
+
+  systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
+    if (key !== "p" && key !== "P") return undefined;
+    if (this.selectedRegister === undefined || isSystemClipboardRegister(this.selectedRegister)) {
+      return { registerName: this.selectedRegister };
+    }
+    return undefined;
   }
 
   hasPendingNonCount(): boolean {

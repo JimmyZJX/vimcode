@@ -17,7 +17,7 @@ import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
 import { cursorAfterDeletingRange, deleteRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
-import { RegisterContent, RegisterName, Registers, parseRegisterName } from "./registers.js";
+import { RegisterContent, RegisterName, Registers, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
 import { addSurrounds } from "./surrounds.js";
 import {
   KeyResult,
@@ -324,8 +324,8 @@ export class VisualMode {
     }
 
     if (key === "p" || key === "P") {
-      this.rememberState(state);
-      this.paste(state, this.takeSelectedRegister());
+      const pastedState = this.paste(state, this.takeSelectedRegister());
+      this.rememberState(pastedState ?? state);
       this.state = undefined;
       this.editor.setCursorStyle("block");
       return handled({ exitVisual: true, nextMode: "normal" });
@@ -462,20 +462,19 @@ export class VisualMode {
     this.editor.setCursorStyle("block");
   }
 
-  private paste(state: VisualState, registerName: RegisterName | undefined): void {
+  private paste(state: VisualState, registerName: RegisterName | undefined): VisualState | undefined {
     const content = this.registers.readContent(registerName);
-    if (content.text.length === 0) return;
+    if (content.text.length === 0) return undefined;
 
     switch (state.kind) {
       case "charwise":
-        pasteOverCharwise(this.editor, this.registers, state, content);
-        break;
+        return pasteOverCharwise(this.editor, this.registers, state, content);
       case "linewise":
         pasteOverLinewise(this.editor, this.registers, state, content);
-        break;
+        return undefined;
       case "blockwise":
         pasteOverBlockwise(this.editor, this.registers, state, content);
-        break;
+        return undefined;
     }
   }
 
@@ -559,6 +558,14 @@ export class VisualMode {
 
   isExpectingRegisterName(): boolean {
     return this.pendingRegister;
+  }
+
+  systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
+    if (key !== "p" && key !== "P") return undefined;
+    if (this.selectedRegister === undefined || isSystemClipboardRegister(this.selectedRegister)) {
+      return { registerName: this.selectedRegister };
+    }
+    return undefined;
   }
 
   private takeCount(defaultValue: number): number {
@@ -1163,21 +1170,23 @@ function pasteOverCharwise(
   registers: Registers,
   state: CharwiseVisualState,
   content: RegisterContent
-): void {
+): VisualState | undefined {
   const range = charwiseVisualRange(editor, state);
   const deletedText = rangeText(editor, range);
   if (content.kind === "blockwise") {
     pasteBlockwiseOverCharwise(editor, registers, state, range, deletedText, content.text);
-    return;
+    return undefined;
   }
 
   const replacementText = content.kind === "linewise" ? `\n${ensureTrailingNewline(content.text)}` : content.text;
   const cursor = content.kind === "linewise"
     ? { row: range.start.row + 1, column: 0 }
     : cursorAtEndOfInsertedText(range.start, replacementText);
+  const pastedRange = { start: range.start, end: positionAfterInsertedText(range.start, replacementText) };
 
   registers.write(undefined, deletedText, "characterwise");
   editor.applyEdits([{ range, text: replacementText }], [charwiseSelection(cursor)], { selectionsBefore: visualUndoSelections(state) });
+  return charwiseStateForRange(editor, pastedRange);
 }
 
 function pasteBlockwiseOverCharwise(
