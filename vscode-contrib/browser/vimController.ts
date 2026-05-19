@@ -4,8 +4,10 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import { Vim, VimStatus } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
@@ -37,12 +39,13 @@ export class VimController extends Disposable {
 		private readonly editor: ICodeEditor,
 		contextKeyService: IContextKeyService,
 		clipboardService: IClipboardService,
-		commandService: ICommandService
+		commandService: ICommandService,
+		private readonly configurationService: IConfigurationService
 	) {
 		super();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
 		this.vimEditor = new VSCodeVimEditor(editor, this.vimClipboard, commandService);
-		this.vim = new Vim(this.vimEditor);
+		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration());
 		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
 		this.vimNormalContext = VimNormalContext.bindTo(contextKeyService);
 		this.vimInsertContext = VimInsertContext.bindTo(contextKeyService);
@@ -58,6 +61,10 @@ export class VimController extends Disposable {
 		}));
 		this._register(this.editor.onDidChangeCursorSelection(event => this.handleCursorSelectionChanged(event.source)));
 		this._register(this.editor.onDidChangeModel(() => this.handleExternalEditorStateChanged()));
+		this._register(this.configurationService.onDidChangeConfiguration(() => {
+			this.vim.setConfiguration(this.readVimCompatibilityConfiguration());
+			this.syncStatus();
+		}));
 	}
 
 	getStatus(): VimStatus {
@@ -70,13 +77,34 @@ export class VimController extends Disposable {
 		super.dispose();
 	}
 
+	private readVimCompatibilityConfiguration(): Partial<VimConfiguration> {
+		const vimConfig = this.configurationService.getValue<Record<string, unknown>>('vim') ?? {};
+		return {
+			leader: typeof vimConfig.leader === 'string' ? vimConfig.leader : undefined,
+			handleKeys: readHandleKeys(layeredConfigValue(vimConfig, 'handleKeys')),
+			normalModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindings')),
+			normalModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindingsNonRecursive')),
+			insertModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'insertModeKeyBindings')),
+			insertModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'insertModeKeyBindingsNonRecursive')),
+			visualModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'visualModeKeyBindings')),
+			visualModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'visualModeKeyBindingsNonRecursive')),
+			operatorPendingModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'operatorPendingModeKeyBindings')),
+			operatorPendingModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'operatorPendingModeKeyBindingsNonRecursive')),
+		};
+	}
+
 	private handleKeyDown(event: IKeyboardEvent): void {
 		const key = keyFromEvent(event);
 		if (!key) {
 			return;
 		}
 
-		if ((this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') && !isEscapeKey(key) && key !== 'ctrl-r' && key !== 'ctrl-w' && key !== 'ctrl-u' && !this.vim.status.pending) {
+		const handleOverride = this.vim.handleKeyOverride(key);
+		if (handleOverride === false) {
+			return;
+		}
+
+		if (handleOverride !== true && (this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') && !this.vim.shouldHandleInsertKey(key) && !this.vim.status.pending) {
 			return;
 		}
 
@@ -126,6 +154,27 @@ export class VimController extends Disposable {
 		this.vimEditor.setCursorStyle(status.mode === 'insert' ? 'line' : 'block');
 		this._onDidChangeStatus.fire(status);
 	}
+}
+
+function readHandleKeys(value: unknown): Record<string, boolean> {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+	return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'));
+}
+
+function readRemaps(value: unknown): VimKeyRemapping[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap(item => {
+		if (typeof item !== 'object' || item === null) return [];
+		const remap = item as { before?: unknown; after?: unknown; commands?: unknown; silent?: unknown; recursive?: unknown };
+		if (!Array.isArray(remap.before) || !remap.before.every(key => typeof key === 'string')) return [];
+		return [{
+			before: remap.before,
+			after: Array.isArray(remap.after) && remap.after.every(key => typeof key === 'string') ? remap.after : undefined,
+			commands: Array.isArray(remap.commands) ? remap.commands.filter(command => typeof command === 'string' || typeof command === 'object') as VimKeyRemapping['commands'] : undefined,
+			silent: typeof remap.silent === 'boolean' ? remap.silent : undefined,
+			recursive: typeof remap.recursive === 'boolean' ? remap.recursive : undefined,
+		}];
+	});
 }
 
 function isEscapeKey(key: string): boolean {

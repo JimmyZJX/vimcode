@@ -6,6 +6,7 @@
 //   from the VSCode patch / tests.
 
 import { LineRange, executeCommand } from "./command.js";
+import { NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
 import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
@@ -52,6 +53,8 @@ export class Vim {
   private readonly searchState = new SearchState();
   private readonly repeatState = new RepeatState();
   private readonly macroState = new MacroState();
+  private configuration: VimConfiguration = defaultVimConfiguration;
+  private remapResolver = new RemapResolver(this.configuration);
   private pendingCommand: string | undefined;
   private pendingInsertRegister = false;
   private insertRepeatCount = 1;
@@ -62,10 +65,17 @@ export class Vim {
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
 
-  constructor(private readonly editor: VimEditorCapabilities) {
+  constructor(private readonly editor: VimEditorCapabilities, configuration: Partial<VimConfiguration> = {}) {
+    this.configuration = mergeVimConfiguration(configuration);
+    this.remapResolver = new RemapResolver(this.configuration);
     this.editor.setCursorStyle("block");
     this.normalMode = new NormalMode(editor, this.registers);
     this.visualMode = new VisualMode(editor, this.registers);
+  }
+
+  setConfiguration(configuration: Partial<VimConfiguration>): void {
+    this.configuration = mergeVimConfiguration(configuration);
+    this.remapResolver = new RemapResolver(this.configuration);
   }
 
   get mode(): VimMode {
@@ -93,10 +103,24 @@ export class Vim {
     return this.registers.read(name);
   }
 
+  handleKeyOverride(key: string): boolean | undefined {
+    return this.remapResolver.handleKeyOverride(key);
+  }
+
+  shouldHandleInsertKey(key: string): boolean {
+    return this.remapResolver.isPending()
+      || this.remapResolver.hasMappings("insert")
+      || key === "ctrl-r"
+      || key === "ctrl-w"
+      || key === "ctrl-u"
+      || this.isEscape(key);
+  }
+
   syncFromEditorState({ render = true }: { render?: boolean } = {}): void {
     this.pendingFind = undefined;
     this.pendingUnmatched = undefined;
     this.sharedActionResolver.clearPending();
+    this.remapResolver.clearPending();
     this.normalChordResolver.clearPending();
     this.markState.clearPending();
     this.searchState.clearPending();
@@ -123,12 +147,13 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.sharedActionResolver.isPending() || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || this.pendingInsertRegister || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.sharedActionResolver.isPending() || this.remapResolver.isPending() || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || this.pendingInsertRegister || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
     if (this.pendingInsertRegister) return "ctrl-r";
+    if (this.remapResolver.isPending()) return this.remapResolver.pendingChord();
     if (this.searchState.isPending()) return this.searchState.pendingChord();
     if (this.markState.isPending()) return this.markState.pendingChord();
     if (this.sharedActionResolver.isPending()) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}${this.sharedActionResolver.pendingChord()}`;
@@ -151,7 +176,27 @@ export class Vim {
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyResult {
+    return this.onKeyInternal(key, { allowRemap: true });
+  }
+
+  private onKeyInternal(key: string, { allowRemap }: { allowRemap: boolean }): KeyResult {
     if (!this.repeatState.isReplaying()) this.repeatState.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
+
+    if (allowRemap && this.shouldResolveRemap()) {
+      const resolution = this.remapResolver.handleKey(this.currentRemapMode(), key);
+      switch (resolution.kind) {
+        case "pending":
+          return "handled";
+        case "matched":
+          this.executeRemapping(resolution.mapping);
+          return "handled";
+        case "replay":
+          for (const replayKey of resolution.keys) this.onKeyInternal(replayKey, { allowRemap: false });
+          return "handled";
+        case "noMatch":
+          break;
+      }
+    }
 
     if (this.pendingInsertRegister) {
       this.handlePendingInsertRegisterKey(key);
@@ -462,6 +507,43 @@ export class Vim {
     this.insertRepeatCount = 1;
     this.insertRepeatText = "";
     this.insertRepeatSeparator = "";
+  }
+
+  private shouldResolveRemap(): boolean {
+    if (this.remapResolver.isPending()) return true;
+    return this.pendingFind === undefined
+      && this.pendingUnmatched === undefined
+      && !this.sharedActionResolver.isPending()
+      && !this.normalChordResolver.isPending()
+      && !this.markState.isPending()
+      && !this.searchState.isPending()
+      && this.pendingCommand === undefined
+      && !this.pendingInsertRegister;
+  }
+
+  private currentRemapMode() {
+    return remapModeForVimMode(this.modeState.kind, {
+      operatorPending: this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined,
+    });
+  }
+
+  private executeRemapping(mapping: NormalizedRemapping): void {
+    for (const command of mapping.commands) this.executeMappedCommand(command);
+    for (const key of mapping.after) this.onKeyInternal(key, { allowRemap: mapping.recursive });
+  }
+
+  private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
+    if (typeof command === "string") {
+      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range) });
+      else this.editor.executeNativeCommand(command);
+      return;
+    }
+
+    if (command.command.startsWith(":")) {
+      executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range) });
+    } else {
+      this.editor.executeNativeCommand(command.command);
+    }
   }
 
   private collapseToFirstCursor(): void {

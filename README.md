@@ -4,6 +4,8 @@ This README is the canonical project tracker for the `zed` branch. Future agents
 
 The old `vimcode` implementation is intentionally being replaced. Do not preserve old chord-menu code or old tests for their own sake. The goal is a reliable, featureful Vim/Helix implementation for VSCode, injected through a VSCode patch plus adapter, using Zed's Vim implementation as the primary architectural and behavioral reference.
 
+A project goal is to eventually replace VSCodeVim for existing users. That means `vimcode` should be compatible with common VSCodeVim user configuration, commands, and plugin-style integrations where doing so does not compromise the simpler patched-VSCode architecture. Zed remains the primary source for Vim core structure and semantics; VSCodeVim is the compatibility reference for VSCode-specific user-facing behavior.
+
 ## Current status
 
 Done in this branch:
@@ -42,7 +44,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 210 enabled tests.
+  - `npm test -- --runInBand` passes with 217 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -87,6 +89,57 @@ Treat this as a Zed-inspired implementation for VSCode, not a literal port of Ze
 Zed's code is tightly integrated with GPUI, Zed's editor model, display map, workspace actions, settings, and search UI. We translate concepts and behavior onto VSCode internals through an adapter, recording provenance as we go so future Zed revisions can be inspected and selectively migrated.
 
 Do not attempt to compile Zed's current Vim crate directly to WASM as the first route. Do not build a large fake Zed editor layer inside VSCode. Do not rely on the public VSCode extension API as the only integration surface; the intended integration is a VSCode patch plus adapter.
+
+## VSCodeVim compatibility plan
+
+Replacing VSCodeVim is a product compatibility goal, not just an implementation milestone. Users should be able to bring common VSCodeVim settings and workflows to `vimcode` with minimal changes. Compatibility should be explicit and tested rather than accidental.
+
+Compatibility references:
+
+- Local VSCodeVim checkout: `/home/jimzhao/vscode-extensions/Vim`
+- VSCodeVim settings: `package.json` `contributes.configuration.properties`
+- VSCodeVim keybindings: `package.json` `contributes.keybindings`
+- VSCodeVim command/action registry: `src/actions/**`, `src/cmd_line/**`, `src/textobject/**`
+- VSCodeVim plugin integrations: `src/actions/plugins/**`
+- VSCodeVim decoration infrastructure: `src/configuration/decoration.ts`, `src/util/decorationUtils.ts`
+
+Near-term compatibility layers to design:
+
+1. **Configuration ingestion.** Add a typed compatibility config model that reads the high-value VSCodeVim setting names first, especially `vim.leader`, `vim.handleKeys`, `vim.useCtrlKeys`, `vim.useSystemClipboard`, `vim.easymotion*`, `vim.sneak*`, `vim.surround`, `vim.highlightedyank.*`, and mode-specific keybinding arrays. Config ingestion should support internal layered settings using the `option__layer_name` convention: array-valued layers are concatenated in sorted key order before the base `option`, and object-valued layers are merged in sorted key order before the base `option`. Unsupported settings should be ignored with a known-unsupported list rather than silently misinterpreted.
+2. **Mode-specific remapping.** Add a data-driven remap layer before built-in key dispatch. It should support `before`, `after`, `commands`, `silent`, recursive/non-recursive variants, and separate insert/normal/visual/operator-pending tables. Start with exact key-sequence replacement; defer full Vimscript expression mappings.
+3. **Command compatibility.** Build a command registry that can invoke both Vim-core actions and VSCode commands. This should cover remap `commands`, `:normal`, `:nohl`, `:registers`, `:marks`, `:write`/`:quit`-style commands where feasible, and clear unsupported-command errors where host integration is required.
+4. **Decoration capability boundary.** Add adapter capabilities for transient labels, highlighted ranges, hidden covered text, gutter marks, and status messages. This is needed for EasyMotion, highlighted yank, mark gutter icons, substitution preview, and any future UI overlays.
+5. **Plugin-style integrations.** Implement compatibility plugins as modules over the core and adapter capabilities, not as one-off key hacks. Priority order: highlighted yank, EasyMotion, Sneak, Commentary, ReplaceWithRegister, CamelCaseMotion/subword motions, indent/argument/entire text objects.
+6. **Compatibility fixtures.** Add a VSCodeVim-compat fixture suite alongside the Zed/Neovim fixtures. These should encode VSCodeVim settings plus key sequences and expected editor state, so we can track intentional divergences.
+
+Suggested EasyMotion architecture:
+
+```text
+src/vim/easymotion.ts
+  - EasyMotionState
+  - marker generation
+  - target search over VimEditorCapabilities
+  - accumulated label input
+  - final target resolution
+
+VimEditorCapabilities
+  - showNavigationOverlays(overlays)
+  - clearNavigationOverlays(key)
+
+vscode-contrib/browser/vscodeVimEditor.ts
+  - render overlays with VSCode decorations or internal overlay hooks
+  - hide covered text where needed
+  - optionally dim non-target ranges
+```
+
+Zed does not implement Vim EasyMotion directly, but its Helix jump labels provide a useful architecture reference: collect visible candidates, assign labels, render navigation overlays, push a pending jump operator, consume label input, then clear overlays. VSCodeVim is the behavior reference for Vim EasyMotion commands and settings.
+
+Compatibility policy:
+
+- Prefer Zed for core Vim semantics and module boundaries.
+- Prefer VSCodeVim for VSCode-specific user-facing configuration, command names, plugin behavior, and migration expectations.
+- Preserve a small, testable core. VSCode-only rendering and command APIs should live behind adapter capabilities.
+- Track unsupported VSCodeVim settings/commands explicitly in this README or a future compatibility matrix.
 
 ## Integration model
 

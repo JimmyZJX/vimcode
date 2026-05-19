@@ -1,3 +1,4 @@
+import { layeredConfigValue, normalizeKey } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
 import { Vim, runKeys } from "./vim.js";
 import { charwiseSelection, selectionHead } from "./state.js";
@@ -7,6 +8,33 @@ function head(editor: InMemoryVimEditor) {
 }
 
 describe("Zed-inspired Vim core smoke tests", () => {
+  it("layers VSCodeVim-compatible array and object config values", () => {
+    expect(layeredConfigValue({
+      normalModeKeyBindings__team: [{ before: ["a"], after: ["b"] }],
+      normalModeKeyBindings__user_defaults: [{ before: ["c"], after: ["d"] }],
+      normalModeKeyBindings: [{ before: ["e"], after: ["f"] }],
+    }, "normalModeKeyBindings")).toEqual([
+      { before: ["a"], after: ["b"] },
+      { before: ["c"], after: ["d"] },
+      { before: ["e"], after: ["f"] },
+    ]);
+
+    expect(layeredConfigValue({
+      handleKeys__team: { "<C-f>": false },
+      handleKeys: { "<C-d>": true },
+    }, "handleKeys")).toEqual({ "<C-f>": false, "<C-d>": true });
+  });
+
+  it("normalizes VSCodeVim handleKeys config", () => {
+    const vim = new Vim(new InMemoryVimEditor(""), {
+      handleKeys: { "<C-f>": false, "<C-d>": true },
+    });
+
+    expect(vim.handleKeyOverride("ctrl-f")).toBe(false);
+    expect(vim.handleKeyOverride("ctrl-d")).toBe(true);
+    expect(vim.handleKeyOverride("ctrl-x")).toBeUndefined();
+  });
+
   it("moves in normal mode and inserts through the editor capability interface", () => {
     const editor = new InMemoryVimEditor("abc");
     const vim = new Vim(editor);
@@ -26,6 +54,61 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["2", "w"]);
 
     expect(head(editor)).toEqual({ row: 0, column: 8 });
+  });
+
+  it("normalizes VSCodeVim key notation", () => {
+    expect(normalizeKey("<Esc>", "\\")).toBe("<escape>");
+    expect(normalizeKey("<C-[>", "\\")).toBe("ctrl-[");
+    expect(normalizeKey("<C-Right>", "\\")).toBe("ctrl-right");
+    expect(normalizeKey("<S-u>", "\\")).toBe("U");
+    expect(normalizeKey("<space>", "\\")).toBe("space");
+    expect(normalizeKey("<leader>", "space")).toBe("space");
+  });
+
+  it("supports VSCodeVim-style normal remaps", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["q"], after: ["w"] }],
+    });
+
+    runKeys(vim, ["q"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+  });
+
+  it("supports VSCodeVim-style insert remaps", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [{ before: ["j", "j"], after: ["<Esc>"] }],
+    });
+
+    runKeys(vim, ["A", "j", "j"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("one");
+  });
+
+  it("supports VSCodeVim-style visual remaps", () => {
+    const editor = new InMemoryVimEditor("abc def");
+    const vim = new Vim(editor, {
+      visualModeKeyBindingsNonRecursive: [{ before: ["q"], after: ["g", "U"] }],
+    });
+
+    runKeys(vim, ["v", "w", "q"]);
+
+    expect(editor.getText()).toBe("ABC def");
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
+  it("supports VSCodeVim-style command remaps", () => {
+    const editor = new InMemoryVimEditor("one\ntwo");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["q"], commands: [":2"] }],
+    });
+
+    runKeys(vim, ["q"]);
+
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
   });
 
   it("supports arrow keys as Vim motions", () => {
