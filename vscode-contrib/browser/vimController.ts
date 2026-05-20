@@ -8,13 +8,14 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimStatus } from '../common/vim.js';
-import { vimcodeKeyEventFromKeyboardEvent, vimcodeKeyHandlerRegistry } from './keyHandlerRegistry.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
@@ -49,8 +50,9 @@ export class VimController extends Disposable {
 		private readonly editor: ICodeEditor,
 		private readonly contextKeyService: IContextKeyService,
 		clipboardService: IClipboardService,
-		private readonly commandService: ICommandService,
+		commandService: ICommandService,
 		private readonly configurationService: IConfigurationService,
+		private readonly keybindingService: IKeybindingService,
 		private readonly extensionManagementService: IExtensionManagementService,
 		private readonly notificationService: INotificationService,
 		private readonly logService: ILogService
@@ -162,41 +164,56 @@ export class VimController extends Disposable {
 		if (!this.enabled) {
 			return;
 		}
-		const handlerKey = keyForExternalHandlerFromEvent(event);
-		const keyHandlers = handlerKey === undefined ? [] : vimcodeKeyHandlerRegistry.matchingHandlers(this.contextKeyService);
-		const vimKey = keyFromEvent(event);
-		if (keyHandlers.length === 0 && (!vimKey || !this.vim.shouldHandleKey(vimKey))) {
+		const key = keyFromEvent(event);
+		if (!key || !this.vim.shouldHandleKey(key) || this.shouldLetNativeKeybindingHandle(event)) {
 			return;
 		}
 
 		event.preventDefault();
 		event.stopPropagation();
-		const keyEvent = handlerKey === undefined ? undefined : vimcodeKeyEventFromKeyboardEvent(handlerKey, event);
-		void this.asyncKeyQueue.enqueue(async () => {
-			if (keyEvent !== undefined) {
-				for (const handler of keyHandlers) {
-					let result: unknown;
-					try {
-						result = await this.commandService.executeCommand(handler.command, keyEvent);
-					} catch (error) {
-						this.logService.warn(`[vimcode] Key handler ${handler.id} failed: ${String(error)}`);
-						continue;
-					}
-					if (result !== null && result !== undefined) {
-						this.syncStatus();
-						return;
-					}
-				}
-			}
+		void this.asyncKeyQueue.enqueue(async () => this.handleVimKey(key)).then(undefined, () => this.syncStatus());
+	}
 
-			if (!vimKey || !this.vim.shouldHandleKey(vimKey)) {
-				this.logService.warn(`[vimcode] Key ${handlerKey ?? '<unknown>'} was captured by vimcode key handlers, but none handled it and Vim does not handle it.`);
-				this.syncStatus();
-				return;
-			}
+	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent): boolean {
+		const target = event.target;
+		if (this.keybindingService.inChordMode) {
+			return true;
+		}
+		const result = this.keybindingService.softDispatch(event, target);
+		if (result.kind === ResultKind.NoMatchingKb) {
+			return false;
+		}
+		if (result.kind === ResultKind.MoreChordsNeeded) {
+			return this.hasMatchingUserOrExtensionKeybinding(event, undefined, true);
+		}
+		if (result.commandId === null || result.isBubble) {
+			return false;
+		}
+		return this.hasMatchingUserOrExtensionKeybinding(event, result.commandId, false);
+	}
 
-			await this.handleVimKey(vimKey);
-		}).then(undefined, () => this.syncStatus());
+	private hasMatchingUserOrExtensionKeybinding(event: IKeyboardEvent, commandId: string | undefined, prefixOnly: boolean): boolean {
+		const resolved = this.keybindingService.resolveKeyboardEvent(event);
+		const [firstChord] = resolved.getDispatchChords();
+		if (firstChord === null) {
+			return false;
+		}
+		const context = this.contextKeyService.getContext(event.target);
+		return this.keybindingService.getKeybindings().some(keybinding => {
+			if (commandId !== undefined && keybinding.command !== commandId) {
+				return false;
+			}
+			if (keybinding.command === null || keybinding.chords[0] !== firstChord) {
+				return false;
+			}
+			if (prefixOnly !== (keybinding.chords.length > 1)) {
+				return false;
+			}
+			if (keybinding.when !== undefined && !keybinding.when.evaluate(context)) {
+				return false;
+			}
+			return !keybinding.isDefault || (keybinding.extensionId !== null && !keybinding.isBuiltinExtension);
+		});
 	}
 
 	private async handleVimKey(key: string): Promise<void> {
@@ -358,7 +375,7 @@ function readRemapCommands(commands: unknown[]): VimKeyRemapping['commands'] {
 	return result;
 }
 
-function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean, escapeKey: string): string | undefined {
+function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean): string | undefined {
 	switch (keyCode) {
 		case KeyCode.LeftArrow:
 			return 'left';
@@ -373,7 +390,7 @@ function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean, escapeKey: stri
 		case KeyCode.End:
 			return 'end';
 		case KeyCode.Escape:
-			return escapeKey;
+			return '<escape>';
 		case KeyCode.Enter:
 			return 'enter';
 		case KeyCode.Backspace:
@@ -409,23 +426,6 @@ function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean, escapeKey: stri
 		default:
 			return undefined;
 	}
-}
-
-function keyForExternalHandlerFromEvent(event: IKeyboardEvent): string | undefined {
-	if (event.metaKey) {
-		return undefined;
-	}
-	if (event.keyCode >= KeyCode.KeyA && event.keyCode <= KeyCode.KeyZ) {
-		const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
-		return event.shiftKey ? letter.toUpperCase() : letter;
-	}
-
-	if (event.keyCode >= KeyCode.Digit0 && event.keyCode <= KeyCode.Digit9) {
-		const digit = event.keyCode - KeyCode.Digit0;
-		return event.shiftKey ? shiftedDigitKey(digit) : String(digit);
-	}
-
-	return keyNameFromKeyCode(event.keyCode, event.shiftKey, 'escape');
 }
 
 function keyFromEvent(event: IKeyboardEvent): string | undefined {
@@ -467,5 +467,5 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 		return event.shiftKey ? shiftedDigitKey(digit) : String(digit);
 	}
 
-	return keyNameFromKeyCode(event.keyCode, event.shiftKey, '<escape>');
+	return keyNameFromKeyCode(event.keyCode, event.shiftKey);
 }

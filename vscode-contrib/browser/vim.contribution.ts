@@ -5,13 +5,13 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorContributionInstantiation, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
-import './keyHandlerRegistry.js';
 import { VimController } from './vimController.js';
 
 function remappingSchema(description: string): IConfigurationPropertySchema {
@@ -98,11 +98,12 @@ class VimContribution extends VimController implements IEditorContribution {
 		@IClipboardService clipboardService: IClipboardService,
 		@ICommandService commandService: ICommandService,
 		@IConfigurationService configurationService: IConfigurationService,
+		@IKeybindingService keybindingService: IKeybindingService,
 		@IExtensionManagementService extensionManagementService: IExtensionManagementService,
 		@INotificationService notificationService: INotificationService,
 		@ILogService logService: ILogService
 	) {
-		super(editor, contextKeyService, clipboardService, commandService, configurationService, extensionManagementService, notificationService, logService);
+		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, notificationService, logService);
 	}
 }
 
