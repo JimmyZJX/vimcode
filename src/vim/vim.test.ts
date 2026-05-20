@@ -817,6 +817,17 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("includes both cursor characters for upward visual delete", () => {
+    const editor = new InMemoryVimEditor("123\n456");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["j", "l", "v", "k", "d"]);
+
+    expect(editor.getText()).toBe("16");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+  });
+
   it("lets visual l reach end of line and delete the newline", () => {
     const editor = new InMemoryVimEditor("ab\ncd");
     const vim = new Vim(editor);

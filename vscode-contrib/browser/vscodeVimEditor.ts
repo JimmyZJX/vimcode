@@ -7,7 +7,7 @@ import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
-import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, selectionHead } from '../common/state.js';
+import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 
@@ -176,12 +176,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
 			const targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
 			if (extend && selection.type === 'charwise') {
-				return {
-					...selection,
-					head: exclusiveVisualHead(this, targetPosition),
-					cursor: targetPosition,
-					goal,
-				};
+				return extendCharwiseSelection(this, selection, targetPosition, goal);
 			}
 			return { ...charwiseSelection(targetPosition), goal };
 		});
@@ -375,6 +370,51 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 		this.visualLineDecorations.set(decorations);
 	}
+}
+
+function extendCharwiseSelection(
+	editor: VSCodeVimEditor,
+	selection: Extract<VimSelection, { type: 'charwise' }>,
+	target: VimPosition,
+	goal: VimSelectionGoal
+): VimSelection {
+	const anchor = inclusiveVisualAnchor(editor, selection);
+	if (comparePositions(anchor, target) <= 0) {
+		return {
+			...selection,
+			anchor,
+			head: exclusiveVisualHead(editor, target),
+			cursor: target,
+			goal,
+		};
+	}
+	return {
+		...selection,
+		anchor: exclusiveVisualHead(editor, anchor),
+		head: target,
+		cursor: target,
+		goal,
+	};
+}
+
+function inclusiveVisualAnchor(
+	editor: VSCodeVimEditor,
+	selection: Extract<VimSelection, { type: 'charwise' }>
+): VimPosition {
+	const head = selection.cursor ?? selection.head;
+	return comparePositions(head, selection.anchor) < 0
+		? previousVisualPosition(editor, selection.anchor)
+		: selection.anchor;
+}
+
+function previousVisualPosition(editor: VSCodeVimEditor, position: VimPosition): VimPosition {
+	if (position.column > 0) {
+		return { row: position.row, column: position.column - 1 };
+	}
+	if (position.row > 0) {
+		return { row: position.row - 1, column: Math.max(0, editor.lineLength(position.row - 1) - 1) };
+	}
+	return position;
 }
 
 function exclusiveVisualHead(editor: VSCodeVimEditor, head: VimPosition): VimPosition {
