@@ -11,6 +11,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorContributionInstantiation, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
+import './keyHandlerRegistry.js';
 import { VimController } from './vimController.js';
 
 function remappingSchema(description: string): IConfigurationPropertySchema {

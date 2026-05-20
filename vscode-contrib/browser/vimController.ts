@@ -14,6 +14,7 @@ import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimStatus } from '../common/vim.js';
+import { vimcodeKeyEventFromKeyboardEvent, vimcodeKeyHandlerRegistry } from './keyHandlerRegistry.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
@@ -46,9 +47,9 @@ export class VimController extends Disposable {
 
 	constructor(
 		private readonly editor: ICodeEditor,
-		contextKeyService: IContextKeyService,
+		private readonly contextKeyService: IContextKeyService,
 		clipboardService: IClipboardService,
-		commandService: ICommandService,
+		private readonly commandService: ICommandService,
 		private readonly configurationService: IConfigurationService,
 		private readonly extensionManagementService: IExtensionManagementService,
 		private readonly notificationService: INotificationService,
@@ -161,25 +162,54 @@ export class VimController extends Disposable {
 		if (!this.enabled) {
 			return;
 		}
-		const key = keyFromEvent(event);
-		if (!key || !this.vim.shouldHandleKey(key)) {
+		const handlerKey = keyForExternalHandlerFromEvent(event);
+		const keyHandlers = handlerKey === undefined ? [] : vimcodeKeyHandlerRegistry.matchingHandlers(this.contextKeyService);
+		const vimKey = keyFromEvent(event);
+		if (keyHandlers.length === 0 && (!vimKey || !this.vim.shouldHandleKey(vimKey))) {
 			return;
 		}
 
 		event.preventDefault();
 		event.stopPropagation();
+		const keyEvent = handlerKey === undefined ? undefined : vimcodeKeyEventFromKeyboardEvent(handlerKey, event);
 		void this.asyncKeyQueue.enqueue(async () => {
-			const clipboard = new ClipboardTransaction(this.vimClipboard);
-			await clipboard.with(async () => {
-				await this.vim.onKeyAsync(key, { clipboard });
-			});
-			if (!this.vim.status.pending) {
-				this.vimEditor.revealPrimaryCursorIfOutsideViewport();
-				this.syncEditorState();
-			} else {
-				this.syncStatus();
+			if (keyEvent !== undefined) {
+				for (const handler of keyHandlers) {
+					let result: unknown;
+					try {
+						result = await this.commandService.executeCommand(handler.command, keyEvent);
+					} catch (error) {
+						this.logService.warn(`[vimcode] Key handler ${handler.id} failed: ${String(error)}`);
+						continue;
+					}
+					if (result !== null && result !== undefined) {
+						this.syncStatus();
+						return;
+					}
+				}
 			}
+
+			if (!vimKey || !this.vim.shouldHandleKey(vimKey)) {
+				this.logService.warn(`[vimcode] Key ${handlerKey ?? '<unknown>'} was captured by vimcode key handlers, but none handled it and Vim does not handle it.`);
+				this.syncStatus();
+				return;
+			}
+
+			await this.handleVimKey(vimKey);
 		}).then(undefined, () => this.syncStatus());
+	}
+
+	private async handleVimKey(key: string): Promise<void> {
+		const clipboard = new ClipboardTransaction(this.vimClipboard);
+		await clipboard.with(async () => {
+			await this.vim.onKeyAsync(key, { clipboard });
+		});
+		if (!this.vim.status.pending) {
+			this.vimEditor.revealPrimaryCursorIfOutsideViewport();
+			this.syncEditorState();
+		} else {
+			this.syncStatus();
+		}
 	}
 
 	private handleCursorSelectionChanged(source: string): void {
@@ -328,6 +358,76 @@ function readRemapCommands(commands: unknown[]): VimKeyRemapping['commands'] {
 	return result;
 }
 
+function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean, escapeKey: string): string | undefined {
+	switch (keyCode) {
+		case KeyCode.LeftArrow:
+			return 'left';
+		case KeyCode.RightArrow:
+			return 'right';
+		case KeyCode.UpArrow:
+			return 'up';
+		case KeyCode.DownArrow:
+			return 'down';
+		case KeyCode.Home:
+			return 'home';
+		case KeyCode.End:
+			return 'end';
+		case KeyCode.Escape:
+			return escapeKey;
+		case KeyCode.Enter:
+			return 'enter';
+		case KeyCode.Backspace:
+			return 'backspace';
+		case KeyCode.Delete:
+			return 'delete';
+		case KeyCode.Insert:
+			return 'insert';
+		case KeyCode.Space:
+			return 'space';
+		case KeyCode.Semicolon:
+			return shiftKey ? ':' : ';';
+		case KeyCode.Quote:
+			return shiftKey ? '"' : '\'';
+		case KeyCode.Comma:
+			return shiftKey ? '<' : ',';
+		case KeyCode.Period:
+			return shiftKey ? '>' : '.';
+		case KeyCode.Slash:
+			return shiftKey ? '?' : '/';
+		case KeyCode.Backquote:
+			return shiftKey ? '~' : '`';
+		case KeyCode.BracketLeft:
+			return shiftKey ? '{' : '[';
+		case KeyCode.BracketRight:
+			return shiftKey ? '}' : ']';
+		case KeyCode.Backslash:
+			return shiftKey ? '|' : '\\';
+		case KeyCode.Minus:
+			return shiftKey ? '_' : '-';
+		case KeyCode.Equal:
+			return shiftKey ? '+' : '=';
+		default:
+			return undefined;
+	}
+}
+
+function keyForExternalHandlerFromEvent(event: IKeyboardEvent): string | undefined {
+	if (event.metaKey) {
+		return undefined;
+	}
+	if (event.keyCode >= KeyCode.KeyA && event.keyCode <= KeyCode.KeyZ) {
+		const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
+		return event.shiftKey ? letter.toUpperCase() : letter;
+	}
+
+	if (event.keyCode >= KeyCode.Digit0 && event.keyCode <= KeyCode.Digit9) {
+		const digit = event.keyCode - KeyCode.Digit0;
+		return event.shiftKey ? shiftedDigitKey(digit) : String(digit);
+	}
+
+	return keyNameFromKeyCode(event.keyCode, event.shiftKey, 'escape');
+}
+
 function keyFromEvent(event: IKeyboardEvent): string | undefined {
 	if (event.altKey || event.metaKey) {
 		return undefined;
@@ -367,54 +467,5 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 		return event.shiftKey ? shiftedDigitKey(digit) : String(digit);
 	}
 
-	switch (event.keyCode) {
-		case KeyCode.LeftArrow:
-			return 'left';
-		case KeyCode.RightArrow:
-			return 'right';
-		case KeyCode.UpArrow:
-			return 'up';
-		case KeyCode.DownArrow:
-			return 'down';
-		case KeyCode.Home:
-			return 'home';
-		case KeyCode.End:
-			return 'end';
-		case KeyCode.Escape:
-			return '<escape>';
-		case KeyCode.Enter:
-			return 'enter';
-		case KeyCode.Backspace:
-			return 'backspace';
-		case KeyCode.Delete:
-			return 'delete';
-		case KeyCode.Insert:
-			return 'insert';
-		case KeyCode.Space:
-			return 'space';
-		case KeyCode.Semicolon:
-			return event.shiftKey ? ':' : ';';
-		case KeyCode.Quote:
-			return event.shiftKey ? '"' : '\'';
-		case KeyCode.Comma:
-			return event.shiftKey ? '<' : ',';
-		case KeyCode.Period:
-			return event.shiftKey ? '>' : '.';
-		case KeyCode.Slash:
-			return event.shiftKey ? '?' : '/';
-		case KeyCode.Backquote:
-			return event.shiftKey ? '~' : '`';
-		case KeyCode.BracketLeft:
-			return event.shiftKey ? '{' : '[';
-		case KeyCode.BracketRight:
-			return event.shiftKey ? '}' : ']';
-		case KeyCode.Backslash:
-			return event.shiftKey ? '|' : '\\';
-		case KeyCode.Minus:
-			return event.shiftKey ? '_' : '-';
-		case KeyCode.Equal:
-			return event.shiftKey ? '+' : '=';
-		default:
-			return undefined;
-	}
+	return keyNameFromKeyCode(event.keyCode, event.shiftKey, '<escape>');
 }
