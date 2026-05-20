@@ -60,15 +60,46 @@ if [[ -z "$target_root" || $# -gt 0 ]]; then
   exit 1
 fi
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+script_path=$(realpath "${BASH_SOURCE[0]}")
+repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+patch_dir="$repo_root/vscode-contrib/patches"
+patch_files=("$patch_dir"/*.patch)
+if [[ ! -e "${patch_files[0]}" ]]; then
+  echo "error: no VSCode patch files found under $patch_dir" >&2
+  echo "       Make sure you are running the sync script from the vimcode checkout, not a copied script." >&2
+  exit 1
+fi
 
 if [[ ! -d "$target_root/src/vs/editor" ]]; then
   echo "error: target does not look like a VSCode checkout: $target_root" >&2
   exit 1
 fi
 
+patch_targets_for() {
+  local patch_file=$1
+  awk '
+    /^\+\+\+ / {
+      path = $2
+      if (path == "/dev/null") next
+      sub(/^b\//, "", path)
+      print path
+    }
+  ' "$patch_file"
+}
+
+remove_reject_files_for() {
+  local patch_file=$1
+  local patch_path
+
+  while IFS= read -r patch_path; do
+    [[ -n "$patch_path" ]] || continue
+    rm -f "$target_root/$patch_path.rej" "$target_root/$patch_path.orig"
+  done < <(patch_targets_for "$patch_file")
+}
+
 reset_patch_targets() {
   local patch_file
+  local patch_name
   local patch_path
   local -a patch_targets=()
 
@@ -76,20 +107,49 @@ reset_patch_targets() {
     [[ -n "$patch_path" ]] || continue
     patch_targets+=("$patch_path")
   done < <(
-    for patch_file in "$repo_root"/vscode-contrib/patches/*.patch; do
-      [[ -f "$patch_file" ]] || continue
-      git apply --numstat "$patch_file" | awk -F '\t' '{ print $3 }'
+    for patch_file in "${patch_files[@]}"; do
+      patch_targets_for "$patch_file"
     done | sort -u
   )
 
   if [[ ${#patch_targets[@]} -eq 0 ]]; then
-    echo "--from-scratch: no patch target files to revert"
-    return
+    echo "error: --from-scratch could not find any target files in $patch_dir/*.patch" >&2
+    exit 1
   fi
 
   echo "--from-scratch: reverting VSCode files touched by vimcode patches"
   printf '  %s\n' "${patch_targets[@]}"
   (cd "$target_root" && git checkout -- "${patch_targets[@]}")
+
+  for patch_file in "${patch_files[@]}"; do
+    patch_name=$(basename "$patch_file")
+
+    case "$patch_name" in
+      editor-vim-contribution.patch|workbench-vim-status.patch)
+        continue
+        ;;
+    esac
+
+    if (cd "$target_root" && git apply --check "$patch_file" >/dev/null 2>&1); then
+      continue
+    fi
+
+    if (cd "$target_root" && git apply --reverse --check "$patch_file" >/dev/null 2>&1); then
+      (cd "$target_root" && git apply --reverse "$patch_file")
+      echo "--from-scratch: removed already-applied VSCode patch $patch_name"
+      continue
+    fi
+
+    echo "--from-scratch: normalizing partially-applied VSCode patch $patch_name"
+    (cd "$target_root" && git apply --reverse --reject "$patch_file" >/dev/null 2>&1) || true
+    remove_reject_files_for "$patch_file"
+
+    if ! (cd "$target_root" && git apply --check "$patch_file" >/dev/null 2>&1); then
+      echo "error: could not normalize VSCode patch $patch_name" >&2
+      echo "       Try checking out the target VSCode files manually, then re-run --from-scratch." >&2
+      exit 1
+    fi
+  done
 }
 
 if [[ "$from_scratch" == true ]]; then
@@ -210,8 +270,7 @@ apply_patch() {
   fi
 }
 
-for patch_file in "$repo_root"/vscode-contrib/patches/*.patch; do
-  [[ -f "$patch_file" ]] || continue
+for patch_file in "${patch_files[@]}"; do
   apply_patch "$patch_file"
 done
 echo "Synced vim contribution to $target_vim_dir and $target_workbench_vim_dir"
