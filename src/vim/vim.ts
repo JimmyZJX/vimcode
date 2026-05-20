@@ -12,6 +12,7 @@ import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
+import type { NormalKeyResult } from "./normal.js";
 import { MarkState } from "./normal/mark.js";
 import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { MacroState, RecordedSelection, RepeatState, VisualRepeatAction } from "./normal/repeat.js";
@@ -25,6 +26,7 @@ import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
 import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
+import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 
 type PendingFind =
   | { type: "forward"; before: boolean; count: number }
@@ -255,121 +257,10 @@ export class Vim {
       }
     }
 
-    if (this.pendingDigraph !== undefined) {
-      this.handlePendingDigraphKey(key);
-      return "handled";
-    }
+    const pendingResult = this.handlePendingKey(key);
+    if (pendingResult !== undefined) return pendingResult;
 
-    if (this.pendingInsertRegister) {
-      this.handlePendingInsertRegisterKey(key);
-      return "handled";
-    }
-
-    if (this.isEscape(key)) {
-      if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
-      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
-      this.pendingFind = undefined;
-      this.pendingDigraph = undefined;
-      this.searchState.clearPending();
-      this.pendingCommand = undefined;
-      this.normalMode.clearPending();
-      if (
-        this.modeState.kind === "visual"
-        || this.modeState.kind === "visualLine"
-        || this.modeState.kind === "visualBlock"
-      ) {
-        this.visualMode.exit();
-        this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
-      } else if (this.modeState.kind !== "normal") {
-        const modeBeforeEscape = this.modeState.kind;
-        if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
-          this.finishInsertOrReplaceSession(modeBeforeEscape);
-        }
-        enterNormalMode(this.editor, { moveLeft: modeBeforeEscape === "insert" || modeBeforeEscape === "replace" });
-        if (modeBeforeEscape === "insert" && this.insertOrigin === "visualBlock") {
-          this.collapseToFirstCursor();
-        }
-        this.insertOrigin = undefined;
-        this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
-        if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
-          this.editor.finishUndoTransaction();
-        }
-      }
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && this.macroState.wantsRecordRegister()) {
-      this.macroState.handleRecordRegister(key);
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && this.macroState.wantsReplayRegister()) {
-      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
-      this.macroState.replayRegisterKey(key, key => this.onKey(key));
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && this.macroState.isRecording() && key === "q") {
-      this.macroState.stopRecording();
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && key === "q") {
-      this.macroState.startRecordingPrefix();
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && key === "@") {
-      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
-      this.macroState.startReplayPrefix(this.normalMode.takeCountForMotion(1));
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && key === "Q") {
-      if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
-      this.macroState.replayLast(this.normalMode.takeCountForMotion(1), key => this.onKey(key));
-      return "handled";
-    }
-
-    if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
-
-    if (this.pendingCommand !== undefined) {
-      this.handlePendingCommandKey(key);
-      return "handled";
-    }
-
-    if (this.searchState.isPending()) {
-      if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
-      const motion = this.searchState.handleKey(key, this.registers, this.editor);
-      if (motion !== undefined) {
-        this.applyMotion(motion, 1);
-        this.editor.clearSearchHighlights();
-      }
-      return "handled";
-    }
-
-    if (this.pendingFind !== undefined) {
-      if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
-      this.handlePendingFindKey(key);
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && this.markState.isPending()) {
-      const motion = this.markState.handleKey(this.editor, key);
-      if (motion !== undefined) this.applyMotion(motion, 1);
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && this.pendingUnmatched !== undefined) {
-      const pending = this.pendingUnmatched;
-      this.pendingUnmatched = undefined;
-      this.applyMotion(
-        pending.direction === "forward"
-          ? { type: "unmatchedForward", char: key }
-          : { type: "unmatchedBackward", char: key },
-        pending.count);
-      return "handled";
-    }
+    this.recordMacroKey(key);
 
     if (this.isMotionMode() && !this.modeIsExpectingRegisterName() && this.shouldResolveSharedAction(key)) {
       const sharedResolution = this.sharedActionResolver.handleKey(key);
@@ -493,24 +384,10 @@ export class Vim {
       return "handled";
     }
 
-    if (
-      this.modeState.kind === "visual"
-      || this.modeState.kind === "visualLine"
-      || this.modeState.kind === "visualBlock"
-    ) {
+    if (this.isVisualMode()) {
+      const modeBefore = this.modeState.kind;
       const result = this.visualMode.onKey(key);
-      if (result.repeatAction !== undefined && !this.repeatState.isReplaying()) {
-        this.repeatState.recordVisualAction(result.repeatAction.selection, result.repeatAction.action);
-      }
-      if (result.enterInsert) {
-        this.insertOrigin = this.modeState.kind;
-        this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
-      } else if (result.nextMode !== undefined) {
-        this.modeState = { dialect: this.modeState.dialect, kind: result.nextMode };
-      } else if (result.exitVisual) {
-        this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
-      }
-      return result.keyResult;
+      return this.applyVisualResult(result, modeBefore);
     }
 
     if (this.modeState.kind !== "normal") {
@@ -518,46 +395,222 @@ export class Vim {
     }
 
     if (key === "v") {
-      this.visualMode.enter("charwise");
-      this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
+      this.enterVisualMode("charwise", "visual");
       return "handled";
     }
 
     if (key === "V") {
-      this.visualMode.enter("linewise");
-      this.modeState = { dialect: this.modeState.dialect, kind: "visualLine" };
+      this.enterVisualMode("linewise", "visualLine");
       return "handled";
     }
 
     if (key === "ctrl-v") {
-      this.visualMode.enter("blockwise");
-      this.modeState = { dialect: this.modeState.dialect, kind: "visualBlock" };
+      this.enterVisualMode("blockwise", "visualBlock");
       return "handled";
     }
 
     if (key === "R") {
-      this.startInsertOrReplaceSession({ count: this.normalMode.takeCountForMotion(1), separator: "" });
-      this.editor.setCursorStyle("block");
-      this.modeState = { dialect: this.modeState.dialect, kind: "replace" };
+      this.enterReplaceMode({ count: this.normalMode.takeCountForMotion(1), separator: "" });
       return "handled";
     }
 
-    const normalResult = this.normalMode.onKey(key);
-    if (normalResult.enterInsert) {
-      this.insertOrigin = this.modeState.kind;
-      this.startInsertOrReplaceSession({ count: normalResult.insertCount, separator: normalResult.insertSeparator });
-      this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
+    return this.applyNormalResult(this.normalMode.onKey(key));
+  }
+
+  private handlePendingKey(key: string): KeyResult | undefined {
+    if (this.pendingDigraph !== undefined) {
+      this.handlePendingDigraphKey(key);
+      return "handled";
     }
-    return normalResult.keyResult;
+
+    if (this.pendingInsertRegister) {
+      this.handlePendingInsertRegisterKey(key);
+      return "handled";
+    }
+
+    if (this.isEscape(key)) {
+      this.recordEscapeKey();
+      this.handleEscapeKey();
+      return "handled";
+    }
+
+    const macroResult = this.handlePendingMacroKey(key);
+    if (macroResult !== undefined) return macroResult;
+
+    if (this.pendingCommand !== undefined) {
+      this.handlePendingCommandKey(key);
+      return "handled";
+    }
+
+    if (this.searchState.isPending()) {
+      this.recordRepeatKey(key);
+      const motion = this.searchState.handleKey(key, this.registers, this.editor);
+      if (motion !== undefined) {
+        this.applyMotion(motion, 1);
+        this.editor.clearSearchHighlights();
+      }
+      return "handled";
+    }
+
+    if (this.pendingFind !== undefined) {
+      this.recordRepeatKey(key);
+      this.handlePendingFindKey(key);
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && this.markState.isPending()) {
+      const motion = this.markState.handleKey(this.editor, key);
+      if (motion !== undefined) this.applyMotion(motion, 1);
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && this.pendingUnmatched !== undefined) {
+      const pending = this.pendingUnmatched;
+      this.pendingUnmatched = undefined;
+      this.applyMotion(
+        pending.direction === "forward"
+          ? { type: "unmatchedForward", char: key }
+          : { type: "unmatchedBackward", char: key },
+        pending.count);
+      return "handled";
+    }
+
+    return undefined;
+  }
+
+  private handlePendingMacroKey(key: string): KeyResult | undefined {
+    if (this.modeState.kind === "normal" && this.macroState.wantsRecordRegister()) {
+      this.macroState.handleRecordRegister(key);
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && this.macroState.wantsReplayRegister()) {
+      this.recordMacroKey(key);
+      this.macroState.replayRegisterKey(key, key => this.onKey(key));
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && this.macroState.isRecording() && key === "q") {
+      this.macroState.stopRecording();
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && key === "q") {
+      this.macroState.startRecordingPrefix();
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && key === "@") {
+      this.recordMacroKey(key);
+      this.macroState.startReplayPrefix(this.normalMode.takeCountForMotion(1));
+      return "handled";
+    }
+
+    if (this.modeState.kind === "normal" && key === "Q") {
+      this.recordMacroKey(key);
+      this.macroState.replayLast(this.normalMode.takeCountForMotion(1), key => this.onKey(key));
+      return "handled";
+    }
+
+    return undefined;
+  }
+
+  private handleEscapeKey(): void {
+    this.clearPendingStateForEscape();
+    if (this.isVisualMode()) {
+      this.visualMode.exit();
+      this.setMode("normal");
+      return;
+    }
+    if (this.modeState.kind !== "normal") {
+      const modeBeforeEscape = this.modeState.kind;
+      if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
+        this.finishInsertOrReplaceSession(modeBeforeEscape);
+      }
+      enterNormalMode(this.editor, { moveLeft: modeBeforeEscape === "insert" || modeBeforeEscape === "replace" });
+      if (modeBeforeEscape === "insert" && this.insertOrigin === "visualBlock") {
+        this.collapseToFirstCursor();
+      }
+      this.insertOrigin = undefined;
+      this.setMode("normal");
+      if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
+        this.editor.finishUndoTransaction();
+      }
+    }
+  }
+
+  private clearPendingStateForEscape(): void {
+    this.pendingFind = undefined;
+    this.pendingDigraph = undefined;
+    this.searchState.clearPending();
+    this.pendingCommand = undefined;
+    this.normalMode.clearPending();
+  }
+
+  private recordEscapeKey(): void {
+    this.recordRepeatKey("<escape>");
+    this.recordMacroKey("<escape>");
+  }
+
+  private recordRepeatKey(key: string): void {
+    if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
+  }
+
+  private recordMacroKey(key: string): void {
+    if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
+  }
+
+  private applyVisualResult(result: VisualKeyResult, modeBefore: VimMode["kind"]): KeyResult {
+    if (result.repeatAction !== undefined && !this.repeatState.isReplaying()) {
+      this.repeatState.recordVisualAction(result.repeatAction.selection, result.repeatAction.action);
+    }
+    if (result.enterInsert) {
+      this.enterInsertMode({ origin: modeBefore });
+    } else if (result.nextMode !== undefined) {
+      this.setMode(result.nextMode);
+    } else if (result.exitVisual) {
+      this.setMode("normal");
+    }
+    return result.keyResult;
+  }
+
+  private applyNormalResult(result: NormalKeyResult): KeyResult {
+    if (result.enterInsert) {
+      this.enterInsertMode({
+        origin: this.modeState.kind,
+        count: result.insertCount,
+        separator: result.insertSeparator,
+      });
+    }
+    return result.keyResult;
+  }
+
+  private enterVisualMode(kind: Parameters<VisualMode["enter"]>[0], mode: Extract<VisualResultMode, "visual" | "visualLine" | "visualBlock">): void {
+    this.visualMode.enter(kind);
+    this.setMode(mode);
+  }
+
+  private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode["kind"]; count?: number; separator?: string }): void {
+    this.insertOrigin = origin;
+    this.startInsertOrReplaceSession({ count, separator });
+    this.setMode("insert");
+  }
+
+  private enterReplaceMode({ count, separator }: { count: number; separator: string }): void {
+    this.startInsertOrReplaceSession({ count, separator });
+    this.editor.setCursorStyle("block");
+    this.setMode("replace");
+  }
+
+  private setMode(kind: Exclude<VimMode["kind"], "select">): void {
+    this.modeState = { dialect: this.modeState.dialect, kind };
   }
 
   private enterInsertAtPrevious(): void {
     const position = this.lastInsertPosition;
     if (position !== undefined) this.editor.setSelections([charwiseSelection(position)]);
     this.editor.setCursorStyle("line");
-    this.insertOrigin = this.modeState.kind;
-    this.startInsertOrReplaceSession({ count: this.takeCountForMotion(1), separator: "" });
-    this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
+    this.enterInsertMode({ origin: this.modeState.kind, count: this.takeCountForMotion(1) });
   }
 
   private startInsertOrReplaceSession({ count, separator }: { count: number; separator: string }): void {
