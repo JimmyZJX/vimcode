@@ -20,6 +20,8 @@ export type VimKeyRemapping = {
 
 export type RawVimConfiguration = Record<string, unknown>;
 
+export const NoopKey = "<nop>";
+
 export type VimConfiguration = {
   leader: string;
   normalModeKeyBindings: readonly VimKeyRemapping[];
@@ -211,6 +213,7 @@ export function normalizeKey(key: string, leader: string): string {
   if (!normalized.startsWith("<") || !normalized.endsWith(">")) normalized = `<${normalized}>`;
 
   if (normalized === "<leader>") return leader;
+  if (normalized === "<nop>") return NoopKey;
   if (normalized === "<space>") return "space";
   if (normalized === "<cr>" || normalized === "<enter>" || normalized === "<return>") return "enter";
   if (normalized === "<esc>" || normalized === "<escape>") return "<escape>";

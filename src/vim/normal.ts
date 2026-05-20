@@ -5,6 +5,7 @@
 // - intentional differences: this first slice hard-codes a small keymap instead of using
 //   Zed's declarative key-context system.
 
+import { lookupDigraph } from "./digraph.js";
 import { VimEditorCapabilities } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
 import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
@@ -66,6 +67,7 @@ export class NormalMode {
   private pendingIndentTextObject: PendingIndentTextObject | undefined;
   private pendingSurround: PendingSurround | undefined;
   private pendingReplaceCount: number | undefined;
+  private pendingReplaceDigraph: { count: number; first?: string } | undefined;
   private selectedRegister: RegisterName | undefined;
 
   constructor(
@@ -74,7 +76,7 @@ export class NormalMode {
   ) {}
 
   isPending(): boolean {
-    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingConvert !== undefined || this.pendingConvertTextObject !== undefined || this.pendingIndent !== undefined || this.pendingIndentTextObject !== undefined || this.pendingSurround !== undefined || this.pendingReplaceCount !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
+    return this.pendingOperator !== undefined || this.pendingPrefix !== undefined || this.pendingTextObject !== undefined || this.pendingConvert !== undefined || this.pendingConvertTextObject !== undefined || this.pendingIndent !== undefined || this.pendingIndentTextObject !== undefined || this.pendingSurround !== undefined || this.pendingReplaceCount !== undefined || this.pendingReplaceDigraph !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
   }
 
   pendingOperatorName(): Operator | undefined {
@@ -103,6 +105,7 @@ export class NormalMode {
       || this.pendingIndentTextObject !== undefined
       || this.pendingSurround !== undefined
       || this.pendingReplaceCount !== undefined
+      || this.pendingReplaceDigraph !== undefined
       || this.selectedRegister !== undefined;
   }
 
@@ -138,6 +141,7 @@ export class NormalMode {
     this.pendingIndentTextObject = undefined;
     this.pendingSurround = undefined;
     this.pendingReplaceCount = undefined;
+    this.pendingReplaceDigraph = undefined;
     this.selectedRegister = undefined;
   }
 
@@ -145,6 +149,11 @@ export class NormalMode {
   // This first slice hard-codes the tiny keymap until we introduce a Zed-like
   // declarative keymap file.
   onKey(key: string): NormalKeyResult {
+    if (this.pendingReplaceDigraph !== undefined) {
+      this.handleReplaceDigraphKey(key);
+      return handled();
+    }
+
     if (this.pendingReplaceCount !== undefined) {
       this.handleReplaceKey(key);
       return handled();
@@ -521,7 +530,22 @@ export class NormalMode {
     const count = this.pendingReplaceCount;
     this.pendingReplaceCount = undefined;
     if (count === undefined || key.length === 0) return;
-    replaceCharacters(this.editor, key, count);
+    if (key === "ctrl-k") {
+      this.pendingReplaceDigraph = { count };
+      return;
+    }
+    replaceCharacters(this.editor, keyForInput(key), count);
+  }
+
+  private handleReplaceDigraphKey(key: string): void {
+    const pending = this.pendingReplaceDigraph;
+    if (pending === undefined) return;
+    if (pending.first === undefined) {
+      this.pendingReplaceDigraph = { ...pending, first: keyForInput(key) };
+      return;
+    }
+    this.pendingReplaceDigraph = undefined;
+    replaceCharacters(this.editor, lookupDigraph(pending.first, keyForInput(key)), pending.count);
   }
 
   private handleSurroundKey(key: string): boolean {
@@ -784,6 +808,10 @@ function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: num
   if (first < 0) return range;
   const last = line.search(/\s*$/);
   return { start: { row, column: first }, end: { row, column: last } };
+}
+
+function keyForInput(key: string): string {
+  return key === "space" ? " " : key;
 }
 
 function isOperatorKey(key: string): boolean {

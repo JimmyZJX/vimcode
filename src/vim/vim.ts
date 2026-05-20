@@ -6,7 +6,8 @@
 //   from the VSCode patch / tests.
 
 import { LineRange, executeCommand } from "./command.js";
-import { AmbiguousRemapConflict, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
+import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
+import { lookupDigraph } from "./digraph.js";
 import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
@@ -28,6 +29,10 @@ import { VisualMode } from "./visual.js";
 type PendingFind =
   | { type: "forward"; before: boolean; count: number }
   | { type: "backward"; after: boolean; count: number };
+
+type PendingDigraph =
+  | { target: "insert" | "replace"; first?: string }
+  | { target: "find"; pending: PendingFind; first?: string };
 
 type PendingUnmatched = { direction: "forward" | "backward"; count: number };
 
@@ -57,6 +62,7 @@ export class Vim {
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remapResolver = new RemapResolver(this.configuration);
   private pendingCommand: string | undefined;
+  private pendingDigraph: PendingDigraph | undefined;
   private pendingInsertRegister = false;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
@@ -135,6 +141,7 @@ export class Vim {
   shouldHandleInsertKey(key: string): boolean {
     return this.remapResolver.isPending()
       || this.remapResolver.hasMappings("insert")
+      || key === "ctrl-k"
       || key === "ctrl-r"
       || key === "ctrl-w"
       || key === "ctrl-u"
@@ -150,6 +157,7 @@ export class Vim {
     this.markState.clearPending();
     this.searchState.clearPending();
     this.pendingCommand = undefined;
+    this.pendingDigraph = undefined;
     this.pendingInsertRegister = false;
     this.normalMode.clearPending();
     const selections = this.editor.getSelections();
@@ -172,11 +180,12 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.sharedActionResolver.isPending() || this.remapResolver.isPending() || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || this.pendingInsertRegister || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.pendingDigraph !== undefined || this.sharedActionResolver.isPending() || this.remapResolver.isPending() || this.normalChordResolver.isPending() || this.markState.isPending() || this.searchState.isPending() || this.pendingCommand !== undefined || this.pendingInsertRegister || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
+    if (this.pendingDigraph !== undefined) return "ctrl-k";
     if (this.pendingInsertRegister) return "ctrl-r";
     if (this.remapResolver.isPending()) return this.remapResolver.pendingChord();
     if (this.searchState.isPending()) return this.searchState.pendingChord();
@@ -246,6 +255,11 @@ export class Vim {
       }
     }
 
+    if (this.pendingDigraph !== undefined) {
+      this.handlePendingDigraphKey(key);
+      return "handled";
+    }
+
     if (this.pendingInsertRegister) {
       this.handlePendingInsertRegisterKey(key);
       return "handled";
@@ -255,6 +269,7 @@ export class Vim {
       if (!this.repeatState.isReplaying()) this.repeatState.recordKey(key);
       if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
       this.pendingFind = undefined;
+      this.pendingDigraph = undefined;
       this.searchState.clearPending();
       this.pendingCommand = undefined;
       this.normalMode.clearPending();
@@ -425,6 +440,10 @@ export class Vim {
     }
 
     if (this.modeState.kind === "insert") {
+      if (key === "ctrl-k") {
+        this.pendingDigraph = { target: "insert" };
+        return "handled";
+      }
       if (key === "ctrl-r") {
         this.pendingInsertRegister = true;
         return "handled";
@@ -446,6 +465,10 @@ export class Vim {
     }
 
     if (this.modeState.kind === "replace") {
+      if (key === "ctrl-k") {
+        this.pendingDigraph = { target: "replace" };
+        return "handled";
+      }
       if (key.length === 1 || key === "\n" || key === "enter") {
         const text = key === "enter" ? "\n" : key;
         replaceModeText(this.editor, text, 1);
@@ -460,7 +483,7 @@ export class Vim {
       if (handled) return "handled";
     }
 
-    if (this.modeState.kind === "normal" && key === ":") {
+    if (this.modeState.kind === "normal" && !this.normalMode.hasPendingNonCount() && key === ":") {
       this.pendingCommand = "";
       return "handled";
     }
@@ -566,6 +589,7 @@ export class Vim {
       && !this.markState.isPending()
       && !this.searchState.isPending()
       && this.pendingCommand === undefined
+      && this.pendingDigraph === undefined
       && !this.pendingInsertRegister;
   }
 
@@ -578,6 +602,7 @@ export class Vim {
   private executeRemapping(mapping: NormalizedRemapping): void {
     const skipFirstRecursiveKey = mapping.recursive && isPrefixOrEqual(mapping.before, mapping.after);
     for (const [index, key] of mapping.after.entries()) {
+      if (key === NoopKey) continue;
       this.onKeyInternal(key, { allowRemap: mapping.recursive && !(skipFirstRecursiveKey && index === 0) });
     }
     for (const command of mapping.commands) this.executeMappedCommand(command);
@@ -728,7 +753,14 @@ export class Vim {
     const pending = this.pendingFind;
     this.pendingFind = undefined;
     if (pending === undefined) return;
-    const char = key === "space" ? " " : key;
+    if (key === "ctrl-k") {
+      this.pendingDigraph = { target: "find", pending };
+      return;
+    }
+    this.applyFindChar(pending, keyForInput(key));
+  }
+
+  private applyFindChar(pending: PendingFind, char: string): void {
     const motion: FindMotion = pending.type === "forward"
       ? { type: "findForward", before: pending.before, char }
       : { type: "findBackward", after: pending.after, char };
@@ -739,6 +771,36 @@ export class Vim {
   private repeatFind({ reversed }: { reversed: boolean }): void {
     if (this.lastFind === undefined) return;
     this.applyMotion(reversed ? reverseFindMotion(this.lastFind) : this.lastFind, this.takeCountForMotion(1));
+  }
+
+  private handlePendingDigraphKey(key: string): void {
+    const pending = this.pendingDigraph;
+    if (pending === undefined) return;
+    if (this.isEscape(key)) {
+      this.pendingDigraph = undefined;
+      return;
+    }
+    const input = keyForInput(key);
+    if (pending.first === undefined) {
+      this.pendingDigraph = { ...pending, first: input };
+      return;
+    }
+
+    this.pendingDigraph = undefined;
+    const text = lookupDigraph(pending.first, input);
+    switch (pending.target) {
+      case "insert":
+        insertText(this.editor, text);
+        this.insertRepeatText += text;
+        return;
+      case "replace":
+        replaceModeText(this.editor, text, 1);
+        this.insertRepeatText += text;
+        return;
+      case "find":
+        this.applyFindChar(pending.pending, text);
+        return;
+    }
   }
 
   private handlePendingInsertRegisterKey(key: string): void {
@@ -852,6 +914,10 @@ export class Vim {
   }
 }
 
+function keyForInput(key: string): string {
+  return key === "space" ? " " : key;
+}
+
 function isPrefixOrEqual(prefix: readonly string[], full: readonly string[]): boolean {
   return prefix.length <= full.length && prefix.every((key, index) => key === full[index]);
 }
@@ -868,6 +934,7 @@ function isBuiltInCtrlKey(key: string): boolean {
     case "ctrl-e":
     case "ctrl-f":
     case "ctrl-i":
+    case "ctrl-k":
     case "ctrl-o":
     case "ctrl-r":
     case "ctrl-u":

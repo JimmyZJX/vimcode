@@ -126,6 +126,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(normalizeKey("<Delete>", "\\")).toBe("delete");
     expect(normalizeKey("<Ins>", "\\")).toBe("insert");
     expect(normalizeKey("<Insert>", "\\")).toBe("insert");
+    expect(normalizeKey("<Nop>", "\\")).toBe("<nop>");
     expect(normalizeKey("<space>", "\\")).toBe("space");
     expect(normalizeKey("<leader>", "space")).toBe("space");
   });
@@ -141,6 +142,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 4 });
   });
 
+  it("supports <Nop> normal remaps", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["x"], after: ["<Nop>"] }],
+    });
+
+    runKeys(vim, ["x"]);
+
+    expect(editor.getText()).toBe("abc");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
   it("supports VSCodeVim-style insert remaps", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor, {
@@ -150,6 +163,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["A", "j", "j"]);
 
     expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("one");
+  });
+
+  it("supports <Nop> insert remaps", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [{ before: ["x"], after: ["<Nop>"] }],
+    });
+
+    runKeys(vim, ["A", "x"]);
+
+    expect(vim.modeName).toBe("vim:insert");
     expect(editor.getText()).toBe("one");
   });
 
