@@ -8,7 +8,7 @@ import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
 import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
-import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from '../common/editor.js';
+import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
@@ -129,8 +129,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 	}
 
-	executeNativeCommand(command: string, args: readonly unknown[] = []): void {
-		const selectionsToRestore = visualSemanticSelections(this.lastSetVimSelections);
+	executeNativeCommand(command: string, args: readonly unknown[] = [], options: NativeCommandOptions = {}): void {
+		const selectionsToRestore = options.preserveVisualSelection === true
+			? visualSemanticSelections(this.lastSetVimSelections)
+			: undefined;
 		this.nativeCommandInProgress = true;
 		void this.commandService.executeCommand(command, ...args).finally(() => {
 			this.nativeCommandInProgress = false;

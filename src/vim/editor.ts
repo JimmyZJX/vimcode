@@ -29,6 +29,10 @@ export type ApplyEditsOptions = {
   undoStopAfter?: boolean;
 };
 
+export type NativeCommandOptions = {
+  preserveVisualSelection?: boolean;
+};
+
 // Zed: `vim::Vim::update_editor` is the closest
 // equivalent boundary, but it closes over Zed's concrete `Editor`. This interface
 // is intentionally local: production VSCode and fake tests both implement it.
@@ -46,7 +50,7 @@ export interface VimEditorCapabilities {
   finishUndoTransaction(): void;
 
   executeHostCommand(command: HostCommand): void;
-  executeNativeCommand(command: string, args?: readonly unknown[]): void;
+  executeNativeCommand(command: string, args?: readonly unknown[], options?: NativeCommandOptions): void;
   isExecutingNativeCommand?(): boolean;
   revealPrimaryCursorIfOutsideViewport(): void;
   revealCurrentLine(target: HostRevealTarget): void;
@@ -238,7 +242,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     }
   }
 
-  executeNativeCommand(command: string, args: readonly unknown[] = []): void {
+  executeNativeCommand(command: string, args: readonly unknown[] = [], _options: NativeCommandOptions = {}): void {
     this.nativeCommands.push({ command, args });
   }
 

@@ -616,14 +616,14 @@ export class Vim {
   private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
     if (typeof command === "string") {
       if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range) });
-      else this.editor.executeNativeCommand(command);
+      else this.editor.executeNativeCommand(command, [], { preserveVisualSelection: this.isVisualMode() });
       return;
     }
 
     if (command.command.startsWith(":")) {
       executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range) });
     } else {
-      this.editor.executeNativeCommand(command.command, commandArgs(command));
+      this.editor.executeNativeCommand(command.command, commandArgs(command), { preserveVisualSelection: this.isVisualMode() });
     }
   }
 
