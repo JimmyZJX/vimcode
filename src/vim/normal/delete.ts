@@ -144,7 +144,8 @@ export function deleteCharacters(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  count: number
+  count: number,
+  options: ApplyEditsOptions = {}
 ): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
@@ -169,5 +170,5 @@ export function deleteCharacters(
   }
 
   if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, options);
 }

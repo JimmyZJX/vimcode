@@ -54,6 +54,8 @@ type LinewiseVisualState = {
   anchorLine: number;
   headLine: number;
   headColumn: number;
+  cursor?: Position;
+  goal?: VimSelectionGoal;
 };
 
 type BlockwiseVisualState = {
@@ -416,7 +418,7 @@ export class VisualMode {
           registerName,
           () => charwiseVisualRange(this.editor, state),
           (_editor, range) => range.start,
-          { selectionsBefore: visualUndoSelections(state) }
+          { selectionsBefore: visualUndoSelections(state), undoStopAfter: false }
         );
         break;
       case "linewise":
@@ -484,6 +486,16 @@ export class VisualMode {
       if (hostSelections !== undefined) {
         this.editor.setSelections(hostSelections);
         this.adoptSelectionFromHost();
+        return;
+      }
+    }
+    if (state.kind === "linewise" && (motion.type === "up" || motion.type === "down")) {
+      const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine, extend: false });
+      const hostSelection = hostSelections?.[0];
+      if (hostSelection?.type === "charwise") {
+        const head = selectionHead(hostSelection);
+        this.state = { ...state, headLine: head.row, headColumn: head.column, goal: hostSelection.goal };
+        this.syncEditorSelection();
         return;
       }
     }
@@ -710,16 +722,16 @@ function linewiseStateAfterMotion(
 ): LinewiseVisualState {
   switch (motion.type) {
     case "up":
-      return { ...state, headLine: Math.max(0, state.headLine - 1) };
+      return { ...state, headLine: Math.max(0, state.headLine - 1), goal: undefined };
     case "down":
-      return { ...state, headLine: Math.min(editor.lineCount() - 1, state.headLine + 1) };
+      return { ...state, headLine: Math.min(editor.lineCount() - 1, state.headLine + 1), goal: undefined };
     case "endOfDocument":
-      return { ...state, headLine: editor.lineCount() - 1 };
+      return { ...state, headLine: editor.lineCount() - 1, goal: undefined };
     case "endOfLine":
       return { ...state, headColumn: editor.lineLength(state.headLine) };
     default: {
-      const { position } = applyMotionWithGoal(editor, linewiseCursor(editor, state), motion, 1);
-      return { ...state, headLine: position.row, headColumn: position.column };
+      const result = applyMotionWithGoal(editor, linewiseCursor(editor, state), motion, 1, state.goal);
+      return { ...state, headLine: result.position.row, headColumn: result.position.column, goal: result.goal };
     }
   }
 }
@@ -834,7 +846,7 @@ function cloneVisualState(state: VisualState): VisualState {
     case "charwise":
       return { ...state, anchor: { ...state.anchor }, head: { ...state.head }, goal: cloneGoal(state.goal) };
     case "linewise":
-      return { ...state };
+      return { ...state, cursor: state.cursor === undefined ? undefined : { ...state.cursor }, goal: cloneGoal(state.goal) };
     case "blockwise":
       return { ...state, anchor: { ...state.anchor }, head: { ...state.head }, goal: cloneGoal(state.goal) };
   }
@@ -854,6 +866,7 @@ function visualStateToEditorSelection(editor: VimEditorCapabilities, state: Visu
         anchorLine: state.anchorLine,
         headLine: state.headLine,
         cursor: linewiseCursor(editor, state),
+        goal: state.goal,
       };
     case "blockwise":
       return { type: "blockwise", anchor: state.anchor, head: state.head, cursor: state.head, goal: state.goal };
@@ -916,11 +929,15 @@ function charwiseStateForRange(editor: VimEditorCapabilities, range: TextRange):
 
 function paragraphLinewiseStateForRange(editor: VimEditorCapabilities, range: TextRange): LinewiseVisualState {
   const endLineLength = editor.lineLength(range.end.row);
+  const headColumn = range.start.row === range.end.row || endLineLength === 0 ? 0 : 1;
   return {
     kind: "linewise",
     anchorLine: range.start.row,
     headLine: range.end.row,
-    headColumn: range.start.row === range.end.row || endLineLength === 0 ? 0 : 1,
+    headColumn,
+    cursor: endLineLength === 0 && range.end.row + 1 < editor.lineCount()
+      ? { row: range.end.row + 1, column: 0 }
+      : undefined,
   };
 }
 
@@ -1081,8 +1098,8 @@ function visualExitPosition(editor: VimEditorCapabilities, state: VisualState): 
 }
 
 function linewiseCursor(editor: VimEditorCapabilities, state: LinewiseVisualState): Position {
+  if (state.cursor !== undefined) return state.cursor;
   const row = state.headLine;
-  if (editor.lineLength(row) === 0 && row + 1 < editor.lineCount()) return { row: row + 1, column: 0 };
   return { row, column: Math.min(state.headColumn, Math.max(0, editor.lineLength(row) - 1)) };
 }
 
@@ -1144,7 +1161,7 @@ function changeLinewise(
   editor.applyEdits(
     [{ range: linewiseEditRange(editor, state), text: "\n" }],
     [charwiseSelection({ row: startLine, column: 0 })],
-    { selectionsBefore: visualUndoSelections(state) }
+    { selectionsBefore: visualUndoSelections(state), undoStopAfter: false }
   );
 }
 
@@ -1280,7 +1297,7 @@ function deleteBlockwise(
   const selectionsAfter = collapse
     ? [charwiseSelection({ row: startRow, column: startColumn })]
     : blockInsertSelections(editor, state, { side: "start" });
-  editor.applyEdits(edits, selectionsAfter, { selectionsBefore: visualUndoSelections(state) });
+  editor.applyEdits(edits, selectionsAfter, { selectionsBefore: visualUndoSelections(state), undoStopAfter: collapse });
 }
 
 function enterBlockInsert(

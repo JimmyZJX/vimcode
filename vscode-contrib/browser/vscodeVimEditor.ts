@@ -15,6 +15,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
+	private nativeCommandInProgress = false;
 
 	constructor(
 		private readonly editor: ICodeEditor,
@@ -94,7 +95,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.rememberSelections(selectionsBefore, loweredBefore.selections);
 			this.editor.setSelections(loweredBefore.selections, 'vim.undoBefore');
 		}
-		this.editor.pushUndoStop();
+		if (options.undoStopBefore !== false) this.editor.pushUndoStop();
 		const vscodeEdits: IIdentifiedSingleEditOperation[] = edits.map(edit => ({
 			range: toRange(edit.range),
 			text: edit.text,
@@ -103,6 +104,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.updateVisualLineDecorations(selectionsAfter);
 		this.rememberSelections(selectionsAfter, lowered.selections);
 		this.editor.executeEdits('vim', vscodeEdits, lowered.selections);
+		if (options.undoStopAfter !== false) this.editor.pushUndoStop();
+	}
+
+	finishUndoTransaction(): void {
 		this.editor.pushUndoStop();
 	}
 
@@ -125,8 +130,18 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	executeNativeCommand(command: string, args: readonly unknown[] = []): void {
-		this.invalidateCachedSelections();
-		this.commandService.executeCommand(command, ...args);
+		const selectionsToRestore = visualSemanticSelections(this.lastSetVimSelections);
+		this.nativeCommandInProgress = true;
+		void this.commandService.executeCommand(command, ...args).finally(() => {
+			this.nativeCommandInProgress = false;
+			if (selectionsToRestore !== undefined) {
+				this.setSelections(selectionsToRestore);
+			}
+		});
+	}
+
+	isExecutingNativeCommand(): boolean {
+		return this.nativeCommandInProgress;
 	}
 
 	revealPrimaryCursorIfOutsideViewport(): void {
@@ -164,7 +179,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		const converter = viewModel.coordinatesConverter;
 		const lineCount = viewModel.model.getLineCount();
 		return this.getSelections().map(selection => {
-			const head = selection.type === 'charwise' ? selection.cursor ?? selection.head : selectionHead(selection);
+			const head = selection.cursor ?? selectionHead(selection);
 			const modelPosition = new VSCodePosition(head.row + 1, head.column + 1);
 			const viewPosition = converter.convertModelPositionToViewPosition(modelPosition, PositionAffinity.None, false, direction === 'down');
 			const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
@@ -273,13 +288,27 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.visualLineDecorations.clear();
 			return false;
 		}
-		const matches = selections.every((selection, index) => selection.equalsSelection(this.lastSetVSCodeSelections![index]));
+		const matches = selections.every((selection, index) => this.selectionMatchesLastSet(selection, this.lastSetVSCodeSelections![index], this.lastSetVimSelections![index]));
 		if (!matches) {
 			this.lastSetVimSelections = undefined;
 			this.lastSetVSCodeSelections = undefined;
 			this.visualLineDecorations.clear();
 		}
 		return matches;
+	}
+
+	private selectionMatchesLastSet(selection: Selection, lastSetSelection: Selection, lastSetVimSelection: VimSelection | undefined): boolean {
+		if (selection.equalsSelection(lastSetSelection)) {
+			return true;
+		}
+		if (lastSetVimSelection?.type !== 'linewise') {
+			return false;
+		}
+		const startLine = Math.min(lastSetVimSelection.anchorLine, lastSetVimSelection.headLine) + 1;
+		const endLine = Math.max(lastSetVimSelection.anchorLine, lastSetVimSelection.headLine) + 1;
+		const selectionStartLine = Math.min(selection.selectionStartLineNumber, selection.positionLineNumber);
+		const selectionEndLine = Math.max(selection.selectionStartLineNumber, selection.positionLineNumber);
+		return selectionStartLine === startLine && selectionEndLine === endLine;
 	}
 
 	private lowerSelections(selections: readonly VimSelection[]): { selections: Selection[]; cursorPositions: VSCodePosition[] } {
@@ -308,9 +337,13 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				};
 			}
 			case 'linewise': {
+				const startLine = Math.min(selection.anchorLine, selection.headLine) + 1;
+				const endLine = Math.max(selection.anchorLine, selection.headLine) + 1;
 				const cursor = this.linewiseCursorPosition(selection);
-				const vscodeSelection = new Selection(cursor.lineNumber, cursor.column, cursor.lineNumber, cursor.column);
-				return { selections: [vscodeSelection], cursorPositions: [] };
+				const vscodeSelection = selection.headLine < selection.anchorLine
+					? new Selection(endLine, this.model().getLineMaxColumn(endLine), startLine, 1)
+					: new Selection(startLine, 1, endLine, this.model().getLineMaxColumn(endLine));
+				return { selections: [vscodeSelection], cursorPositions: [cursor] };
 			}
 			case 'blockwise':
 				return this.lowerBlockwiseSelection(selection);
@@ -370,6 +403,21 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 		this.visualLineDecorations.set(decorations);
 	}
+}
+
+function visualSemanticSelections(selections: readonly VimSelection[] | undefined): readonly VimSelection[] | undefined {
+	if (selections === undefined) {
+		return undefined;
+	}
+	return selections.some(selection => {
+		switch (selection.type) {
+			case 'charwise':
+				return comparePositions(selection.anchor, selection.head) !== 0;
+			case 'linewise':
+			case 'blockwise':
+				return true;
+		}
+	}) ? selections : undefined;
 }
 
 function extendCharwiseSelection(

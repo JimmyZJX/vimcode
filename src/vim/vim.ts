@@ -282,13 +282,18 @@ export class Vim {
         this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
       } else if (this.modeState.kind !== "normal") {
         const modeBeforeEscape = this.modeState.kind;
-        if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") this.finishInsertOrReplaceSession(modeBeforeEscape);
+        if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
+          this.finishInsertOrReplaceSession(modeBeforeEscape);
+        }
         enterNormalMode(this.editor, { moveLeft: modeBeforeEscape === "insert" || modeBeforeEscape === "replace" });
         if (modeBeforeEscape === "insert" && this.insertOrigin === "visualBlock") {
           this.collapseToFirstCursor();
         }
         this.insertOrigin = undefined;
         this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+        if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
+          this.editor.finishUndoTransaction();
+        }
       }
       return "handled";
     }

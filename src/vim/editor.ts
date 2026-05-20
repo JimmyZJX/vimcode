@@ -23,7 +23,11 @@ export type HostCommand = "navigateBack" | "navigateForward" | "undo" | "redo";
 export type HostDirection = "up" | "down";
 export type HostRevealTarget = "top" | "center" | "bottom";
 export type HostFoldCommand = "toggle" | "open" | "close" | "openRecursive" | "closeRecursive" | "openAll" | "closeAll";
-export type ApplyEditsOptions = { selectionsBefore?: readonly VimSelection[] };
+export type ApplyEditsOptions = {
+  selectionsBefore?: readonly VimSelection[];
+  undoStopBefore?: boolean;
+  undoStopAfter?: boolean;
+};
 
 // Zed: `vim::Vim::update_editor` is the closest
 // equivalent boundary, but it closes over Zed's concrete `Editor`. This interface
@@ -39,9 +43,11 @@ export interface VimEditorCapabilities {
   setCursorStyle(style: CursorStyle): void;
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options?: ApplyEditsOptions): void;
+  finishUndoTransaction(): void;
 
   executeHostCommand(command: HostCommand): void;
   executeNativeCommand(command: string, args?: readonly unknown[]): void;
+  isExecutingNativeCommand?(): boolean;
   revealPrimaryCursorIfOutsideViewport(): void;
   revealCurrentLine(target: HostRevealTarget): void;
   executeFoldCommand(command: HostFoldCommand): void;
@@ -93,9 +99,19 @@ function exclusiveVisualHead(editor: VimEditorCapabilities, head: Position): Pos
 // `test::neovim_backed_test_context::NeovimBackedTestContext`
 // motivate this fake editor. It is not a port of either; it is the local host
 // implementation used for capability-interface tests.
+type UndoSnapshot = {
+  textBefore: string;
+  textAfter: string;
+  selectionsBefore: VimSelection[];
+  selectionsAfter: VimSelection[];
+};
+
 export class InMemoryVimEditor implements VimEditorCapabilities {
   private lines: string[];
   private selections: VimSelection[];
+  private undoStack: UndoSnapshot[] = [];
+  private redoStack: UndoSnapshot[] = [];
+  private pendingUndoSnapshot: UndoSnapshot | undefined;
   public cursorStyle: CursorStyle = "block";
   public readonly nativeCommands: { command: string; args: readonly unknown[] }[] = [];
 
@@ -165,21 +181,62 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
           };
       }
     });
+    if (this.pendingUndoSnapshot !== undefined) {
+      this.pendingUndoSnapshot = {
+        ...this.pendingUndoSnapshot,
+        selectionsAfter: cloneSelections(this.selections),
+      };
+    }
   }
 
   setCursorStyle(style: CursorStyle): void {
     this.cursorStyle = style;
   }
 
-  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], _options: ApplyEditsOptions = {}): void {
+  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
+    const undoStopBefore = options.undoStopBefore ?? true;
+    const undoStopAfter = options.undoStopAfter ?? true;
+    if (undoStopBefore && this.pendingUndoSnapshot === undefined) this.finishUndoTransaction();
+
+    const snapshotBefore = this.pendingUndoSnapshot;
+    const textBefore = snapshotBefore?.textBefore ?? this.getText();
+    const selectionsBefore = cloneSelections(snapshotBefore?.selectionsBefore ?? options.selectionsBefore ?? this.selections);
     const sortedEdits = [...edits].sort((a, b) => -comparePositions(a.range.start, b.range.start));
     for (const edit of sortedEdits) {
       this.replace(edit.range, edit.text);
     }
     this.setSelections(selectionsAfter);
+    const textAfter = this.getText();
+    const storedSelectionsAfter = cloneSelections(this.selections);
+    if (textBefore !== textAfter || !selectionsEqual(selectionsBefore, storedSelectionsAfter)) {
+      this.pendingUndoSnapshot = { textBefore, textAfter, selectionsBefore, selectionsAfter: storedSelectionsAfter };
+      this.redoStack = [];
+    }
+    if (undoStopAfter && snapshotBefore === undefined) this.finishUndoTransaction();
   }
 
-  executeHostCommand(_command: HostCommand): void {}
+  finishUndoTransaction(): void {
+    const snapshot = this.pendingUndoSnapshot;
+    if (snapshot === undefined) return;
+    this.pendingUndoSnapshot = undefined;
+    if (snapshot.textBefore !== snapshot.textAfter || !selectionsEqual(snapshot.selectionsBefore, snapshot.selectionsAfter)) {
+      this.undoStack.push(snapshot);
+    }
+  }
+
+  executeHostCommand(command: HostCommand): void {
+    switch (command) {
+      case "undo":
+        this.undo();
+        return;
+      case "redo":
+        this.redo();
+        return;
+      case "navigateBack":
+      case "navigateForward":
+        return;
+    }
+  }
 
   executeNativeCommand(command: string, args: readonly unknown[] = []): void {
     this.nativeCommands.push({ command, args });
@@ -216,9 +273,27 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   clearSearchHighlights(): void {}
 
+  private undo(): void {
+    this.finishUndoTransaction();
+    const snapshot = this.undoStack.pop();
+    if (snapshot === undefined) return;
+    this.lines = snapshot.textBefore.split("\n");
+    this.setSelections(snapshot.selectionsBefore);
+    this.redoStack.push(snapshot);
+  }
+
+  private redo(): void {
+    this.finishUndoTransaction();
+    const snapshot = this.redoStack.pop();
+    if (snapshot === undefined) return;
+    this.lines = snapshot.textAfter.split("\n");
+    this.setSelections(snapshot.selectionsAfter);
+    this.undoStack.push(snapshot);
+  }
+
   private modelRowSelections(direction: HostDirection, count: number, { extend }: { extend: boolean }): readonly VimSelection[] {
     return this.selections.map(selection => {
-      const head = selection.type === "charwise" ? selection.cursor ?? selection.head : selectionHead(selection);
+      const head = selection.cursor ?? selectionHead(selection);
       const goal = selection.goal ?? modelGoalForHead(head, { extend: extend && selection.type === "charwise" && selection.cursor !== undefined });
       const rowDelta = direction === "up" ? -count : count;
       const row = Math.max(0, Math.min(head.row + rowDelta, this.lineCount() - 1));
@@ -246,6 +321,41 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       ...replacementLines
     );
   }
+}
+
+function cloneSelections(selections: readonly VimSelection[]): VimSelection[] {
+  return selections.map(cloneSelection);
+}
+
+function cloneSelection(selection: VimSelection): VimSelection {
+  switch (selection.type) {
+    case "charwise":
+      return {
+        ...selection,
+        anchor: { ...selection.anchor },
+        head: { ...selection.head },
+        cursor: selection.cursor === undefined ? undefined : { ...selection.cursor },
+        goal: selection.goal === undefined ? undefined : { ...selection.goal },
+      };
+    case "linewise":
+      return {
+        ...selection,
+        cursor: selection.cursor === undefined ? undefined : { ...selection.cursor },
+        goal: selection.goal === undefined ? undefined : { ...selection.goal },
+      };
+    case "blockwise":
+      return {
+        ...selection,
+        anchor: { ...selection.anchor },
+        head: { ...selection.head },
+        cursor: selection.cursor === undefined ? undefined : { ...selection.cursor },
+        goal: selection.goal === undefined ? undefined : { ...selection.goal },
+      };
+  }
+}
+
+function selectionsEqual(a: readonly VimSelection[], b: readonly VimSelection[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function modelGoalForHead(head: Position, { extend }: { extend: boolean }): VimSelectionGoal {

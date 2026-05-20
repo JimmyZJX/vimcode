@@ -43,7 +43,8 @@ export function changeRange(
     registers,
     registerName,
     rangeForHead,
-    (_editor, range) => range.start
+    (_editor, range) => range.start,
+    { undoStopAfter: false }
   );
 }
 
@@ -79,7 +80,7 @@ export function changeLineRange(
   }
 
   if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, { undoStopAfter: false });
   return true;
 }
 

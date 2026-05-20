@@ -343,7 +343,7 @@ export class NormalMode {
         return handled();
       case "s": {
         const count = this.takeCount(1);
-        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count);
+        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count, { undoStopAfter: false });
         enterInsertAtSelections(this.editor, (pos) => pos);
         return handled({ enterInsert: true });
       }

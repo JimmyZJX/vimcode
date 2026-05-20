@@ -619,6 +619,51 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("undoes and redoes a normal delete as one edit transaction", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d", "w", "u"]);
+
+    expect(editor.getText()).toBe("one two");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+
+    runKeys(vim, ["ctrl-r"]);
+
+    expect(editor.getText()).toBe("two");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("undoes a change plus inserted text as one edit transaction", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["c", "w", "X", "<escape>", "u"]);
+
+    expect(editor.getText()).toBe("one two");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+
+    runKeys(vim, ["ctrl-r"]);
+
+    expect(editor.getText()).toBe("X two");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("undoes a visual change plus inserted text as one edit transaction", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "e", "c", "X", "<escape>", "u"]);
+
+    expect(editor.getText()).toBe("one two");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
   it("yanks by motion without changing the buffer", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor);
@@ -868,6 +913,32 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.modeName).toBe("vim:normal");
     expect(head(editor)).toEqual({ row: 1, column: 2 });
+  });
+
+  it("keeps visual-line cursor on empty selected lines", () => {
+    const editor = new InMemoryVimEditor("ab\n\ncd\nef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["l", "V", "j"]);
+
+    expect(vim.modeName).toBe("vim:visualLine");
+    expect(editor.getSelections()[0]).toEqual({
+      type: "linewise",
+      anchorLine: 0,
+      headLine: 1,
+      cursor: { row: 1, column: 0 },
+      goal: { type: "modelColumn", column: 1 },
+    });
+
+    runKeys(vim, ["j"]);
+
+    expect(editor.getSelections()[0]).toEqual({
+      type: "linewise",
+      anchorLine: 0,
+      headLine: 2,
+      cursor: { row: 2, column: 1 },
+      goal: { type: "modelColumn", column: 1 },
+    });
   });
 
   it("adds surrounds around a text object", () => {

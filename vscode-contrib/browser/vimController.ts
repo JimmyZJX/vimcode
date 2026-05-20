@@ -230,7 +230,7 @@ export class VimController extends Disposable {
 	}
 
 	private handleCursorSelectionChanged(source: string): void {
-		if (!this.enabled) return;
+		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		// VSCode-specific synchronization path: unlike Zed, VSCode selection state
 		// can be changed outside the Vim state machine (mouse selections, undo/redo
 		// recovery, multicursor commands, other editor contributions). Ignore changes
@@ -243,7 +243,7 @@ export class VimController extends Disposable {
 	}
 
 	private handleExternalEditorStateChanged(): void {
-		if (!this.enabled) return;
+		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		this.vimEditor.invalidateCachedSelections();
 		this.vim.syncFromEditorState({ render: false });
 		this.syncEditorState();
