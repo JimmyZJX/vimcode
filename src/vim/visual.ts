@@ -7,7 +7,7 @@
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
-import { VimEditorCapabilities, normalCursorPosition, rangeText } from "./editor.js";
+import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
@@ -418,7 +418,7 @@ export class VisualMode {
           registerName,
           () => charwiseVisualRange(this.editor, state),
           (_editor, range) => range.start,
-          { selectionsBefore: visualUndoSelections(state), undoStopAfter: false }
+          keepUndoTransactionOpen({ selectionsBefore: visualUndoSelections(state) })
         );
         break;
       case "linewise":
@@ -1161,7 +1161,7 @@ function changeLinewise(
   editor.applyEdits(
     [{ range: linewiseEditRange(editor, state), text: "\n" }],
     [charwiseSelection({ row: startLine, column: 0 })],
-    { selectionsBefore: visualUndoSelections(state), undoStopAfter: false }
+    keepUndoTransactionOpen({ selectionsBefore: visualUndoSelections(state) })
   );
 }
 
@@ -1297,7 +1297,13 @@ function deleteBlockwise(
   const selectionsAfter = collapse
     ? [charwiseSelection({ row: startRow, column: startColumn })]
     : blockInsertSelections(editor, state, { side: "start" });
-  editor.applyEdits(edits, selectionsAfter, { selectionsBefore: visualUndoSelections(state), undoStopAfter: collapse });
+  editor.applyEdits(
+    edits,
+    selectionsAfter,
+    collapse
+      ? { selectionsBefore: visualUndoSelections(state) }
+      : keepUndoTransactionOpen({ selectionsBefore: visualUndoSelections(state) })
+  );
 }
 
 function enterBlockInsert(

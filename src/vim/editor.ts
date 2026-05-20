@@ -33,6 +33,14 @@ export type NativeCommandOptions = {
   preserveVisualSelection?: boolean;
 };
 
+// Most Vim edits are complete commands and should become one native undo unit.
+// Change-like commands ([c], [s], visual [c], etc.) first delete text and then
+// enter insert/replace mode; use [keepUndoTransactionOpen] for the deletion half
+// and call [finishUndoTransaction] when Escape leaves insert/replace mode.
+export function keepUndoTransactionOpen(options: ApplyEditsOptions = {}): ApplyEditsOptions {
+  return { ...options, undoStopAfter: false };
+}
+
 // Zed: `vim::Vim::update_editor` is the closest
 // equivalent boundary, but it closes over Zed's concrete `Editor`. This interface
 // is intentionally local: production VSCode and fake tests both implement it.

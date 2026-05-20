@@ -6,7 +6,7 @@
 //   Zed's declarative key-context system.
 
 import { lookupDigraph } from "./digraph.js";
-import { VimEditorCapabilities } from "./editor.js";
+import { VimEditorCapabilities, keepUndoTransactionOpen } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
 import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
@@ -343,7 +343,7 @@ export class NormalMode {
         return handled();
       case "s": {
         const count = this.takeCount(1);
-        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count, { undoStopAfter: false });
+        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count, keepUndoTransactionOpen());
         enterInsertAtSelections(this.editor, (pos) => pos);
         return handled({ enterInsert: true });
       }
