@@ -147,6 +147,78 @@ text = text.replace(
 if text != original:
     view_cursor.write_text(text)
 
+view_events = root / 'src/vs/editor/common/viewEvents.ts'
+text = view_events.read_text()
+original = text
+if "import { Position } from './core/position.js';" not in text:
+    text = text.replace(
+        "import { ConfigurationChangedEvent, EditorOption } from './config/editorOptions.js';\n",
+        "import { ConfigurationChangedEvent, EditorOption } from './config/editorOptions.js';\nimport { Position } from './core/position.js';\n",
+        1,
+    )
+if "public readonly cursorPositions: Position[] | undefined = undefined" not in text:
+    text = text.replace(
+        "\t\t\tpublic readonly reason: CursorChangeReason\n\t\t) { }",
+        "\t\t\tpublic readonly reason: CursorChangeReason,\n\t\t\tpublic readonly cursorPositions: Position[] | undefined = undefined\n\t\t) { }",
+        1,
+    )
+if text != original:
+    view_events.write_text(text)
+
+cursor = root / 'src/vs/editor/common/cursor/cursor.ts'
+text = cursor.read_text()
+original = text
+old_emit = """\t\tconst newState = CursorModelState.from(this._model, this);
+\t\tif (newState.equals(oldState)) {
+\t\t\treturn false;
+\t\t}
+
+\t\tconst selections = this._cursors.getSelections();
+\t\tconst viewSelections = this._cursors.getViewSelections();
+
+\t\t// Let the view get the event first.
+\t\teventsCollector.emitViewEvent(new ViewCursorStateChangedEvent(viewSelections, selections, reason));"""
+new_emit = """\t\tconst newState = CursorModelState.from(this._model, this);
+\t\tconst selections = this._cursors.getSelections();
+\t\tconst viewCursorPositions = this._getViewCursorPositionsFromSource(source, selections.length);
+\t\tif (newState.equals(oldState) && viewCursorPositions === undefined) {
+\t\t\treturn false;
+\t\t}
+
+\t\tconst viewSelections = this._cursors.getViewSelections();
+
+\t\t// Let the view get the event first.
+\t\teventsCollector.emitViewEvent(new ViewCursorStateChangedEvent(viewSelections, selections, reason, viewCursorPositions));"""
+if old_emit in text:
+    text = text.replace(old_emit, new_emit, 1)
+if "private _getViewCursorPositionsFromSource" not in text:
+    method = """\tprivate _getViewCursorPositionsFromSource(source: string | null | undefined, selectionCount: number): Position[] | undefined {
+\t\tconst prefix = 'vim.cursorPositions:';
+\t\tif (!source?.startsWith(prefix)) {
+\t\t\treturn undefined;
+\t\t}
+\t\tconst rawPositions = source.slice(prefix.length).split(';').filter(Boolean);
+\t\tif (rawPositions.length !== selectionCount) {
+\t\t\treturn undefined;
+\t\t}
+\t\tconst result: Position[] = [];
+\t\tfor (const rawPosition of rawPositions) {
+\t\t\tconst [rawLineNumber, rawColumn] = rawPosition.split(',');
+\t\t\tconst lineNumber = Number(rawLineNumber);
+\t\t\tconst column = Number(rawColumn);
+\t\t\tif (!Number.isFinite(lineNumber) || !Number.isFinite(column)) {
+\t\t\t\treturn undefined;
+\t\t\t}
+\t\t\tresult.push(this._coordinatesConverter.convertModelPositionToViewPosition(new Position(lineNumber, column)));
+\t\t}
+\t\treturn result;
+\t}
+
+"""
+    text = text.replace("\t// -----------------------------------------------------------------------------------------------------------\n\t// ----- handlers beyond this point", method + "\t// -----------------------------------------------------------------------------------------------------------\n\t// ----- handlers beyond this point", 1)
+if text != original:
+    cursor.write_text(text)
+
 view_cursors = root / 'src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts'
 text = view_cursors.read_text()
 original = text
