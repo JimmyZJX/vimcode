@@ -7,7 +7,7 @@
 //   quote/bracket pairs covered by current fixtures. Zed handles anchors, syntax objects,
 //   any-bracket matching, multicursor deduplication, and display-map details.
 
-import { ApplyEditsOptions, VimEditorCapabilities, rangeText } from "./editor.js";
+import { VimEditorCapabilities, rangeText } from "./editor.js";
 import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
 export type SurroundPair = {
@@ -45,7 +45,7 @@ export function addSurrounds(
   editor: VimEditorCapabilities,
   ranges: readonly TextRange[],
   key: string,
-  { linewise = false, ...editOptions }: { linewise?: boolean } & ApplyEditsOptions = {}
+  { linewise = false }: { linewise?: boolean } = {}
 ): void {
   const spec = surroundSpecForKey(key);
   const edits: TextEdit[] = [];
@@ -62,7 +62,7 @@ export function addSurrounds(
     }
   }
 
-  editor.applyEdits(edits, selectionsAfter, editOptions);
+  editor.applyEdits(edits, selectionsAfter);
 }
 
 export function deleteSurrounds(editor: VimEditorCapabilities, key: string): void {

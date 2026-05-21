@@ -664,6 +664,30 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("undoes an insert session as one edit transaction", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["i", "a", "b", "c", "<escape>", "u"]);
+
+    expect(editor.getText()).toBe("one");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("undoes visual-block append back to one normal cursor", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["l", "ctrl-v", "j", "A", "X", "<escape>", "u"]);
+
+    expect(editor.getText()).toBe("abc\ndef");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 1 } },
+    ]);
+  });
+
   it("yanks by motion without changing the buffer", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor);

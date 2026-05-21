@@ -8,7 +8,7 @@
 import { LineRange, executeCommand } from "./command.js";
 import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
 import { lookupDigraph } from "./digraph.js";
-import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
+import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
@@ -178,10 +178,11 @@ export class Vim {
     }
     this.insertOrigin = undefined;
     if (render) this.editor.setCursorStyle("block");
-    this.editor.setSelections(this.editor.getSelections().map(selection => {
-      const range = rangeOfSelection(selection);
-      return charwiseSelection(normalCursorPosition(this.editor, range.start));
-    }));
+    const firstSelection = this.editor.getSelections()[0];
+    if (firstSelection !== undefined) {
+      const range = rangeOfSelection(firstSelection);
+      this.editor.setSelections([charwiseSelection(normalCursorPosition(this.editor, range.start))]);
+    }
     this.setMode("normal");
   }
 
@@ -363,16 +364,17 @@ export class Vim {
         return "handled";
       }
       if (key === "ctrl-w") {
-        deleteToPreviousWord(this.editor);
+        deleteToPreviousWord(this.editor, this.insertEditOptions());
         return "handled";
       }
       if (key === "ctrl-u") {
-        deleteToBeginningOfLine(this.editor);
+        deleteToBeginningOfLine(this.editor, this.insertEditOptions());
         return "handled";
       }
-      if (key.length === 1 || key === "\n") {
-        insertText(this.editor, key);
-        this.insertRepeatText += key;
+      const text = insertTextForKey(key);
+      if (text !== undefined) {
+        insertText(this.editor, text, this.insertEditOptions());
+        this.insertRepeatText += text;
         return "handled";
       }
       return "not-handled";
@@ -383,9 +385,9 @@ export class Vim {
         this.pendingDigraph = { target: "replace" };
         return "handled";
       }
-      if (key.length === 1 || key === "\n" || key === "enter") {
-        const text = key === "enter" ? "\n" : key;
-        replaceModeText(this.editor, text, 1);
+      const text = insertTextForKey(key);
+      if (text !== undefined) {
+        replaceModeText(this.editor, text, 1, this.insertEditOptions());
         this.insertRepeatText += text;
         return "handled";
       }
@@ -552,7 +554,7 @@ export class Vim {
       this.insertOrigin = undefined;
       this.setMode("normal");
       if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
-        this.editor.finishUndoTransaction();
+        this.editor.finishUndoTransaction(this.editor.getSelections());
       }
     }
   }
@@ -644,8 +646,8 @@ export class Vim {
       return;
     }
     const repeatedText = Array.from({ length: this.insertRepeatCount - 1 }, () => `${this.insertRepeatSeparator}${this.insertRepeatText}`).join("");
-    if (mode === "replace") replaceModeText(this.editor, repeatedText, 1);
-    else insertText(this.editor, repeatedText);
+    if (mode === "replace") replaceModeText(this.editor, repeatedText, 1, this.insertEditOptions());
+    else insertText(this.editor, repeatedText, this.insertEditOptions());
     this.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
     this.clearInsertOrReplaceSession();
   }
@@ -654,6 +656,10 @@ export class Vim {
     this.insertRepeatCount = 1;
     this.insertRepeatText = "";
     this.insertRepeatSeparator = "";
+  }
+
+  private insertEditOptions() {
+    return keepUndoTransactionOpen();
   }
 
   private shouldResolveRemap(): boolean {
@@ -772,9 +778,7 @@ export class Vim {
       case "host":
       case "z": {
         const hostCommand = handleHostAction(this.editor, action, defaultValue => this.takeCountForMotion(defaultValue));
-        if (hostCommand === "undo" || hostCommand === "redo") {
-          this.syncFromUndoRedoState({ render: false });
-        } else {
+        if (hostCommand !== "undo" && hostCommand !== "redo") {
           this.syncFromEditorState({ render: false });
         }
         return;
@@ -871,11 +875,11 @@ export class Vim {
     const text = lookupDigraph(pending.first, input);
     switch (pending.target) {
       case "insert":
-        insertText(this.editor, text);
+        insertText(this.editor, text, this.insertEditOptions());
         this.insertRepeatText += text;
         return;
       case "replace":
-        replaceModeText(this.editor, text, 1);
+        replaceModeText(this.editor, text, 1, this.insertEditOptions());
         this.insertRepeatText += text;
         return;
       case "find":
@@ -889,7 +893,7 @@ export class Vim {
     if (this.isEscape(key)) return;
     const registerName = parseRegisterName(key);
     if (registerName === undefined) return;
-    insertText(this.editor, this.registers.read(registerName));
+    insertText(this.editor, this.registers.read(registerName), this.insertEditOptions());
   }
 
   private handlePendingCommandKey(key: string): void {
@@ -997,6 +1001,13 @@ export class Vim {
 
 function keyForInput(key: string): string {
   return key === "space" ? " " : key;
+}
+
+function insertTextForKey(key: string): string | undefined {
+  if (key === "space") return " ";
+  if (key === "enter") return "\n";
+  if (key === "\n") return "\n";
+  return key.length === 1 ? key : undefined;
 }
 
 function isPrefixOrEqual(prefix: readonly string[], full: readonly string[]): boolean {

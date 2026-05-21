@@ -13,6 +13,8 @@ import { ResultKind } from '../../../../platform/keybinding/common/keybindingRes
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { CursorChangeReason, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
+import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimStatus } from '../common/vim.js';
@@ -25,7 +27,6 @@ const VimInsertContext = new RawContextKey<boolean>('vim.insert', false, true);
 const VimPendingContext = new RawContextKey<boolean>('vim.pending', false, true);
 const VimOperatorContext = new RawContextKey<string>('vim.operator', '', true);
 const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
-
 export class VimController extends Disposable {
 	public static readonly ID = 'editor.contrib.vim';
 	private static warnedAboutVSCodeVim = false;
@@ -42,6 +43,7 @@ export class VimController extends Disposable {
 	private readonly vimChordContext: IContextKey<string>;
 	private enabled = false;
 	private lastAmbiguousRemapWarningSignature = '';
+	private pendingUndoRedoContentSync = false;
 	private readonly originalCursorStyle = this.editor.getRawOptions().cursorStyle;
 	private readonly _onDidChangeStatus = this._register(new Emitter<VimStatus>());
 	readonly onDidChangeStatus: Event<VimStatus> = this._onDidChangeStatus.event;
@@ -59,7 +61,7 @@ export class VimController extends Disposable {
 	) {
 		super();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
-		this.vimEditor = new VSCodeVimEditor(editor, commandService);
+		this.vimEditor = new VSCodeVimEditor(editor, commandService, message => this.logUndo(message));
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration());
 		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
 		this.vimNormalContext = VimNormalContext.bindTo(contextKeyService);
@@ -70,7 +72,8 @@ export class VimController extends Disposable {
 		this.updateEnabledState();
 		this._register(this.editor.onKeyDown(event => this.handleKeyDown(event)));
 		this._register(this.editor.onDidFocusEditorText(() => this.syncEditorState()));
-		this._register(this.editor.onDidChangeCursorSelection(event => this.handleCursorSelectionChanged(event.source)));
+		this._register(this.editor.onDidChangeCursorSelection(event => this.handleCursorSelectionChanged(event)));
+		this._register(this.editor.onDidChangeModelContent(event => this.handleModelContentChanged(event)));
 		this._register(this.editor.onDidChangeModel(() => this.handleExternalEditorStateChanged()));
 		this._register(this.extensionManagementService.onDidInstallExtensions(() => {
 			if (this.enabled) this.warnIfVSCodeVimInstalled();
@@ -86,6 +89,7 @@ export class VimController extends Disposable {
 	}
 
 	override dispose(): void {
+		this.vimEditor.dispose();
 		this.editor.getContainerDomNode().classList.remove('vim-cursor-rendering-enabled');
 		this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
 		super.dispose();
@@ -119,6 +123,12 @@ export class VimController extends Disposable {
 		this.lastAmbiguousRemapWarningSignature = signature;
 		for (const message of messages) {
 			this.logService.warn(`[vimcode] ${message}`);
+		}
+	}
+
+	private logUndo(message: string): void {
+		if (this.configurationService.getValue<unknown>('vim.debugUndo') === true) {
+			this.logService.info(`[vimcode.undo] ${message}`);
 		}
 	}
 
@@ -229,23 +239,48 @@ export class VimController extends Disposable {
 		}
 	}
 
-	private handleCursorSelectionChanged(source: string): void {
+	private handleCursorSelectionChanged(event: ICursorSelectionChangedEvent): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
+		this.logUndo(`selection event source=${event.source} reason=${cursorChangeReasonName(event.reason)} selections=${formatVSCodeSelections([event.selection, ...event.secondarySelections])}`);
+		if (event.reason === CursorChangeReason.Undo || event.reason === CursorChangeReason.Redo) {
+			this.pendingUndoRedoContentSync = false;
+			this.syncFromUndoRedoState(`selection:${cursorChangeReasonName(event.reason)}`);
+			return;
+		}
 		// VSCode-specific synchronization path: unlike Zed, VSCode selection state
-		// can be changed outside the Vim state machine (mouse selections, undo/redo
-		// recovery, multicursor commands, other editor contributions). Ignore changes
-		// that this Vim adapter originated, and also ignore native cursor movement while
-		// insert/replace mode is intentionally letting VSCode handle typed input.
-		if (source.startsWith('vim') || this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
+		// can be changed outside the Vim state machine (mouse selections, multicursor
+		// commands, other editor contributions). Ignore changes that this Vim adapter
+		// originated, and also ignore native cursor movement while insert/replace mode
+		// is intentionally letting VSCode handle typed input.
+		if (event.source.startsWith('vim') || this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
 			return;
 		}
 		this.handleExternalEditorStateChanged();
+	}
+
+	private handleModelContentChanged(event: IModelContentChangedEvent): void {
+		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.() || (!event.isUndoing && !event.isRedoing)) return;
+		this.logUndo(`content event undo=${event.isUndoing} redo=${event.isRedoing} version=${event.versionId} changes=${event.changes.length} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		this.pendingUndoRedoContentSync = true;
+		queueMicrotask(() => {
+			if (!this.pendingUndoRedoContentSync) return;
+			this.pendingUndoRedoContentSync = false;
+			this.syncFromUndoRedoState(event.isUndoing ? 'content:undo' : 'content:redo');
+		});
 	}
 
 	private handleExternalEditorStateChanged(): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		this.vimEditor.invalidateCachedSelections();
 		this.vim.syncFromEditorState({ render: false });
+		this.syncEditorState();
+	}
+
+	private syncFromUndoRedoState(reason: string): void {
+		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
+		this.vimEditor.invalidateCachedSelections();
+		this.vim.syncFromUndoRedoState({ render: false });
+		this.logUndo(`syncFromUndoRedoState end reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
 		this.syncEditorState();
 	}
 
@@ -324,6 +359,29 @@ class ClipboardTransaction implements VimSystemClipboard {
 
 function formatKeySequence(keys: readonly string[]): string {
 	return keys.join(' ');
+}
+
+function formatVSCodeSelections(selections: readonly { selectionStartLineNumber: number; selectionStartColumn: number; positionLineNumber: number; positionColumn: number }[]): string {
+	return `[${selections.map(selection => `${selection.selectionStartLineNumber}:${selection.selectionStartColumn}->${selection.positionLineNumber}:${selection.positionColumn}`).join(', ')}]`;
+}
+
+function cursorChangeReasonName(reason: CursorChangeReason): string {
+	switch (reason) {
+		case CursorChangeReason.NotSet:
+			return 'NotSet';
+		case CursorChangeReason.ContentFlush:
+			return 'ContentFlush';
+		case CursorChangeReason.RecoverFromMarkers:
+			return 'RecoverFromMarkers';
+		case CursorChangeReason.Explicit:
+			return 'Explicit';
+		case CursorChangeReason.Paste:
+			return 'Paste';
+		case CursorChangeReason.Undo:
+			return 'Undo';
+		case CursorChangeReason.Redo:
+			return 'Redo';
+	}
 }
 
 function readHandleKeys(value: unknown): Record<string, boolean> {

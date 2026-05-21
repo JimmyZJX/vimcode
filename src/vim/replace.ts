@@ -5,7 +5,7 @@
 // - intentional differences: this first slice is model-buffer only and omits undo-stack
 //   restoration for replace-mode backspace.
 
-import { VimEditorCapabilities } from "./editor.js";
+import { ApplyEditsOptions, VimEditorCapabilities } from "./editor.js";
 import { Position, TextEdit, VimSelection, charwiseSelection, selectionHead } from "./state.js";
 
 export function replaceCharacters(
@@ -32,7 +32,8 @@ export function replaceCharacters(
 export function replaceModeText(
   editor: VimEditorCapabilities,
   text: string,
-  count: number
+  count: number,
+  options: ApplyEditsOptions = {}
 ): void {
   const replacement = text === "\n" || text === "enter" ? "\n" : text.repeat(count);
   const edits: TextEdit[] = [];
@@ -43,7 +44,7 @@ export function replaceModeText(
     edits.push({ range: { start: head, end }, text: replacement });
     selectionsAfter.push(charwiseSelection(positionAfterInsertedText(head, replacement)));
   }
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, options);
 }
 
 function endPositionForReplace(editor: VimEditorCapabilities, start: Position, count: number): Position {

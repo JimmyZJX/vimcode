@@ -329,13 +329,13 @@ export class NormalMode {
       case "o": {
         const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
-        openLine(this.editor, { above: false });
+        openLine(this.editor, { above: false }, keepUndoTransactionOpen());
         return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
       }
       case "O": {
         const insertCount = this.takeCount(1);
         this.selectedRegister = undefined;
-        openLine(this.editor, { above: true });
+        openLine(this.editor, { above: true }, keepUndoTransactionOpen());
         return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
       }
       case "r":

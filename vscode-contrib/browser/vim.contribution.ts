@@ -73,6 +73,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			description: nls.localize('vim.useCtrlKeys', "Enable Vim Ctrl key commands that override common VS Code operations."),
 		},
+		'vim.debugUndo': {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			description: nls.localize('vim.debugUndo', "Log vimcode undo transaction and VS Code undo/redo synchronization details."),
+		},
 		'vim.handleKeys': {
 			type: 'object',
 			default: {},

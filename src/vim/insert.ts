@@ -5,7 +5,7 @@
 // - intentional differences: ordinary insert-mode typing is modeled as host edits through
 //   `VimEditorCapabilities`; production VSCode should usually delegate to native typing.
 
-import { VimEditorCapabilities, normalCursorPosition } from "./editor.js";
+import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition } from "./editor.js";
 import {
   Position,
   TextEdit,
@@ -15,7 +15,7 @@ import {
   selectionHead,
 } from "./state.js";
 
-export function insertText(editor: VimEditorCapabilities, text: string): void {
+export function insertText(editor: VimEditorCapabilities, text: string, options: ApplyEditsOptions = {}): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
 
@@ -25,7 +25,7 @@ export function insertText(editor: VimEditorCapabilities, text: string): void {
     selectionsAfter.push(charwiseSelection(positionAfterInsertedText(range.start, text)));
   }
 
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, options);
 }
 
 // Zed: `normal::Vim::insert_after`, `normal::Vim::insert_before`,
@@ -41,7 +41,7 @@ export function enterInsertAtSelections(
 }
 
 // Zed: `normal::Vim::insert_line_above` and `normal::Vim::insert_line_below`.
-export function openLine(editor: VimEditorCapabilities, { above }: { above: boolean }): void {
+export function openLine(editor: VimEditorCapabilities, { above }: { above: boolean }, options: ApplyEditsOptions = {}): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
 
@@ -52,13 +52,13 @@ export function openLine(editor: VimEditorCapabilities, { above }: { above: bool
     selectionsAfter.push(charwiseSelection({ row: above ? row : row + 1, column: 0 }));
   }
 
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, options);
   editor.setCursorStyle("line");
 }
 
 // Zed: `vim::Vim::switch_mode`. The cursor-left behavior when leaving insert
 // mode mirrors the normal-mode cursor fixup, but is simplified.
-export function deleteToBeginningOfLine(editor: VimEditorCapabilities): void {
+export function deleteToBeginningOfLine(editor: VimEditorCapabilities, options: ApplyEditsOptions = {}): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   for (const selection of editor.getSelections()) {
@@ -67,10 +67,10 @@ export function deleteToBeginningOfLine(editor: VimEditorCapabilities): void {
     edits.push({ range: { start, end: head }, text: "" });
     selectionsAfter.push(charwiseSelection(start));
   }
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, options);
 }
 
-export function deleteToPreviousWord(editor: VimEditorCapabilities): void {
+export function deleteToPreviousWord(editor: VimEditorCapabilities, options: ApplyEditsOptions = {}): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   for (const selection of editor.getSelections()) {
@@ -79,7 +79,7 @@ export function deleteToPreviousWord(editor: VimEditorCapabilities): void {
     edits.push({ range: { start, end: head }, text: "" });
     selectionsAfter.push(charwiseSelection(start));
   }
-  editor.applyEdits(edits, selectionsAfter);
+  editor.applyEdits(edits, selectionsAfter, options);
 }
 
 export function enterNormalMode(

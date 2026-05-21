@@ -7,19 +7,31 @@ import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
+import { EditSources } from '../../../common/textModelEditSource.js';
 import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
+
+type VimUndoTransaction = {
+	model: ITextModel;
+	undoSelectionsBefore: Selection[];
+	pushStackElement: ITextModel['pushStackElement'];
+	pushEditOperations: ITextModel['pushEditOperations'];
+	hasEdits: boolean;
+};
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private nativeCommandInProgress = false;
+	private vimEditInProgress = false;
+	private undoTransaction: VimUndoTransaction | undefined;
 
 	constructor(
 		private readonly editor: ICodeEditor,
-		private readonly commandService: ICommandService
+		private readonly commandService: ICommandService,
+		private readonly logUndo: (message: string) => void = () => undefined
 	) {
 		this.visualLineDecorations = editor.createDecorationsCollection();
 	}
@@ -87,28 +99,50 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.editor.updateOptions({ cursorStyle: style === 'line' ? 'line' : style === 'block' ? 'block' : 'underline' });
 	}
 
+	beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void {
+		this.logUndo(`beginUndoTransaction open=${this.isUndoTransactionOpen()} before=${formatVimSelections(selectionsBefore)} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		if (this.isUndoTransactionOpen()) return;
+		this.editor.pushUndoStop();
+		this.openUndoTransaction(this.model(), this.lowerSelections(selectionsBefore).selections, { hasEdits: false });
+	}
+
 	applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
-		const selectionsBefore = options.selectionsBefore;
-		if (selectionsBefore !== undefined) {
-			const loweredBefore = this.lowerSelections(selectionsBefore);
-			this.updateVisualLineDecorations(selectionsBefore);
-			this.rememberSelections(selectionsBefore, loweredBefore.selections);
-			this.editor.setSelections(loweredBefore.selections, 'vim.undoBefore');
-		}
-		if (options.undoStopBefore !== false) this.editor.pushUndoStop();
+		this.logUndo(`applyEdits start edits=${edits.length} open=${this.isUndoTransactionOpen()} stopBefore=${options.undoStopBefore !== false} stopAfter=${options.undoStopAfter !== false} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		if (options.undoStopBefore !== false && !this.isUndoTransactionOpen()) this.editor.pushUndoStop();
 		const vscodeEdits: IIdentifiedSingleEditOperation[] = edits.map(edit => ({
 			range: toRange(edit.range),
 			text: edit.text,
 		}));
-		const lowered = this.lowerSelections(selectionsAfter);
+		const loweredLiveAfter = this.lowerSelections(selectionsAfter);
+		this.logUndo(`applyEdits states liveAfter=${formatVimSelections(selectionsAfter)}`);
+
 		this.updateVisualLineDecorations(selectionsAfter);
-		this.rememberSelections(selectionsAfter, lowered.selections);
-		this.editor.executeEdits('vim', vscodeEdits, lowered.selections);
-		if (options.undoStopAfter !== false) this.editor.pushUndoStop();
+		this.rememberSelections(selectionsAfter, loweredLiveAfter.selections);
+		this.withVimEditInProgress(() => {
+			this.editor.executeEdits('vim', vscodeEdits, loweredLiveAfter.selections);
+			this.logUndo(`executeEdits nativeAfter=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		});
+		if (options.undoStopAfter !== false) {
+			if (this.isUndoTransactionOpen()) this.closeUndoTransaction({ pushUndoStop: true });
+			else this.editor.pushUndoStop();
+		}
+		this.logUndo(`applyEdits end open=${this.isUndoTransactionOpen()} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 	}
 
-	finishUndoTransaction(): void {
-		this.editor.pushUndoStop();
+	finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void {
+		this.logUndo(`finishUndoTransaction start open=${this.isUndoTransactionOpen()} selectionsAfter=${formatVimSelections(selectionsAfter)} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		const transaction = this.undoTransaction;
+		if (transaction !== undefined && transaction.hasEdits && selectionsAfter !== undefined) {
+			const lowered = this.lowerSelections(selectionsAfter);
+			this.updateVisualLineDecorations(selectionsAfter);
+			this.rememberSelections(selectionsAfter, lowered.selections);
+			this.withVimEditInProgress(() => {
+				this.applyModelEdits([], this.editor.getSelections() ?? [], lowered.selections);
+			});
+		}
+		if (transaction === undefined) this.editor.pushUndoStop();
+		else this.closeUndoTransaction({ pushUndoStop: transaction.hasEdits });
+		this.logUndo(`finishUndoTransaction end native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 	}
 
 	executeHostCommand(command: HostCommand): void {
@@ -121,10 +155,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				this.commandService.executeCommand('workbench.action.navigateForward');
 				return;
 			case 'undo':
+				this.logUndo(`executeHostCommand undo nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 				this.editor.trigger('vim', 'undo', null);
+				this.logUndo(`executeHostCommand undo nativeAfterTrigger=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 				return;
 			case 'redo':
+				this.logUndo(`executeHostCommand redo nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 				this.editor.trigger('vim', 'redo', null);
+				this.logUndo(`executeHostCommand redo nativeAfterTrigger=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 				return;
 		}
 	}
@@ -143,7 +181,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	isExecutingNativeCommand(): boolean {
-		return this.nativeCommandInProgress;
+		return this.nativeCommandInProgress || this.vimEditInProgress;
 	}
 
 	revealPrimaryCursorIfOutsideViewport(): void {
@@ -264,10 +302,72 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		CommonFindController.get(this.editor)?.closeFindWidget();
 	}
 
+	dispose(): void {
+		this.closeUndoTransaction({ pushUndoStop: false });
+	}
+
 	invalidateCachedSelections(): void {
 		this.lastSetVimSelections = undefined;
 		this.lastSetVSCodeSelections = undefined;
 		this.visualLineDecorations.clear();
+	}
+
+	private isUndoTransactionOpen(): boolean {
+		return this.undoTransaction !== undefined;
+	}
+
+	// VSCode typing/paste commands call [pushStackElement] themselves and record
+	// cursor state from the live editor selections. During Vim-owned insert
+	// transactions (notably visual-block insert), live selections can be transient
+	// multicursors while Vim undo should restore a single normal-mode cursor.  Keep
+	// the patch scoped to one model and one open Vim transaction: suppress native
+	// checkpoints so native typing/paste appends to Vim's undo element, and replace
+	// the before-cursor state only for the first real edit in the transaction.
+	private openUndoTransaction(model: ITextModel, undoSelectionsBefore: Selection[], { hasEdits }: { hasEdits: boolean }): void {
+		if (this.undoTransaction?.model === model) return;
+		this.closeUndoTransaction({ pushUndoStop: false });
+		const pushStackElement = model.pushStackElement.bind(model) as ITextModel['pushStackElement'];
+		const pushEditOperations = model.pushEditOperations.bind(model) as ITextModel['pushEditOperations'];
+		this.undoTransaction = { model, undoSelectionsBefore, pushStackElement, pushEditOperations, hasEdits };
+		model.pushStackElement = (() => {
+			if (this.undoTransaction?.model === model) {
+				this.logUndo('suppressed native pushStackElement during Vim undo transaction');
+				return;
+			}
+			pushStackElement();
+		}) as ITextModel['pushStackElement'];
+		model.pushEditOperations = ((...args: Parameters<ITextModel['pushEditOperations']>) => {
+			const [beforeCursorState, editOperations, cursorStateComputer, group, reason] = args;
+			const transaction = this.undoTransaction;
+			if (transaction === undefined || transaction.model !== model) {
+				return pushEditOperations(beforeCursorState, editOperations, cursorStateComputer, group, reason);
+			}
+			const before = transaction.hasEdits ? beforeCursorState : transaction.undoSelectionsBefore;
+			if (editOperations.length > 0) transaction.hasEdits = true;
+			this.logUndo(`pushEditOperations(transaction) edits=${editOperations.length} before=${formatVSCodeSelections(before ?? [])}`);
+			return pushEditOperations(before, editOperations, cursorStateComputer, group, reason);
+		}) as ITextModel['pushEditOperations'];
+	}
+
+	private closeUndoTransaction({ pushUndoStop }: { pushUndoStop: boolean }): void {
+		const transaction = this.undoTransaction;
+		if (transaction === undefined) return;
+		transaction.model.pushStackElement = transaction.pushStackElement;
+		transaction.model.pushEditOperations = transaction.pushEditOperations;
+		this.undoTransaction = undefined;
+		if (pushUndoStop) this.editor.pushUndoStop();
+	}
+
+	private applyModelEdits(edits: IIdentifiedSingleEditOperation[], undoSelectionsBefore: Selection[], undoSelectionsAfter: Selection[]): void {
+		this.logUndo(`pushEditOperations before=${formatVSCodeSelections(undoSelectionsBefore)} after=${formatVSCodeSelections(undoSelectionsAfter)} edits=${edits.length}`);
+		const returnedSelections = this.model().pushEditOperations(
+			undoSelectionsBefore,
+			edits,
+			() => undoSelectionsAfter,
+			undefined,
+			EditSources.unknown({ name: 'vim' })
+		);
+		this.logUndo(`pushEditOperations returned=${formatVSCodeSelections(returnedSelections ?? [])} nativeAfterModel=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 	}
 
 	private model() {
@@ -276,6 +376,15 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			throw new Error('Vim editor adapter requires an attached model');
 		}
 		return model;
+	}
+
+	private withVimEditInProgress(callback: () => void): void {
+		this.vimEditInProgress = true;
+		try {
+			callback();
+		} finally {
+			this.vimEditInProgress = false;
+		}
 	}
 
 	private rememberSelections(vimSelections: readonly VimSelection[], vscodeSelections: readonly Selection[]): void {
@@ -559,6 +668,28 @@ function fromRange(range: Range): TextRange {
 		start: { row: range.startLineNumber - 1, column: range.startColumn - 1 },
 		end: { row: range.endLineNumber - 1, column: range.endColumn - 1 },
 	};
+}
+
+function formatVimSelections(selections: readonly VimSelection[] | undefined): string {
+	if (selections === undefined) return 'undefined';
+	return `[${selections.map(selection => {
+		switch (selection.type) {
+			case 'charwise':
+				return `char:${formatVimPosition(selection.anchor)}->${formatVimPosition(selection.head)}`;
+			case 'linewise':
+				return `line:${selection.anchorLine}->${selection.headLine}`;
+			case 'blockwise':
+				return `block:${formatVimPosition(selection.anchor)}->${formatVimPosition(selection.head)}`;
+		}
+	}).join(', ')}]`;
+}
+
+function formatVimPosition(position: VimPosition): string {
+	return `${position.row + 1}:${position.column + 1}`;
+}
+
+function formatVSCodeSelections(selections: readonly { selectionStartLineNumber: number; selectionStartColumn: number; positionLineNumber: number; positionColumn: number }[]): string {
+	return `[${selections.map(selection => `${selection.selectionStartLineNumber}:${selection.selectionStartColumn}->${selection.positionLineNumber}:${selection.positionColumn}`).join(', ')}]`;
 }
 
 function toRange(range: TextRange): Range {
