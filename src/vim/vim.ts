@@ -151,17 +151,7 @@ export class Vim {
   }
 
   syncFromEditorState({ render = true }: { render?: boolean } = {}): void {
-    this.pendingFind = undefined;
-    this.pendingUnmatched = undefined;
-    this.sharedActionResolver.clearPending();
-    this.remapResolver.clearPending();
-    this.normalChordResolver.clearPending();
-    this.markState.clearPending();
-    this.searchState.clearPending();
-    this.pendingCommand = undefined;
-    this.pendingDigraph = undefined;
-    this.pendingInsertRegister = false;
-    this.normalMode.clearPending();
+    this.clearPendingForExternalSync();
     const selections = this.editor.getSelections();
     const visualSelection = selections.find(selection =>
       selection.type === "charwise" && comparePositions(selection.anchor, selection.head) !== 0);
@@ -178,7 +168,35 @@ export class Vim {
     this.insertOrigin = undefined;
     if (render) this.editor.setCursorStyle("block");
     this.editor.setSelections(selections.map(selection => charwiseSelection(normalCursorPosition(this.editor, selectionHead(selection)))));
-    this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+    this.setMode("normal");
+  }
+
+  syncFromUndoRedoState({ render = true }: { render?: boolean } = {}): void {
+    this.clearPendingForExternalSync();
+    if (this.isVisualMode()) {
+      this.visualMode.clearState();
+    }
+    this.insertOrigin = undefined;
+    if (render) this.editor.setCursorStyle("block");
+    this.editor.setSelections(this.editor.getSelections().map(selection => {
+      const range = rangeOfSelection(selection);
+      return charwiseSelection(normalCursorPosition(this.editor, range.start));
+    }));
+    this.setMode("normal");
+  }
+
+  private clearPendingForExternalSync(): void {
+    this.pendingFind = undefined;
+    this.pendingUnmatched = undefined;
+    this.sharedActionResolver.clearPending();
+    this.remapResolver.clearPending();
+    this.normalChordResolver.clearPending();
+    this.markState.clearPending();
+    this.searchState.clearPending();
+    this.pendingCommand = undefined;
+    this.pendingDigraph = undefined;
+    this.pendingInsertRegister = false;
+    this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
@@ -716,10 +734,10 @@ export class Vim {
           this.normalMode.handleGKey(action.key);
         } else if (this.isVisualMode() && action.key === "J") {
           this.visualMode.joinSelections({ insertWhitespace: false });
-          this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+          this.setMode("normal");
         } else if (this.isVisualMode() && (action.key === "u" || action.key === "U" || action.key === "~")) {
           this.visualMode.convertSelections(convertTargetForKey(action.key));
-          this.modeState = { dialect: this.modeState.dialect, kind: "normal" };
+          this.setMode("normal");
         }
         return;
       case "insertAtPrevious":
@@ -752,10 +770,15 @@ export class Vim {
   private handleNormalChordAction(action: NormalChordAction): void {
     switch (action.type) {
       case "host":
-      case "z":
-        handleHostAction(this.editor, action, defaultValue => this.takeCountForMotion(defaultValue));
-        this.syncFromEditorState({ render: false });
+      case "z": {
+        const hostCommand = handleHostAction(this.editor, action, defaultValue => this.takeCountForMotion(defaultValue));
+        if (hostCommand === "undo" || hostCommand === "redo") {
+          this.syncFromUndoRedoState({ render: false });
+        } else {
+          this.syncFromEditorState({ render: false });
+        }
         return;
+      }
 
     }
   }

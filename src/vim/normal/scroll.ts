@@ -5,21 +5,20 @@
 // - intentional differences: VSCode owns viewport, navigation history, undo/redo, and folding;
 //   this module only maps resolved actions to host capabilities.
 
-import { VimEditorCapabilities } from "../editor.js";
+import { HostCommand, VimEditorCapabilities } from "../editor.js";
 import { NormalChordAction } from "./chord.js";
 
 export function handleHostAction(
   editor: VimEditorCapabilities,
   action: NormalChordAction,
   takeCount: (defaultValue: number) => number
-): void {
+): HostCommand | undefined {
   switch (action.type) {
     case "z":
       handleZKey(editor, action.key);
-      return;
+      return undefined;
     case "host":
-      handleHostKey(editor, action.key, takeCount);
-      return;
+      return handleHostKey(editor, action.key, takeCount);
   }
 }
 
@@ -56,7 +55,7 @@ function handleZKey(editor: VimEditorCapabilities, key: string): void {
       editor.executeFoldCommand("closeAll");
       return;
     default:
-      return;
+      return undefined;
   }
 }
 
@@ -64,27 +63,27 @@ function handleHostKey(
   editor: VimEditorCapabilities,
   key: string,
   takeCount: (defaultValue: number) => number
-): void {
+): HostCommand | undefined {
   switch (key) {
     case "ctrl-o":
       editor.executeHostCommand("navigateBack");
-      return;
+      return "navigateBack";
     case "ctrl-i":
       editor.executeHostCommand("navigateForward");
-      return;
+      return "navigateForward";
     case "u":
       editor.executeHostCommand("undo");
-      return;
+      return "undo";
     case "ctrl-r":
       editor.executeHostCommand("redo");
-      return;
+      return "redo";
     case "ctrl-y":
       editor.scrollByLines("up", takeCount(1));
-      return;
+      return undefined;
     case "ctrl-e":
       editor.scrollByLines("down", takeCount(1));
-      return;
+      return undefined;
     default:
-      return;
+      return undefined;
   }
 }
