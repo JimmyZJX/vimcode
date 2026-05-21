@@ -969,6 +969,27 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("The {quick brown}");
   });
 
+  it("adds surrounds around a visual selection with shift-s", () => {
+    const editor = new InMemoryVimEditor("The quick brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["w", "v", "e", "S", "b"]);
+
+    expect(editor.getText()).toBe("The (quick) brown");
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
+  it("undoes visual surround back to normal mode", () => {
+    const editor = new InMemoryVimEditor("The quick brown");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["w", "v", "e", "S", "b", "u"]);
+
+    expect(editor.getText()).toBe("The quick brown");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+  });
+
   it("deletes surrounds", () => {
     const editor = new InMemoryVimEditor("The { quick } brown");
     const vim = new Vim(editor);

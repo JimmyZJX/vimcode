@@ -1,3 +1,4 @@
+// DISABLED: vimcode uses VSCodeVim/vim-surround visual S for surround; Zed/default-Vim visual S substitutes lines.
 {"Put":{"state":"The quick brown\nfox juˇmps over\nthe lazy dog\n"}}
 {"Key":"shift-s"}
 {"Key":"o"}

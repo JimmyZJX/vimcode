@@ -82,7 +82,7 @@ export class VisualMode {
   private state: VisualState | undefined;
   private lastState: VisualState | undefined;
   private pendingTextObject: PendingTextObject | undefined;
-  private pendingSurround: { ranges: readonly TextRange[]; linewise: boolean } | undefined;
+  private pendingSurround: { ranges: readonly TextRange[]; linewise: boolean; selectionsBefore: readonly VimSelection[] } | undefined;
   private pendingRegister = false;
   private pendingPrefix: "g" | undefined;
   private selectedRegister: RegisterName | undefined;
@@ -171,7 +171,7 @@ export class VisualMode {
     if (this.pendingSurround !== undefined) {
       const pending = this.pendingSurround;
       this.pendingSurround = undefined;
-      addSurrounds(this.editor, pending.ranges, key, { linewise: pending.linewise });
+      addSurrounds(this.editor, pending.ranges, key, { linewise: pending.linewise, selectionsBefore: pending.selectionsBefore });
       this.state = undefined;
       this.editor.setCursorStyle("block");
       return handled({ exitVisual: true, nextMode: "normal" });
@@ -261,11 +261,8 @@ export class VisualMode {
     }
 
     if (key === "S") {
-      this.rememberState(state);
-      substituteLineForState(this.editor, this.registers, this.takeSelectedRegister(), state);
-      this.state = undefined;
-      this.editor.setCursorStyle("line");
-      return handled({ exitVisual: true, enterInsert: true, nextMode: "insert" });
+      this.pendingSurround = { ranges: visualSurroundRanges(this.editor, state), linewise: state.kind === "linewise", selectionsBefore: visualUndoSelections(state) };
+      return handled();
     }
 
     if (key === "J") {
@@ -397,7 +394,7 @@ export class VisualMode {
           registerName,
           () => charwiseVisualRange(this.editor, state),
           cursorAfterDeletingRange,
-          { selectionsBefore: visualUndoSelections(state) }
+          completeVisualEditOptions(state)
         );
         break;
       case "linewise":
@@ -418,7 +415,7 @@ export class VisualMode {
           registerName,
           () => charwiseVisualRange(this.editor, state),
           (_editor, range) => range.start,
-          keepUndoTransactionOpen({ selectionsBefore: visualUndoSelections(state) })
+          openVisualChangeEditOptions(state)
         );
         break;
       case "linewise":
@@ -951,40 +948,6 @@ function inclusiveHeadForRangeEnd(editor: VimEditorCapabilities, range: TextRang
   return { row: range.end.row, column: 0 };
 }
 
-function substituteLineForState(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  state: VisualState
-): void {
-  switch (state.kind) {
-    case "charwise": {
-      const range = charwiseVisualRange(editor, state);
-      const lineState: LinewiseVisualState = {
-        kind: "linewise",
-        anchorLine: range.start.row,
-        headLine: range.end.column === 0 && range.end.row > range.start.row ? range.end.row - 1 : range.end.row,
-        headColumn: range.start.column,
-      };
-      changeLinewise(editor, registers, registerName, lineState);
-      return;
-    }
-    case "linewise":
-      changeLinewise(editor, registers, registerName, state);
-      return;
-    case "blockwise": {
-      const { startRow, endRow } = blockBounds(state);
-      changeLinewise(editor, registers, registerName, {
-        kind: "linewise",
-        anchorLine: startRow,
-        headLine: endRow,
-        headColumn: 0,
-      });
-      return;
-    }
-  }
-}
-
 function visualIndentCursor(editor: VimEditorCapabilities, state: VisualState, direction: IndentDirection): Position {
   const start = visualStartPosition(state);
   switch (direction) {
@@ -1011,6 +974,10 @@ function visualIndentRepeatActionForState(
     selection: { type: "visualLine", rows: Math.max(0, endRow - startRow) },
     action: { type: "indent", direction },
   };
+}
+
+function visualSurroundRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
+  return visualConvertRanges(editor, state);
 }
 
 function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
@@ -1134,6 +1101,14 @@ function linewiseEditRange(editor: VimEditorCapabilities, state: LinewiseVisualS
   return { start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } };
 }
 
+function completeVisualEditOptions(state: VisualState) {
+  return { selectionsBefore: visualUndoSelections(state) };
+}
+
+function openVisualChangeEditOptions(state: VisualState) {
+  return keepUndoTransactionOpen(completeVisualEditOptions(state));
+}
+
 function deleteLinewise(
   editor: VimEditorCapabilities,
   registers: Registers,
@@ -1146,7 +1121,7 @@ function deleteLinewise(
   editor.applyEdits(
     [{ range: linewiseEditRange(editor, state), text: "" }],
     [charwiseSelection(linewiseCursorAfterDelete(editor, startLine, state.headColumn, deletedLineCount))],
-    { selectionsBefore: visualUndoSelections(state) }
+    completeVisualEditOptions(state)
   );
 }
 
@@ -1161,7 +1136,7 @@ function changeLinewise(
   editor.applyEdits(
     [{ range: linewiseEditRange(editor, state), text: "\n" }],
     [charwiseSelection({ row: startLine, column: 0 })],
-    keepUndoTransactionOpen({ selectionsBefore: visualUndoSelections(state) })
+    openVisualChangeEditOptions(state)
   );
 }
 
@@ -1202,7 +1177,7 @@ function pasteOverCharwise(
   const pastedRange = { start: range.start, end: positionAfterInsertedText(range.start, replacementText) };
 
   registers.write(undefined, deletedText, "characterwise");
-  editor.applyEdits([{ range, text: replacementText }], [charwiseSelection(cursor)], { selectionsBefore: visualUndoSelections(state) });
+  editor.applyEdits([{ range, text: replacementText }], [charwiseSelection(cursor)], completeVisualEditOptions(state));
   return charwiseStateForRange(editor, pastedRange);
 }
 
@@ -1223,7 +1198,7 @@ function pasteBlockwiseOverCharwise(
     edits.push({ range: { start: insertAt, end: insertAt }, text: blockLines[index] });
   }
   registers.write(undefined, deletedText, "characterwise");
-  editor.applyEdits(edits, [charwiseSelection({ row: range.start.row, column: range.start.column })], { selectionsBefore: visualUndoSelections(state) });
+  editor.applyEdits(edits, [charwiseSelection({ row: range.start.row, column: range.start.column })], completeVisualEditOptions(state));
 }
 
 function pasteOverLinewise(
@@ -1242,7 +1217,7 @@ function pasteOverLinewise(
     registers.write(undefined, linewiseText(editor, state), "linewise");
   }
 
-  editor.applyEdits([{ range, text: replacementText }], [charwiseSelection({ row: startLine, column: 0 })], { selectionsBefore: visualUndoSelections(state) });
+  editor.applyEdits([{ range, text: replacementText }], [charwiseSelection({ row: startLine, column: 0 })], completeVisualEditOptions(state));
 }
 
 function pasteOverBlockwise(
@@ -1270,7 +1245,7 @@ function pasteOverBlockwise(
     });
   }
 
-  editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: startColumn + blockLines[0].length - 1 })], { selectionsBefore: visualUndoSelections(state) });
+  editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: startColumn + blockLines[0].length - 1 })], completeVisualEditOptions(state));
 }
 
 function deleteBlockwise(
@@ -1301,8 +1276,8 @@ function deleteBlockwise(
     edits,
     selectionsAfter,
     collapse
-      ? { selectionsBefore: visualUndoSelections(state) }
-      : keepUndoTransactionOpen({ selectionsBefore: visualUndoSelections(state) })
+      ? completeVisualEditOptions(state)
+      : openVisualChangeEditOptions(state)
   );
 }
 
