@@ -96,6 +96,235 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.shouldHandleKey("ctrl-h")).toBe(false);
   });
 
+  it("delegates Zed-style normal-mode multicursor bindings to VSCode actions", () => {
+    const editor = new InMemoryVimEditor("one one one");
+    const vim = new Vim(editor);
+
+    expect(vim.shouldHandleKey("ctrl-n")).toBe(true);
+    runKeys(vim, ["ctrl-n", "g", "l", "g", "L", "g", ">", "g", "<", "g", "a"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.nativeCommands).toEqual([
+      { command: "editor.action.addSelectionToNextFindMatch", args: [] },
+      { command: "editor.action.addSelectionToNextFindMatch", args: [] },
+      { command: "editor.action.addSelectionToPreviousFindMatch", args: [] },
+      { command: "editor.action.moveSelectionToNextFindMatch", args: [] },
+      { command: "editor.action.moveSelectionToPreviousFindMatch", args: [] },
+      { command: "editor.action.selectHighlights", args: [] },
+    ]);
+  });
+
+  it("delegates Zed-style visual-mode multicursor bindings to VSCode actions", () => {
+    const editor = new InMemoryVimEditor("one one one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "e", "ctrl-n", "g", "l", "g", "L", "g", ">", "g", "<", "g", "a"]);
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.nativeCommands).toEqual([
+      { command: "editor.action.addSelectionToNextFindMatch", args: [] },
+      { command: "editor.action.addSelectionToNextFindMatch", args: [] },
+      { command: "editor.action.addSelectionToPreviousFindMatch", args: [] },
+      { command: "editor.action.moveSelectionToNextFindMatch", args: [] },
+      { command: "editor.action.moveSelectionToPreviousFindMatch", args: [] },
+      { command: "editor.action.selectHighlights", args: [] },
+    ]);
+  });
+
+  it("enters visual mode from every normal-mode cursor", () => {
+    const editor = new InMemoryVimEditor("one\ntwo");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 0 } },
+    ]);
+    runKeys(vim, ["v"]);
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 1 }, cursor: { row: 0, column: 0 }, goal: undefined },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 1 }, cursor: { row: 1, column: 0 }, goal: undefined },
+    ]);
+  });
+
+  it("clears the desired column when entering visual mode", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["5", "l", "j", "v", "j"]);
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      {
+        type: "charwise",
+        anchor: { row: 1, column: 0 },
+        head: { row: 2, column: 1 },
+        cursor: { row: 2, column: 0 },
+        goal: { type: "modelColumn", column: 0 },
+      },
+    ]);
+  });
+
+  it("does not move visual mode from an empty line to the next line", () => {
+    const editor = new InMemoryVimEditor("\nabc");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v"]);
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 }, cursor: { row: 0, column: 0 }, goal: undefined },
+    ]);
+  });
+
+  it("surrounds an empty visual selection", () => {
+    const editor = new InMemoryVimEditor("\n123456");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "S", "b"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("()\n123456");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
+    ]);
+  });
+
+  it("does not keep next-line text selected after visual motion returns to an empty line", () => {
+    const editor = new InMemoryVimEditor("\n123456");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "j", "l", "l", "k", "S", "b"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("()\n123456");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
+    ]);
+  });
+
+  it("syncs undo-restored visual multicursor selections into visual mode", () => {
+    const editor = new InMemoryVimEditor("one two\none two");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
+    ]);
+    vim.syncFromUndoRedoState({ render: false });
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
+    ]);
+  });
+
+  it("turns synced multicursor visual selections into normal-mode cursors on escape", () => {
+    const editor = new InMemoryVimEditor("one\ntwo");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+
+    expect(vim.modeName).toBe("vim:visual");
+    runKeys(vim, ["<escape>"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 3 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 3 }, head: { row: 1, column: 3 } },
+    ]);
+  });
+
+  it("collapses normal-mode multicursor selections on escape", () => {
+    const editor = new InMemoryVimEditor("one\ntwo");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 3 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 3 }, head: { row: 1, column: 3 } },
+    ]);
+    runKeys(vim, ["<escape>"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 3 }, head: { row: 0, column: 3 } },
+    ]);
+  });
+
+  it("deletes all synced visual multicursor selections", () => {
+    const editor = new InMemoryVimEditor("one two\none two");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["d"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe(" two\n two");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 0 } },
+    ]);
+    expect(vim.readRegister(undefined)).toBe("one\none");
+  });
+
+  it("changes all synced visual multicursor selections", () => {
+    const editor = new InMemoryVimEditor("one two\none two");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["c", "X", "<escape>"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("X two\nX two");
+    expect(vim.readRegister(undefined)).toBe("one\none");
+  });
+
+  it("applies visual motions to all synced visual multicursor selections", () => {
+    const editor = new InMemoryVimEditor("one two\none two");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["l", "d"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("two\ntwo");
+    expect(vim.readRegister(undefined)).toBe("one \none ");
+  });
+
+  it("applies text objects to all synced visual multicursor selections", () => {
+    const editor = new InMemoryVimEditor("one two\none two");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 2 } },
+      { type: "charwise", anchor: { row: 1, column: 5 }, head: { row: 1, column: 6 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["i", "w", "d"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe(" two\none ");
+    expect(vim.readRegister(undefined)).toBe("one\ntwo");
+  });
+
   it("moves in normal mode and inserts through the editor capability interface", () => {
     const editor = new InMemoryVimEditor("abc");
     const vim = new Vim(editor);

@@ -9,7 +9,7 @@ import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
 import { EditSources } from '../../../common/textModelEditSource.js';
 import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
-import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities } from '../common/editor.js';
+import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 
 type VimUndoTransaction = {
@@ -72,8 +72,8 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		if (selections.length === 0) {
 			return [charwiseSelection({ row: 0, column: 0 })];
 		}
-		return selections.map(selection => ({
-			type: 'charwise',
+		const rebuilt = selections.map(selection => ({
+			type: 'charwise' as const,
 			anchor: {
 				row: selection.selectionStartLineNumber - 1,
 				column: selection.selectionStartColumn - 1,
@@ -83,6 +83,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				column: selection.positionColumn - 1,
 			},
 		}));
+		return rebuilt;
 	}
 
 	setSelections(selections: readonly VimSelection[]): void {
@@ -168,10 +169,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	executeNativeCommand(command: string, args: readonly unknown[] = [], options: NativeCommandOptions = {}): void {
+		const syncSelectionAfter = options.syncSelectionAfter === true || command === 'undo' || command === 'redo';
 		const selectionsToRestore = options.preserveVisualSelection === true
 			? visualSemanticSelections(this.lastSetVimSelections)
 			: undefined;
-		this.nativeCommandInProgress = true;
+		this.nativeCommandInProgress = !syncSelectionAfter;
 		void this.commandService.executeCommand(command, ...args).finally(() => {
 			this.nativeCommandInProgress = false;
 			if (selectionsToRestore !== undefined) {
@@ -212,13 +214,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		// This is a pure query over VSCode's internal view model. It uses the same
 		// model<->view coordinate conversion that native cursor movement uses, so
 		// folded ranges and soft wraps are represented without moving the live cursor.
+		const before = this.getSelections();
 		const viewModel = this.editor._getViewModel();
 		if (viewModel === null) {
-			return this.getSelections();
+			return before;
 		}
 		const converter = viewModel.coordinatesConverter;
 		const lineCount = viewModel.model.getLineCount();
-		return this.getSelections().map(selection => {
+		const result = before.map(selection => {
 			const head = selection.cursor ?? selectionHead(selection);
 			const modelPosition = new VSCodePosition(head.row + 1, head.column + 1);
 			const viewPosition = converter.convertModelPositionToViewPosition(modelPosition, PositionAffinity.None, false, direction === 'down');
@@ -233,8 +236,12 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			if (extend && selection.type === 'charwise') {
 				return extendCharwiseSelection(this, selection, targetPosition, goal);
 			}
-			return { ...charwiseSelection(targetPosition), goal };
+			// VSCode model positions are between characters and can point one column
+			// past the final character. Normal Vim cursors live on a character, except
+			// on empty lines, so clip host movement results back to Vim-normal shape.
+			return { ...charwiseSelection(normalCursorPosition(this, targetPosition)), goal };
 		});
+		return result;
 	}
 
 	moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): readonly VimSelection[] {
@@ -673,9 +680,12 @@ function fromRange(range: Range): TextRange {
 function formatVimSelections(selections: readonly VimSelection[] | undefined): string {
 	if (selections === undefined) return 'undefined';
 	return `[${selections.map(selection => {
-		switch (selection.type) {
-			case 'charwise':
-				return `char:${formatVimPosition(selection.anchor)}->${formatVimPosition(selection.head)}`;
+					switch (selection.type) {
+			case 'charwise': {
+				const cursor = selection.cursor === undefined ? '' : ` cursor=${formatVimPosition(selection.cursor)}`;
+				const goal = selection.goal === undefined ? '' : ` goal=${JSON.stringify(selection.goal)}`;
+				return `char:${formatVimPosition(selection.anchor)}->${formatVimPosition(selection.head)}${cursor}${goal}`;
+			}
 			case 'linewise':
 				return `line:${selection.anchorLine}->${selection.headLine}`;
 			case 'blockwise':

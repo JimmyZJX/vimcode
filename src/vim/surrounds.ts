@@ -8,7 +8,7 @@
 //   any-bracket matching, multicursor deduplication, and display-map details.
 
 import { VimEditorCapabilities, rangeText } from "./editor.js";
-import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
+import { TextEdit, TextRange, charwiseSelection, comparePositions, selectionHead } from "./state.js";
 
 export type SurroundPair = {
   open: string;
@@ -52,7 +52,10 @@ export function addSurrounds(
   const selectionsAfter = ranges.map(range => charwiseSelection(range.start));
 
   for (const range of ranges) {
-    if (linewise) {
+    if (comparePositions(range.start, range.end) === 0) {
+      const space = spec.spaced ? " " : "";
+      edits.push({ range, text: `${spec.pair.open}${space}${space}${spec.pair.close}` });
+    } else if (linewise) {
       edits.push({ range: { start: range.start, end: range.start }, text: `${spec.pair.open}\n` });
       edits.push({ range: { start: range.end, end: range.end }, text: `\n${spec.pair.close}` });
     } else {

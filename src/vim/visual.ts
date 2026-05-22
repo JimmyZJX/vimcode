@@ -7,7 +7,7 @@
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
-import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
+import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
@@ -15,7 +15,7 @@ import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { IndentDirection, indentRanges, visualIndentRanges } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
-import { cursorAfterDeletingRange, deleteRange } from "./normal/delete.js";
+import { cursorAfterDeletingRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, Registers, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
 import { addSurrounds } from "./surrounds.js";
@@ -99,7 +99,8 @@ export class VisualMode {
   ) {}
 
   enter(kind: VisualState["kind"] = "charwise"): void {
-    const selection = this.editor.getSelections()[0];
+    const selections = this.editor.getSelections();
+    const selection = selections[0];
     const head = selectionHead(selection);
     this.pendingTextObject = undefined;
     this.pendingSurround = undefined;
@@ -107,34 +108,27 @@ export class VisualMode {
     this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
     this.countBuffer = "";
+    this.editor.setCursorStyle("line");
     switch (kind) {
       case "charwise":
-        this.state = { kind, anchor: head, head: initialCharwiseHead(this.editor, head) };
+        this.setCharwiseStates(selections.map(selection => {
+          const head = selectionHead(selection);
+          return { kind, anchor: head, head: initialCharwiseHead(this.editor, head) };
+        }));
         break;
       case "linewise":
         this.state = { kind, anchorLine: head.row, headLine: head.row, headColumn: head.column };
+        this.syncEditorSelection();
         break;
       case "blockwise":
         this.state = { kind, anchor: head, head };
+        this.syncEditorSelection();
         break;
     }
-    this.editor.setCursorStyle("line");
-    this.syncEditorSelection();
   }
 
   adoptSelection(selection: VimSelection, { render }: { render: boolean }): boolean {
-    if (selection.type !== "charwise") return false;
-    if (comparePositions(selection.anchor, selection.head) === 0) return false;
-    this.pendingTextObject = undefined;
-    this.pendingSurround = undefined;
-    this.pendingRegister = false;
-    this.pendingPrefix = undefined;
-    this.selectedRegister = undefined;
-    this.countBuffer = "";
-    this.state = externalSelectionToCharwiseState(this.editor, selection);
-    this.editor.setCursorStyle("line");
-    if (render) this.syncEditorSelection();
-    return true;
+    return this.adoptCharwiseSelection(selection, { render, allowEmpty: false });
   }
 
   clearState(): void {
@@ -158,8 +152,9 @@ export class VisualMode {
     this.selectedRegister = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");
-    if (state === undefined) {
-      this.editor.setSelections(this.editor.getSelections().map(selection => charwiseSelection(selectionHead(selection))));
+    const selections = this.editor.getSelections();
+    if (state === undefined || (state.kind !== "blockwise" && selections.length > 1)) {
+      this.editor.setSelections(selections.map(selection => charwiseSelection(selectionHead(selection))));
     } else {
       this.editor.setSelections([charwiseSelection(visualExitPosition(this.editor, state))]);
     }
@@ -268,7 +263,11 @@ export class VisualMode {
     }
 
     if (key === "S") {
-      this.pendingSurround = { ranges: visualSurroundRanges(this.editor, state), linewise: state.kind === "linewise", undoSelectionsBefore: visualUndoSelections(state) };
+      this.pendingSurround = {
+        ranges: visualSurroundRanges(this.editor, state),
+        linewise: state.kind === "linewise",
+        undoSelectionsBefore: visualCurrentUndoSelections(this.editor, state),
+      };
       return handled();
     }
 
@@ -302,14 +301,18 @@ export class VisualMode {
     }
 
     if (key === "o" || key === "O") {
-      this.state = otherEndState(state, { rowAware: key === "o" });
-      this.syncEditorSelection();
+      if (state.kind === "charwise") {
+        this.setCharwiseStates(currentCharwiseVisualStates(this.editor, state).map(state => otherEndState(state, { rowAware: key === "o" }) as CharwiseVisualState));
+      } else {
+        this.state = otherEndState(state, { rowAware: key === "o" });
+        this.syncEditorSelection();
+      }
       return handled();
     }
 
     if (key === "y" || key === "Y") {
       this.yank(state, this.takeSelectedRegister());
-      this.finishNormalAt(visualStartPosition(state));
+      this.finishNormalAtVisualStarts(state);
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
@@ -362,26 +365,32 @@ export class VisualMode {
       return handled();
     }
 
-    if (object.type !== "paragraph" && this.editor.lineLength(state.anchor.row) === 0) {
+    const states = currentCharwiseVisualStates(this.editor, state);
+    if (states.some(state => object.type !== "paragraph" && this.editor.lineLength(state.anchor.row) === 0)) {
       this.syncEditorSelection();
       return handled();
     }
 
-    const range = textObjectRange(this.editor, visualObjectHead(this.editor, state), object, { around: pendingTextObject.around, count: this.takeCount(1) });
+    const count = this.takeCount(1);
+    const ranges = states.map(state =>
+      textObjectRange(this.editor, visualObjectHead(this.editor, state), object, { around: pendingTextObject.around, count }));
     if (object.type === "paragraph") {
-      this.state = paragraphLinewiseStateForRange(this.editor, range);
+      this.state = paragraphLinewiseStateForRange(this.editor, ranges[0]);
       this.syncEditorSelection();
       return handled({ nextMode: "visualLine" });
     }
-    this.state = charwiseStateForRange(this.editor, range);
-    this.syncEditorSelection();
+    this.setCharwiseStates(ranges.map(range => charwiseStateForRange(this.editor, range)));
     return handled();
   }
 
   private yank(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        this.registers.writeYank(registerName, rangeText(this.editor, charwiseVisualRange(this.editor, state)), "characterwise");
+        this.registers.writeYank(
+          registerName,
+          currentCharwiseVisualRanges(this.editor, state).map(range => rangeText(this.editor, range)).join("\n"),
+          "characterwise"
+        );
         break;
       case "linewise":
         this.registers.writeYank(registerName, linewiseText(this.editor, state), "linewise");
@@ -395,14 +404,9 @@ export class VisualMode {
   private delete(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        beginVisualUndoTransaction(this.editor, state);
-        deleteRange(
-          this.editor,
-          this.registers,
-          registerName,
-          () => charwiseVisualRange(this.editor, state),
-          cursorAfterDeletingRange
-        );
+        deleteCharwiseVisualRanges(this.editor, this.registers, registerName, state, {
+          cursorForRange: cursorAfterDeletingRange,
+        });
         break;
       case "linewise":
         deleteLinewise(this.editor, this.registers, registerName, state);
@@ -416,15 +420,10 @@ export class VisualMode {
   private change(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        beginVisualUndoTransaction(this.editor, state);
-        deleteRange(
-          this.editor,
-          this.registers,
-          registerName,
-          () => charwiseVisualRange(this.editor, state),
-          (_editor, range) => range.start,
-          openVisualChangeEditOptions()
-        );
+        deleteCharwiseVisualRanges(this.editor, this.registers, registerName, state, {
+          cursorForRange: (_editor, range) => range.start,
+          options: openVisualChangeEditOptions(),
+        });
         break;
       case "linewise":
         changeLinewise(this.editor, this.registers, registerName, state);
@@ -493,6 +492,9 @@ export class VisualMode {
         this.adoptSelectionFromHost();
         return;
       }
+      this.setCharwiseStates(currentCharwiseVisualStates(this.editor, state).map(state =>
+        stateAfterMotion(this.editor, state, motion, count) as CharwiseVisualState));
+      return;
     }
     if (state.kind === "linewise" && (motion.type === "up" || motion.type === "down")) {
       const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine, extend: false });
@@ -514,9 +516,34 @@ export class VisualMode {
     this.editor.setSelections([visualStateToEditorSelection(this.editor, this.state)]);
   }
 
+  private setCharwiseStates(states: readonly CharwiseVisualState[]): void {
+    const first = states[0];
+    if (first === undefined) return;
+    this.state = first;
+    this.editor.setSelections(states.map(state => charwiseStateToEditorSelection(this.editor, state)));
+  }
+
   adoptSelectionFromHost(): void {
     const selection = this.editor.getSelections()[0];
-    if (selection?.type === "charwise") this.adoptSelection(selection, { render: false });
+    if (selection?.type === "charwise") this.adoptCharwiseSelection(selection, { render: false, allowEmpty: true });
+  }
+
+  private adoptCharwiseSelection(
+    selection: VimSelection,
+    { render, allowEmpty }: { render: boolean; allowEmpty: boolean }
+  ): boolean {
+    if (selection.type !== "charwise") return false;
+    if (!allowEmpty && comparePositions(selection.anchor, selection.head) === 0) return false;
+    this.pendingTextObject = undefined;
+    this.pendingSurround = undefined;
+    this.pendingRegister = false;
+    this.pendingPrefix = undefined;
+    this.selectedRegister = undefined;
+    this.countBuffer = "";
+    this.state = externalSelectionToCharwiseState(this.editor, selection);
+    this.editor.setCursorStyle("line");
+    if (render && this.editor.getSelections().length <= 1) this.syncEditorSelection();
+    return true;
   }
 
   restoreLastSelection(): RestoredVisualMode | undefined {
@@ -532,17 +559,14 @@ export class VisualMode {
     return modeForState(lastState);
   }
 
-  private finishNormalAt(position: Position): void {
+  private finishNormalAtVisualStarts(state: VisualState): void {
     if (this.state !== undefined) this.rememberState(this.state);
-    this.state = undefined;
-    this.pendingTextObject = undefined;
-    this.pendingSurround = undefined;
-    this.pendingRegister = false;
-    this.pendingPrefix = undefined;
-    this.selectedRegister = undefined;
-    this.countBuffer = "";
+    const selections = state.kind === "charwise"
+      ? currentCharwiseVisualRanges(this.editor, state).map(range => charwiseSelection(range.start))
+      : [charwiseSelection(visualStartPosition(state))];
+    this.clearState();
     this.editor.setCursorStyle("block");
-    this.editor.setSelections([charwiseSelection(position)]);
+    this.editor.setSelections(selections);
   }
 
   private takeSelectedRegister(): RegisterName | undefined {
@@ -625,6 +649,23 @@ function isCountKey(key: string, countBuffer: string): boolean {
 }
 
 function externalSelectionToCharwiseState(editor: VimEditorCapabilities, selection: Extract<VimSelection, { type: "charwise" }>): CharwiseVisualState {
+  if (selection.cursor !== undefined) {
+    if (comparePositions(selection.cursor, selection.anchor) < 0) {
+      return {
+        kind: "charwise",
+        anchor: previousVisualPosition(editor, selection.anchor),
+        head: selection.cursor,
+        goal: selection.goal,
+      };
+    }
+    return {
+      kind: "charwise",
+      anchor: selection.anchor,
+      head: selection.cursor,
+      goal: selection.goal,
+    };
+  }
+
   if (comparePositions(selection.anchor, selection.head) <= 0) {
     return {
       kind: "charwise",
@@ -647,10 +688,7 @@ function previousVisualPosition(editor: VimEditorCapabilities, position: Positio
   return position;
 }
 
-function initialCharwiseHead(editor: VimEditorCapabilities, head: Position): Position {
-  if (editor.lineLength(head.row) === 0 && head.row + 1 < editor.lineCount()) {
-    return { row: head.row + 1, column: 0 };
-  }
+function initialCharwiseHead(_editor: VimEditorCapabilities, head: Position): Position {
   return head;
 }
 
@@ -991,7 +1029,7 @@ function visualSurroundRanges(editor: VimEditorCapabilities, state: VisualState)
 function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
   switch (state.kind) {
     case "charwise":
-      return [charwiseVisualRange(editor, state)];
+      return currentCharwiseVisualRanges(editor, state);
     case "linewise": {
       const { startLine, endLine } = lineBounds(state);
       return [{ start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } }];
@@ -1259,6 +1297,68 @@ function pasteOverBlockwise(
 
   beginVisualUndoTransaction(editor, state);
   editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: startColumn + blockLines[0].length - 1 })]);
+}
+
+function currentCharwiseVisualStates(
+  editor: VimEditorCapabilities,
+  state: CharwiseVisualState
+): readonly CharwiseVisualState[] {
+  const states = editor.getSelections().flatMap(selection =>
+    selection.type === "charwise"
+      ? [externalSelectionToCharwiseState(editor, selection)]
+      : []);
+  return states.length === 0 ? [state] : states;
+}
+
+function currentCharwiseVisualRanges(
+  editor: VimEditorCapabilities,
+  state: CharwiseVisualState
+): readonly TextRange[] {
+  return currentCharwiseVisualStates(editor, state).map(state => charwiseVisualRange(editor, state));
+}
+
+function currentCharwiseVisualUndoSelections(
+  editor: VimEditorCapabilities,
+  state: CharwiseVisualState
+): readonly VimSelection[] {
+  const selections = editor.getSelections();
+  return selections.length <= 1 ? visualUndoSelections(state) : selections;
+}
+
+function visualCurrentUndoSelections(
+  editor: VimEditorCapabilities,
+  state: VisualState
+): readonly VimSelection[] {
+  return state.kind === "charwise" ? currentCharwiseVisualUndoSelections(editor, state) : visualUndoSelections(state);
+}
+
+function deleteCharwiseVisualRanges(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  state: CharwiseVisualState,
+  {
+    cursorForRange,
+    options = {},
+  }: {
+    cursorForRange: (editor: VimEditorCapabilities, range: TextRange) => Position;
+    options?: ApplyEditsOptions;
+  }
+): void {
+  const ranges = currentCharwiseVisualRanges(editor, state);
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+  const copied: string[] = [];
+
+  for (const range of ranges) {
+    copied.push(rangeText(editor, range));
+    edits.push({ range, text: "" });
+    selectionsAfter.push(charwiseSelection(cursorForRange(editor, range)));
+  }
+
+  if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
+  editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(editor, state));
+  editor.applyEdits(edits, selectionsAfter, options);
 }
 
 function deleteBlockwise(

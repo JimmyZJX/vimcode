@@ -241,7 +241,11 @@ export class VimController extends Disposable {
 
 	private handleCursorSelectionChanged(event: ICursorSelectionChangedEvent): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
-		this.logUndo(`selection event source=${event.source} reason=${cursorChangeReasonName(event.reason)} selections=${formatVSCodeSelections([event.selection, ...event.secondarySelections])}`);
+		const selections = [event.selection, ...event.secondarySelections];
+		if (this.isModelMarkerRecoveryNoise(event)) {
+			return;
+		}
+		this.logUndo(`selection event source=${event.source} reason=${cursorChangeReasonName(event.reason)} selections=${formatVSCodeSelections(selections)}`);
 		if (event.reason === CursorChangeReason.Undo || event.reason === CursorChangeReason.Redo) {
 			this.pendingUndoRedoContentSync = false;
 			this.syncFromUndoRedoState(`selection:${cursorChangeReasonName(event.reason)}`);
@@ -256,6 +260,23 @@ export class VimController extends Disposable {
 			return;
 		}
 		this.handleExternalEditorStateChanged();
+	}
+
+	private isModelMarkerRecoveryNoise(event: ICursorSelectionChangedEvent): boolean {
+		if (event.source !== 'modelChange' || event.reason !== CursorChangeReason.RecoverFromMarkers) {
+			return false;
+		}
+		// Marker recovery is VSCode adjusting cursor/selection markers after model edits
+		// such as log-file appends. Treat it as authoritative for insert/replace via the
+		// existing early return above, but do not let it churn normal-mode cursors or
+		// rewrite an active Vim visual selection.
+		if (this.vim.mode.kind === 'visual' || this.vim.mode.kind === 'visualLine' || this.vim.mode.kind === 'visualBlock') {
+			return true;
+		}
+		return this.vim.mode.kind === 'normal'
+			&& [event.selection, ...event.secondarySelections].every(selection =>
+				selection.selectionStartLineNumber === selection.positionLineNumber
+				&& selection.selectionStartColumn === selection.positionColumn);
 	}
 
 	private handleModelContentChanged(event: IModelContentChangedEvent): void {

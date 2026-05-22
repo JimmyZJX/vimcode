@@ -8,6 +8,7 @@
 import { LineRange, executeCommand } from "./command.js";
 import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
 import { lookupDigraph } from "./digraph.js";
+import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
@@ -24,7 +25,7 @@ import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
-import { KeyResult, Operator, VimMode, charwiseSelection, comparePositions, rangeOfSelection, selectionHead } from "./state.js";
+import { KeyResult, Operator, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 
@@ -44,6 +45,14 @@ export type VimStatus = {
   operator: Operator | undefined;
   chord: string;
   text: string;
+};
+
+export type EditorSyncResult = {
+  mode: VimMode["kind"];
+  selectionCount: number;
+  visualSelectionFound: boolean;
+  adoptedVisualSelection: boolean;
+  reason: string;
 };
 
 // Zed: `vim::Vim`. This class is the local main state holder; GPUI
@@ -150,16 +159,23 @@ export class Vim {
       || this.isEscape(key);
   }
 
-  syncFromEditorState({ render = true }: { render?: boolean } = {}): void {
+  syncFromEditorState({ render = true }: { render?: boolean } = {}): EditorSyncResult {
     this.clearPendingForExternalSync();
     const selections = this.editor.getSelections();
-    const visualSelection = selections.find(selection =>
-      selection.type === "charwise" && comparePositions(selection.anchor, selection.head) !== 0);
+    const reconciliation = reconcileCursorState(
+      { selections },
+      { mode: this.modeState, selections }
+    );
 
-    if (visualSelection !== undefined && this.visualMode.adoptSelection(visualSelection, { render })) {
-      this.insertOrigin = undefined;
-      this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
-      return;
+    if (reconciliation.modeKind === "visual") {
+      const visualSelection = reconciliation.selections.find(selection => selection.type === "charwise");
+      const adopted = visualSelection !== undefined
+        && this.visualMode.adoptSelection(visualSelection, { render });
+      if (adopted) {
+        this.insertOrigin = undefined;
+        this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
+        return { mode: this.modeState.kind, ...reconciliation };
+      }
     }
 
     if (this.isVisualMode()) {
@@ -167,23 +183,21 @@ export class Vim {
     }
     this.insertOrigin = undefined;
     if (render) this.editor.setCursorStyle("block");
-    this.editor.setSelections(selections.map(selection => charwiseSelection(normalCursorPosition(this.editor, selectionHead(selection)))));
+    const normalSelections = collapseSelectionsToNormalCursors(reconciliation.selections)
+      .map(selection => charwiseSelection(normalCursorPosition(this.editor, selectionHead(selection))));
+    this.editor.setSelections(normalSelections);
     this.setMode("normal");
+    return {
+      mode: this.modeState.kind,
+      selectionCount: reconciliation.selectionCount,
+      visualSelectionFound: reconciliation.visualSelectionFound,
+      adoptedVisualSelection: false,
+      reason: reconciliation.visualSelectionFound ? "failed to adopt visual selection" : reconciliation.reason,
+    };
   }
 
-  syncFromUndoRedoState({ render = true }: { render?: boolean } = {}): void {
-    this.clearPendingForExternalSync();
-    if (this.isVisualMode()) {
-      this.visualMode.clearState();
-    }
-    this.insertOrigin = undefined;
-    if (render) this.editor.setCursorStyle("block");
-    const firstSelection = this.editor.getSelections()[0];
-    if (firstSelection !== undefined) {
-      const range = rangeOfSelection(firstSelection);
-      this.editor.setSelections([charwiseSelection(normalCursorPosition(this.editor, range.start))]);
-    }
-    this.setMode("normal");
+  syncFromUndoRedoState({ render = true }: { render?: boolean } = {}): EditorSyncResult {
+    return this.syncFromEditorState({ render });
   }
 
   private clearPendingForExternalSync(): void {
@@ -542,6 +556,10 @@ export class Vim {
       this.setMode("normal");
       return;
     }
+    if (this.modeState.kind === "normal" && this.hasMultipleCursorsOrSelection()) {
+      this.collapseToFirstCursor();
+      return;
+    }
     if (this.modeState.kind !== "normal") {
       const modeBeforeEscape = this.modeState.kind;
       if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
@@ -705,9 +723,12 @@ export class Vim {
   }
 
   private collapseToFirstCursor(): void {
-    const firstSelection = this.editor.getSelections()[0];
-    if (firstSelection === undefined) return;
-    this.editor.setSelections([{ type: "charwise", anchor: selectionHead(firstSelection), head: selectionHead(firstSelection) }]);
+    const collapsed = collapseToPrimaryNormalCursor(this.editor.getSelections());
+    if (collapsed.length > 0) this.editor.setSelections(collapsed);
+  }
+
+  private hasMultipleCursorsOrSelection(): boolean {
+    return hasMultipleCursorsOrSelection(this.editor.getSelections());
   }
 
   private shouldResolveSharedAction(key: string): boolean {
@@ -766,6 +787,13 @@ export class Vim {
       case "searchSelection":
         this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
         return;
+      case "multiCursor": {
+        const count = this.takeCountForMotion(1);
+        for (let index = 0; index < count; index++) {
+          this.editor.executeNativeCommand(action.command, [], { syncSelectionAfter: true });
+        }
+        return;
+      }
       case "native":
         this.editor.executeNativeCommand(action.command);
         this.syncFromEditorState({ render: false });
@@ -777,10 +805,8 @@ export class Vim {
     switch (action.type) {
       case "host":
       case "z": {
-        const hostCommand = handleHostAction(this.editor, action, defaultValue => this.takeCountForMotion(defaultValue));
-        if (hostCommand !== "undo" && hostCommand !== "redo") {
-          this.syncFromEditorState({ render: false });
-        }
+        handleHostAction(this.editor, action, defaultValue => this.takeCountForMotion(defaultValue));
+        this.syncFromEditorState({ render: false });
         return;
       }
 
@@ -1027,6 +1053,7 @@ function isBuiltInCtrlKey(key: string): boolean {
     case "ctrl-f":
     case "ctrl-i":
     case "ctrl-k":
+    case "ctrl-n":
     case "ctrl-o":
     case "ctrl-r":
     case "ctrl-u":

@@ -12,7 +12,7 @@
 {"Get":{"state":"The «ˇquick brown\nfox jumps o»ver\nthe lazy dog","mode":"Visual"}}
 {"Put":{"state":"a\nˇ\nb\n"}}
 {"Key":"v"}
-{"Get":{"state":"a\n«\nˇ»b\n","mode":"Visual"}}
+{"Get":{"state":"a\nˇ\nb\n","mode":"Visual"}}
 {"Key":"v"}
 {"Get":{"state":"a\nˇ\nb\n","mode":"Normal"}}
 {"Put":{"state":"a\nb\nˇ"}}

@@ -11,6 +11,7 @@ export type SharedAction =
   | { type: "page"; key: "ctrl-d" | "ctrl-u" | "ctrl-f" | "ctrl-b" }
   | { type: "restoreVisualSelection" }
   | { type: "searchSelection"; reversed: boolean }
+  | { type: "multiCursor"; command: string }
   | { type: "native"; command: string };
 
 export type SharedActionResolution =
@@ -31,6 +32,18 @@ const bindings: ReadonlyMap<string, SharedAction> = new Map([
   ["g J", { type: "normalGKey", key: "J" }],
   ["g n", { type: "searchSelection", reversed: false }],
   ["g N", { type: "searchSelection", reversed: true }],
+  // `ctrl-n` is a VSCodeVim-style alias for VSCode's native Ctrl+D action.
+  ["ctrl-n", { type: "multiCursor", command: "editor.action.addSelectionToNextFindMatch" }],
+  // Zed: assets/keymaps/vim.json binds these to `vim::SelectNext`,
+  // `vim::SelectPrevious`, editor select-next/previous with `replace_newest`,
+  // and `editor::SelectAllMatches`. In VSCode, the native multicursor
+  // controller already implements the same selection sessions, so the first
+  // slice delegates to those editor actions.
+  ["g l", { type: "multiCursor", command: "editor.action.addSelectionToNextFindMatch" }],
+  ["g L", { type: "multiCursor", command: "editor.action.addSelectionToPreviousFindMatch" }],
+  ["g >", { type: "multiCursor", command: "editor.action.moveSelectionToNextFindMatch" }],
+  ["g <", { type: "multiCursor", command: "editor.action.moveSelectionToPreviousFindMatch" }],
+  ["g a", { type: "multiCursor", command: "editor.action.selectHighlights" }],
   ["ctrl-d", { type: "page", key: "ctrl-d" }],
   ["ctrl-u", { type: "page", key: "ctrl-u" }],
   ["ctrl-f", { type: "page", key: "ctrl-f" }],

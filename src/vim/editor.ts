@@ -30,6 +30,7 @@ export type ApplyEditsOptions = {
 
 export type NativeCommandOptions = {
   preserveVisualSelection?: boolean;
+  syncSelectionAfter?: boolean;
 };
 
 // Most Vim edits are complete commands and should become one native undo unit.
