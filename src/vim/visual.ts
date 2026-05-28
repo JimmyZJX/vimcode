@@ -42,6 +42,7 @@ export type VisualKeyResult = {
   enterInsert: boolean;
   nextMode?: VisualResultMode;
   repeatAction?: { selection: RecordedSelection; action: VisualRepeatAction };
+  pendingRepeatChange?: { selection: RecordedSelection };
 };
 
 type CharwiseVisualState = {
@@ -75,14 +76,16 @@ function handled(
     enterInsert = false,
     nextMode,
     repeatAction,
+    pendingRepeatChange,
   }: {
     exitVisual?: boolean;
     enterInsert?: boolean;
     nextMode?: VisualResultMode;
     repeatAction?: { selection: RecordedSelection; action: VisualRepeatAction };
+    pendingRepeatChange?: { selection: RecordedSelection };
   } = {}
 ): VisualKeyResult {
-  return { keyResult: "handled", exitVisual, enterInsert, nextMode, repeatAction };
+  return { keyResult: "handled", exitVisual, enterInsert, nextMode, repeatAction, pendingRepeatChange };
 }
 
 export class VisualMode {
@@ -319,19 +322,21 @@ export class VisualMode {
     }
 
     if (key === "d" || key === "x") {
+      const selection = visualRepeatSelectionForState(this.editor, state);
       this.rememberState(state);
       this.delete(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("block");
-      return handled({ exitVisual: true, nextMode: "normal" });
+      return handled({ exitVisual: true, nextMode: "normal", repeatAction: { selection, action: { type: "delete" } } });
     }
 
     if (key === "c" || key === "s") {
+      const selection = visualRepeatSelectionForState(this.editor, state);
       this.rememberState(state);
       this.change(state, this.takeSelectedRegister());
       this.state = undefined;
       this.editor.setCursorStyle("line");
-      return handled({ exitVisual: true, enterInsert: true, nextMode: "insert" });
+      return handled({ exitVisual: true, enterInsert: true, nextMode: "insert", pendingRepeatChange: { selection } });
     }
 
     if (key === "p" || key === "P") {
@@ -1010,6 +1015,29 @@ function visualIndentCursor(editor: VimEditorCapabilities, state: VisualState, d
 
 function leadingWhitespaceLength(line: string): number {
   return /^\s*/.exec(line)?.[0].length ?? 0;
+}
+
+function visualRepeatSelectionForState(
+  editor: VimEditorCapabilities,
+  state: VisualState
+): RecordedSelection {
+  switch (state.kind) {
+    case "charwise": {
+      const range = charwiseVisualRange(editor, state);
+      return {
+        type: "charwise",
+        rowDelta: range.end.row - range.start.row,
+        columnDelta: range.end.column - range.start.column,
+        endColumn: range.end.column,
+      };
+    }
+    case "linewise": {
+      const { startRow, endRow } = visualLineBounds(editor, state);
+      return { type: "visualLine", rows: Math.max(0, endRow - startRow) };
+    }
+    case "blockwise":
+      return { type: "none" };
+  }
 }
 
 function visualIndentRepeatActionForState(

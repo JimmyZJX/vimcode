@@ -6,14 +6,18 @@
 // - intentional differences: key-based actions are still stored as small key sequences;
 //   visual actions are modeled explicitly only for the actions currently implemented.
 
+import { RegisterName } from "../registers.js";
 import { IndentDirection } from "./indent.js";
 
 export type RecordedSelection =
   | { type: "none" }
+  | { type: "charwise"; rowDelta: number; columnDelta: number; endColumn: number }
   | { type: "visualLine"; rows: number };
 
 export type VisualRepeatAction =
-  | { type: "indent"; direction: IndentDirection };
+  | { type: "indent"; direction: IndentDirection }
+  | { type: "delete" }
+  | { type: "change"; insertedText: string };
 
 export type RepeatAction =
   | { type: "keys"; keys: readonly string[] }
@@ -42,6 +46,10 @@ export class RepeatState {
     this.last = { type: "keys", keys: [...keys] };
   }
 
+  cancelCurrent(): void {
+    this.current = undefined;
+  }
+
   recordVisualAction(selection: RecordedSelection, action: VisualRepeatAction): void {
     this.current = undefined;
     this.last = { type: "visual", selection, action };
@@ -57,15 +65,17 @@ export class RepeatState {
 
   replay(
     count: number | undefined,
-    { runKey, runVisualAction }: { runKey: (key: string) => void; runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => void }
+    { runKey, runVisualAction, registerName }: { runKey: (key: string) => void; runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => void; registerName?: RegisterName }
   ): void {
     if (this.last === undefined) return;
     this.replaying = true;
     try {
       switch (this.last.type) {
         case "keys": {
-          const keys = count === undefined ? this.last.keys : keysWithCountOverride(this.last.keys, count);
+          const countedKeys = count === undefined ? this.last.keys : keysWithCountOverride(this.last.keys, count);
+          const keys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
           for (const key of keys) runKey(key);
+          if (count !== undefined) this.last = { type: "keys", keys: [...countedKeys] };
           break;
         }
         case "visual":
@@ -180,7 +190,18 @@ function isRepeatableStartKey(key: string): boolean {
     || key === "i"
     || key === "a"
     || key === "I"
-    || key === "A";
+    || key === "A"
+    || key === "v"
+    || key === "V"
+    || key === "ctrl-v";
+}
+
+function keysWithRegisterOverride(keys: readonly string[], registerName: RegisterName): readonly string[] {
+  const { index: afterCount } = consumeCount(keys, 0);
+  if (keys[afterCount] === '"') {
+    return [...keys.slice(0, afterCount + 1), registerName, ...keys.slice(afterCount + 2)];
+  }
+  return [...keys.slice(0, afterCount), '"', registerName, ...keys.slice(afterCount)];
 }
 
 function keysWithCountOverride(keys: readonly string[], count: number): readonly string[] {

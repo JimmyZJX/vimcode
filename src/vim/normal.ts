@@ -114,6 +114,24 @@ export class NormalMode {
     if (registerName !== undefined) this.selectedRegister = registerName;
   }
 
+  takeSelectedRegisterForRepeat(): RegisterName | undefined {
+    return this.takeSelectedRegister();
+  }
+
+  hasOnlySelectedRegisterPending(): boolean {
+    return this.selectedRegister !== undefined
+      && this.pendingOperator === undefined
+      && this.pendingPrefix === undefined
+      && this.pendingTextObject === undefined
+      && this.pendingConvert === undefined
+      && this.pendingConvertTextObject === undefined
+      && this.pendingIndent === undefined
+      && this.pendingIndentTextObject === undefined
+      && this.pendingSurround === undefined
+      && this.pendingReplaceCount === undefined
+      && this.pendingReplaceDigraph === undefined;
+  }
+
   pendingChord(): string {
     const count = this.countBuffer;
     const operator = this.pendingOperator === undefined ? "" : keyForOperator(this.pendingOperator.operator);

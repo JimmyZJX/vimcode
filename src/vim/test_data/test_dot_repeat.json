@@ -1,4 +1,3 @@
-// DISABLED: full dot-repeat fixture includes Zed Put-with-preserved-repeat-state cases and case-toggle edge cases beyond current repeat slice.
 {"Put":{"state":"ˇhello"}}
 {"Key":"o"}
 {"Key":"w"}

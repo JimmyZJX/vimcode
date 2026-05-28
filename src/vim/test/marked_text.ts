@@ -72,18 +72,29 @@ export function encodeMarkedText({ text, row, column, anchorRow, anchorColumn, m
 export function editorFromMarkedText(markedText: string): { editor: InMemoryVimEditor; vim: Vim } {
   const parsed = parseMarkedText(markedText);
   const editor = new InMemoryVimEditor(parsed.text);
-  editor.setSelections([charwiseSelection({ row: parsed.row, column: parsed.column })]);
+  editor.setSelections(selectionsFromParsedMarkedText(parsed));
   const vim = new Vim(editor);
+  if (parsed.mode === "visual") vim.syncFromEditorState({ render: false });
+  return { editor, vim };
+}
+
+export function resetEditorFromMarkedText(editor: InMemoryVimEditor, vim: Vim, markedText: string): void {
+  const parsed = parseMarkedText(markedText);
+  editor.resetForTest(parsed.text, selectionsFromParsedMarkedText(parsed));
+  vim.syncFromEditorState({ render: false });
+}
+
+function selectionsFromParsedMarkedText(parsed: ParsedMarkedText): readonly VimSelection[] {
   if (parsed.mode === "visual") {
-    editor.setSelections([
+    return [
       {
         type: "charwise",
         anchor: { row: parsed.anchorRow!, column: parsed.anchorColumn! },
         head: { row: parsed.row, column: parsed.column },
       },
-    ]);
+    ];
   }
-  return { editor, vim };
+  return [charwiseSelection({ row: parsed.row, column: parsed.column })];
 }
 
 export function markedTextFromEditor(editor: InMemoryVimEditor, mode: VimMode["kind"] = "normal"): string {

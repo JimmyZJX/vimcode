@@ -25,7 +25,7 @@ import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
-import { KeyResult, Operator, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
+import { KeyResult, Operator, TextRange, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 
@@ -80,6 +80,7 @@ export class Vim {
   private insertRepeatSeparator = "";
   private lastInsertPosition: ReturnType<typeof selectionHead> | undefined;
   private insertOrigin: VimMode["kind"] | undefined;
+  private pendingVisualRepeatChange: { selection: RecordedSelection } | undefined;
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
 
@@ -355,12 +356,20 @@ export class Vim {
       return "handled";
     }
 
-    if (!this.repeatState.isReplaying() && this.modeState.kind === "normal" && key === ".") {
+    if (!this.repeatState.isReplaying()
+      && this.modeState.kind === "normal"
+      && key === "."
+      && (!this.normalMode.hasPendingNonCount() || this.normalMode.hasOnlySelectedRegisterPending())) {
       this.repeatState.replay(this.normalMode.takeCountForRepeat(), {
+        registerName: this.normalMode.takeSelectedRegisterForRepeat(),
         runKey: key => this.onKey(key),
         runVisualAction: (selection, action) => this.replayVisualAction(selection, action),
       });
       return "handled";
+    }
+
+    if (!this.repeatState.isReplaying() && this.modeState.kind === "normal" && key === "." && this.normalMode.hasPendingNonCount()) {
+      this.repeatState.cancelCurrent();
     }
 
     if (!this.repeatState.isReplaying()) {
@@ -602,6 +611,9 @@ export class Vim {
     if (result.repeatAction !== undefined && !this.repeatState.isReplaying()) {
       this.repeatState.recordVisualAction(result.repeatAction.selection, result.repeatAction.action);
     }
+    if (result.pendingRepeatChange !== undefined && !this.repeatState.isReplaying()) {
+      this.pendingVisualRepeatChange = result.pendingRepeatChange;
+    }
     if (result.enterInsert) {
       this.enterInsertMode({ origin: modeBefore });
     } else if (result.nextMode !== undefined) {
@@ -659,6 +671,11 @@ export class Vim {
 
   private finishInsertOrReplaceSession(mode: "insert" | "replace"): void {
     this.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
+    const pendingVisualRepeatChange = this.pendingVisualRepeatChange;
+    if (pendingVisualRepeatChange !== undefined && !this.repeatState.isReplaying()) {
+      this.repeatState.recordVisualAction(pendingVisualRepeatChange.selection, { type: "change", insertedText: this.insertRepeatText });
+    }
+    this.pendingVisualRepeatChange = undefined;
     if (this.insertRepeatCount <= 1 || this.insertRepeatText.length === 0) {
       this.clearInsertOrReplaceSession();
       return;
@@ -745,6 +762,7 @@ export class Vim {
   private handleSharedAction(action: SharedAction): void {
     switch (action.type) {
       case "motion":
+        this.repeatState.cancelCurrent();
         switch (action.key) {
           case "gg":
             this.applyMotion({ type: "startOfDocument" }, this.takeCountForMotion(1));
@@ -771,6 +789,7 @@ export class Vim {
         if (this.modeState.kind === "normal") this.enterInsertAtPrevious();
         return;
       case "page": {
+        this.repeatState.cancelCurrent();
         const selections = this.editor.moveByPages(
           action.key === "ctrl-u" || action.key === "ctrl-b" ? "up" : "down",
           this.takeCountForMotion(1),
@@ -780,6 +799,7 @@ export class Vim {
         return;
       }
       case "restoreVisualSelection": {
+        this.repeatState.cancelCurrent();
         const nextMode = this.visualMode.restoreLastSelection();
         if (nextMode !== undefined) this.modeState = { dialect: this.modeState.dialect, kind: nextMode };
         return;
@@ -788,6 +808,7 @@ export class Vim {
         this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
         return;
       case "multiCursor": {
+        this.repeatState.cancelCurrent();
         const count = this.takeCountForMotion(1);
         for (let index = 0; index < count; index++) {
           this.editor.executeNativeCommand(action.command, [], { syncSelectionAfter: true });
@@ -795,6 +816,7 @@ export class Vim {
         return;
       }
       case "native":
+        this.repeatState.cancelCurrent();
         this.editor.executeNativeCommand(action.command);
         this.syncFromEditorState({ render: false });
         return;
@@ -962,7 +984,60 @@ export class Vim {
         );
         return;
       }
+      case "delete": {
+        const range = this.rangeForRecordedSelection(selection);
+        if (range === undefined) return;
+        this.editor.applyEdits([{ range, text: "" }], [charwiseSelection(normalCursorPosition(this.editor, range.start))]);
+        return;
+      }
+      case "change": {
+        const range = this.rangeForRecordedSelection(selection);
+        if (range === undefined) return;
+        this.editor.applyEdits([{ range, text: action.insertedText }], [charwiseSelection(range.start)]);
+        return;
+      }
     }
+  }
+
+  private rangeForRecordedSelection(selection: RecordedSelection): TextRange | undefined {
+    const start = selectionHead(this.editor.getSelections()[0]);
+    switch (selection.type) {
+      case "none":
+        return undefined;
+      case "charwise":
+        return {
+          start,
+          end: selection.rowDelta === 0
+            ? this.charwiseRepeatEnd(start, selection.columnDelta)
+            : this.charwiseMultilineRepeatEnd(start, selection),
+        };
+      case "visualLine": {
+        const endRow = Math.min(this.editor.lineCount() - 1, start.row + selection.rows);
+        return { start: { row: start.row, column: 0 }, end: { row: endRow, column: this.editor.lineLength(endRow) } };
+      }
+    }
+  }
+
+  private charwiseRepeatEnd(start: ReturnType<typeof selectionHead>, columnDelta: number): ReturnType<typeof selectionHead> {
+    const lineLength = this.editor.lineLength(start.row);
+    if (start.column + columnDelta <= lineLength) {
+      return { row: start.row, column: start.column + columnDelta };
+    }
+    if (start.row + 1 < this.editor.lineCount()) {
+      return { row: start.row + 1, column: 0 };
+    }
+    return { row: start.row, column: lineLength };
+  }
+
+  private charwiseMultilineRepeatEnd(start: ReturnType<typeof selectionHead>, selection: Extract<RecordedSelection, { type: "charwise" }>): ReturnType<typeof selectionHead> {
+    const targetRow = Math.min(start.row + selection.rowDelta, this.editor.lineCount() - 1);
+    if (targetRow === start.row) {
+      return { row: start.row, column: Math.min(start.column + 1, this.editor.lineLength(start.row)) };
+    }
+    return {
+      row: targetRow,
+      column: Math.min(selection.endColumn, this.editor.lineLength(targetRow)),
+    };
   }
 
   private applySearchSelection({ reversed, count }: { reversed: boolean; count: number }): void {

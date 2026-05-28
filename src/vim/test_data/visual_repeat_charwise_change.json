@@ -1,0 +1,16 @@
+{"Put":{"state":"ˇthe quick brown\nfox jumps over\nthe lazy dog"}}
+{"Key":"v"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"s"}
+{"Key":"o"}
+{"Key":"escape"}
+{"Get":{"state":"ˇo quick brown\nfox jumps over\nthe lazy dog","mode":"Normal"}}
+{"Key":"j"}
+{"Key":"w"}
+{"Key":"."}
+{"Get":{"state":"o quick brown\nfox ˇops over\nthe lazy dog","mode":"Normal"}}
+{"Key":"f"}
+{"Key":"r"}
+{"Key":"."}
+{"Get":{"state":"o quick brown\nfox ops oveˇothe lazy dog","mode":"Normal"}}

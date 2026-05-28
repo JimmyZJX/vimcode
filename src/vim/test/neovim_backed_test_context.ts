@@ -9,7 +9,7 @@
 import { parseRegisterName } from "../registers.js";
 import { Vim, runKeys } from "../vim.js";
 import { InMemoryVimEditor } from "../editor.js";
-import { editorFromMarkedText, markedTextFromEditor } from "./marked_text.js";
+import { editorFromMarkedText, markedTextFromEditor, resetEditorFromMarkedText } from "./marked_text.js";
 import { EnabledNeovimFixture } from "./neovim_fixtures.js";
 
 export type SharedState = {
@@ -31,7 +31,11 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
     step++;
     if ("Put" in entry) {
       currentScenario = [`Put ${entry.Put.state}`];
-      ({ editor, vim } = editorFromMarkedText(entry.Put.state));
+      if (editor === undefined || vim === undefined) {
+        ({ editor, vim } = editorFromMarkedText(entry.Put.state));
+      } else {
+        resetEditorFromMarkedText(editor, vim, entry.Put.state);
+      }
     } else if ("Key" in entry) {
       currentScenario.push(`Key ${entry.Key}`);
       const currentVim = requireVim(vim, fixture.testCaseId);

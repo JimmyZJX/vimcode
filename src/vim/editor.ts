@@ -134,6 +134,16 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.selections = [charwiseSelection(position(0, 0))];
   }
 
+  resetForTest(text: string, selections: readonly VimSelection[]): void {
+    this.lines = text.split("\n");
+    this.selections = [charwiseSelection(position(0, 0))];
+    this.undoStack = [];
+    this.redoStack = [];
+    this.pendingUndoSnapshot = undefined;
+    this.pendingUndoSelectionsBefore = undefined;
+    this.setSelections(selections);
+  }
+
   lineCount(): number {
     return this.lines.length;
   }

@@ -1,4 +1,4 @@
-// DISABLED: full dot-repeat register fixture requires precise repeat-register semantics beyond current slice.
+// DISABLED: full dot-repeat register fixture requires precise numbered-register paste advancement and explicit-register repeat semantics beyond current slice.
 {"Put":{"state":"ˇhello\n"}}
 {"Key":"y"}
 {"Key":"y"}
