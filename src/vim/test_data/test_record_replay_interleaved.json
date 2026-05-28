@@ -1,4 +1,3 @@
-// DISABLED: macro replay while recording and @@ last-register edge cases still need richer Zed-accurate macro state.
 {"Put":{"state":"ˇhello world"}}
 {"Key":"q"}
 {"Key":"z"}

@@ -96,6 +96,7 @@ export class MacroState {
   private recordingRegister: string | undefined;
   private current: string[] = [];
   private readonly recorded = new Map<string, readonly string[]>();
+  private lastRecordedRegister: string | undefined;
   private lastReplayRegister: string | undefined;
   private replaying = false;
 
@@ -139,7 +140,7 @@ export class MacroState {
     if (register === undefined) return false;
     this.recordingRegister = undefined;
     this.recorded.set(register, this.current);
-    this.lastReplayRegister = register;
+    this.lastRecordedRegister = register;
     this.current = [];
     return true;
   }
@@ -154,7 +155,7 @@ export class MacroState {
   }
 
   replayLast(count: number, runKey: (key: string) => void): void {
-    const register = this.lastReplayRegister;
+    const register = this.lastRecordedRegister;
     if (register === undefined) return;
     this.replay(register, count, runKey);
   }
