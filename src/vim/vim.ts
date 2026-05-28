@@ -15,6 +15,7 @@ import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
 import { MarkState } from "./normal/mark.js";
+import { ChangeListState } from "./normal/change_list.js";
 import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { MacroState, RecordedSelection, RepeatState, VisualRepeatAction } from "./normal/repeat.js";
 import { handleHostAction } from "./normal/scroll.js";
@@ -65,6 +66,7 @@ export class Vim {
   private pendingUnmatched: PendingUnmatched | undefined;
   private lastFind: FindMotion | undefined;
   private readonly markState = new MarkState();
+  private readonly changeListState = new ChangeListState();
   private readonly sharedActionResolver = new SharedActionResolver();
   private readonly normalChordResolver = new NormalChordResolver();
   private readonly searchState = new SearchState();
@@ -273,6 +275,16 @@ export class Vim {
   }
 
   private onKeyInternal(key: string, { allowRemap }: { allowRemap: boolean }): KeyResult {
+    const textBefore = this.editor.getText();
+    const modeBefore = this.modeState.kind;
+    const result = this.onKeyInternalImpl(key, { allowRemap });
+    if (this.editor.getText() !== textBefore) {
+      this.changeListState.record(this.editor, { insertMode: modeBefore === "insert" });
+    }
+    return result;
+  }
+
+  private onKeyInternalImpl(key: string, { allowRemap }: { allowRemap: boolean }): KeyResult {
     if (!this.repeatState.isReplaying()) this.repeatState.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
 
     if (allowRemap && this.shouldResolveRemap()) {
@@ -811,6 +823,12 @@ export class Vim {
       case "searchSelection":
         this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
         return;
+      case "changeList": {
+        this.repeatState.cancelCurrent();
+        const position = this.changeListState.move(this.takeCountForMotion(1), action.direction);
+        if (position !== undefined) this.editor.setSelections([charwiseSelection(position)]);
+        return;
+      }
       case "multiCursor": {
         this.repeatState.cancelCurrent();
         const count = this.takeCountForMotion(1);

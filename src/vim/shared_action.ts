@@ -7,6 +7,7 @@
 export type SharedAction =
   | { type: "motion"; key: "gg" | "gj" | "gk" }
   | { type: "normalGKey"; key: "u" | "U" | "~" | "J" }
+  | { type: "changeList"; direction: "older" | "newer" }
   | { type: "insertAtPrevious" }
   | { type: "page"; key: "ctrl-d" | "ctrl-u" | "ctrl-f" | "ctrl-b" }
   | { type: "restoreVisualSelection" }
@@ -30,6 +31,8 @@ const bindings: ReadonlyMap<string, SharedAction> = new Map([
   ["g U", { type: "normalGKey", key: "U" }],
   ["g ~", { type: "normalGKey", key: "~" }],
   ["g J", { type: "normalGKey", key: "J" }],
+  ["g ;", { type: "changeList", direction: "older" }],
+  ["g ,", { type: "changeList", direction: "newer" }],
   ["g n", { type: "searchSelection", reversed: false }],
   ["g N", { type: "searchSelection", reversed: true }],
   // `ctrl-n` is a VSCodeVim-style alias for VSCode's native Ctrl+D action.
