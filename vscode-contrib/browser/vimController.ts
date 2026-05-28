@@ -418,6 +418,8 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 			return `VisualLine${suffix}`;
 		case 'visualBlock':
 			return `VisualBlock${suffix}`;
+		default:
+			return `Unknown${suffix}`;
 	}
 }
 
