@@ -447,6 +447,8 @@ function cursorChangeReasonName(reason: CursorChangeReason): string {
 			return 'Undo';
 		case CursorChangeReason.Redo:
 			return 'Redo';
+		default:
+			return `Unknown(${reason})`;
 	}
 }
 
