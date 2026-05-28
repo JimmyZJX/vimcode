@@ -22,7 +22,7 @@ import type { EditorSyncResult } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
-const VimModeContext = new RawContextKey<string>('vim.mode', 'normal', true);
+const VimModeContext = new RawContextKey<string>('vim.mode', 'Normal', true);
 const VimNormalContext = new RawContextKey<boolean>('vim.normal', true, true);
 const VimInsertContext = new RawContextKey<boolean>('vim.insert', false, true);
 const VimPendingContext = new RawContextKey<boolean>('vim.pending', false, true);
@@ -338,7 +338,7 @@ export class VimController extends Disposable {
 
 	private syncDisabledStatus(): void {
 		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
-		this.vimModeContext.set('disabled');
+		this.vimModeContext.set('Disabled');
 		this.vimNormalContext.set(false);
 		this.vimInsertContext.set(false);
 		this.vimPendingContext.set(false);
@@ -353,7 +353,7 @@ export class VimController extends Disposable {
 		}
 		const status = this.vim.status;
 		this.editor.getContainerDomNode().classList.toggle('vim-character-mode-enabled', status.mode !== 'insert' && status.mode !== 'replace');
-		this.vimModeContext.set(status.mode);
+		this.vimModeContext.set(vscodeVimModeContextValue(status));
 		this.vimNormalContext.set(status.mode === 'normal');
 		this.vimInsertContext.set(status.mode === 'insert');
 		this.vimPendingContext.set(status.pending);
@@ -400,6 +400,24 @@ class ClipboardTransaction implements VimSystemClipboard {
 				await this.clipboard.writeTextAsync(this.pendingWrite);
 			}
 		}
+	}
+}
+
+function vscodeVimModeContextValue(status: VimStatus): string {
+	const suffix = status.pending ? '+' : '';
+	switch (status.mode) {
+		case 'normal':
+			return `Normal${suffix}`;
+		case 'insert':
+			return `Insert${suffix}`;
+		case 'replace':
+			return `Replace${suffix}`;
+		case 'visual':
+			return `Visual${suffix}`;
+		case 'visualLine':
+			return `VisualLine${suffix}`;
+		case 'visualBlock':
+			return `VisualBlock${suffix}`;
 	}
 }
 
