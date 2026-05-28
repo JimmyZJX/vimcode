@@ -79,6 +79,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			description: nls.localize('vim.debugUndo', "Log vimcode undo transaction and VS Code undo/redo synchronization details."),
 		},
+		'vim.debugVisual': {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			description: nls.localize('vim.debugVisual', "Log vimcode mouse-selection and visual-mode synchronization decisions."),
+		},
 		'vim.handleKeys': {
 			type: 'object',
 			default: {},

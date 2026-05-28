@@ -7,6 +7,7 @@
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
+import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
@@ -28,6 +29,7 @@ import {
   VimSelectionGoal,
   charwiseSelection,
   comparePositions,
+  rangeOfSelection,
   selectionHead,
 } from "./state.js";
 
@@ -1314,7 +1316,12 @@ function currentCharwiseVisualRanges(
   editor: VimEditorCapabilities,
   state: CharwiseVisualState
 ): readonly TextRange[] {
-  return currentCharwiseVisualStates(editor, state).map(state => charwiseVisualRange(editor, state));
+  const ranges = editor.getSelections().flatMap(selection => {
+    if (selection.type !== "charwise") return [];
+    if (isEditorOwnedCharwiseSelection(selection)) return [rangeOfSelection(selection)];
+    return [charwiseVisualRange(editor, externalSelectionToCharwiseState(editor, selection))];
+  });
+  return ranges.length === 0 ? [charwiseVisualRange(editor, state)] : ranges;
 }
 
 function currentCharwiseVisualUndoSelections(

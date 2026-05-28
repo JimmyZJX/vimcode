@@ -1297,6 +1297,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getSelections()).toEqual([externalSelection]);
   });
 
+  it("uses exact external backward selection ranges for visual operations", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 4 }, head: { row: 0, column: 1 } }]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["S", "b"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("a(bcd)ef");
+  });
+
   it("can render an externally-adopted visual selection when Vim takes over", () => {
     const editor = new InMemoryVimEditor("abcdef");
     const vim = new Vim(editor);

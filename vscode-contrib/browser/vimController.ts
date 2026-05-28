@@ -18,6 +18,7 @@ import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimStatus } from '../common/vim.js';
+import type { EditorSyncResult } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
@@ -90,7 +91,7 @@ export class VimController extends Disposable {
 
 	override dispose(): void {
 		this.vimEditor.dispose();
-		this.editor.getContainerDomNode().classList.remove('vim-cursor-rendering-enabled');
+		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 		this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
 		super.dispose();
 	}
@@ -102,12 +103,12 @@ export class VimController extends Disposable {
 	private updateEnabledState(): void {
 		const enabled = this.isEnabled();
 		this.enabled = enabled;
-		this.editor.getContainerDomNode().classList.toggle('vim-cursor-rendering-enabled', enabled);
 		if (enabled) {
 			this.warnIfVSCodeVimInstalled();
 			this.logAmbiguousRemapConflicts();
 			this.syncEditorState();
 		} else {
+			this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 			this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
 			this.syncDisabledStatus();
 		}
@@ -129,6 +130,16 @@ export class VimController extends Disposable {
 	private logUndo(message: string): void {
 		if (this.configurationService.getValue<unknown>('vim.debugUndo') === true) {
 			this.logService.info(`[vimcode.undo] ${message}`);
+		}
+	}
+
+	private shouldLogVisual(): boolean {
+		return this.configurationService.getValue<unknown>('vim.debugVisual') === true;
+	}
+
+	private logVisual(message: string): void {
+		if (this.shouldLogVisual()) {
+			this.logService.info(`[vimcode.visual] ${message}`);
 		}
 	}
 
@@ -245,7 +256,13 @@ export class VimController extends Disposable {
 		if (this.isModelMarkerRecoveryNoise(event)) {
 			return;
 		}
+		if (event.source.startsWith('vim')) {
+			return;
+		}
 		this.logUndo(`selection event source=${event.source} reason=${cursorChangeReasonName(event.reason)} selections=${formatVSCodeSelections(selections)}`);
+		if (event.source === 'mouse' && this.shouldLogVisual()) {
+			this.logVisual(`mouse selection reason=${cursorChangeReasonName(event.reason)} mode=${this.vim.mode.kind} native=${formatVSCodeSelections(selections)}`);
+		}
 		if (event.reason === CursorChangeReason.Undo || event.reason === CursorChangeReason.Redo) {
 			this.pendingUndoRedoContentSync = false;
 			this.syncFromUndoRedoState(`selection:${cursorChangeReasonName(event.reason)}`);
@@ -253,13 +270,12 @@ export class VimController extends Disposable {
 		}
 		// VSCode-specific synchronization path: unlike Zed, VSCode selection state
 		// can be changed outside the Vim state machine (mouse selections, multicursor
-		// commands, other editor contributions). Ignore changes that this Vim adapter
-		// originated, and also ignore native cursor movement while insert/replace mode
-		// is intentionally letting VSCode handle typed input.
-		if (event.source.startsWith('vim') || this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
+		// commands, other editor contributions). Ignore native cursor movement while
+		// insert/replace mode is intentionally letting VSCode handle typed input.
+		if (this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
 			return;
 		}
-		this.handleExternalEditorStateChanged();
+		this.handleExternalEditorStateChanged(event.source);
 	}
 
 	private isModelMarkerRecoveryNoise(event: ICursorSelectionChangedEvent): boolean {
@@ -290,19 +306,26 @@ export class VimController extends Disposable {
 		});
 	}
 
-	private handleExternalEditorStateChanged(): void {
+	private handleExternalEditorStateChanged(source?: string, { render = false }: { render?: boolean } = {}): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		this.vimEditor.invalidateCachedSelections();
-		this.vim.syncFromEditorState({ render: false });
+		const result = this.vim.syncFromEditorState({ render });
+		this.logVisualSyncDecision(source ?? 'external', result);
 		this.syncEditorState();
 	}
 
 	private syncFromUndoRedoState(reason: string): void {
 		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
 		this.vimEditor.invalidateCachedSelections();
-		this.vim.syncFromUndoRedoState({ render: false });
+		const result = this.vim.syncFromUndoRedoState({ render: false });
+		this.logVisualSyncDecision(`undoRedo:${reason}`, result);
 		this.logUndo(`syncFromUndoRedoState end reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
 		this.syncEditorState();
+	}
+
+	private logVisualSyncDecision(source: string, result: EditorSyncResult): void {
+		if (!this.shouldLogVisual()) return;
+		this.logVisual(`sync source=${source} mode=${result.mode} selectionCount=${result.selectionCount} visualSelectionFound=${result.visualSelectionFound} adopted=${result.adoptedVisualSelection} reason=${result.reason}`);
 	}
 
 	private syncEditorState(): void {
@@ -314,6 +337,7 @@ export class VimController extends Disposable {
 	}
 
 	private syncDisabledStatus(): void {
+		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 		this.vimModeContext.set('disabled');
 		this.vimNormalContext.set(false);
 		this.vimInsertContext.set(false);
@@ -328,6 +352,7 @@ export class VimController extends Disposable {
 			return;
 		}
 		const status = this.vim.status;
+		this.editor.getContainerDomNode().classList.toggle('vim-character-mode-enabled', status.mode !== 'insert' && status.mode !== 'replace');
 		this.vimModeContext.set(status.mode);
 		this.vimNormalContext.set(status.mode === 'normal');
 		this.vimInsertContext.set(status.mode === 'insert');

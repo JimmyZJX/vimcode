@@ -1,5 +1,5 @@
 diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts b/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
-index f4e4f95..175a2c6 100644
+index f4e4f95..7734b61 100644
 --- a/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
 +++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
 @@ -53,6 +53,7 @@ export class ViewCursor {
@@ -45,8 +45,17 @@ index f4e4f95..175a2c6 100644
  		const lineContent = this._context.viewModel.getLineContent(lineNumber);
  		const [startOffset, endOffset] = strings.getCharContainingOffset(lineContent, column - 1);
  		return [new Position(lineNumber, startOffset + 1), lineContent.substring(startOffset, endOffset)];
+@@ -274,7 +277,7 @@ export class ViewCursor {
+ 
+ 		return {
+ 			domNode: this._domNode.domNode,
+-			position: this._position,
++			position: this._renderPosition ?? this._position,
+ 			contentLeft: this._renderData.left,
+ 			height: this._renderData.height,
+ 			width: 2
 diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
-index d3fd386..296e200 100644
+index d3fd386..0da151e 100644
 --- a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
 +++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
 @@ -10,6 +10,7 @@ import { ViewPart } from '../../view/viewPart.js';
@@ -88,23 +97,24 @@ index d3fd386..296e200 100644
  			positions[i] = e.selections[i].getPosition();
  		}
 -		this._onCursorPositionChanged(positions[0], positions.slice(1), e.reason);
-+		const renderPositions = e.cursorPositions ?? (this._domNode.domNode.closest('.vim-cursor-rendering-enabled') !== null
++		const renderPositions = e.cursorPositions ?? (this._domNode.domNode.closest('.vim-character-mode-enabled') !== null
 +			? e.selections.map(selection => this._vimRenderCursorPosition(selection))
 +			: undefined);
 +		this._onCursorPositionChanged(positions[0], positions.slice(1), e.reason, e.cursorPositions !== undefined, renderPositions?.[0], renderPositions?.slice(1));
  
  		const selectionIsEmpty = e.selections[0].isEmpty();
  		if (this._selectionIsEmpty !== selectionIsEmpty) {
-@@ -173,6 +177,14 @@ export class ViewCursors extends ViewPart {
+@@ -173,6 +177,15 @@ export class ViewCursors extends ViewPart {
  
  		return true;
  	}
-+
 +	private _vimRenderCursorPosition(selection: Selection): Position {
-+		if (selection.isEmpty() || selection.getDirection() !== SelectionDirection.LTR || selection.positionColumn <= 1) {
-+			return selection.getPosition();
++		if (!selection.isEmpty()
++			&& selection.getDirection() === SelectionDirection.LTR
++			&& selection.positionColumn > 1) {
++			return new Position(selection.positionLineNumber, selection.positionColumn - 1);
 +		}
-+		return new Position(selection.positionLineNumber, selection.positionColumn - 1);
++		return selection.getPosition();
 +	}
 +
  	public override onDecorationsChanged(e: viewEvents.ViewDecorationsChangedEvent): boolean {

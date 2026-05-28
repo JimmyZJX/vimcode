@@ -67,6 +67,12 @@ export function hasMultipleCursorsOrSelection(selections: readonly VimSelection[
   });
 }
 
+export function isEditorOwnedCharwiseSelection(
+  selection: VimSelection
+): selection is Extract<VimSelection, { type: "charwise" }> {
+  return selection.type === "charwise" && selection.cursor === undefined;
+}
+
 export function collapseSelectionsToNormalCursors(
   selections: readonly VimSelection[]
 ): readonly VimSelection[] {

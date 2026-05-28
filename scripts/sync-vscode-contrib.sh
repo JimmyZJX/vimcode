@@ -75,6 +75,24 @@ if [[ ! -d "$target_root/src/vs/editor" ]]; then
   exit 1
 fi
 
+# Files touched by older versions of vimcode patches.  Keep these in the
+# --from-scratch reset set so shrinking a patch does not leave stale edits in an
+# existing VSCode checkout.
+legacy_patch_targets=(
+  src/vs/editor/browser/controller/mouseHandler.ts
+  src/vs/editor/browser/controller/mouseTarget.ts
+  src/vs/editor/browser/coreCommands.ts
+  src/vs/editor/browser/view/viewController.ts
+  src/vs/editor/browser/view.ts
+  src/vs/editor/browser/viewParts/selections/selections.ts
+  src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts
+  src/vs/editor/common/cursorEvents.ts
+  src/vs/editor/common/viewModel.ts
+  src/vs/editor/common/viewModel/viewContext.ts
+  src/vs/editor/common/viewModel/viewModelImpl.ts
+  src/vs/editor/common/viewModelEventDispatcher.ts
+)
+
 patch_targets_for() {
   local patch_file=$1
   awk '
@@ -107,9 +125,12 @@ reset_patch_targets() {
     [[ -n "$patch_path" ]] || continue
     patch_targets+=("$patch_path")
   done < <(
-    for patch_file in "${patch_files[@]}"; do
-      patch_targets_for "$patch_file"
-    done | sort -u
+    {
+      printf '%s\n' "${legacy_patch_targets[@]}"
+      for patch_file in "${patch_files[@]}"; do
+        patch_targets_for "$patch_file"
+      done
+    } | sort -u
   )
 
   if [[ ${#patch_targets[@]} -eq 0 ]]; then
