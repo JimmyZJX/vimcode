@@ -73,9 +73,10 @@ export class RepeatState {
       switch (this.last.type) {
         case "keys": {
           const countedKeys = count === undefined ? this.last.keys : keysWithCountOverride(this.last.keys, count);
-          const keys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
+          const registerKeys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
+          const keys = advanceNumberedPasteRepeat(registerKeys);
           for (const key of keys) runKey(key);
-          if (count !== undefined) this.last = { type: "keys", keys: [...countedKeys] };
+          if (count !== undefined || keys !== this.last.keys) this.last = { type: "keys", keys: [...keys] };
           break;
         }
         case "visual":
@@ -198,10 +199,18 @@ function isRepeatableStartKey(key: string): boolean {
 
 function keysWithRegisterOverride(keys: readonly string[], registerName: RegisterName): readonly string[] {
   const { index: afterCount } = consumeCount(keys, 0);
-  if (keys[afterCount] === '"') {
-    return [...keys.slice(0, afterCount + 1), registerName, ...keys.slice(afterCount + 2)];
-  }
+  if (keys[afterCount] === '"') return keys;
   return [...keys.slice(0, afterCount), '"', registerName, ...keys.slice(afterCount)];
+}
+
+function advanceNumberedPasteRepeat(keys: readonly string[]): readonly string[] {
+  const { index: afterCount } = consumeCount(keys, 0);
+  if (keys[afterCount] !== '"') return keys;
+  const registerName = keys[afterCount + 1];
+  const command = keys[afterCount + 2];
+  if (!/^\d$/.test(registerName) || (command !== "p" && command !== "P")) return keys;
+  const nextRegister = String(Math.min(9, Number(registerName) + 1));
+  return [...keys.slice(0, afterCount + 1), nextRegister, ...keys.slice(afterCount + 2)];
 }
 
 function keysWithCountOverride(keys: readonly string[], count: number): readonly string[] {

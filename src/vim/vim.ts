@@ -604,7 +604,7 @@ export class Vim {
   }
 
   private recordMacroKey(key: string): void {
-    if (!this.macroState.isReplaying()) this.macroState.recordKey(key);
+    if (!this.macroState.isReplaying() && !this.repeatState.isReplaying()) this.macroState.recordKey(key);
   }
 
   private applyVisualResult(result: VisualKeyResult, modeBefore: VimMode["kind"]): KeyResult {

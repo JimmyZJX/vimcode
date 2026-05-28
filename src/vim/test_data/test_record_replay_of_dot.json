@@ -1,4 +1,3 @@
-// DISABLED: macro replay of dot should preserve recorded dot rather than later repeat state; needs richer Zed-accurate repeat/macro interaction.
 {"Put":{"state":"ˇhello world"}}
 {"Key":"r"}
 {"Key":"o"}
