@@ -154,6 +154,11 @@ function firstNonWhitespace(editor: VimEditorCapabilities, row: number): Positio
   return { row, column: first < 0 ? 0 : first };
 }
 
+function firstNonWhitespaceOrCurrent(editor: VimEditorCapabilities, current: Position): Position {
+  const line = editor.line(current.row);
+  return line.search(/\S/) < 0 ? current : firstNonWhitespace(editor, current.row);
+}
+
 function endOfLine(editor: VimEditorCapabilities, row: number): Position {
   return normalCursorPosition(editor, { row, column: editor.lineLength(row) });
 }
@@ -270,7 +275,7 @@ export function applyMotionOnce(
     case "startOfLine":
       return { row: clipped.row, column: 0 };
     case "firstNonWhitespace":
-      return firstNonWhitespace(editor, clipped.row);
+      return firstNonWhitespaceOrCurrent(editor, clipped);
     case "endOfLine":
       return endOfLine(editor, clipped.row);
     case "startOfDocument":

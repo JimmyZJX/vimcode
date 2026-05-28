@@ -7,7 +7,7 @@
 
 import { VimEditorCapabilities } from "../editor.js";
 import { Motion } from "../motion.js";
-import { Position, selectionHead } from "../state.js";
+import { Position, VimSelection, rangeOfSelection, selectionHead } from "../state.js";
 
 export type PendingMark =
   | { type: "create" }
@@ -34,6 +34,16 @@ export class MarkState {
 
   createMark(editor: VimEditorCapabilities, key: string): void {
     this.marks.set(key, selectionHead(editor.getSelections()[0]));
+  }
+
+  setBuiltinMark(key: "." | "^", position: Position): void {
+    this.marks.set(key, position);
+  }
+
+  setVisualSelectionMarks(editor: VimEditorCapabilities, selection: VimSelection): void {
+    const range = rangeOfSelection(selection);
+    this.marks.set("<", range.start);
+    this.marks.set(">", previousPosition(editor, range.end));
   }
 
   jumpMotion(editor: VimEditorCapabilities, key: string, { line }: { line: boolean }): Motion | undefined {
@@ -74,4 +84,10 @@ export class MarkState {
     if (key === "`" || key === "'") return this.previousContext;
     return this.marks.get(key);
   }
+}
+
+function previousPosition(editor: VimEditorCapabilities, position: Position): Position {
+  if (position.column > 0) return { row: position.row, column: position.column - 1 };
+  if (position.row > 0) return { row: position.row - 1, column: Math.max(0, editor.lineLength(position.row - 1) - 1) };
+  return position;
 }

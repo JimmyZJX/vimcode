@@ -561,6 +561,8 @@ export class Vim {
   private handleEscapeKey(): void {
     this.clearPendingStateForEscape();
     if (this.isVisualMode()) {
+      const selection = this.editor.getSelections()[0];
+      if (selection !== undefined) this.markState.setVisualSelectionMarks(this.editor, selection);
       this.visualMode.exit();
       this.setMode("normal");
       return;
@@ -641,6 +643,7 @@ export class Vim {
   }
 
   private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode["kind"]; count?: number; separator?: string }): void {
+    this.markState.setBuiltinMark(".", selectionHead(this.editor.getSelections()[0]));
     this.insertOrigin = origin;
     this.startInsertOrReplaceSession({ count, separator });
     this.setMode("insert");
@@ -671,6 +674,7 @@ export class Vim {
 
   private finishInsertOrReplaceSession(mode: "insert" | "replace"): void {
     this.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
+    this.markState.setBuiltinMark("^", this.lastInsertPosition);
     const pendingVisualRepeatChange = this.pendingVisualRepeatChange;
     if (pendingVisualRepeatChange !== undefined && !this.repeatState.isReplaying()) {
       this.repeatState.recordVisualAction(pendingVisualRepeatChange.selection, { type: "change", insertedText: this.insertRepeatText });

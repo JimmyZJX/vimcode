@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"Line one\nLine two\nLine three\nˇLine four\nLine five\n"}}
 {"Key":"c"}
 {"Key":"w"}
