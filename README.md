@@ -44,7 +44,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 314 enabled tests.
+  - `npm test -- --runInBand` passes with 323 enabled tests.
 
 Implemented first-slice behavior:
 
