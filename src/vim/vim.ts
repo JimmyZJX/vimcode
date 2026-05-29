@@ -24,7 +24,7 @@ import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
 import { SharedAction, SharedActionResolver } from "./shared_action.js";
-import { KeyResult, Operator, TextRange, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
+import { KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
@@ -380,7 +380,7 @@ export class Vim {
       return "handled";
     }
 
-    if (this.modeState.kind === "normal" && !this.normalMode.isPending() && (key === "]" || key === "[")) {
+    if (this.modeState.kind === "normal" && !this.normalMode.hasPendingNonCount() && (key === "]" || key === "[")) {
       this.pendingUnmatched = {
         direction: key === "]" ? "forward" : "backward",
         count: this.takeCountForMotion(1),
@@ -542,6 +542,10 @@ export class Vim {
     if (this.modeState.kind === "normal" && this.pendingUnmatched !== undefined) {
       const pending = this.pendingUnmatched;
       this.pendingUnmatched = undefined;
+      if (key === "space") {
+        this.insertEmptyLines(pending.direction === "backward" ? "above" : "below", pending.count);
+        return "handled";
+      }
       this.applyMotion(
         pending.direction === "forward"
           ? { type: "unmatchedForward", char: key }
@@ -551,6 +555,20 @@ export class Vim {
     }
 
     return undefined;
+  }
+
+  private insertEmptyLines(side: "above" | "below", count: number): void {
+    const selections = this.editor.getSelections();
+    const edits: TextEdit[] = [];
+    const selectionsAfter: ReturnType<typeof charwiseSelection>[] = [];
+    for (const selection of selections) {
+      const head = selectionHead(selection);
+      const editPosition = emptyLineInsertPosition(this.editor, head, side);
+      edits.push({ range: { start: editPosition, end: editPosition }, text: "\n".repeat(count) });
+      const row = side === "above" ? head.row + count : head.row;
+      selectionsAfter.push(charwiseSelection({ row, column: head.column }));
+    }
+    this.editor.applyEdits(edits, selectionsAfter);
   }
 
   private handlePendingMacroKey(key: string): KeyResult | undefined {
@@ -1145,6 +1163,14 @@ export class Vim {
   private isEscape(key: string): boolean {
     return key === "<escape>" || key === "escape" || key === "ctrl-[";
   }
+}
+
+function emptyLineInsertPosition(
+  editor: { lineLength: (row: number) => number },
+  head: Position,
+  side: "above" | "below"
+): Position {
+  return side === "above" ? { row: head.row, column: 0 } : { row: head.row, column: editor.lineLength(head.row) };
 }
 
 function keyForInput(key: string): string {
