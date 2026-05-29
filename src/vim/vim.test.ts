@@ -1,7 +1,7 @@
 import { layeredConfigValue, normalizeKey } from "./config.js";
 import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
-import { Vim, runKeys } from "./vim.js";
+import { Vim, VimModelState, runKeys } from "./vim.js";
 import type { VimSystemClipboard } from "./registers.js";
 import { charwiseSelection, selectionHead } from "./state.js";
 
@@ -66,6 +66,24 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.shouldHandleKey("ctrl-d")).toBe(false);
     expect(vim.shouldHandleKey("ctrl-h")).toBe(false);
+  });
+
+  it("keeps local marks in attached model state", () => {
+    const editor = new InMemoryVimEditor("one\ntwo");
+    const firstModel = new VimModelState();
+    const secondModel = new VimModelState();
+    const vim = new Vim(editor, {}, undefined, firstModel);
+
+    runKeys(vim, ["m", "a", "j"]);
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
+
+    vim.attachModelState(secondModel);
+    runKeys(vim, ["`", "a"]);
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
+
+    vim.attachModelState(firstModel);
+    runKeys(vim, ["`", "a"]);
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
   it("lets handleKeys force Ctrl key handling", () => {

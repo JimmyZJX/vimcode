@@ -17,7 +17,7 @@ import { CursorChangeReason, ICursorSelectionChangedEvent } from '../../../commo
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
-import { Vim, VimStatus } from '../common/vim.js';
+import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
 import type { EditorSyncResult } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
@@ -31,6 +31,8 @@ const VimOperatorContext = new RawContextKey<string>('vim.operator', '', true);
 const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
 export class VimController extends Disposable {
 	public static readonly ID = 'editor.contrib.vim';
+	private static readonly globalState = new VimGlobalState();
+	private static readonly modelStates = new Map<string, VimModelState>();
 	private static warnedAboutVSCodeVim = false;
 
 	private readonly vimClipboard: VSCodeVimClipboard;
@@ -65,7 +67,7 @@ export class VimController extends Disposable {
 		super();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
 		this.vimEditor = new VSCodeVimEditor(editor, commandService, message => this.logUndo(message));
-		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration());
+		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration(), VimController.globalState);
 		this.vimActiveContext = VimActiveContext.bindTo(contextKeyService);
 		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
 		this.vimNormalContext = VimNormalContext.bindTo(contextKeyService);
@@ -73,6 +75,7 @@ export class VimController extends Disposable {
 		this.vimPendingContext = VimPendingContext.bindTo(contextKeyService);
 		this.vimOperatorContext = VimOperatorContext.bindTo(contextKeyService);
 		this.vimChordContext = VimChordContext.bindTo(contextKeyService);
+		this.attachCurrentModelState();
 		this.updateEnabledState();
 		this._register(this.editor.onKeyDown(event => this.handleKeyDown(event)));
 		this._register(this.editor.onDidFocusEditorText(() => this.syncEditorState()));
@@ -107,6 +110,7 @@ export class VimController extends Disposable {
 		const enabled = this.isEnabled();
 		this.enabled = enabled;
 		if (enabled) {
+			this.attachCurrentModelState();
 			this.warnIfVSCodeVimInstalled();
 			this.logAmbiguousRemapConflicts();
 			this.syncEditorState();
@@ -313,7 +317,7 @@ export class VimController extends Disposable {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		this.pendingUndoRedoContentSync = false;
 		this.vimEditor.detachFromModel();
-		if (!this.hasModel()) {
+		if (!this.attachCurrentModelState()) {
 			this.syncDisabledStatus();
 			return;
 		}
@@ -363,6 +367,19 @@ export class VimController extends Disposable {
 
 	private hasModel(): boolean {
 		return this.editor.getModel() !== null;
+	}
+
+	private attachCurrentModelState(): boolean {
+		const model = this.editor.getModel();
+		if (model === null) return false;
+		const key = model.uri.toString();
+		let modelState = VimController.modelStates.get(key);
+		if (modelState === undefined) {
+			modelState = new VimModelState();
+			VimController.modelStates.set(key, modelState);
+		}
+		this.vim.attachModelState(modelState);
+		return true;
 	}
 
 	private syncDisabledStatus(): void {
