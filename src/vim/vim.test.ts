@@ -786,6 +786,24 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("yabcdzxef");
   });
 
+  it("keeps changelist entries in attached model state", () => {
+    const editor = new InMemoryVimEditor("one\ntwo\nthree");
+    const firstModel = new VimModelState();
+    const secondModel = new VimModelState();
+    const vim = new Vim(editor, {}, undefined, firstModel);
+
+    runKeys(vim, ["j", "A", "x", "<escape>", "g", "g", "0"]);
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+
+    vim.attachModelState(secondModel);
+    runKeys(vim, ["g", ";"]);
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+
+    vim.attachModelState(firstModel);
+    runKeys(vim, ["g", ";"]);
+    expect(head(editor)).toEqual({ row: 1, column: 3 });
+  });
+
   it("preserves the target column across vertical motions", () => {
     const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
     const vim = new Vim(editor);

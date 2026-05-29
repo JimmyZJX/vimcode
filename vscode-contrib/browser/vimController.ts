@@ -16,6 +16,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { CursorChangeReason, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
+import type { ITextModel } from '../../../common/model.js';
 import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
@@ -33,7 +34,7 @@ const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
 export class VimController extends Disposable {
 	public static readonly ID = 'editor.contrib.vim';
 	private static readonly globalState = new VimGlobalState();
-	private static readonly modelStates = new Map<string, { state: VimModelState; disposeListener: IDisposable }>();
+	private static readonly modelStateStore = new VimModelStateStore();
 	private static warnedAboutVSCodeVim = false;
 
 	private readonly vimClipboard: VSCodeVimClipboard;
@@ -382,17 +383,7 @@ export class VimController extends Disposable {
 	private attachCurrentModelState(): boolean {
 		const model = this.editor.getModel();
 		if (model === null) return false;
-		const key = model.uri.toString();
-		let entry = VimController.modelStates.get(key);
-		if (entry === undefined) {
-			const disposeListener = model.onWillDispose(() => {
-				disposeListener.dispose();
-				VimController.modelStates.delete(key);
-			});
-			entry = { state: new VimModelState(), disposeListener };
-			VimController.modelStates.set(key, entry);
-		}
-		this.vim.attachModelState(entry.state);
+		this.vim.attachModelState(VimController.modelStateStore.getOrCreate(model));
 		return true;
 	}
 
@@ -494,6 +485,24 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 			return `VisualBlock${suffix}`;
 		default:
 			return `Unknown${suffix}`;
+	}
+}
+
+class VimModelStateStore {
+	private readonly entries = new Map<string, { state: VimModelState; disposeListener: IDisposable }>();
+
+	getOrCreate(model: ITextModel): VimModelState {
+		const key = model.uri.toString();
+		let entry = this.entries.get(key);
+		if (entry === undefined) {
+			const disposeListener = model.onWillDispose(() => {
+				disposeListener.dispose();
+				this.entries.delete(key);
+			});
+			entry = { state: new VimModelState(), disposeListener };
+			this.entries.set(key, entry);
+		}
+		return entry.state;
 	}
 }
 
