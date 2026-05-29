@@ -456,6 +456,17 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 1, column: 0 });
   });
 
+  it("supports write ex commands", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [":", "w", "enter"]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.files.save", args: [] },
+    ]);
+  });
+
   it("passes VSCodeVim-style command remap args to native commands", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor, {

@@ -41,6 +41,11 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
     return;
   }
 
+  if (trimmedRest === "w" || trimmedRest === "write") {
+    editor.executeNativeCommand("workbench.action.files.save", [], { syncSelectionAfter: true });
+    return;
+  }
+
   if (trimmedRest === "j" || trimmedRest === "join") {
     joinRange(editor, range ?? currentLineRange(editor, 2));
     return;
