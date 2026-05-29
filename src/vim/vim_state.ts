@@ -13,6 +13,7 @@ import { MarkState } from "./normal/mark.js";
 import { MacroState, RepeatState } from "./normal/repeat.js";
 import { SearchState } from "./normal/search.js";
 import { Registers } from "./registers.js";
+import { Position } from "./state.js";
 
 export class VimGlobalState {
   readonly registers = new Registers();
@@ -25,4 +26,5 @@ export class VimGlobalState {
 export class VimModelState {
   readonly marks = new MarkState();
   readonly changeList = new ChangeListState();
+  lastInsertPosition: Position | undefined;
 }

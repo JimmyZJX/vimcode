@@ -75,7 +75,6 @@ export class Vim {
   private insertRepeatCount = 1;
   private insertRepeatText = "";
   private insertRepeatSeparator = "";
-  private lastInsertPosition: ReturnType<typeof selectionHead> | undefined;
   private insertOrigin: VimMode["kind"] | undefined;
   private pendingVisualRepeatChange: { selection: RecordedSelection } | undefined;
   private readonly normalMode: NormalMode;
@@ -682,7 +681,7 @@ export class Vim {
   }
 
   private enterInsertAtPrevious(): void {
-    const position = this.lastInsertPosition;
+    const position = this.modelState.lastInsertPosition;
     if (position !== undefined) this.editor.setSelections([charwiseSelection(position)]);
     this.editor.setCursorStyle("line");
     this.enterInsertMode({ origin: this.modeState.kind, count: this.takeCountForMotion(1) });
@@ -695,8 +694,8 @@ export class Vim {
   }
 
   private finishInsertOrReplaceSession(mode: "insert" | "replace"): void {
-    this.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
-    this.modelState.marks.setBuiltinMark("^", this.lastInsertPosition);
+    this.modelState.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
+    this.modelState.marks.setBuiltinMark("^", this.modelState.lastInsertPosition);
     const pendingVisualRepeatChange = this.pendingVisualRepeatChange;
     if (pendingVisualRepeatChange !== undefined && !this.globalState.repeat.isReplaying()) {
       this.globalState.repeat.recordVisualAction(pendingVisualRepeatChange.selection, { type: "change", insertedText: this.insertRepeatText });
@@ -709,7 +708,7 @@ export class Vim {
     const repeatedText = Array.from({ length: this.insertRepeatCount - 1 }, () => `${this.insertRepeatSeparator}${this.insertRepeatText}`).join("");
     if (mode === "replace") replaceModeText(this.editor, repeatedText, 1, this.insertEditOptions());
     else insertText(this.editor, repeatedText, this.insertEditOptions());
-    this.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
+    this.modelState.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
     this.clearInsertOrReplaceSession();
   }
 
