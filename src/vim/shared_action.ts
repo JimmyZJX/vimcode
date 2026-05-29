@@ -5,7 +5,7 @@
 // - intentional differences: this is a tiny resolver until the local keymap becomes fully data-driven.
 
 export type SharedAction =
-  | { type: "motion"; key: "gg" | "gj" | "gk" | "g_" }
+  | { type: "motion"; key: "gg" | "gj" | "gk" | "g_" | "ge" | "gE" }
   | { type: "normalGKey"; key: "u" | "U" | "~" | "J" }
   | { type: "changeList"; direction: "older" | "newer" }
   | { type: "insertAtPrevious" }
@@ -26,6 +26,8 @@ const bindings: ReadonlyMap<string, SharedAction> = new Map([
   ["g j", { type: "motion", key: "gj" }],
   ["g k", { type: "motion", key: "gk" }],
   ["g _", { type: "motion", key: "g_" }],
+  ["g e", { type: "motion", key: "ge" }],
+  ["g E", { type: "motion", key: "gE" }],
   ["g v", { type: "restoreVisualSelection" }],
   ["g i", { type: "insertAtPrevious" }],
   ["g u", { type: "normalGKey", key: "u" }],

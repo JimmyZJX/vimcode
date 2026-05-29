@@ -41,6 +41,7 @@ export type Motion =
   | { type: "left" }
   | { type: "wrappingLeft" }
   | { type: "right" }
+  | { type: "wrappingRight" }
   | { type: "up"; displayLine?: boolean }
   | { type: "down"; displayLine?: boolean }
   | { type: "startOfLine" }
@@ -53,6 +54,7 @@ export type Motion =
   | { type: "nextWordStart"; bigWord: boolean }
   | { type: "nextWordEnd"; bigWord: boolean }
   | { type: "previousWordStart"; bigWord: boolean }
+  | { type: "previousWordEnd"; bigWord: boolean }
   | { type: "matching" }
   | { type: "unmatchedForward"; char: string }
   | { type: "unmatchedBackward"; char: string }
@@ -73,6 +75,8 @@ export function motionForKey(key: string): Motion | undefined {
     case "l":
     case "right":
       return { type: "right" };
+    case "space":
+      return { type: "wrappingRight" };
     case "ctrl-left":
       return { type: "previousWordStart", bigWord: false };
     case "ctrl-right":
@@ -147,6 +151,18 @@ function previousPosition(editor: VimEditorCapabilities, pos: Position): Positio
   if (pos.column > 0) return { row: pos.row, column: pos.column - 1 };
   if (pos.row > 0) return { row: pos.row - 1, column: editor.lineLength(pos.row - 1) };
   return undefined;
+}
+
+function wrappingRight(editor: VimEditorCapabilities, pos: Position): Position {
+  const clipped = clipPosition(editor, pos);
+  const lineLength = editor.lineLength(clipped.row);
+  if (lineLength === 0) {
+    if (clipped.row + 1 < editor.lineCount()) return { row: clipped.row + 1, column: 0 };
+    return clipped;
+  }
+  if (clipped.column + 1 < lineLength) return { row: clipped.row, column: clipped.column + 1 };
+  if (clipped.row + 1 < editor.lineCount()) return { row: clipped.row + 1, column: 0 };
+  return normalCursorPosition(editor, clipped);
 }
 
 function firstNonWhitespace(editor: VimEditorCapabilities, row: number): Position {
@@ -258,6 +274,32 @@ function previousWordStart(
   return normalCursorPosition(editor, first);
 }
 
+// Zed: `motion::previous_word_end`, reached from `motion::Motion::move_point`.
+function previousWordEnd(editor: VimEditorCapabilities, start: Position, bigWord: boolean): Position {
+  let current: Position | undefined = start;
+  const startChar = charAt(editor, current);
+  if (startChar !== undefined && charClass(startChar, bigWord) !== "whitespace") {
+    const startClass = charClass(startChar, bigWord);
+    current = previousPosition(editor, current);
+    while (current !== undefined) {
+      const char = charAt(editor, current);
+      if (char === undefined || charClass(char, bigWord) !== startClass) break;
+      current = previousPosition(editor, current);
+    }
+  } else {
+    current = previousPosition(editor, current);
+  }
+
+  while (current !== undefined) {
+    if (editor.lineLength(current.row) === 0) return normalCursorPosition(editor, current);
+    const char = charAt(editor, current);
+    if (char !== undefined && charClass(char, bigWord) !== "whitespace") break;
+    current = previousPosition(editor, current);
+  }
+
+  return current === undefined ? position(0, 0) : normalCursorPosition(editor, current);
+}
+
 // Zed: `motion::Motion::move_point`. We keep the
 // same dispatch shape, but delegate only to local model-position helpers for now.
 export function applyMotionOnce(
@@ -275,6 +317,8 @@ export function applyMotionOnce(
       return normalCursorPosition(editor, clipped);
     case "right":
       return normalCursorPosition(editor, { row: clipped.row, column: clipped.column + 1 });
+    case "wrappingRight":
+      return wrappingRight(editor, clipped);
     case "up":
       return normalCursorPosition(editor, { row: clipped.row - 1, column: clipped.column });
     case "down":
@@ -299,6 +343,8 @@ export function applyMotionOnce(
       return nextWordEnd(editor, clipped, motion.bigWord);
     case "previousWordStart":
       return previousWordStart(editor, clipped, motion.bigWord);
+    case "previousWordEnd":
+      return previousWordEnd(editor, clipped, motion.bigWord);
     case "matching":
       return matching(editor, clipped);
     case "unmatchedForward":
@@ -375,6 +421,10 @@ export function applyMotionWithGoal(
   if (motion.type === "startOfFile") {
     return { position: position(0, 0) };
   }
+  if (motion.type === "endOfLine") {
+    const row = Math.max(0, Math.min(start.row + count - 1, editor.lineCount() - 1));
+    return { position: endOfLine(editor, row), goal: { type: "endOfLine" } };
+  }
   if (motion.type === "lastNonWhitespace") {
     const row = Math.max(0, Math.min(start.row + count - 1, editor.lineCount() - 1));
     return { position: lastNonWhitespace(editor, row) };
@@ -406,7 +456,7 @@ export function applyMotionWithGoal(
   for (let i = 0; i < count; i++) {
     current = applyMotionOnce(editor, current, motion);
   }
-  return { position: current, goal: motion.type === "endOfLine" ? { type: "endOfLine" } : undefined };
+  return { position: current, goal: undefined };
 }
 
 function modelColumnForGoal(

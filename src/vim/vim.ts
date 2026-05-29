@@ -801,6 +801,12 @@ export class Vim {
           case "g_":
             this.applyMotion({ type: "lastNonWhitespace" }, this.takeCountForMotion(1));
             return;
+          case "ge":
+            this.applyMotion({ type: "previousWordEnd", bigWord: false }, this.takeCountForMotion(1));
+            return;
+          case "gE":
+            this.applyMotion({ type: "previousWordEnd", bigWord: true }, this.takeCountForMotion(1));
+            return;
         }
       case "normalGKey":
         if (this.modeState.kind === "normal") {
