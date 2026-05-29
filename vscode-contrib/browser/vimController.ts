@@ -3,6 +3,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import * as nls from '../../../../nls.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -32,7 +33,7 @@ const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
 export class VimController extends Disposable {
 	public static readonly ID = 'editor.contrib.vim';
 	private static readonly globalState = new VimGlobalState();
-	private static readonly modelStates = new Map<string, VimModelState>();
+	private static readonly modelStates = new Map<string, { state: VimModelState; disposeListener: IDisposable }>();
 	private static warnedAboutVSCodeVim = false;
 
 	private readonly vimClipboard: VSCodeVimClipboard;
@@ -318,7 +319,7 @@ export class VimController extends Disposable {
 		this.pendingUndoRedoContentSync = false;
 		this.vimEditor.detachFromModel();
 		if (!this.attachCurrentModelState()) {
-			this.syncDisabledStatus();
+			this.syncDetachedStatus();
 			return;
 		}
 		this.handleExternalEditorStateChanged('model');
@@ -329,7 +330,7 @@ export class VimController extends Disposable {
 		if (!this.hasModel()) {
 			this.pendingUndoRedoContentSync = false;
 			this.vimEditor.detachFromModel();
-			this.syncDisabledStatus();
+			this.syncDetachedStatus();
 			return;
 		}
 		this.vimEditor.invalidateCachedSelections();
@@ -339,9 +340,14 @@ export class VimController extends Disposable {
 	}
 
 	private syncFromUndoRedoState(reason: string): void {
-		if (!this.enabled || !this.hasModel()) {
+		if (!this.enabled) {
 			this.pendingUndoRedoContentSync = false;
 			this.syncDisabledStatus();
+			return;
+		}
+		if (!this.hasModel()) {
+			this.pendingUndoRedoContentSync = false;
+			this.syncDetachedStatus();
 			return;
 		}
 		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
@@ -358,8 +364,12 @@ export class VimController extends Disposable {
 	}
 
 	private syncEditorState(): void {
-		if (!this.enabled || !this.hasModel()) {
+		if (!this.enabled) {
 			this.syncDisabledStatus();
+			return;
+		}
+		if (!this.hasModel()) {
+			this.syncDetachedStatus();
 			return;
 		}
 		this.syncStatus();
@@ -373,13 +383,29 @@ export class VimController extends Disposable {
 		const model = this.editor.getModel();
 		if (model === null) return false;
 		const key = model.uri.toString();
-		let modelState = VimController.modelStates.get(key);
-		if (modelState === undefined) {
-			modelState = new VimModelState();
-			VimController.modelStates.set(key, modelState);
+		let entry = VimController.modelStates.get(key);
+		if (entry === undefined) {
+			const disposeListener = model.onWillDispose(() => {
+				disposeListener.dispose();
+				VimController.modelStates.delete(key);
+			});
+			entry = { state: new VimModelState(), disposeListener };
+			VimController.modelStates.set(key, entry);
 		}
-		this.vim.attachModelState(modelState);
+		this.vim.attachModelState(entry.state);
 		return true;
+	}
+
+	private syncDetachedStatus(): void {
+		const status = this.vim.status;
+		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
+		this.vimActiveContext.set(true);
+		this.vimModeContext.set(vscodeVimModeContextValue(status));
+		this.vimNormalContext.set(status.mode === 'normal');
+		this.vimInsertContext.set(status.mode === 'insert');
+		this.vimPendingContext.set(status.pending);
+		this.vimOperatorContext.set(status.operator ?? '');
+		this.vimChordContext.set(status.chord);
 	}
 
 	private syncDisabledStatus(): void {
