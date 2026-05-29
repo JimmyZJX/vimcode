@@ -45,6 +45,7 @@ export type Motion =
   | { type: "down"; displayLine?: boolean }
   | { type: "startOfLine" }
   | { type: "firstNonWhitespace" }
+  | { type: "lastNonWhitespace" }
   | { type: "endOfLine" }
   | { type: "startOfDocument" }
   | { type: "startOfFile" }
@@ -157,6 +158,12 @@ function firstNonWhitespace(editor: VimEditorCapabilities, row: number): Positio
 function firstNonWhitespaceOrCurrent(editor: VimEditorCapabilities, current: Position): Position {
   const line = editor.line(current.row);
   return line.search(/\S/) < 0 ? current : firstNonWhitespace(editor, current.row);
+}
+
+function lastNonWhitespace(editor: VimEditorCapabilities, row: number): Position {
+  const line = editor.line(row);
+  const match = /\S\s*$/.exec(line);
+  return { row, column: match === null ? 0 : match.index };
 }
 
 function endOfLine(editor: VimEditorCapabilities, row: number): Position {
@@ -276,6 +283,8 @@ export function applyMotionOnce(
       return { row: clipped.row, column: 0 };
     case "firstNonWhitespace":
       return firstNonWhitespaceOrCurrent(editor, clipped);
+    case "lastNonWhitespace":
+      return lastNonWhitespace(editor, clipped.row);
     case "endOfLine":
       return endOfLine(editor, clipped.row);
     case "startOfDocument":
@@ -365,6 +374,10 @@ export function applyMotionWithGoal(
   }
   if (motion.type === "startOfFile") {
     return { position: position(0, 0) };
+  }
+  if (motion.type === "lastNonWhitespace") {
+    const row = Math.max(0, Math.min(start.row + count - 1, editor.lineCount() - 1));
+    return { position: lastNonWhitespace(editor, row) };
   }
   if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump" || motion.type === "searchMatch") {
     return { position: applyMotionOnce(editor, start, motion) };

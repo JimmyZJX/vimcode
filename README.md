@@ -34,7 +34,7 @@ Done in this branch:
   - Existing passing local fixtures remain enabled.
   - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
   - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
-  - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_delete_b`, `test_change_w`, `test_change_e`, `test_change_b`, `test_change_j`, `test_change_k`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
+  - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_delete_b`, `test_change_w`, `test_change_e`, `test_change_b`, `test_change_j`, `test_change_k`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_next_line_start`, `test_plus_minus`, `test_end_of_line_downward`, `test_delete_left`, `test_delete_to_end_of_line`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, and linewise yank/paste fixtures.
   - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_backwards_n`, `test_d_search`, `test_gn`, `test_cgn_repeat`, `test_dgn_repeat`, `test_search_skipping`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, `test_enter_visual_mode`, `test_gv`, `test_word_object_with_count`, `test_delete_paragraph_object`, `test_change_paragraph_object`, `test_visual_paragraph_object`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, visual-line fixtures, the first visual-block movement/paste/insert fixtures, focused surround add/delete/change fixtures, and escaped quote object fixtures.
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text plus the charwise, linewise, and rectangular visual marker shapes used by the enabled fixtures.
@@ -44,7 +44,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 217 enabled tests.
+  - `npm test -- --runInBand` passes with 297 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -54,12 +54,13 @@ Implemented first-slice behavior:
 - pending operators
 - first text-object grammar: operator + `i`/`a` + `w`/`W`, simple quote/bracket objects, and first paragraph/sentence objects
 - visual mode slice: charwise `v`, visual-line `V`, and visual-block `ctrl-v` motions plus visual `d`/`x`, `y`, `c`/`s`, `iw`/`iW`, `p`/`P`, block `I`/`A` insert, and other-end block movement for the enabled Zed fixtures
-- motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `gg`, `G`, `f`, `F`, `t`, `T`, `;`, `,`, `%`, `]}`, `])`, `[{`, `[(`, and local mark jumps
+- motions: `h`, `j`, `k`, `l`, `w`, `W`, `e`, `E`, `b`, `B`, `0`, `^`, `$`, `+`, `-`, `enter`, `gg`, `G`, `g_`, `f`, `F`, `t`, `T`, `;`, `,`, `%`, `]}`, `])`, `[{`, `[(`, and local mark jumps
 - operators: `d`, `c`, `y`, including expanded basic `d`/`c` coverage for `0`, `h`, `l`, `$`, vertical linewise motions, `gg`, `G`, and `cc`
 - line operators: `dd`, `cc`, `yy`
 - motion operators: `dw`, `de`, `cw`, `ce`, `yw`
 - insert commands: `i`, `a`, `I`, `A`, `o`, `O`
-- `x`
+- `x` and `X`
+- `D` delete-to-end-of-line
 - very basic normal and visual `p` / `P`
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
 - `/...<enter>` and `?...<enter>` regex search with smart-case matching, `n`/`N` repeat, `*`/`#` word search, and search-as-operator ranges through a VSCode-native search capability boundary; native Find highlights are shown while typing the query, seeded with the last query while empty, and cleared after the Vim search commits

@@ -789,6 +789,9 @@ export class Vim {
           case "gk":
             this.applyMotion({ type: "up", displayLine: true }, this.takeCountForMotion(1));
             return;
+          case "g_":
+            this.applyMotion({ type: "lastNonWhitespace" }, this.takeCountForMotion(1));
+            return;
         }
       case "normalGKey":
         if (this.modeState.kind === "normal") {

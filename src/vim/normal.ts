@@ -11,7 +11,7 @@ import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.
 import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { changeLineRange, changeLines, changeMotion } from "./normal/change.js";
-import { deleteCharacters, deleteLineRange, deleteLines, deleteMotion } from "./normal/delete.js";
+import { deleteCharacters, deleteCharactersBefore, deleteLineRange, deleteLines, deleteMotion } from "./normal/delete.js";
 import { applyTextObjectOperator } from "./normal/object.js";
 import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion } from "./normal/yank.js";
@@ -368,6 +368,12 @@ export class NormalMode {
       case "S":
         this.handleLineOperator("change");
         return handled({ enterInsert: true });
+      case "D":
+        deleteMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
+        return handled();
+      case "X":
+        deleteCharactersBefore(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
+        return handled();
       case "J":
         this.joinFromSelections({ insertWhitespace: true });
         return handled();
@@ -390,6 +396,14 @@ export class NormalMode {
         return handled();
       case "P":
         paste(this.editor, this.registers, this.takeSelectedRegister(), { before: true, count: this.takeCount(1) });
+        return handled();
+      case "+":
+        this.moveToLineFirstNonWhitespace(this.takeCount(1));
+        this.selectedRegister = undefined;
+        return handled();
+      case "-":
+        this.moveToLineFirstNonWhitespace(-this.takeCount(1));
+        this.selectedRegister = undefined;
         return handled();
       default:
         this.clearPending();
@@ -443,6 +457,10 @@ export class NormalMode {
       return handled();
     }
 
+    if (key === "_") {
+      return handled({ enterInsert: this.applyMotion({ type: "lastNonWhitespace" }, this.takeCount(1)) });
+    }
+
     if ((key === "j" || key === "k") && this.pendingOperator === undefined) {
       const count = this.takeCount(1);
       const motion: Motion = { type: key === "j" ? "down" : "up" };
@@ -491,6 +509,16 @@ export class NormalMode {
       this.editor.getSelections().map((selection) => {
         const head = selectionHead(selection);
         const targetRow = Math.min(head.row + 1, this.editor.lineCount() - 1);
+        return charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow));
+      })
+    );
+  }
+
+  private moveToLineFirstNonWhitespace(rowDelta: number): void {
+    this.editor.setSelections(
+      this.editor.getSelections().map((selection) => {
+        const head = selectionHead(selection);
+        const targetRow = Math.max(0, Math.min(head.row + rowDelta, this.editor.lineCount() - 1));
         return charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow));
       })
     );

@@ -139,6 +139,31 @@ function linewiseContent(editor: VimEditorCapabilities, row: number, count: numb
   return `${lines.join("\n")}\n`;
 }
 
+// Zed: the `normal::DeleteLeft` action deletes before the cursor without crossing
+// line boundaries.
+export function deleteCharactersBefore(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  count: number,
+  options: ApplyEditsOptions = {}
+): void {
+  deleteRange(
+    editor,
+    registers,
+    registerName,
+    (head) => {
+      if (head.column === 0) return { start: head, end: head };
+      return {
+        start: { row: head.row, column: Math.max(0, head.column - count) },
+        end: head,
+      };
+    },
+    (_editor, range, head) => ({ row: head.row, column: range.start.column }),
+    options
+  );
+}
+
 // Zed: the `normal::DeleteRight` action calls `delete_motion(Motion::Right, ...)`.
 export function deleteCharacters(
   editor: VimEditorCapabilities,

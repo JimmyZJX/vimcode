@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"The qˇuick\nbrown fox"}}
 {"Key":"shift-d"}
 {"Get":{"state":"The ˇq\nbrown fox","mode":"Normal"}}
