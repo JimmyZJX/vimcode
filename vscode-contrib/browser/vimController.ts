@@ -500,6 +500,10 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 			return `Insert${suffix}`;
 		case 'replace':
 			return `Replace${suffix}`;
+		case 'search':
+			return 'Search';
+		case 'command':
+			return 'Command';
 		case 'visual':
 			return `Visual${suffix}`;
 		case 'visualLine':

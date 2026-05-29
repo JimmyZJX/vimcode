@@ -70,6 +70,7 @@ export class Vim {
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remapResolver = new RemapResolver(this.configuration);
   private pendingCommand: string | undefined;
+  private searchOriginMode: VimMode["kind"] | undefined;
   private pendingDigraph: PendingDigraph | undefined;
   private pendingInsertRegister = false;
   private insertRepeatCount = 1;
@@ -113,7 +114,7 @@ export class Vim {
   }
 
   get modeName(): string {
-    const suffix = this.isPending() ? "+" : "";
+    const suffix = this.isPending() && this.modeState.kind !== "search" && this.modeState.kind !== "command" ? "+" : "";
     return `${this.modeState.dialect}:${this.modeState.kind}${suffix}`;
   }
 
@@ -154,6 +155,8 @@ export class Vim {
       }
     }
 
+    if (this.modeState.kind === "search" || this.modeState.kind === "command") return true;
+
     return !((this.modeState.kind === "insert" || this.modeState.kind === "replace")
       && !this.shouldHandleInsertKey(key)
       && !this.status.pending);
@@ -170,6 +173,7 @@ export class Vim {
   }
 
   syncFromEditorState({ render = true }: { render?: boolean } = {}): EditorSyncResult {
+    const modeBeforeSync = this.modeState.kind;
     const selections = this.editor.getSelections();
     const reconciliation = reconcileCursorState(
       { selections },
@@ -199,7 +203,9 @@ export class Vim {
         return selection.goal === undefined ? normalSelection : { ...normalSelection, goal: selection.goal };
       });
     this.editor.setSelections(normalSelections);
-    this.setMode("normal");
+    if (modeBeforeSync !== "search" && modeBeforeSync !== "command") {
+      this.setMode("normal");
+    }
     return {
       mode: this.modeState.kind,
       selectionCount: reconciliation.selectionCount,
@@ -230,6 +236,7 @@ export class Vim {
     this.normalChordResolver.clearPending();
     this.modelState.marks.clearPending();
     this.globalState.search.clearPending();
+    this.searchOriginMode = undefined;
     if (closeSearchHighlights && searchWasPending) this.editor.clearSearchHighlights();
     this.pendingCommand = undefined;
     this.pendingDigraph = undefined;
@@ -456,6 +463,7 @@ export class Vim {
 
     if (this.modeState.kind === "normal" && !this.normalMode.hasPendingNonCount() && key === ":") {
       this.pendingCommand = "";
+      this.setMode("command");
       return "handled";
     }
 
@@ -519,10 +527,16 @@ export class Vim {
 
     if (this.globalState.search.isPending()) {
       this.recordRepeatKey(key);
+      const originMode = this.searchOriginMode ?? "normal";
       const motion = this.globalState.search.handleKey(key, this.globalState.registers, this.editor);
       if (motion !== undefined) {
+        this.searchOriginMode = undefined;
+        this.setMode(originMode === "visual" || originMode === "visualLine" || originMode === "visualBlock" ? originMode : "normal");
         this.applyMotion(motion, 1);
         this.editor.clearSearchHighlights();
+      } else if (!this.globalState.search.isPending()) {
+        this.searchOriginMode = undefined;
+        this.setMode(originMode === "visual" || originMode === "visualLine" || originMode === "visualBlock" ? originMode : "normal");
       }
       return "handled";
     }
@@ -619,6 +633,10 @@ export class Vim {
     }
     if (this.modeState.kind === "normal" && this.hasMultipleCursorsOrSelection()) {
       this.collapseToFirstCursor();
+      return;
+    }
+    if (this.modeState.kind === "search" || this.modeState.kind === "command") {
+      this.setMode("normal");
       return;
     }
     if (this.modeState.kind !== "normal") {
@@ -931,7 +949,9 @@ export class Vim {
     }
 
     if (key === "/" || key === "?") {
+      this.searchOriginMode = this.modeState.kind;
       this.globalState.search.start(key === "?", this.editor);
+      this.setMode("search");
       return true;
     }
 
@@ -1014,6 +1034,7 @@ export class Vim {
     if (key === "enter") {
       const command = this.pendingCommand;
       this.pendingCommand = undefined;
+      this.setMode("normal");
       executeCommand(this.editor, command, {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
       });

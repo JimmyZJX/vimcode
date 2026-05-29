@@ -41,6 +41,8 @@ export type VimMode =
   | { dialect: VimDialect; kind: "normal" }
   | { dialect: VimDialect; kind: "insert" }
   | { dialect: VimDialect; kind: "replace" }
+  | { dialect: VimDialect; kind: "search" }
+  | { dialect: VimDialect; kind: "command" }
   | { dialect: VimDialect; kind: "visual" }
   | { dialect: VimDialect; kind: "visualLine" }
   | { dialect: VimDialect; kind: "visualBlock" }

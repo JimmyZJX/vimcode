@@ -191,6 +191,8 @@ export function remapModeForVimMode(mode: VimMode["kind"], { operatorPending }: 
       return "visualBlock";
     case "normal":
     case "replace":
+    case "search":
+    case "command":
     case "select":
       return "normal";
   }

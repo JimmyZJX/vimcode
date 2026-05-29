@@ -1499,10 +1499,24 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
 
     runKeys(vim, ["/"]);
-    expect(vim.modeName).toBe("vim:normal+");
+    expect(vim.modeName).toBe("vim:search");
 
     vim.syncFromEditorState();
-    expect(vim.modeName).toBe("vim:normal+");
+    expect(vim.modeName).toBe("vim:search");
+  });
+
+  it("uses command mode while collecting ex command input", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [":"]);
+    expect(vim.modeName).toBe("vim:command");
+
+    runKeys(vim, ["w", "enter"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.files.save", args: [] },
+    ]);
   });
 
   it("keeps pending operators across external cursor sync", () => {
