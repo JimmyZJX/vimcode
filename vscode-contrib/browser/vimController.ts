@@ -22,6 +22,7 @@ import type { EditorSyncResult } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
+const VimActiveContext = new RawContextKey<boolean>('vim.active', false, true);
 const VimModeContext = new RawContextKey<string>('vim.mode', 'Normal', true);
 const VimNormalContext = new RawContextKey<boolean>('vim.normal', true, true);
 const VimInsertContext = new RawContextKey<boolean>('vim.insert', false, true);
@@ -36,6 +37,7 @@ export class VimController extends Disposable {
 	private readonly vimEditor: VSCodeVimEditor;
 	private readonly vim: Vim;
 	private readonly asyncKeyQueue = new AsyncKeyQueue();
+	private readonly vimActiveContext: IContextKey<boolean>;
 	private readonly vimModeContext: IContextKey<string>;
 	private readonly vimNormalContext: IContextKey<boolean>;
 	private readonly vimInsertContext: IContextKey<boolean>;
@@ -64,6 +66,7 @@ export class VimController extends Disposable {
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
 		this.vimEditor = new VSCodeVimEditor(editor, commandService, message => this.logUndo(message));
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration());
+		this.vimActiveContext = VimActiveContext.bindTo(contextKeyService);
 		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
 		this.vimNormalContext = VimNormalContext.bindTo(contextKeyService);
 		this.vimInsertContext = VimInsertContext.bindTo(contextKeyService);
@@ -91,7 +94,7 @@ export class VimController extends Disposable {
 
 	override dispose(): void {
 		this.vimEditor.dispose();
-		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
+		this.syncDisabledStatus();
 		this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
 		super.dispose();
 	}
@@ -338,6 +341,7 @@ export class VimController extends Disposable {
 
 	private syncDisabledStatus(): void {
 		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
+		this.vimActiveContext.set(false);
 		this.vimModeContext.set('Disabled');
 		this.vimNormalContext.set(false);
 		this.vimInsertContext.set(false);
@@ -353,6 +357,7 @@ export class VimController extends Disposable {
 		}
 		const status = this.vim.status;
 		this.editor.getContainerDomNode().classList.toggle('vim-character-mode-enabled', status.mode !== 'insert' && status.mode !== 'replace');
+		this.vimActiveContext.set(true);
 		this.vimModeContext.set(vscodeVimModeContextValue(status));
 		this.vimNormalContext.set(status.mode === 'normal');
 		this.vimInsertContext.set(status.mode === 'insert');
