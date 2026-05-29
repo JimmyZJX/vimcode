@@ -35,6 +35,7 @@ export type VimConfiguration = {
   handleKeys: Readonly<Record<string, boolean>>;
   useCtrlKeys: boolean;
   useSystemClipboard: boolean;
+  visualMultilineInsert: boolean;
 };
 
 export const defaultVimConfiguration: VimConfiguration = {
@@ -50,6 +51,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   handleKeys: {},
   useCtrlKeys: true,
   useSystemClipboard: false,
+  visualMultilineInsert: false,
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {

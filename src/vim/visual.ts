@@ -7,9 +7,10 @@
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
+import { VimConfiguration } from "./config.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
-import { positionAfterInsertedText } from "./insert.js";
+import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
@@ -98,10 +99,19 @@ export class VisualMode {
   private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
 
+  private visualMultilineInsert: boolean;
+
   constructor(
     private readonly editor: VimEditorCapabilities,
-    private readonly registers: Registers
-  ) {}
+    private readonly registers: Registers,
+    configuration: Pick<VimConfiguration, "visualMultilineInsert">
+  ) {
+    this.visualMultilineInsert = configuration.visualMultilineInsert;
+  }
+
+  setConfiguration(configuration: Pick<VimConfiguration, "visualMultilineInsert">): void {
+    this.visualMultilineInsert = configuration.visualMultilineInsert;
+  }
 
   enter(kind: VisualState["kind"] = "charwise"): void {
     const selections = this.editor.getSelections();
@@ -262,6 +272,15 @@ export class VisualMode {
         deleteSelection: false,
         side: key === "I" ? "start" : "end",
       });
+      this.state = undefined;
+      this.editor.setCursorStyle("line");
+      return handled({ exitVisual: true, enterInsert: true });
+    }
+
+    if (this.visualMultilineInsert && (state.kind === "charwise" || state.kind === "linewise") && (key === "I" || key === "A")) {
+      this.rememberState(state);
+      beginVisualUndoTransaction(this.editor, state);
+      this.editor.setSelections(visualMultilineInsertSelections(this.editor, state, { side: key === "I" ? "start" : "end" }));
       this.state = undefined;
       this.editor.setCursorStyle("line");
       return handled({ exitVisual: true, enterInsert: true });
@@ -1440,6 +1459,33 @@ function enterBlockInsert(
   } else {
     editor.setSelections(blockInsertSelections(editor, state, { side }));
   }
+}
+
+function visualMultilineInsertSelections(
+  editor: VimEditorCapabilities,
+  state: CharwiseVisualState | LinewiseVisualState,
+  { side }: { side: "start" | "end" }
+): VimSelection[] {
+  if (state.kind === "linewise") {
+    const { startLine, endLine } = lineBounds(state);
+    const selections: VimSelection[] = [];
+    for (let row = startLine; row <= endLine; row++) {
+      selections.push(charwiseSelection(side === "start" ? firstNonWhitespace(editor.line(row), row) : { row, column: editor.lineLength(row) }));
+    }
+    return selections;
+  }
+
+  const range = charwiseVisualRange(editor, state);
+  const end = inclusiveHeadForRangeEnd(editor, range);
+  const selections: VimSelection[] = [];
+  for (let row = range.start.row; row <= end.row; row++) {
+    if (side === "start") {
+      selections.push(charwiseSelection(row === range.start.row ? range.start : firstNonWhitespace(editor.line(row), row)));
+    } else {
+      selections.push(charwiseSelection(row === end.row ? { row, column: Math.min(range.end.column, editor.lineLength(row)) } : { row, column: editor.lineLength(row) }));
+    }
+  }
+  return selections;
 }
 
 function blockInsertSelections(

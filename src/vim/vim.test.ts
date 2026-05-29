@@ -33,6 +33,14 @@ class FakeAsyncClipboard implements VimSystemClipboard {
   }
 }
 
+class SearchTrackingEditor extends InMemoryVimEditor {
+  clearSearchHighlightsCount = 0;
+
+  override clearSearchHighlights(): void {
+    this.clearSearchHighlightsCount++;
+  }
+}
+
 describe("Zed-inspired Vim core smoke tests", () => {
   it("layers VSCodeVim-compatible array and object config values", () => {
     expect(layeredConfigValue({
@@ -1268,6 +1276,33 @@ describe("Zed-inspired Vim core smoke tests", () => {
     });
   });
 
+  it("can use VSCodeVim-style visual-line multiline insert", () => {
+    const editor = new InMemoryVimEditor("one\n  two\nthree");
+    const vim = new Vim(editor, { visualMultilineInsert: true });
+
+    runKeys(vim, ["V", "j", "I", "x", "<escape>"]);
+
+    expect(editor.getText()).toBe("xone\n  xtwo\nthree");
+  });
+
+  it("can use VSCodeVim-style multiline insert for line-spanning visual selections", () => {
+    const editor = new InMemoryVimEditor("one\n  two\nthree");
+    const vim = new Vim(editor, { visualMultilineInsert: true });
+
+    runKeys(vim, ["v", "j", "I", "x", "<escape>"]);
+
+    expect(editor.getText()).toBe("xone\n  xtwo\nthree");
+  });
+
+  it("can use VSCodeVim-style visual-line multiline append", () => {
+    const editor = new InMemoryVimEditor("one\n  two\nthree");
+    const vim = new Vim(editor, { visualMultilineInsert: true });
+
+    runKeys(vim, ["V", "j", "A", "x", "<escape>"]);
+
+    expect(editor.getText()).toBe("onex\n  twox\nthree");
+  });
+
   it("adds surrounds around a text object", () => {
     const editor = new InMemoryVimEditor("The quick brown");
     const vim = new Vim(editor);
@@ -1371,6 +1406,21 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getSelections()).toEqual([externalSelection]);
   });
 
+  it("clears pending operators when external sync adopts visual mode", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d"]);
+    expect(vim.modeName).toBe("vim:normal+");
+
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 4 } }]);
+    vim.syncFromEditorState({ render: false });
+
+    expect(vim.modeName).toBe("vim:visual");
+    runKeys(vim, ["w"]);
+    expect(editor.getText()).toBe("abcdef");
+  });
+
   it("uses exact external backward selection ranges for visual operations", () => {
     const editor = new InMemoryVimEditor("abcdef");
     const vim = new Vim(editor);
@@ -1431,6 +1481,41 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["o", "x", "<escape>", "O", "y", "<escape>"]);
 
     expect(editor.getText()).toBe("alpha\ny\nx\nbeta");
+  });
+
+  it("keeps slash search pending across external cursor sync", () => {
+    const editor = new InMemoryVimEditor("foo");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/"]);
+    expect(vim.modeName).toBe("vim:normal+");
+
+    vim.syncFromEditorState();
+    expect(vim.modeName).toBe("vim:normal+");
+  });
+
+  it("keeps pending operators across external cursor sync", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d"]);
+    expect(vim.modeName).toBe("vim:normal+");
+
+    vim.syncFromEditorState();
+    expect(vim.modeName).toBe("vim:normal+");
+
+    runKeys(vim, ["w"]);
+    expect(editor.getText()).toBe("two");
+  });
+
+  it("closes search highlights when slash search is cancelled", () => {
+    const editor = new SearchTrackingEditor("foo");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/", "f", "<escape>"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.clearSearchHighlightsCount).toBe(1);
   });
 
   it("supports smart-case search", () => {

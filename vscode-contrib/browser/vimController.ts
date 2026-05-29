@@ -31,6 +31,25 @@ const VimInsertContext = new RawContextKey<boolean>('vim.insert', false, true);
 const VimPendingContext = new RawContextKey<boolean>('vim.pending', false, true);
 const VimOperatorContext = new RawContextKey<string>('vim.operator', '', true);
 const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
+
+class VimModelStateStore {
+	private readonly entries = new Map<string, { state: VimModelState; disposeListener: IDisposable }>();
+
+	getOrCreate(model: ITextModel): VimModelState {
+		const key = model.uri.toString();
+		let entry = this.entries.get(key);
+		if (entry === undefined) {
+			const disposeListener = model.onWillDispose(() => {
+				disposeListener.dispose();
+				this.entries.delete(key);
+			});
+			entry = { state: new VimModelState(), disposeListener };
+			this.entries.set(key, entry);
+		}
+		return entry.state;
+	}
+}
+
 export class VimController extends Disposable {
 	public static readonly ID = 'editor.contrib.vim';
 	private static readonly globalState = new VimGlobalState();
@@ -170,6 +189,7 @@ export class VimController extends Disposable {
 		const vimConfig = this.configurationService.getValue<Record<string, unknown>>('vim') ?? {};
 		const useCtrlKeys = this.configurationService.getValue<unknown>('vim.useCtrlKeys');
 		const useSystemClipboard = this.configurationService.getValue<unknown>('vim.useSystemClipboard');
+		const visualMultilineInsert = this.configurationService.getValue<unknown>('vim.visualMultilineInsert');
 		return {
 			leader: typeof vimConfig.leader === 'string' ? vimConfig.leader : undefined,
 			useCtrlKeys: typeof useCtrlKeys === 'boolean'
@@ -178,6 +198,9 @@ export class VimController extends Disposable {
 			useSystemClipboard: typeof useSystemClipboard === 'boolean'
 				? useSystemClipboard
 				: typeof vimConfig.useSystemClipboard === 'boolean' ? vimConfig.useSystemClipboard : undefined,
+			visualMultilineInsert: typeof visualMultilineInsert === 'boolean'
+				? visualMultilineInsert
+				: typeof vimConfig.visualMultilineInsert === 'boolean' ? vimConfig.visualMultilineInsert : undefined,
 			handleKeys: readHandleKeys(layeredConfigValue(vimConfig, 'handleKeys')),
 			normalModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindings')),
 			normalModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindingsNonRecursive')),
@@ -485,24 +508,6 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 			return `VisualBlock${suffix}`;
 		default:
 			return `Unknown${suffix}`;
-	}
-}
-
-class VimModelStateStore {
-	private readonly entries = new Map<string, { state: VimModelState; disposeListener: IDisposable }>();
-
-	getOrCreate(model: ITextModel): VimModelState {
-		const key = model.uri.toString();
-		let entry = this.entries.get(key);
-		if (entry === undefined) {
-			const disposeListener = model.onWillDispose(() => {
-				disposeListener.dispose();
-				this.entries.delete(key);
-			});
-			entry = { state: new VimModelState(), disposeListener };
-			this.entries.set(key, entry);
-		}
-		return entry.state;
 	}
 }
 

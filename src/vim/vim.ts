@@ -92,12 +92,12 @@ export class Vim {
     this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.editor.setCursorStyle("block");
     this.normalMode = new NormalMode(editor, this.globalState.registers);
-    this.visualMode = new VisualMode(editor, this.globalState.registers);
+    this.visualMode = new VisualMode(editor, this.globalState.registers, this.configuration);
   }
 
   attachModelState(modelState: VimModelState): void {
     if (this.modelState === modelState) return;
-    this.clearPendingForExternalSync();
+    this.clearPendingForModelSwitch();
     this.modelState = modelState;
   }
 
@@ -105,6 +105,7 @@ export class Vim {
     this.configuration = mergeVimConfiguration(configuration);
     this.remapResolver = new RemapResolver(this.configuration);
     this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
+    this.visualMode.setConfiguration(this.configuration);
   }
 
   get mode(): VimMode {
@@ -169,7 +170,6 @@ export class Vim {
   }
 
   syncFromEditorState({ render = true }: { render?: boolean } = {}): EditorSyncResult {
-    this.clearPendingForExternalSync();
     const selections = this.editor.getSelections();
     const reconciliation = reconcileCursorState(
       { selections },
@@ -181,6 +181,7 @@ export class Vim {
       const adopted = visualSelection !== undefined
         && this.visualMode.adoptSelection(visualSelection, { render });
       if (adopted) {
+        this.clearPendingForExternalModeChange();
         this.insertOrigin = undefined;
         this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
         return { mode: this.modeState.kind, ...reconciliation };
@@ -212,7 +213,16 @@ export class Vim {
     return this.syncFromEditorState({ render });
   }
 
-  private clearPendingForExternalSync(): void {
+  private clearPendingForModelSwitch(): void {
+    this.clearPendingGrammar({ closeSearchHighlights: false });
+  }
+
+  private clearPendingForExternalModeChange(): void {
+    this.clearPendingGrammar({ closeSearchHighlights: true });
+  }
+
+  private clearPendingGrammar({ closeSearchHighlights }: { closeSearchHighlights: boolean }): void {
+    const searchWasPending = this.globalState.search.isPending();
     this.pendingFind = undefined;
     this.pendingUnmatched = undefined;
     this.sharedActionResolver.clearPending();
@@ -220,6 +230,7 @@ export class Vim {
     this.normalChordResolver.clearPending();
     this.modelState.marks.clearPending();
     this.globalState.search.clearPending();
+    if (closeSearchHighlights && searchWasPending) this.editor.clearSearchHighlights();
     this.pendingCommand = undefined;
     this.pendingDigraph = undefined;
     this.pendingInsertRegister = false;
@@ -610,11 +621,7 @@ export class Vim {
   }
 
   private clearPendingStateForEscape(): void {
-    this.pendingFind = undefined;
-    this.pendingDigraph = undefined;
-    this.globalState.search.clearPending();
-    this.pendingCommand = undefined;
-    this.normalMode.clearPending();
+    this.clearPendingGrammar({ closeSearchHighlights: true });
   }
 
   private recordEscapeKey(): void {
