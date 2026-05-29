@@ -78,7 +78,7 @@ export class VimController extends Disposable {
 		this._register(this.editor.onDidFocusEditorText(() => this.syncEditorState()));
 		this._register(this.editor.onDidChangeCursorSelection(event => this.handleCursorSelectionChanged(event)));
 		this._register(this.editor.onDidChangeModelContent(event => this.handleModelContentChanged(event)));
-		this._register(this.editor.onDidChangeModel(() => this.handleExternalEditorStateChanged()));
+		this._register(this.editor.onDidChangeModel(() => this.handleEditorModelChanged()));
 		this._register(this.extensionManagementService.onDidInstallExtensions(() => {
 			if (this.enabled) this.warnIfVSCodeVimInstalled();
 		}));
@@ -185,7 +185,7 @@ export class VimController extends Disposable {
 	}
 
 	private handleKeyDown(event: IKeyboardEvent): void {
-		if (!this.enabled) {
+		if (!this.enabled || !this.hasModel()) {
 			return;
 		}
 		const key = keyFromEvent(event);
@@ -254,7 +254,7 @@ export class VimController extends Disposable {
 	}
 
 	private handleCursorSelectionChanged(event: ICursorSelectionChangedEvent): void {
-		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
+		if (!this.enabled || !this.hasModel() || this.vimEditor.isExecutingNativeCommand?.()) return;
 		const selections = [event.selection, ...event.secondarySelections];
 		if (this.isModelMarkerRecoveryNoise(event)) {
 			return;
@@ -299,7 +299,7 @@ export class VimController extends Disposable {
 	}
 
 	private handleModelContentChanged(event: IModelContentChangedEvent): void {
-		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.() || (!event.isUndoing && !event.isRedoing)) return;
+		if (!this.enabled || !this.hasModel() || this.vimEditor.isExecutingNativeCommand?.() || (!event.isUndoing && !event.isRedoing)) return;
 		this.logUndo(`content event undo=${event.isUndoing} redo=${event.isRedoing} version=${event.versionId} changes=${event.changes.length} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		this.pendingUndoRedoContentSync = true;
 		queueMicrotask(() => {
@@ -309,8 +309,25 @@ export class VimController extends Disposable {
 		});
 	}
 
+	private handleEditorModelChanged(): void {
+		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
+		this.pendingUndoRedoContentSync = false;
+		this.vimEditor.detachFromModel();
+		if (!this.hasModel()) {
+			this.syncDisabledStatus();
+			return;
+		}
+		this.handleExternalEditorStateChanged('model');
+	}
+
 	private handleExternalEditorStateChanged(source?: string, { render = false }: { render?: boolean } = {}): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
+		if (!this.hasModel()) {
+			this.pendingUndoRedoContentSync = false;
+			this.vimEditor.detachFromModel();
+			this.syncDisabledStatus();
+			return;
+		}
 		this.vimEditor.invalidateCachedSelections();
 		const result = this.vim.syncFromEditorState({ render });
 		this.logVisualSyncDecision(source ?? 'external', result);
@@ -318,6 +335,11 @@ export class VimController extends Disposable {
 	}
 
 	private syncFromUndoRedoState(reason: string): void {
+		if (!this.enabled || !this.hasModel()) {
+			this.pendingUndoRedoContentSync = false;
+			this.syncDisabledStatus();
+			return;
+		}
 		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
 		this.vimEditor.invalidateCachedSelections();
 		const result = this.vim.syncFromUndoRedoState({ render: false });
@@ -332,11 +354,15 @@ export class VimController extends Disposable {
 	}
 
 	private syncEditorState(): void {
-		if (!this.enabled) {
+		if (!this.enabled || !this.hasModel()) {
 			this.syncDisabledStatus();
 			return;
 		}
 		this.syncStatus();
+	}
+
+	private hasModel(): boolean {
+		return this.editor.getModel() !== null;
 	}
 
 	private syncDisabledStatus(): void {

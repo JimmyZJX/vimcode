@@ -310,7 +310,12 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	dispose(): void {
+		this.detachFromModel();
+	}
+
+	detachFromModel(): void {
 		this.closeUndoTransaction({ pushUndoStop: false });
+		this.invalidateCachedSelections();
 	}
 
 	invalidateCachedSelections(): void {
