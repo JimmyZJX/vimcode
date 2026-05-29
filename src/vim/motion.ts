@@ -251,6 +251,7 @@ function previousWordStart(
 ): Position {
   let current = previousPosition(editor, start);
   while (current !== undefined) {
+    if (editor.lineLength(current.row) === 0) return normalCursorPosition(editor, current);
     const char = charAt(editor, current);
     if (char !== undefined && charClass(char, bigWord) !== "whitespace") break;
     current = previousPosition(editor, current);
