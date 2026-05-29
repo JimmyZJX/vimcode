@@ -786,6 +786,26 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 2, column: 0 });
   });
 
+  it("preserves target column goals when syncing from editor state", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
+    const vim = new Vim(editor);
+
+    editor.setSelections([{ ...charwiseSelection({ row: 1, column: 0 }), goal: { type: "modelColumn", column: 5 } }]);
+    vim.syncFromEditorState();
+    runKeys(vim, ["j"]);
+
+    expect(head(editor)).toEqual({ row: 2, column: 5 });
+  });
+
+  it("preserves the target column across reveal-line chords", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nabcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["5", "l", "j", "z", "z", "j"]);
+
+    expect(head(editor)).toEqual({ row: 2, column: 5 });
+  });
+
   it("preserves the target column across half-page motions", () => {
     const editor = new InMemoryVimEditor("abcdef\nx\nx\nabcdef");
     const vim = new Vim(editor);

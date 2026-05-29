@@ -24,6 +24,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
+	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
 	private nativeCommandInProgress = false;
 	private vimEditInProgress = false;
 	private undoTransaction: VimUndoTransaction | undefined;
@@ -72,17 +73,22 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		if (selections.length === 0) {
 			return [charwiseSelection({ row: 0, column: 0 })];
 		}
-		const rebuilt = selections.map(selection => ({
-			type: 'charwise' as const,
-			anchor: {
-				row: selection.selectionStartLineNumber - 1,
-				column: selection.selectionStartColumn - 1,
-			},
-			head: {
+		const rebuilt = selections.map(selection => {
+			const head = {
 				row: selection.positionLineNumber - 1,
 				column: selection.positionColumn - 1,
-			},
-		}));
+			};
+			const rebuiltSelection = {
+				type: 'charwise' as const,
+				anchor: {
+					row: selection.selectionStartLineNumber - 1,
+					column: selection.selectionStartColumn - 1,
+				},
+				head,
+			};
+			const goal = this.rememberedSelectionGoals.get(positionKey(head));
+			return goal === undefined ? rebuiltSelection : { ...rebuiltSelection, goal };
+		});
 		return rebuilt;
 	}
 
@@ -316,6 +322,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	detachFromModel(): void {
 		this.closeUndoTransaction({ pushUndoStop: false });
 		this.invalidateCachedSelections();
+		this.rememberedSelectionGoals.clear();
 	}
 
 	invalidateCachedSelections(): void {
@@ -402,6 +409,13 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private rememberSelections(vimSelections: readonly VimSelection[], vscodeSelections: readonly Selection[]): void {
 		this.lastSetVimSelections = [...vimSelections];
 		this.lastSetVSCodeSelections = [...vscodeSelections];
+		this.rememberedSelectionGoals = new Map();
+		for (const selection of vimSelections) {
+			if (selection.goal === undefined) {
+				continue;
+			}
+			this.rememberedSelectionGoals.set(positionKey(selection.cursor ?? selectionHead(selection)), selection.goal);
+		}
 	}
 
 	private selectionsMatchLastSet(selections: readonly Selection[]): boolean {
@@ -526,6 +540,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 		this.visualLineDecorations.set(decorations);
 	}
+}
+
+function positionKey(position: VimPosition): string {
+	return `${position.row}:${position.column}`;
 }
 
 function visualSemanticSelections(selections: readonly VimSelection[] | undefined): readonly VimSelection[] | undefined {

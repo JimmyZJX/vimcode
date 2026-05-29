@@ -194,7 +194,10 @@ export class Vim {
     this.insertOrigin = undefined;
     if (render) this.editor.setCursorStyle("block");
     const normalSelections = collapseSelectionsToNormalCursors(reconciliation.selections)
-      .map(selection => charwiseSelection(normalCursorPosition(this.editor, selectionHead(selection))));
+      .map(selection => {
+        const normalSelection = charwiseSelection(normalCursorPosition(this.editor, selectionHead(selection)));
+        return selection.goal === undefined ? normalSelection : { ...normalSelection, goal: selection.goal };
+      });
     this.editor.setSelections(normalSelections);
     this.setMode("normal");
     return {

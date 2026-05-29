@@ -76,7 +76,10 @@ export function isEditorOwnedCharwiseSelection(
 export function collapseSelectionsToNormalCursors(
   selections: readonly VimSelection[]
 ): readonly VimSelection[] {
-  return selections.map(selection => charwiseSelection(selectionHead(selection)));
+  return selections.map(selection => {
+    const collapsed = charwiseSelection(selectionHead(selection));
+    return selection.goal === undefined ? collapsed : { ...collapsed, goal: selection.goal };
+  });
 }
 
 export function collapseToPrimaryNormalCursor(
