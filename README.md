@@ -80,6 +80,7 @@ Implemented first-slice behavior:
 - Zed reference commit subject: `Update Mistral provider docs following #55443 (#56133)`
 - Primary Zed Vim source root: `/home/jimzhao/vscode-extensions/zed/crates/vim/src`
 - Primary Zed Vim keymap: `/home/jimzhao/vscode-extensions/zed/assets/keymaps/vim.json`
+- Zed `crates/vim` license: `GPL-3.0-or-later`; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`licenses/GPL-3.0-or-later.txt`](licenses/GPL-3.0-or-later.txt)
 
 Jimmy has a basic experiment in a patched VSCode build that is not included in this repository yet. Once available, document how that patch intercepts keys, how it calls into this package, and which VSCode internal services are available to the adapter.
 
