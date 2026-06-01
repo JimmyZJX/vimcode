@@ -11,7 +11,7 @@ import { VimConfiguration } from "./config.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
-import { applyMotionWithGoal, hostViewLineSelectionsForMotion, Motion, motionForKey } from "./motion.js";
+import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { IndentDirection, indentRanges, visualIndentRanges } from "./normal/indent.js";
@@ -356,6 +356,14 @@ export class VisualMode {
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
+    if (key === "D") {
+      this.rememberState(state);
+      this.deleteToLineEnd(state, this.takeSelectedRegister());
+      this.state = undefined;
+      this.editor.setCursorStyle("block");
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+
     if (key === "d" || key === "x") {
       const selection = visualRepeatSelectionForState(this.editor, state);
       this.rememberState(state);
@@ -453,6 +461,36 @@ export class VisualMode {
     }
     this.registers.writeYank(registerName, `${lines.join("\n")}\n`, "linewise");
     return { row: bounds.startRow, column: 0 };
+  }
+
+  private deleteToLineEnd(state: VisualState, registerName: RegisterName | undefined): void {
+    if (state.kind === "blockwise") {
+      const { startRow, endRow, startColumn } = blockBounds(state);
+      const edits: TextEdit[] = [];
+      const copied: string[] = [];
+      for (let row = startRow; row <= endRow; row++) {
+        const start = { row, column: Math.min(startColumn, this.editor.lineLength(row)) };
+        const end = { row, column: this.editor.lineLength(row) };
+        edits.push({ range: { start, end }, text: "" });
+        copied.push(rangeText(this.editor, { start, end }));
+      }
+      this.registers.writeDelete(registerName, copied.join("\n"), "blockwise");
+      const cursorColumn = Math.max(0, Math.min(startColumn, this.editor.lineLength(startRow)) - 1);
+      this.editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: cursorColumn })]);
+      return;
+    }
+
+    const { startRow, endRow } = visualLineBounds(this.editor, state);
+    const anchor = visualAnchorPosition(state);
+    const count = endRow - startRow + 1;
+    const range = lineRange(this.editor, startRow, count);
+    const copied: string[] = [];
+    for (let row = startRow; row <= endRow; row++) copied.push(this.editor.line(row));
+    this.registers.writeDelete(registerName, `${copied.join("\n")}\n`, "linewise");
+    this.editor.applyEdits(
+      [{ range, text: "" }],
+      [charwiseSelection(linewiseCursorAfterDelete(this.editor, startRow, anchor.column, count))]
+    );
   }
 
   private delete(state: VisualState, registerName: RegisterName | undefined): void {
@@ -1498,7 +1536,10 @@ function visualMultilineInsertSelections(
     const { startLine, endLine } = lineBounds(state);
     const selections: VimSelection[] = [];
     for (let row = startLine; row <= endLine; row++) {
-      selections.push(charwiseSelection(side === "start" ? firstNonWhitespace(editor.line(row), row) : { row, column: editor.lineLength(row) }));
+      const endColumn = startLine === endLine
+        ? Math.min(state.headColumn + 1, editor.lineLength(row))
+        : editor.lineLength(row);
+      selections.push(charwiseSelection(side === "start" ? firstNonWhitespace(editor.line(row), row) : { row, column: endColumn }));
     }
     return selections;
   }

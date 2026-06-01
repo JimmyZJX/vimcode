@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"ˇone two\nthree four\nfive six\n"}}
 {"Key":"ctrl-v"}
 {"Key":"j"}

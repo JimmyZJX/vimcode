@@ -51,7 +51,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   handleKeys: {},
   useCtrlKeys: true,
   useSystemClipboard: false,
-  visualMultilineInsert: false,
+  visualMultilineInsert: true,
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {

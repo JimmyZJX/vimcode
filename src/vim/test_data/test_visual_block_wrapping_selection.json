@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"SetOption":{"value":"wrap"}}
 {"SetOption":{"value":"columns=12"}}
 {"Put":{"state":"ˇ12345678901234567890\n12345678901234567890\n12345678901234567890\n"}}
