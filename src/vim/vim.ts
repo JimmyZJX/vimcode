@@ -16,6 +16,7 @@ import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
 import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
+import { incrementNumbers } from "./normal/increment.js";
 import { handleHostAction } from "./normal/scroll.js";
 import { searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
@@ -917,6 +918,17 @@ export class Vim {
       case "searchSelection":
         this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
         return;
+      case "incrementStep": {
+        const count = this.takeCountForMotion(1);
+        const delta = (action.direction === "increment" ? 1 : -1) * count;
+        incrementNumbers(this.editor, delta, delta);
+        if (this.isVisualMode()) {
+          this.visualMode.clearState();
+          this.editor.setCursorStyle("block");
+          this.setMode("normal");
+        }
+        return;
+      }
       case "changeList": {
         this.globalState.repeat.cancelCurrent();
         const position = this.modelState.changeList.move(this.takeCountForMotion(1), action.direction);

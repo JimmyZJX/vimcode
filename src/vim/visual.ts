@@ -221,6 +221,13 @@ export class VisualMode {
         this.convert(state, convertTargetForKey(key));
         return handled({ exitVisual: true, nextMode: "normal" });
       }
+      if (key === "ctrl-a" || key === "ctrl-x") {
+        const delta = (key === "ctrl-a" ? 1 : -1) * this.takeCount(1);
+        incrementNumbers(this.editor, delta, delta);
+        this.state = undefined;
+        this.editor.setCursorStyle("block");
+        return handled({ exitVisual: true, nextMode: "normal" });
+      }
       this.exit();
       return handled({ exitVisual: true, nextMode: "normal" });
     }

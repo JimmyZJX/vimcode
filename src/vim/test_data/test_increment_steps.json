@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: increment stepping works for linewise selections, but full fixture still depends on visual-block selection geometry.
 {"Put":{"state":"ˇ1\n1\n1  2\n1\n1"}}
 {"Key":"j"}
 {"Key":"v"}

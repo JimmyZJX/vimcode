@@ -12,6 +12,7 @@ export type SharedAction =
   | { type: "page"; key: "ctrl-d" | "ctrl-u" | "ctrl-f" | "ctrl-b" }
   | { type: "restoreVisualSelection" }
   | { type: "searchSelection"; reversed: boolean }
+  | { type: "incrementStep"; direction: "increment" | "decrement" }
   | { type: "multiCursor"; command: string }
   | { type: "native"; command: string };
 
@@ -38,6 +39,8 @@ const bindings: ReadonlyMap<string, SharedAction> = new Map([
   ["g ,", { type: "changeList", direction: "newer" }],
   ["g n", { type: "searchSelection", reversed: false }],
   ["g N", { type: "searchSelection", reversed: true }],
+  ["g ctrl-a", { type: "incrementStep", direction: "increment" }],
+  ["g ctrl-x", { type: "incrementStep", direction: "decrement" }],
   // `ctrl-n` is a VSCodeVim-style alias for VSCode's native Ctrl+D action.
   ["ctrl-n", { type: "multiCursor", command: "editor.action.addSelectionToNextFindMatch" }],
   // Zed: assets/keymaps/vim.json binds these to `vim::SelectNext`,

@@ -753,6 +753,17 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 6 });
   });
 
+  it("supports stepped increment through g ctrl-a", () => {
+    const editor = new InMemoryVimEditor("1\n1\n1");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "G", "g", "ctrl-a"]);
+
+    expect(editor.getText()).toBe("2\n3\n4");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
   it("supports insert-mode ctrl-w and ctrl-u", () => {
     const editor = new InMemoryVimEditor("hello brave world");
     const vim = new Vim(editor);
@@ -1156,7 +1167,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
 
     runKeys(vim, ["/", "a", "l", "p", "x", "left"]);
-    expect(vim.status.chord).toBe("/alp▏x");
+    expect(vim.status.chord).toBe("/alp|x");
 
     runKeys(vim, ["delete", "h", "end", "space", "b", "e", "t", "a", "enter"]);
 
@@ -1176,7 +1187,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.shouldHandleKey("ctrl-a")).toBe(false);
     expect(vim.onKey("ctrl-a")).toBe("not-handled");
-    expect(vim.status.chord).toBe("/▏");
+    expect(vim.status.chord).toBe("/|");
   });
 
   it("shows unfinished chords using Vim keys rather than semantic names", () => {

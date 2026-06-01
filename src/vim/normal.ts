@@ -457,6 +457,12 @@ export class NormalMode {
       return handled();
     }
 
+    if ((key === "ctrl-a" || key === "ctrl-x") && this.pendingOperator === undefined) {
+      const delta = (key === "ctrl-a" ? 1 : -1) * this.takeCount(1);
+      incrementNumbers(this.editor, delta, delta);
+      return handled();
+    }
+
     if (key === "_") {
       return handled({ enterInsert: this.applyMotion({ type: "lastNonWhitespace" }, this.takeCount(1)) });
     }
