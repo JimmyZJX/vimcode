@@ -7,27 +7,58 @@
 //   Vim-specific direction and repeat metadata.
 
 import { VimEditorCapabilities } from "../editor.js";
-import { SearchOptions, searchOptionsForQuery } from "../search.js";
 import { Motion } from "../motion.js";
 import { Registers } from "../registers.js";
+import { SearchOptions, searchOptionsForQuery } from "../search.js";
+import {
+  SingleLineEditor,
+  SingleLineEditorKey,
+} from "../single_line_editor.js";
 import { TextRange, selectionHead } from "../state.js";
 
-export type PendingSearch = { backwards: boolean; query: string };
+export type PendingSearch = { backwards: boolean; input: SingleLineEditor };
+
+function singleLineEditorKey(key: string): SingleLineEditorKey | undefined {
+  switch (key) {
+    case "left":
+    case "right":
+    case "ctrl-left":
+    case "ctrl-right":
+    case "home":
+    case "end":
+    case "space":
+    case "backspace":
+    case "delete":
+    case "ctrl-backspace":
+    case "ctrl-delete":
+      return key;
+    default:
+      return undefined;
+  }
+}
 
 export class SearchState {
   private pending: PendingSearch | undefined;
-  private last: { query: string; backwards: boolean; options: SearchOptions } | undefined;
+  private last:
+    | { query: string; backwards: boolean; options: SearchOptions }
+    | undefined;
 
   isPending(): boolean {
     return this.pending !== undefined;
   }
 
   pendingChord(): string {
-    return this.pending === undefined ? "" : `${this.pending.backwards ? "?" : "/"}${this.pending.query}`;
+    if (this.pending === undefined) return "";
+    const value = this.pending.input.value();
+    const cursor = this.pending.input.cursorPosition();
+    return `${this.pending.backwards ? "?" : "/"}${value.slice(
+      0,
+      cursor
+    )}|${value.slice(cursor)}`;
   }
 
   start(backwards: boolean, editor: VimEditorCapabilities): void {
-    this.pending = { backwards, query: "" };
+    this.pending = { backwards, input: new SingleLineEditor("") };
     this.updatePendingSearchUi(editor);
   }
 
@@ -35,23 +66,42 @@ export class SearchState {
     this.pending = undefined;
   }
 
-  handleKey(key: string, registers: Registers, editor: VimEditorCapabilities): Motion | undefined {
+  appendText(text: string, editor: VimEditorCapabilities): void {
+    if (this.pending === undefined || text.length === 0) return;
+    this.pending.input.insert(text);
+    this.updatePendingSearchUi(editor);
+  }
+
+  handleKey(
+    key: string,
+    registers: Registers,
+    editor: VimEditorCapabilities
+  ): Motion | undefined {
     const pending = this.pending;
     if (pending === undefined) return undefined;
     if (key === "enter") {
-      const query = pending.query.length > 0 ? pending.query : this.last?.query;
-      const backwards = pending.query.length > 0 ? pending.backwards : this.last?.backwards ?? pending.backwards;
-      const options = pending.query.length > 0 ? searchOptionsForQuery(query ?? "") : this.last?.options ?? searchOptionsForQuery(query ?? "");
+      const pendingQuery = pending.input.value();
+      const query = pendingQuery.length > 0 ? pendingQuery : this.last?.query;
+      const backwards =
+        pendingQuery.length > 0
+          ? pending.backwards
+          : this.last?.backwards ?? pending.backwards;
+      const options =
+        pendingQuery.length > 0
+          ? searchOptionsForQuery(query ?? "")
+          : this.last?.options ?? searchOptionsForQuery(query ?? "");
       this.pending = undefined;
       if (query !== undefined && query.length > 0) {
         return this.setLast(query, backwards, registers, editor, options);
       }
       return undefined;
     }
-    if (key === "backspace") {
-      this.pending = { ...pending, query: pending.query.slice(0, -1) };
-    } else {
-      this.pending = { ...pending, query: pending.query + (key === "space" ? " " : key) };
+
+    const editorKey = singleLineEditorKey(key);
+    if (editorKey !== undefined) {
+      pending.input.tryKey(editorKey);
+    } else if (key.length === 1) {
+      pending.input.insert(key);
     }
     this.updatePendingSearchUi(editor);
     return undefined;
@@ -59,9 +109,18 @@ export class SearchState {
 
   private updatePendingSearchUi(editor: VimEditorCapabilities): void {
     if (this.pending === undefined) return;
-    const query = this.pending.query.length === 0 ? this.last?.query ?? "" : this.pending.query;
-    const options = this.pending.query.length === 0 ? this.last?.options ?? searchOptionsForQuery(query) : searchOptionsForQuery(query);
-    editor.updateSearch(query, this.pending.backwards ? "backward" : "forward", { ...options, reveal: true });
+    const pendingQuery = this.pending.input.value();
+    const query =
+      pendingQuery.length === 0 ? this.last?.query ?? "" : pendingQuery;
+    const options =
+      pendingQuery.length === 0
+        ? this.last?.options ?? searchOptionsForQuery(query)
+        : searchOptionsForQuery(query);
+    editor.updateSearch(
+      query,
+      this.pending.backwards ? "backward" : "forward",
+      { ...options, reveal: true }
+    );
   }
 
   setLast(
@@ -74,17 +133,35 @@ export class SearchState {
     const normalizedOptions = searchOptionsForQuery(query, options);
     this.last = { query, backwards, options: normalizedOptions };
     registers.writeSearch(query);
-    editor.updateSearch(query, backwards ? "backward" : "forward", { ...normalizedOptions, reveal: true });
-    return { type: backwards ? "searchBackward" : "searchForward", query, options: normalizedOptions };
+    editor.updateSearch(query, backwards ? "backward" : "forward", {
+      ...normalizedOptions,
+      reveal: true,
+    });
+    return {
+      type: backwards ? "searchBackward" : "searchForward",
+      query,
+      options: normalizedOptions,
+    };
   }
 
   repeat({ reversed }: { reversed: boolean }): Motion | undefined {
     if (this.last === undefined) return undefined;
     const backwards = reversed ? !this.last.backwards : this.last.backwards;
-    return { type: backwards ? "searchBackward" : "searchForward", query: this.last.query, options: this.last.options };
+    return {
+      type: backwards ? "searchBackward" : "searchForward",
+      query: this.last.query,
+      options: this.last.options,
+    };
   }
 
-  matchRangeForSelection(editor: VimEditorCapabilities, { reversed, count, includeStart }: { reversed: boolean; count: number; includeStart: boolean }): TextRange | undefined {
+  matchRangeForSelection(
+    editor: VimEditorCapabilities,
+    {
+      reversed,
+      count,
+      includeStart,
+    }: { reversed: boolean; count: number; includeStart: boolean }
+  ): TextRange | undefined {
     if (this.last === undefined) return undefined;
     const backwards = reversed ? !this.last.backwards : this.last.backwards;
     let start = selectionHead(editor.getSelections()[0]);
@@ -111,7 +188,9 @@ export function searchUnderCursorMotion(
 ): Motion | undefined {
   const query = wordUnderCursor(editor);
   if (query === undefined) return undefined;
-  return searchState.setLast(query, backwards, registers, editor, { wholeWord: true });
+  return searchState.setLast(query, backwards, registers, editor, {
+    wholeWord: true,
+  });
 }
 
 function wordUnderCursor(editor: VimEditorCapabilities): string | undefined {
@@ -119,7 +198,8 @@ function wordUnderCursor(editor: VimEditorCapabilities): string | undefined {
   const line = editor.line(head.row);
   if (line.length === 0) return undefined;
   let column = Math.min(head.column, line.length - 1);
-  if (!isWordChar(line[column]) && column > 0 && isWordChar(line[column - 1])) column--;
+  if (!isWordChar(line[column]) && column > 0 && isWordChar(line[column - 1]))
+    column--;
   if (!isWordChar(line[column])) return undefined;
 
   let start = column;
@@ -132,4 +212,3 @@ function wordUnderCursor(editor: VimEditorCapabilities): string | undefined {
 function isWordChar(char: string | undefined): boolean {
   return char !== undefined && /\w/.test(char);
 }
-

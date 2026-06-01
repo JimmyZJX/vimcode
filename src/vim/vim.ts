@@ -147,6 +147,8 @@ export class Vim {
     if (handleOverride === false) return false;
     if (handleOverride === true) return true;
 
+    if (this.modeState.kind === "search") return this.shouldHandleSearchKey(key);
+
     if (isCtrlKey(key) && !this.remapResolver.isPending()) {
       const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key);
       if (!isMapped) {
@@ -155,7 +157,7 @@ export class Vim {
       }
     }
 
-    if (this.modeState.kind === "search" || this.modeState.kind === "command") return true;
+    if (this.modeState.kind === "command") return true;
 
     return !((this.modeState.kind === "insert" || this.modeState.kind === "replace")
       && !this.shouldHandleInsertKey(key)
@@ -169,6 +171,25 @@ export class Vim {
       || key === "ctrl-r"
       || key === "ctrl-w"
       || key === "ctrl-u"
+      || this.isEscape(key);
+  }
+
+  private shouldHandleSearchKey(key: string): boolean {
+    return key.length === 1
+      || key === "space"
+      || key === "enter"
+      || key === "backspace"
+      || key === "delete"
+      || key === "left"
+      || key === "right"
+      || key === "ctrl-left"
+      || key === "ctrl-right"
+      || key === "home"
+      || key === "end"
+      || key === "ctrl-backspace"
+      || key === "ctrl-delete"
+      || key === "ctrl-v"
+      || key === "ctrl-y"
       || this.isEscape(key);
   }
 
@@ -294,6 +315,9 @@ export class Vim {
     if (this.pendingInsertRegister) {
       const registerName = parseRegisterName(key);
       return isSystemClipboardRegister(registerName) ? { registerName } : undefined;
+    }
+    if (this.modeState.kind === "search" && (key === "ctrl-v" || key === "ctrl-y")) {
+      return { registerName: "+" };
     }
 
     if (this.modeState.kind === "normal") return this.normalMode.systemClipboardRegisterToReadForKey(key);
@@ -530,7 +554,12 @@ export class Vim {
     }
 
     if (this.globalState.search.isPending()) {
+      if (!this.shouldHandleSearchKey(key)) return "not-handled";
       this.recordRepeatKey(key);
+      if (key === "ctrl-v" || key === "ctrl-y") {
+        this.globalState.search.appendText(this.globalState.registers.read("+"), this.editor);
+        return "handled";
+      }
       const originMode = this.searchOriginMode ?? "normal";
       const motion = this.globalState.search.handleKey(key, this.globalState.registers, this.editor);
       if (motion !== undefined) {

@@ -1,6 +1,8 @@
-import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
-import { CommonFindController, FindStartFocusAction } from '../../find/browser/findController.js';
+import { CommonFindController } from '../../find/browser/findController.js';
+import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
+import { FindReplaceState } from '../../find/browser/findState.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
@@ -25,6 +27,8 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
+	private hiddenFindState: FindReplaceState | undefined;
+	private hiddenFindModel: FindModelBoundToEditorModel | undefined;
 	private nativeCommandInProgress = false;
 	private vimEditInProgress = false;
 	private undoTransaction: VimUndoTransaction | undefined;
@@ -271,25 +275,34 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	updateSearch(query: string, _direction: SearchDirection, options: SearchOptions = {}): void {
-		const controller = CommonFindController.get(this.editor);
-		if (controller === null) {
+		if (query.length === 0 || !this.editor.hasModel()) {
+			this.clearSearchHighlights();
 			return;
 		}
-		void controller.start({
-			forceRevealReplace: false,
-			seedSearchStringFromSelection: 'none',
-			seedSearchStringFromNonEmptySelection: false,
-			seedSearchStringFromGlobalClipboard: false,
-			shouldFocus: FindStartFocusAction.NoFocusChange,
-			shouldAnimate: false,
-			updateSearchScope: false,
-			loop: true,
-		}, {
+
+		this.closeNativeFindWidget();
+
+		const hiddenFindState = this.ensureHiddenFindState();
+		hiddenFindState.change({
 			searchString: query,
 			isRegex: options.regex ?? false,
 			wholeWord: options.wholeWord ?? false,
 			matchCase: options.caseSensitive ?? true,
-		});
+			loop: true,
+			isRevealed: false,
+			isReplaceRevealed: false,
+			searchScope: null,
+		}, false);
+	}
+
+	private ensureHiddenFindState(): FindReplaceState {
+		if (this.hiddenFindState === undefined) {
+			this.hiddenFindState = new FindReplaceState();
+		}
+		if (this.hiddenFindModel === undefined) {
+			this.hiddenFindModel = new FindModelBoundToEditorModel(this.editor as IActiveCodeEditor, this.hiddenFindState);
+		}
+		return this.hiddenFindState;
 	}
 
 	findSearchMatch(query: string, start: VimPosition, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
@@ -312,14 +325,27 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	clearSearchHighlights(): void {
-		CommonFindController.get(this.editor)?.closeFindWidget();
+		this.hiddenFindModel?.dispose();
+		this.hiddenFindModel = undefined;
+		this.hiddenFindState?.dispose();
+		this.hiddenFindState = undefined;
+		this.closeNativeFindWidget();
+	}
+
+	private closeNativeFindWidget(): void {
+		const controller = CommonFindController.get(this.editor);
+		if (controller?.getState().isRevealed === true) {
+			controller.closeFindWidget();
+		}
 	}
 
 	dispose(): void {
+		this.clearSearchHighlights();
 		this.detachFromModel();
 	}
 
 	detachFromModel(): void {
+		this.clearSearchHighlights();
 		this.closeUndoTransaction({ pushUndoStop: false });
 		this.invalidateCachedSelections();
 		this.rememberedSelectionGoals.clear();

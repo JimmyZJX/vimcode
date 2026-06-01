@@ -1136,6 +1136,49 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(clipboard.readCount).toBe(1);
   });
 
+  it("pastes from the system clipboard into search mode with ctrl-v and ctrl-y", async () => {
+    const editor = new InMemoryVimEditor("foo bar baz");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard("ba");
+
+    await runKeysAsync(vim, ["/", "r", "left", "ctrl-v", "enter"], clipboard);
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+    expect(clipboard.readCount).toBe(1);
+
+    clipboard.text = "az";
+    await runKeysAsync(vim, ["/", "b", "ctrl-y", "enter"], clipboard);
+    expect(head(editor)).toEqual({ row: 0, column: 8 });
+    expect(clipboard.readCount).toBe(2);
+  });
+
+  it("edits the pending search query with a single-line editor", () => {
+    const editor = new InMemoryVimEditor("alpha beta gamma");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/", "a", "l", "p", "x", "left"]);
+    expect(vim.status.chord).toBe("/alp▏x");
+
+    runKeys(vim, ["delete", "h", "end", "space", "b", "e", "t", "a", "enter"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+    expect(vim.readRegister("/")).toBe("alph beta");
+
+    runKeys(vim, ["/", "a", "l", "p", "h", "space", "b", "e", "t", "a", "ctrl-left", "delete", "enter"]);
+
+    expect(vim.readRegister("/")).toBe("alph eta");
+  });
+
+  it("lets unknown ctrl chords fall through in search mode", () => {
+    const editor = new InMemoryVimEditor("foo");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/"]);
+
+    expect(vim.shouldHandleKey("ctrl-a")).toBe(false);
+    expect(vim.onKey("ctrl-a")).toBe("not-handled");
+    expect(vim.status.chord).toBe("/▏");
+  });
+
   it("shows unfinished chords using Vim keys rather than semantic names", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor);
