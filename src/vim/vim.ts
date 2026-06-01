@@ -40,6 +40,11 @@ type PendingDigraph =
 
 type PendingUnmatched = { direction: "forward" | "backward"; count: number };
 
+type PendingLiteral =
+  | { type: "plain" }
+  | { type: "decimal"; digits: string }
+  | { type: "hex"; digits: string; maxDigits: number };
+
 export type VimStatus = {
   mode: VimMode["kind"];
   pending: boolean;
@@ -73,6 +78,7 @@ export class Vim {
   private pendingCommand: string | undefined;
   private searchOriginMode: VimMode["kind"] | undefined;
   private pendingDigraph: PendingDigraph | undefined;
+  private pendingLiteral: PendingLiteral | undefined;
   private pendingInsertRegister = false;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
@@ -169,6 +175,7 @@ export class Vim {
     return this.remapResolver.isPending()
       || this.remapResolver.hasMappings("insert")
       || key === "ctrl-k"
+      || key === "ctrl-v"
       || key === "ctrl-r"
       || key === "ctrl-w"
       || key === "ctrl-u"
@@ -262,17 +269,19 @@ export class Vim {
     if (closeSearchHighlights && searchWasPending) this.editor.clearSearchHighlights();
     this.pendingCommand = undefined;
     this.pendingDigraph = undefined;
+    this.pendingLiteral = undefined;
     this.pendingInsertRegister = false;
     this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
-    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.pendingDigraph !== undefined || this.sharedActionResolver.isPending() || this.remapResolver.isPending() || this.normalChordResolver.isPending() || this.modelState.marks.isPending() || this.globalState.search.isPending() || this.pendingCommand !== undefined || this.pendingInsertRegister || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingFind !== undefined || this.pendingUnmatched !== undefined || this.pendingDigraph !== undefined || this.pendingLiteral !== undefined || this.sharedActionResolver.isPending() || this.remapResolver.isPending() || this.normalChordResolver.isPending() || this.modelState.marks.isPending() || this.globalState.search.isPending() || this.pendingCommand !== undefined || this.pendingInsertRegister || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
     if (this.pendingDigraph !== undefined) return "ctrl-k";
+    if (this.pendingLiteral !== undefined) return "ctrl-v";
     if (this.pendingInsertRegister) return "ctrl-r";
     if (this.remapResolver.isPending()) return this.remapResolver.pendingChord();
     if (this.globalState.search.isPending()) return this.globalState.search.pendingChord();
@@ -446,6 +455,10 @@ export class Vim {
         this.pendingDigraph = { target: "insert" };
         return "handled";
       }
+      if (key === "ctrl-v") {
+        this.pendingLiteral = { type: "plain" };
+        return "handled";
+      }
       if (key === "ctrl-r") {
         this.pendingInsertRegister = true;
         return "handled";
@@ -533,6 +546,10 @@ export class Vim {
     if (this.pendingDigraph !== undefined) {
       this.handlePendingDigraphKey(key);
       return "handled";
+    }
+
+    if (this.pendingLiteral !== undefined) {
+      return this.handlePendingLiteralKey(key);
     }
 
     if (this.pendingInsertRegister) {
@@ -1082,6 +1099,81 @@ export class Vim {
     }
   }
 
+  private handlePendingLiteralKey(key: string): KeyResult | undefined {
+    const pending = this.pendingLiteral;
+    if (pending === undefined) return "handled";
+
+    if (pending.type === "plain") {
+      if (key === "x") {
+        this.pendingLiteral = { type: "hex", digits: "", maxDigits: 2 };
+        return "handled";
+      }
+      if (key === "u" || key === "U") {
+        this.pendingLiteral = { type: "hex", digits: "", maxDigits: key === "u" ? 4 : 8 };
+        return "handled";
+      }
+      if (/^[0-9]$/.test(key)) {
+        return this.handlePendingLiteralKeyWithState({ type: "decimal", digits: key });
+      }
+      this.pendingLiteral = undefined;
+      this.insertLiteralText(literalTextForKey(key));
+      return "handled";
+    }
+
+    if (pending.type === "decimal") {
+      if (/^[0-9]$/.test(key)) {
+        return this.handlePendingLiteralKeyWithState({ ...pending, digits: pending.digits + key });
+      }
+      this.pendingLiteral = undefined;
+      this.insertLiteralCodepoint(Number(pending.digits));
+      if (this.isEscape(key)) {
+        this.recordEscapeKey();
+        this.handleEscapeKey();
+        return "handled";
+      }
+      const text = insertTextForKey(key);
+      if (text !== undefined) this.insertLiteralText(text);
+      return "handled";
+    }
+
+    if (/^[0-9a-fA-F]$/.test(key) && pending.digits.length + 1 < pending.maxDigits) {
+      this.pendingLiteral = { ...pending, digits: pending.digits + key };
+      return "handled";
+    }
+    if (/^[0-9a-fA-F]$/.test(key)) {
+      this.pendingLiteral = undefined;
+      this.insertLiteralCodepoint(Number.parseInt(pending.digits + key, 16));
+      return "handled";
+    }
+    this.pendingLiteral = undefined;
+    if (pending.digits.length > 0) this.insertLiteralCodepoint(Number.parseInt(pending.digits, 16));
+    const text = insertTextForKey(key);
+    if (text !== undefined) this.insertLiteralText(text);
+    return "handled";
+  }
+
+  private handlePendingLiteralKeyWithState(next: PendingLiteral): KeyResult {
+    this.pendingLiteral = next;
+    if (next.type === "decimal" && next.digits.length >= 3) {
+      this.pendingLiteral = undefined;
+      this.insertLiteralCodepoint(Number(next.digits));
+    }
+    return "handled";
+  }
+
+  private insertLiteralCodepoint(codepoint: number): void {
+    this.insertLiteralText(String.fromCodePoint(Math.max(0, codepoint)));
+  }
+
+  private insertLiteralText(text: string): void {
+    if (this.modeState.kind === "replace") {
+      replaceModeText(this.editor, text, 1, this.insertEditOptions());
+    } else {
+      insertText(this.editor, text, this.insertEditOptions());
+    }
+    this.insertRepeatText += text;
+  }
+
   private handlePendingInsertRegisterKey(key: string): void {
     this.pendingInsertRegister = false;
     if (this.isEscape(key)) return;
@@ -1257,6 +1349,19 @@ function emptyLineInsertPosition(
 
 function keyForInput(key: string): string {
   return key === "space" ? " " : key;
+}
+
+function literalTextForKey(key: string): string {
+  if (key === "tab") return "\t";
+  if (key === "enter") return "\n";
+  if (key === "escape" || key === "<escape" || key === "<escape>") return "\u001b";
+  const control = /^ctrl-(.)$/.exec(key);
+  if (control !== null) {
+    if (control[1] === "j") return "\u0000";
+    if (control[1] === "[") return "\u001b";
+    return String.fromCodePoint(control[1].toLowerCase().charCodeAt(0) - "a".charCodeAt(0) + 1);
+  }
+  return keyForInput(key);
 }
 
 function insertTextForKey(key: string): string | undefined {
