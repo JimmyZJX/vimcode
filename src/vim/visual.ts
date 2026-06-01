@@ -334,7 +334,16 @@ export class VisualMode {
       return handled();
     }
 
-    if (key === "y" || key === "Y") {
+    if (key === "Y") {
+      const cursor = this.yankLinewise(state, this.takeSelectedRegister());
+      if (cursor !== undefined) this.rememberState(state);
+      this.state = undefined;
+      this.editor.setCursorStyle("block");
+      this.editor.setSelections([charwiseSelection(cursor ?? visualStartPosition(state))]);
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+
+    if (key === "y") {
       this.yank(state, this.takeSelectedRegister());
       this.finishNormalAtVisualStarts(state);
       return handled({ exitVisual: true, nextMode: "normal" });
@@ -425,6 +434,18 @@ export class VisualMode {
         this.registers.writeYank(registerName, blockwiseText(this.editor, state), "blockwise");
         break;
     }
+  }
+
+  private yankLinewise(state: VisualState, registerName: RegisterName | undefined): Position | undefined {
+    const bounds = visualLineBounds(this.editor, state);
+    if (bounds === undefined) return undefined;
+
+    const lines: string[] = [];
+    for (let row = bounds.startRow; row <= bounds.endRow; row++) {
+      lines.push(this.editor.line(row));
+    }
+    this.registers.writeYank(registerName, `${lines.join("\n")}\n`, "linewise");
+    return { row: bounds.startRow, column: 0 };
   }
 
   private delete(state: VisualState, registerName: RegisterName | undefined): void {
