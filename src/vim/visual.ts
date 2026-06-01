@@ -410,27 +410,22 @@ export class VisualMode {
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
-    if (state.kind !== "charwise") {
-      this.syncEditorSelection();
-      return handled();
-    }
-
-    const states = currentCharwiseVisualStates(this.editor, state);
-    if (states.some(state => object.type !== "paragraph" && this.editor.lineLength(state.anchor.row) === 0)) {
-      this.syncEditorSelection();
-      return handled();
-    }
-
     const count = this.takeCount(1);
+    const states = state.kind === "charwise" ? currentCharwiseVisualStates(this.editor, state) : [state];
+    if (states.some(state => object.type !== "paragraph" && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
+      this.syncEditorSelection();
+      return handled();
+    }
+
     const ranges = states.map(state =>
-      textObjectRange(this.editor, visualObjectHead(this.editor, state), object, { around: pendingTextObject.around, count }));
+      textObjectRange(this.editor, visualObjectPosition(this.editor, state), object, { around: pendingTextObject.around, count }));
     if (object.type === "paragraph") {
       this.state = paragraphLinewiseStateForRange(this.editor, ranges[0]);
       this.syncEditorSelection();
       return handled({ nextMode: "visualLine" });
     }
     this.setCharwiseStates(ranges.map(range => charwiseStateForRange(this.editor, range)));
-    return handled();
+    return handled({ nextMode: "visual" });
   }
 
   private yank(state: VisualState, registerName: RegisterName | undefined): void {
@@ -784,14 +779,21 @@ function initialCharwiseHead(_editor: VimEditorCapabilities, head: Position): Po
   return head;
 }
 
-function visualObjectHead(editor: VimEditorCapabilities, state: CharwiseVisualState): Position {
-  if (isForwardCharwiseVisualState(state)
-    && editor.lineLength(state.anchor.row) === 0
-    && state.head.row === state.anchor.row + 1
-    && state.head.column === 0) {
-    return state.anchor;
+function visualObjectPosition(editor: VimEditorCapabilities, state: VisualState): Position {
+  switch (state.kind) {
+    case "charwise":
+      if (isForwardCharwiseVisualState(state)
+        && editor.lineLength(state.anchor.row) === 0
+        && state.head.row === state.anchor.row + 1
+        && state.head.column === 0) {
+        return state.anchor;
+      }
+      return state.head;
+    case "linewise":
+      return linewiseCursor(editor, state);
+    case "blockwise":
+      return state.head;
   }
-  return state.head;
 }
 
 function visualMotionForKey(key: string): Motion | undefined {

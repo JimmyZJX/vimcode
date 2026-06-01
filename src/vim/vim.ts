@@ -1000,9 +1000,17 @@ export class Vim {
       return true;
     }
 
-    if ((key === "*" || key === "#") && this.modeState.kind === "normal") {
-      const motion = searchUnderCursorMotion(this.editor, this.globalState.search, this.globalState.registers, { backwards: key === "#" });
+    if (key === "*" || key === "#") {
+      const backwards = key === "#";
+      const motion = this.modeState.kind === "normal"
+        ? searchUnderCursorMotion(this.editor, this.globalState.search, this.globalState.registers, { backwards })
+        : this.visualSearchMotion({ backwards });
       if (motion !== undefined) {
+        if (this.isVisualMode()) {
+          this.visualMode.clearState();
+          this.editor.setCursorStyle("block");
+          this.setMode("normal");
+        }
         this.applyMotion(motion, this.takeCountForMotion(1));
         this.editor.clearSearchHighlights();
       }
@@ -1010,6 +1018,14 @@ export class Vim {
     }
 
     return false;
+  }
+
+  private visualSearchMotion({ backwards }: { backwards: boolean }): Motion | undefined {
+    const selection = this.editor.getSelections()[0];
+    if (selection === undefined) return undefined;
+    const query = this.editor.getText(rangeOfSelection(selection));
+    if (query.length === 0) return undefined;
+    return this.globalState.search.setLast(query, backwards, this.globalState.registers, this.editor, { regex: false });
   }
 
   private handlePendingFindKey(key: string): void {
