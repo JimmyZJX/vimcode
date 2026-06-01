@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"ˇabc\ndef\n\nparagraph\nthe second\n\n\n\nthird and\nfinal"}}
 {"Key":"}"}
 {"Get":{"state":"abc\ndef\nˇ\nparagraph\nthe second\n\n\n\nthird and\nfinal","mode":"Normal"}}

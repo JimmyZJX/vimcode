@@ -1,4 +1,3 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
 {"Put":{"state":"ˇfirst\n    \nstill first\n\nsecond"}}
 {"Key":"}"}
 {"Get":{"state":"first\n    \nstill first\nˇ\nsecond","mode":"Normal"}}

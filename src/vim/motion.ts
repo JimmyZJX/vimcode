@@ -58,6 +58,10 @@ export type Motion =
   | { type: "matching" }
   | { type: "unmatchedForward"; char: string }
   | { type: "unmatchedBackward"; char: string }
+  | { type: "nextSentence" }
+  | { type: "previousSentence" }
+  | { type: "endOfParagraph" }
+  | { type: "startOfParagraph" }
   | { type: "jump"; position: Position; line: boolean }
   | { type: "searchMatch"; range: TextRange }
   | FindMotion;
@@ -113,6 +117,14 @@ export function motionForKey(key: string): Motion | undefined {
       return { type: "previousWordStart", bigWord: true };
     case "%":
       return { type: "matching" };
+    case ")":
+      return { type: "nextSentence" };
+    case "(":
+      return { type: "previousSentence" };
+    case "}":
+      return { type: "endOfParagraph" };
+    case "{":
+      return { type: "startOfParagraph" };
     default:
       return undefined;
   }
@@ -166,9 +178,12 @@ function wrappingRight(editor: VimEditorCapabilities, pos: Position): Position {
 }
 
 function firstNonWhitespace(editor: VimEditorCapabilities, row: number): Position {
-  const line = editor.line(row);
+  return { row, column: firstNonWhitespaceColumn(editor.line(row)) };
+}
+
+function firstNonWhitespaceColumn(line: string): number {
   const first = line.search(/\S/);
-  return { row, column: first < 0 ? 0 : first };
+  return first < 0 ? 0 : first;
 }
 
 function firstNonWhitespaceOrCurrent(editor: VimEditorCapabilities, current: Position): Position {
@@ -352,6 +367,14 @@ export function applyMotionOnce(
       return unmatched(editor, clipped, motion.char, "forward");
     case "unmatchedBackward":
       return unmatched(editor, clipped, motion.char, "backward");
+    case "nextSentence":
+      return sentenceForward(editor, clipped, 1);
+    case "previousSentence":
+      return sentenceBackward(editor, clipped, 1);
+    case "endOfParagraph":
+      return endOfParagraphMotion(editor, clipped, 1);
+    case "startOfParagraph":
+      return startOfParagraphMotion(editor, clipped, 1);
     case "jump":
       return motion.line ? firstNonWhitespace(editor, motion.position.row) : normalCursorPosition(editor, motion.position);
     case "searchMatch":
@@ -430,7 +453,11 @@ export function applyMotionWithGoal(
     const row = Math.max(0, Math.min(start.row + count - 1, editor.lineCount() - 1));
     return { position: lastNonWhitespace(editor, row) };
   }
-  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump" || motion.type === "searchMatch") {
+  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "jump" || motion.type === "searchMatch") {
+    if (motion.type === "nextSentence") return { position: sentenceForward(editor, start, count) };
+    if (motion.type === "previousSentence") return { position: sentenceBackward(editor, start, count) };
+    if (motion.type === "endOfParagraph") return { position: endOfParagraphMotion(editor, start, count) };
+    if (motion.type === "startOfParagraph") return { position: startOfParagraphMotion(editor, start, count) };
     return { position: applyMotionOnce(editor, start, motion) };
   }
   if (motion.type === "findBackward") {
@@ -505,7 +532,18 @@ export function motionRange(
     const rangeEnd = nextPosition(editor, end) ?? end;
     return orderedRange(start, rangeEnd);
   }
-  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+  if (motion.type === "endOfParagraph") {
+    if (end.row > start.row && end.column === 0) {
+      const startColumn = firstNonWhitespaceColumn(editor.line(start.row));
+      if (start.column <= startColumn) {
+        return lineRange(editor, start.row, Math.max(1, end.row - start.row));
+      }
+      const previousRow = end.row - 1;
+      return orderedRange(start, { row: previousRow, column: editor.lineLength(previousRow) });
+    }
+    return orderedRange(start, nextPosition(editor, end) ?? end);
+  }
+  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
     return orderedRange(start, end);
   }
   if (motion.type === "searchMatch") {
@@ -601,6 +639,123 @@ function documentText(editor: VimEditorCapabilities): string {
   const lines: string[] = [];
   for (let row = 0; row < editor.lineCount(); row++) lines.push(editor.line(row));
   return lines.join("\n");
+}
+
+// Zed: `motion::start_of_paragraph` / `end_of_paragraph`. Paragraphs are runs of
+// non-empty lines; whitespace-only lines are not boundaries.
+function startOfParagraphMotion(editor: VimEditorCapabilities, start: Position, count: number): Position {
+  if (start.row === 0) return position(0, 0);
+
+  let remaining = Math.max(1, count);
+  let foundNonEmptyLine = false;
+  for (let row = start.row; row >= 0; row--) {
+    const empty = editor.lineLength(row) === 0;
+    if (foundNonEmptyLine && empty) {
+      if (remaining <= 1) return { row, column: 0 };
+      remaining--;
+      foundNonEmptyLine = false;
+    }
+    foundNonEmptyLine ||= !empty;
+  }
+  return position(0, 0);
+}
+
+function endOfParagraphMotion(editor: VimEditorCapabilities, start: Position, count: number): Position {
+  if (start.row === editor.lineCount() - 1) return endOfLine(editor, editor.lineCount() - 1);
+
+  let remaining = Math.max(1, count);
+  let foundNonEmptyLine = false;
+  for (let row = start.row; row < editor.lineCount(); row++) {
+    const empty = editor.lineLength(row) === 0;
+    if (foundNonEmptyLine && empty) {
+      if (remaining <= 1) return { row, column: 0 };
+      remaining--;
+      foundNonEmptyLine = false;
+    }
+    foundNonEmptyLine ||= !empty;
+  }
+  return endOfLine(editor, editor.lineCount() - 1);
+}
+
+// Zed: `motion::sentence_forwards` / `sentence_backwards`, translated to offsets
+// over the model buffer. A sentence starts after `.`, `?`, or `!` followed by
+// whitespace/nonblank text, or after blank-line boundaries.
+function sentenceForward(editor: VimEditorCapabilities, start: Position, count: number): Position {
+  const text = documentText(editor);
+  const startOffset = offsetOfPosition(editor, start);
+  let remaining = Math.max(1, count);
+  let wasBlankBoundary = startOffset > 0 && text[startOffset - 1] === "\n" && text[startOffset] === "\n";
+
+  for (let offset = startOffset; offset < text.length; offset++) {
+    const char = text[offset];
+    if (wasBlankBoundary && char === "\n") continue;
+
+    const next = wasBlankBoundary
+      ? nextNonBlankOffset(text, offset)
+      : char === "\n" && text[offset + 1] === "\n"
+        ? nextNonBlankOffset(text, offset + 1)
+        : char === "." || char === "?" || char === "!"
+          ? startOfNextSentenceOffset(text, offset + 1)
+          : undefined;
+
+    if (next !== undefined) {
+      remaining--;
+      if (remaining === 0) return normalCursorPosition(editor, positionOfOffset(editor, next));
+    }
+
+    wasBlankBoundary = char === "\n" && text[offset + 1] === "\n";
+  }
+
+  return endOfLine(editor, editor.lineCount() - 1);
+}
+
+function sentenceBackward(editor: VimEditorCapabilities, start: Position, count: number): Position {
+  const text = documentText(editor);
+  const originalStart = offsetOfPosition(editor, start);
+  let startOffset = originalStart;
+  let remaining = Math.max(1, count);
+  let wasNewline = text[startOffset] === "\n";
+
+  for (let offset = startOffset - 1; offset >= 0; offset--) {
+    const char = text[offset];
+    const next = wasNewline && char === "\n"
+      ? offset + 1
+      : char === "\n" && text[offset - 1] === "\n"
+        ? nextNonBlankOffset(text, offset + 1)
+        : char === "." || char === "?" || char === "!"
+          ? startOfNextSentenceOffset(text, offset + 1)
+          : undefined;
+
+    if (next !== undefined) {
+      if (next < startOffset) remaining--;
+      if (remaining === 0 || offset === 0) return normalCursorPosition(editor, positionOfOffset(editor, next));
+    }
+    if (wasNewline) startOffset = offset;
+    wasNewline = char === "\n";
+  }
+
+  return position(0, 0);
+}
+
+function nextNonBlankOffset(text: string, start: number): number {
+  for (let offset = start; offset < text.length; offset++) {
+    const char = text[offset];
+    if (char === "\n" || !/\s/.test(char)) return offset;
+  }
+  return text.length;
+}
+
+function startOfNextSentenceOffset(text: string, offset: number): number | undefined {
+  let seenSpace = false;
+  for (let index = offset; index < text.length; index++) {
+    const char = text[index];
+    if (!seenSpace && (char === ")" || char === "]" || char === "\"" || char === "'")) continue;
+    if (char === "\n" && seenSpace) return index;
+    if (/\s/.test(char)) seenSpace = true;
+    else if (seenSpace) return index;
+    else return undefined;
+  }
+  return text.length;
 }
 
 // Zed: `motion::matching`, reached from `Motion::Matching`. This local version is
