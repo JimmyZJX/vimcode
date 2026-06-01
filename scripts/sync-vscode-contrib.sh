@@ -86,6 +86,9 @@ legacy_patch_targets=(
   src/vs/editor/browser/view.ts
   src/vs/editor/browser/viewParts/selections/selections.ts
   src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts
+  src/vs/editor/common/cursor/cursorMoveCommands.ts
+  src/vs/editor/common/cursor/cursorWordOperations.ts
+  src/vs/editor/common/cursorCommon.ts
   src/vs/editor/common/cursorEvents.ts
   src/vs/editor/common/viewModel.ts
   src/vs/editor/common/viewModel/viewContext.ts

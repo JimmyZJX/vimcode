@@ -1,8 +1,13 @@
 diff --git a/src/vs/editor/browser/controller/mouseHandler.ts b/src/vs/editor/browser/controller/mouseHandler.ts
-index 4ad4ca9..a0000e8 100644
 --- a/src/vs/editor/browser/controller/mouseHandler.ts
 +++ b/src/vs/editor/browser/controller/mouseHandler.ts
-@@ -13,6 +13,7 @@ import { ClientCoordinates, EditorMouseEvent, EditorMouseEventFactory, GlobalEdi
+@@ -8,11 +8,12 @@ import { StandardWheelEvent, IMouseWheelEvent } from '../../../base/browser/mous
+ import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
+ import * as platform from '../../../base/common/platform.js';
+ import { HitTestContext, MouseTarget, MouseTargetFactory, PointerHandlerLastRenderData } from './mouseTarget.js';
+-import { IMouseTarget, IMouseTargetViewZoneData, MouseTargetType } from '../editorBrowser.js';
++import { IMouseTarget, IMouseTargetContentEmpty, IMouseTargetContentText, IMouseTargetViewZoneData, MouseTargetType } from '../editorBrowser.js';
+ import { ClientCoordinates, EditorMouseEvent, EditorMouseEventFactory, GlobalEditorPointerMoveMonitor, createEditorPagePosition, createCoordinatesRelativeToEditor } from '../editorDom.js';
  import { ViewController } from '../view/viewController.js';
  import { EditorZoom } from '../../common/config/editorZoom.js';
  import { Position } from '../../common/core/position.js';
@@ -14,168 +19,61 @@ index 4ad4ca9..a0000e8 100644
  		this._viewController.dispatchMouse({
  			position: position.position,
  			mouseColumn: position.mouseColumn,
-+			vimMouseCharacterRange: this._vimMouseCharacterRange(position),
++			vimMouseCharacterViewRange: this._vimMouseCharacterViewRange(position, inSelectionMode),
  			startedOnLineNumbers: this._mouseState.startedOnLineNumbers,
  			revealType,
  
-@@ -657,6 +659,20 @@ class MouseDownOperation extends Disposable {
+@@ -657,6 +659,49 @@ class MouseDownOperation extends Disposable {
  			onInjectedText: position.type === MouseTargetType.CONTENT_TEXT && position.detail.injectedText !== null
  		});
  	}
 +
-+	private _vimMouseCharacterRange(position: IMouseTarget): Range | undefined {
-+		if (!this._isVimCursorRenderingEnabled()
-+			|| position.type !== MouseTargetType.CONTENT_TEXT
-+			|| position.range === null
-+			|| position.range.isEmpty()) {
++	/**
++	 * VSCode's mouse target position is a cursor boundary. Vim block-cursor selection
++	 * needs the character cell under the pointer. During drag, VSCode can report an
++	 * empty CONTENT_TEXT range at boundaries or CONTENT_EMPTY after line text; synthesize
++	 * the adjacent cell so selection extension is stable and includes EOL characters.
++	 */
++	private _vimMouseCharacterViewRange(position: IMouseTarget, inSelectionMode: boolean): Range | undefined {
++		if (!this._isVimCharacterModeEnabled()) {
 +			return undefined;
 +		}
-+		return position.range;
++		if (position.type === MouseTargetType.CONTENT_TEXT) {
++			return position.range.isEmpty()
++				? this._vimSyntheticCharacterViewRange(position, inSelectionMode)
++				: position.range;
++		}
++		if (position.type === MouseTargetType.CONTENT_EMPTY) {
++			return this._vimSyntheticCharacterViewRange(position, inSelectionMode);
++		}
++		return undefined;
 +	}
 +
-+	private _isVimCursorRenderingEnabled(): boolean {
++	private _vimSyntheticCharacterViewRange(position: IMouseTargetContentText | IMouseTargetContentEmpty, inSelectionMode: boolean): Range | undefined {
++		if (!inSelectionMode
++			|| (position.type === MouseTargetType.CONTENT_EMPTY && position.detail.isAfterLines)) {
++			return undefined;
++		}
++
++		const lineNumber = position.position.lineNumber;
++		const column = position.position.column;
++		const lineMaxColumn = this._context.viewModel.getLineMaxColumn(lineNumber);
++		if (column < lineMaxColumn) {
++			return new Range(lineNumber, column, lineNumber, column + 1);
++		}
++		if (column > 1) {
++			return new Range(lineNumber, column - 1, lineNumber, column);
++		}
++		return undefined;
++	}
++
++	private _isVimCharacterModeEnabled(): boolean {
 +		return this._viewHelper.viewDomNode.closest('.vim-character-mode-enabled') !== null;
 +	}
  }
  
  class MouseDownState {
-diff --git a/src/vs/editor/browser/controller/mouseTarget.ts b/src/vs/editor/browser/controller/mouseTarget.ts
-index 8256f6b..01db359 100644
---- a/src/vs/editor/browser/controller/mouseTarget.ts
-+++ b/src/vs/editor/browser/controller/mouseTarget.ts
-@@ -545,17 +545,19 @@ export class MouseTargetFactory {
- 		const ctx = new HitTestContext(this._context, this._viewHelper, lastRenderData);
- 		const request = new HitTestRequest(ctx, editorPos, pos, relativePos, target);
- 		try {
--			const r = MouseTargetFactory._createMouseTarget(ctx, request);
-+			let r = MouseTargetFactory._createMouseTarget(ctx, request);
- 
- 			if (r.type === MouseTargetType.CONTENT_TEXT) {
- 				// Snap to the nearest soft tab boundary if atomic soft tabs are enabled.
- 				if (ctx.stickyTabStops && r.position !== null) {
- 					const position = MouseTargetFactory._snapToSoftTabBoundary(r.position, ctx.viewModel);
- 					const range = EditorRange.fromPositions(position, position).plusRange(r.range);
--					return request.fulfillContentText(position, range, r.detail);
-+					r = request.fulfillContentText(position, range, r.detail);
- 				}
- 			}
- 
-+			r = MouseTargetFactory._normalizeVimCharacterTarget(ctx, request, r);
-+
- 			// console.log(MouseTarget.toString(r));
- 			return r;
- 		} catch (err) {
-@@ -871,6 +873,87 @@ export class MouseTargetFactory {
- 		return (chars + 1);
- 	}
- 
-+	private static _normalizeVimCharacterTarget(ctx: HitTestContext, request: HitTestRequest, target: IMouseTarget): IMouseTarget {
-+		if (!MouseTargetFactory._isVimCharacterHitTestingEnabled(ctx)) {
-+			return target;
-+		}
-+
-+		// In Vim character mode, mouse targets should describe the character under
-+		// the pointer, not the boundary nearest the pointer.  After normalization,
-+		// CONTENT_TEXT targets have [position] equal to [range.getStartPosition()].
-+		// Downstream code still carries the range so selection drags can choose the
-+		// start or end boundary while preserving the original click-count behavior.
-+		const range = MouseTargetFactory._vimMouseCharacterRangeForTarget(ctx, request, target);
-+		if (range === null) {
-+			return target;
-+		}
-+
-+		const position = range.getStartPosition();
-+		if (target.type === MouseTargetType.CONTENT_TEXT) {
-+			return request.fulfillContentText(position, range, target.detail);
-+		}
-+		if (target.type === MouseTargetType.CONTENT_EMPTY) {
-+			return request.fulfillContentText(position, range, { injectedText: null, mightBeForeignElement: false });
-+		}
-+		return target;
-+	}
-+
-+	private static _isVimCharacterHitTestingEnabled(ctx: HitTestContext): boolean {
-+		return ctx.viewDomNode.closest('.vim-character-mode-enabled') !== null;
-+	}
-+
-+	private static _vimMouseCharacterRangeForTarget(ctx: HitTestContext, request: HitTestRequest, target: IMouseTarget): EditorRange | null {
-+		if (target.type === MouseTargetType.CONTENT_TEXT) {
-+			if (target.range !== null && !target.range.isEmpty()) {
-+				return target.range;
-+			}
-+			return target.position === null
-+				? null
-+				: MouseTargetFactory._characterRangeAtMouseOffset(ctx, target.position.lineNumber, target.position.column, request.mouseContentHorizontalOffset);
-+		}
-+
-+		if (target.type === MouseTargetType.CONTENT_EMPTY && target.position !== null && !target.detail.isAfterLines) {
-+			const lineMaxColumn = ctx.viewModel.getLineMaxColumn(target.position.lineNumber);
-+			if (lineMaxColumn > 1 && target.position.column >= lineMaxColumn) {
-+				return new EditorRange(target.position.lineNumber, lineMaxColumn - 1, target.position.lineNumber, lineMaxColumn);
-+			}
-+		}
-+
-+		return null;
-+	}
-+
-+	private static _characterRangeAtMouseOffset(ctx: HitTestContext, lineNumber: number, column: number, mouseContentHorizontalOffset: number): EditorRange | null {
-+		interface OffsetColumn { offset: number; column: number }
-+		const points: OffsetColumn[] = [];
-+		const visibleRange = ctx.visibleRangeForPosition(lineNumber, column);
-+		if (visibleRange) {
-+			points.push({ offset: visibleRange.left, column });
-+		}
-+		if (column > 1) {
-+			const visibleRange = ctx.visibleRangeForPosition(lineNumber, column - 1);
-+			if (visibleRange) {
-+				points.push({ offset: visibleRange.left, column: column - 1 });
-+			}
-+		}
-+		const lineMaxColumn = ctx.viewModel.getLineMaxColumn(lineNumber);
-+		if (column < lineMaxColumn) {
-+			const visibleRange = ctx.visibleRangeForPosition(lineNumber, column + 1);
-+			if (visibleRange) {
-+				points.push({ offset: visibleRange.left, column: column + 1 });
-+			}
-+		}
-+
-+		points.sort((a, b) => a.offset - b.offset);
-+		for (let i = 1; i < points.length; i++) {
-+			const prev = points[i - 1];
-+			const curr = points[i];
-+			if (prev.offset <= mouseContentHorizontalOffset && mouseContentHorizontalOffset <= curr.offset) {
-+				return new EditorRange(lineNumber, prev.column, lineNumber, curr.column);
-+			}
-+		}
-+		return null;
-+	}
-+
- 	private static createMouseTargetFromHitTestPosition(ctx: HitTestContext, request: HitTestRequest, spanNode: HTMLElement, pos: Position, injectedText: InjectedText | null): IMouseTarget {
- 		const lineNumber = pos.lineNumber;
- 		const column = pos.column;
-diff --git a/src/vs/editor/browser/coreCommands.ts b/src/vs/editor/browser/coreCommands.ts
-index 9331eea..c49f6ea 100644
---- a/src/vs/editor/browser/coreCommands.ts
-+++ b/src/vs/editor/browser/coreCommands.ts
-@@ -374,6 +374,7 @@ export namespace CoreNavigationCommands {
- 	export interface MoveCommandOptions extends BaseCommandOptions {
- 		position: IPosition;
- 		viewPosition?: IPosition;
-+		vimMouseCharacterRange?: Range;
- 		revealType: NavigationCommandRevealType;
- 	}
- 
-@@ -395,7 +396,7 @@ export namespace CoreNavigationCommands {
- 				args.source,
- 				CursorChangeReason.Explicit,
- 				[
--					CursorMoveCommands.moveTo(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.viewPosition)
-+					CursorMoveCommands.moveTo(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.viewPosition, args.vimMouseCharacterRange)
- 				]
- 			);
- 			if (cursorStateChanged && args.revealType !== NavigationCommandRevealType.None) {
 diff --git a/src/vs/editor/browser/view/viewController.ts b/src/vs/editor/browser/view/viewController.ts
-index cd312c9..4f6dda9 100644
 --- a/src/vs/editor/browser/view/viewController.ts
 +++ b/src/vs/editor/browser/view/viewController.ts
 @@ -8,6 +8,7 @@ import { CoreNavigationCommands, NavigationCommandRevealType } from '../coreComm
@@ -186,72 +84,65 @@ index cd312c9..4f6dda9 100644
  import { Selection } from '../../common/core/selection.js';
  import { IEditorConfiguration } from '../../common/config/editorConfiguration.js';
  import { IViewModel } from '../../common/viewModel.js';
-@@ -23,6 +24,7 @@ export interface IMouseDispatchData {
+@@ -23,6 +24,8 @@ export interface IMouseDispatchData {
  	 * Desired mouse column (e.g. when position.column gets clamped to text length -- clicking after text on a line).
  	 */
  	mouseColumn: number;
-+	vimMouseCharacterRange?: Range;
++	/** Mouse-only: view range of the character cell under the pointer in Vim block-cursor mode. */
++	vimMouseCharacterViewRange?: Range;
  	revealType: NavigationCommandRevealType;
  	startedOnLineNumbers: boolean;
  
-@@ -237,10 +239,10 @@ export class ViewController {
+@@ -237,10 +240,10 @@ export class ViewController {
  		} else if (data.mouseDownCount === 2) {
  			if (!data.onInjectedText) {
  				if (this._hasMulticursorModifier(data)) {
 -					this._lastCursorWordSelect(data.position, data.revealType);
-+					this._lastCursorWordSelect(data.position, data.revealType, data.vimMouseCharacterRange);
++					this._lastCursorWordSelect(data.position, data.revealType, data.vimMouseCharacterViewRange);
  				} else {
  					if (data.inSelectionMode) {
 -						this._wordSelectDrag(data.position, data.revealType);
-+						this._wordSelectDrag(data.position, data.revealType, data.vimMouseCharacterRange);
++						this._wordSelectDrag(data.position, data.revealType, data.vimMouseCharacterViewRange);
  					} else {
  						const model = this.viewModel.model;
  						const modelPos = this._convertViewToModelPosition(data.position);
-@@ -248,7 +250,7 @@ export class ViewController {
+@@ -248,7 +251,7 @@ export class ViewController {
  						if (selection) {
  							this._select(selection);
  						} else {
 -							this._wordSelect(data.position, data.revealType);
-+							this._wordSelect(data.position, data.revealType, data.vimMouseCharacterRange);
++							this._wordSelect(data.position, data.revealType, data.vimMouseCharacterViewRange);
  						}
  					}
  				}
-@@ -275,32 +277,36 @@ export class ViewController {
+@@ -275,7 +278,7 @@ export class ViewController {
  						if (columnSelection) {
  							this._columnSelect(data.position, data.mouseColumn, true);
  						} else {
 -							this._moveToSelect(data.position, data.revealType);
-+							this._moveToSelect(data.position, data.revealType, data.vimMouseCharacterRange);
++							this._moveToSelect(data.position, data.revealType, data.vimMouseCharacterViewRange);
  						}
  					}
  				} else {
--					this.moveTo(data.position, data.revealType);
-+					this.moveTo(data.position, data.revealType, data.vimMouseCharacterRange);
- 				}
- 			}
+@@ -285,12 +288,15 @@ export class ViewController {
  		}
  	}
  
 -	private _usualArgs(viewPosition: Position, revealType: NavigationCommandRevealType): CoreNavigationCommands.MoveCommandOptions {
 +	private _usualArgs(viewPosition: Position, revealType: NavigationCommandRevealType, vimMouseCharacterViewRange?: Range): CoreNavigationCommands.MoveCommandOptions {
  		viewPosition = this._validateViewColumn(viewPosition);
-+		const vimMouseCharacterRange = vimMouseCharacterViewRange === undefined
-+			? undefined
-+			: this.viewModel.coordinatesConverter.convertViewRangeToModelRange(vimMouseCharacterViewRange);
  		return {
  			source: 'mouse',
--			position: this._convertViewToModelPosition(viewPosition),
-+			position: vimMouseCharacterRange?.getStartPosition() ?? this._convertViewToModelPosition(viewPosition),
+ 			position: this._convertViewToModelPosition(viewPosition),
  			viewPosition,
-+			vimMouseCharacterRange,
++			vimMouseCharacterModelRange: vimMouseCharacterViewRange === undefined
++				? undefined
++				: this.viewModel.coordinatesConverter.convertViewRangeToModelRange(vimMouseCharacterViewRange),
  			revealType
  		};
  	}
- 
--	public moveTo(viewPosition: Position, revealType: NavigationCommandRevealType): void {
--		CoreNavigationCommands.MoveTo.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType));
-+	public moveTo(viewPosition: Position, revealType: NavigationCommandRevealType, vimMouseCharacterViewRange?: Range): void {
-+		CoreNavigationCommands.MoveTo.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType, vimMouseCharacterViewRange));
+@@ -299,8 +305,8 @@ export class ViewController {
+ 		CoreNavigationCommands.MoveTo.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType));
  	}
  
 -	private _moveToSelect(viewPosition: Position, revealType: NavigationCommandRevealType): void {
@@ -284,92 +175,140 @@ index cd312c9..4f6dda9 100644
  	}
  
  	private _lineSelect(viewPosition: Position, revealType: NavigationCommandRevealType): void {
-diff --git a/src/vs/editor/common/cursor/cursorMoveCommands.ts b/src/vs/editor/common/cursor/cursorMoveCommands.ts
-index a447e3a..5fd5ca3 100644
---- a/src/vs/editor/common/cursor/cursorMoveCommands.ts
-+++ b/src/vs/editor/common/cursor/cursorMoveCommands.ts
-@@ -13,6 +13,11 @@ import { ICommandMetadata } from '../../../platform/commands/common/commands.js'
- import { IViewModel } from '../viewModel.js';
- import { TextDirection } from '../model.js';
- 
-+function vimCharacterSelectionStart(model: ICursorSimpleModel, position: Position): Range {
-+	const endColumn = Math.min(position.column + 1, model.getLineMaxColumn(position.lineNumber));
-+	return new Range(position.lineNumber, position.column, position.lineNumber, endColumn);
-+}
-+
- export class CursorMoveCommands {
- 
- 	public static addCursorDown(viewModel: IViewModel, cursors: CursorState[], useLogicalLine: boolean): PartialCursorState[] {
-@@ -238,6 +243,26 @@ export class CursorMoveCommands {
- 		return CursorState.fromModelState(WordOperations.word(viewModel.cursorConfig, viewModel.model, cursor.modelState, inSelectionMode, position));
+diff --git a/src/vs/editor/browser/coreCommands.ts b/src/vs/editor/browser/coreCommands.ts
+--- a/src/vs/editor/browser/coreCommands.ts
++++ b/src/vs/editor/browser/coreCommands.ts
+@@ -374,6 +374,8 @@ export namespace CoreNavigationCommands {
+ 	export interface MoveCommandOptions extends BaseCommandOptions {
+ 		position: IPosition;
+ 		viewPosition?: IPosition;
++		/** Mouse-only: model range of the character cell under the pointer in Vim block-cursor mode. */
++		vimMouseCharacterModelRange?: Range;
+ 		revealType: NavigationCommandRevealType;
  	}
  
-+	private static vimCharacter(viewModel: IViewModel, cursor: CursorState, _position: IPosition, _vimMouseCharacterRange: Range | undefined): PartialCursorState {
-+		const position = viewModel.model.validatePosition(_position);
-+		const targetRange = _vimMouseCharacterRange === undefined
-+			? undefined
-+			: viewModel.model.validateRange(_vimMouseCharacterRange);
-+		const selectionStart = cursor.modelState.selectionStartKind === SelectionStartKind.VimCharacter
-+			? cursor.modelState.selectionStart
-+			: vimCharacterSelectionStart(viewModel.model, cursor.modelState.position);
-+		const targetStart = targetRange?.getStartPosition() ?? position;
-+		const targetEnd = targetRange?.getEndPosition() ?? position;
-+		const activePosition = targetStart.isBeforeOrEqual(selectionStart.getStartPosition()) ? targetStart : targetEnd;
-+		return CursorState.fromModelState(new SingleCursorState(
-+			selectionStart,
-+			SelectionStartKind.VimCharacter,
-+			0,
-+			activePosition,
-+			0
-+		));
+@@ -395,7 +397,7 @@ export namespace CoreNavigationCommands {
+ 				args.source,
+ 				CursorChangeReason.Explicit,
+ 				[
+-					CursorMoveCommands.moveTo(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.viewPosition)
++					CursorMoveCommands.moveTo(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.viewPosition, args.vimMouseCharacterModelRange)
+ 				]
+ 			);
+ 			if (cursorStateChanged && args.revealType !== NavigationCommandRevealType.None) {
+@@ -1646,7 +1648,7 @@ export namespace CoreNavigationCommands {
+ 				args.source,
+ 				CursorChangeReason.Explicit,
+ 				[
+-					CursorMoveCommands.word(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position)
++					CursorMoveCommands.word(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.vimMouseCharacterModelRange)
+ 				]
+ 			);
+ 			if (args.revealType !== NavigationCommandRevealType.None) {
+@@ -1684,7 +1686,7 @@ export namespace CoreNavigationCommands {
+ 			const states = viewModel.getCursorStates();
+ 			const newStates: PartialCursorState[] = states.slice(0);
+ 			const lastAddedState = states[lastAddedCursorIndex];
+-			newStates[lastAddedCursorIndex] = CursorMoveCommands.word(viewModel, lastAddedState, lastAddedState.modelState.hasSelection(), args.position);
++			newStates[lastAddedCursorIndex] = CursorMoveCommands.word(viewModel, lastAddedState, lastAddedState.modelState.hasSelection(), args.position, args.vimMouseCharacterModelRange);
+ 
+ 			viewModel.model.pushStackElement();
+ 			viewModel.setCursorStates(
+diff --git a/src/vs/editor/common/cursor/cursorMoveCommands.ts b/src/vs/editor/common/cursor/cursorMoveCommands.ts
+--- a/src/vs/editor/common/cursor/cursorMoveCommands.ts
++++ b/src/vs/editor/common/cursor/cursorMoveCommands.ts
+@@ -233,9 +233,31 @@ export class CursorMoveCommands {
+ 		}
+ 	}
+ 
+-	public static word(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition): PartialCursorState {
++	public static word(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, _vimMouseCharacterModelRange?: Range): PartialCursorState {
+ 		const position = viewModel.model.validatePosition(_position);
+-		return CursorState.fromModelState(WordOperations.word(viewModel.cursorConfig, viewModel.model, cursor.modelState, inSelectionMode, position));
++		const vimMouseCharacterModelRange = _vimMouseCharacterModelRange ? viewModel.model.validateRange(_vimMouseCharacterModelRange) : undefined;
++		return CursorState.fromModelState(WordOperations.word(viewModel.cursorConfig, viewModel.model, cursor.modelState, inSelectionMode, position, vimMouseCharacterModelRange));
 +	}
 +
++	private static vimMouseCharacterActivePosition(selectionStart: Range, range: Range): Position {
++		const targetStart = range.getStartPosition();
++		return targetStart.isBefore(selectionStart.getStartPosition()) ? targetStart : range.getEndPosition();
++	}
++
++	private static vimMouseCharacterSelectionStart(model: ICursorSimpleModel, cursor: CursorState): Range {
++		if (!cursor.modelState.selectionStart.isEmpty()) {
++			return cursor.modelState.selectionStart;
++		}
++
++		const position = cursor.modelState.selectionStart.getStartPosition();
++		const lineMaxColumn = model.getLineMaxColumn(position.lineNumber);
++		if (position.column < lineMaxColumn) {
++			return new Range(position.lineNumber, position.column, position.lineNumber, position.column + 1);
++		}
++		if (position.column > 1) {
++			return new Range(position.lineNumber, position.column - 1, position.lineNumber, position.column);
++		}
++		return cursor.modelState.selectionStart;
+ 	}
+ 
  	public static cancelSelection(viewModel: IViewModel, cursor: CursorState): PartialCursorState {
- 		if (!cursor.modelState.hasSelection()) {
- 			return new CursorState(cursor.modelState, cursor.viewState);
-@@ -252,8 +277,12 @@ export class CursorMoveCommands {
+@@ -252,7 +274,7 @@ export class CursorMoveCommands {
  		));
  	}
  
 -	public static moveTo(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, _viewPosition: IPosition | undefined): PartialCursorState {
-+	public static moveTo(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, _viewPosition: IPosition | undefined, _vimMouseCharacterRange: Range | undefined = undefined): PartialCursorState {
++	public static moveTo(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, _viewPosition: IPosition | undefined, _vimMouseCharacterModelRange?: Range): PartialCursorState {
  		if (inSelectionMode) {
-+			if (cursor.modelState.selectionStartKind === SelectionStartKind.VimCharacter
-+				|| (cursor.modelState.selectionStartKind === SelectionStartKind.Simple && _vimMouseCharacterRange !== undefined)) {
-+				return this.vimCharacter(viewModel, cursor, _position, _vimMouseCharacterRange);
-+			}
  			if (cursor.modelState.selectionStartKind === SelectionStartKind.Word) {
  				return this.word(viewModel, cursor, inSelectionMode, _position);
- 			}
-@@ -261,11 +290,13 @@ export class CursorMoveCommands {
+@@ -260,6 +282,18 @@ export class CursorMoveCommands {
+ 			if (cursor.modelState.selectionStartKind === SelectionStartKind.Line) {
  				return this.line(viewModel, cursor, inSelectionMode, _position, _viewPosition);
  			}
++			if (_vimMouseCharacterModelRange !== undefined) {
++				const vimMouseCharacterModelRange = viewModel.model.validateRange(_vimMouseCharacterModelRange);
++				const selectionStart = this.vimMouseCharacterSelectionStart(viewModel.model, cursor);
++				const activePosition = this.vimMouseCharacterActivePosition(selectionStart, vimMouseCharacterModelRange);
++				return CursorState.fromModelState(new SingleCursorState(
++					selectionStart,
++					SelectionStartKind.Simple,
++					0,
++					activePosition,
++					0
++				));
++			}
  		}
--		const position = viewModel.model.validatePosition(_position);
-+		const position = viewModel.model.validatePosition(_vimMouseCharacterRange?.getStartPosition() ?? _position);
+ 		const position = viewModel.model.validatePosition(_position);
  		const viewPosition = (
--			_viewPosition
--				? viewModel.coordinatesConverter.validateViewPosition(new Position(_viewPosition.lineNumber, _viewPosition.column), position)
--				: viewModel.coordinatesConverter.convertModelPositionToViewPosition(position)
-+			_vimMouseCharacterRange !== undefined
-+				? viewModel.coordinatesConverter.convertModelPositionToViewPosition(position)
-+				: _viewPosition
-+					? viewModel.coordinatesConverter.validateViewPosition(new Position(_viewPosition.lineNumber, _viewPosition.column), position)
-+					: viewModel.coordinatesConverter.convertModelPositionToViewPosition(position)
- 		);
- 		return CursorState.fromViewState(cursor.viewState.move(inSelectionMode, viewPosition.lineNumber, viewPosition.column, 0));
+diff --git a/src/vs/editor/common/cursor/cursorWordOperations.ts b/src/vs/editor/common/cursor/cursorWordOperations.ts
+--- a/src/vs/editor/common/cursor/cursorWordOperations.ts
++++ b/src/vs/editor/common/cursor/cursorWordOperations.ts
+@@ -738,7 +738,7 @@ export class WordOperations {
+ 		return null;
  	}
-diff --git a/src/vs/editor/common/cursorCommon.ts b/src/vs/editor/common/cursorCommon.ts
-index 4b03cf5..18d438f 100644
---- a/src/vs/editor/common/cursorCommon.ts
-+++ b/src/vs/editor/common/cursorCommon.ts
-@@ -333,7 +333,8 @@ export class PartialViewCursorState {
- export const enum SelectionStartKind {
- 	Simple,
- 	Word,
--	Line
-+	Line,
-+	VimCharacter
- }
  
- /**
+-	public static word(config: CursorConfiguration, model: ICursorSimpleModel, cursor: SingleCursorState, inSelectionMode: boolean, position: Position): SingleCursorState {
++	public static word(config: CursorConfiguration, model: ICursorSimpleModel, cursor: SingleCursorState, inSelectionMode: boolean, position: Position, vimMouseCharacterModelRange?: Range): SingleCursorState {
+ 		const wordSeparators = getMapForWordSeparators(config.wordSeparators, config.wordSegmenterLocales);
+ 		const prevWord = WordOperations._findPreviousWordOnLine(wordSeparators, model, position);
+ 		const nextWord = WordOperations._findNextWordOnLine(wordSeparators, model, position);
+@@ -805,12 +805,20 @@ export class WordOperations {
+ 			column = cursor.selectionStart.endColumn;
+ 		} else if (position.isBeforeOrEqual(cursor.selectionStart.getStartPosition())) {
+ 			column = startColumn;
++			// Use the Vim mouse cell instead of the nearest native cursor boundary.
++			if (vimMouseCharacterModelRange && vimMouseCharacterModelRange.startLineNumber === lineNumber) {
++				column = Math.min(column, vimMouseCharacterModelRange.startColumn);
++			}
+ 			const possiblePosition = new Position(lineNumber, column);
+ 			if (cursor.selectionStart.containsPosition(possiblePosition)) {
+ 				column = cursor.selectionStart.endColumn;
+ 			}
+ 		} else {
+ 			column = endColumn;
++			// Use the Vim mouse cell instead of the nearest native cursor boundary.
++			if (vimMouseCharacterModelRange && vimMouseCharacterModelRange.endLineNumber === lineNumber) {
++				column = Math.max(column, vimMouseCharacterModelRange.endColumn);
++			}
+ 			const possiblePosition = new Position(lineNumber, column);
+ 			if (cursor.selectionStart.containsPosition(possiblePosition)) {
+ 				column = cursor.selectionStart.startColumn;
