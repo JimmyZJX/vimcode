@@ -10,7 +10,7 @@ import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, Vi
 import { lookupDigraph } from "./digraph.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
-import { enterNormalMode, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
+import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
@@ -431,6 +431,10 @@ export class Vim {
       }
       if (key === "ctrl-u") {
         deleteToBeginningOfLine(this.editor, this.insertEditOptions());
+        return "handled";
+      }
+      if (key === "ctrl-y" || key === "ctrl-e") {
+        insertCharacterFromAdjacentLine(this.editor, key === "ctrl-y" ? "above" : "below", this.insertEditOptions());
         return "handled";
       }
       const text = insertTextForKey(key);

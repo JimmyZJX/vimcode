@@ -28,7 +28,37 @@ export function insertText(editor: VimEditorCapabilities, text: string, options:
   editor.applyEdits(edits, selectionsAfter, options);
 }
 
-// Zed: `normal::Vim::insert_after`, `normal::Vim::insert_before`,
+export function insertCharacterFromAdjacentLine(
+  editor: VimEditorCapabilities,
+  side: "above" | "below",
+  options: ApplyEditsOptions = {}
+): void {
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+
+  for (const selection of editor.getSelections()) {
+    const range = rangeOfSelection(selection);
+    const sourceRow = range.start.row + (side === "above" ? -1 : 1);
+    if (sourceRow < 0 || sourceRow >= editor.lineCount()) {
+      selectionsAfter.push(charwiseSelection(range.start));
+      continue;
+    }
+
+    const sourceLine = editor.line(sourceRow);
+    const text = sourceLine[range.start.column];
+    if (text === undefined) {
+      selectionsAfter.push(charwiseSelection(range.start));
+      continue;
+    }
+
+    edits.push({ range, text });
+    selectionsAfter.push(charwiseSelection(positionAfterInsertedText(range.start, text)));
+  }
+
+  if (edits.length > 0) editor.applyEdits(edits, selectionsAfter, options);
+}
+
+// Zed: `normal::Vim::insert_after`, `normal::Vim::insert_before`, 
 // `normal::Vim::insert_first_non_whitespace`, and `normal::Vim::insert_end_of_line`.
 export function enterInsertAtSelections(
   editor: VimEditorCapabilities,
