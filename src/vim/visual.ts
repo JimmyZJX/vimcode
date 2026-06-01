@@ -11,7 +11,7 @@ import { VimConfiguration } from "./config.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
-import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, Motion, motionForKey } from "./motion.js";
+import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, matchingPositionFromLine, Motion, motionForKey } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { IndentDirection, indentRanges, visualIndentRanges } from "./normal/indent.js";
@@ -50,6 +50,7 @@ type CharwiseVisualState = {
   kind: "charwise";
   anchor: Position;
   head: Position; // Vim cursor position; inclusive.
+  cursor?: Position;
   goal?: VimSelectionGoal;
 };
 
@@ -388,6 +389,18 @@ export class VisualMode {
       this.state = undefined;
       this.editor.setCursorStyle("block");
       return handled({ exitVisual: true, nextMode: "normal" });
+    }
+
+    if (key === "%" && state.kind === "charwise") {
+      const head = matchingPositionFromLine(this.editor, state.head);
+      this.state = {
+        ...state,
+        head,
+        cursor: visualMatchingCursor(this.editor, state, head),
+        goal: undefined,
+      };
+      this.syncEditorSelection();
+      return handled();
     }
 
     const motion = visualMotionForKey(key);
@@ -801,6 +814,13 @@ function visualMotionForKey(key: string): Motion | undefined {
   return motionForKey(key);
 }
 
+function visualMatchingCursor(editor: VimEditorCapabilities, state: CharwiseVisualState, match: Position): Position | undefined {
+  if (match.row !== state.anchor.row && match.column === 0 && editor.lineLength(match.row) > 0) {
+    return { row: match.row, column: 1 };
+  }
+  return undefined;
+}
+
 function stateAfterMotion(
   editor: VimEditorCapabilities,
   state: VisualState,
@@ -831,17 +851,18 @@ function charwiseStateAfterMotion(
 ): CharwiseVisualState {
   if (motion.type === "right") {
     const head = charwiseRight(editor, state.head);
-    return { ...state, head, goal: undefined };
+    return { ...state, head, cursor: undefined, goal: undefined };
   }
   if (motion.type === "endOfLine") {
     const head = { row: state.head.row, column: editor.lineLength(state.head.row) };
-    return { ...state, head, goal: { type: "endOfLine" } };
+    return { ...state, head, cursor: undefined, goal: { type: "endOfLine" } };
   }
   const result = applyMotionWithGoal(editor, state.head, motion, 1, state.goal);
   const head = adjustCharwiseMotionHead(editor, state.head, result.position, motion);
   return {
     ...state,
     head,
+    cursor: undefined,
     goal: result.goal ?? (motion.type === "nextWordStart" ? { type: "modelColumn", column: result.position.column } : undefined),
   };
 }
@@ -1016,7 +1037,7 @@ function charwiseStateToEditorSelection(editor: VimEditorCapabilities, state: Ch
       type: "charwise",
       anchor: state.anchor,
       head: exclusiveVisualHead(editor, state.head),
-      cursor: state.head,
+      cursor: state.cursor ?? state.head,
       goal: state.goal,
     };
   }

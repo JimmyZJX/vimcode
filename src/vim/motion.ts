@@ -318,6 +318,10 @@ function previousWordEnd(editor: VimEditorCapabilities, start: Position, bigWord
 
 // Zed: `motion::Motion::move_point`. We keep the
 // same dispatch shape, but delegate only to local model-position helpers for now.
+export function matchingPositionFromLine(editor: VimEditorCapabilities, start: Position): Position {
+  return matching(editor, start, { searchBackwardOnLine: true });
+}
+
 export function applyMotionOnce(
   editor: VimEditorCapabilities,
   start: Position,
@@ -761,20 +765,25 @@ function startOfNextSentenceOffset(text: string, offset: number): number | undef
 // Zed: `motion::matching`, reached from `Motion::Matching`. This local version is
 // text-based and intentionally limited to bracket pairs; Zed also uses syntax-aware
 // bracket ranges, comments, tags, preprocessor directives, and optional quote matching.
-function matching(editor: VimEditorCapabilities, start: Position): Position {
+function matching(editor: VimEditorCapabilities, start: Position, { searchBackwardOnLine = false }: { searchBackwardOnLine?: boolean } = {}): Position {
   const text = documentText(editor);
   const startOffset = offsetOfPosition(editor, start);
   const lineStart = offsetOfPosition(editor, { row: start.row, column: 0 });
   const lineEnd = lineStart + editor.lineLength(start.row);
-  const bracketOffset = bracketOffsetForMatching(text, startOffset, lineEnd);
+  const bracketOffset = bracketOffsetForMatching(text, startOffset, lineStart, lineEnd, { searchBackwardOnLine });
   if (bracketOffset === undefined) return start;
   const matchOffset = matchingBracketOffset(text, bracketOffset);
   return matchOffset === undefined ? start : normalCursorPosition(editor, positionOfOffset(editor, matchOffset));
 }
 
-function bracketOffsetForMatching(text: string, startOffset: number, lineEnd: number): number | undefined {
+function bracketOffsetForMatching(text: string, startOffset: number, lineStart: number, lineEnd: number, { searchBackwardOnLine }: { searchBackwardOnLine: boolean }): number | undefined {
   for (let offset = startOffset; offset <= lineEnd && offset < text.length; offset++) {
     if (bracketPair(text[offset]) !== undefined) return offset;
+  }
+  if (searchBackwardOnLine) {
+    for (let offset = Math.min(startOffset - 1, lineEnd - 1); offset >= lineStart; offset--) {
+      if (bracketPair(text[offset]) !== undefined) return offset;
+    }
   }
   return undefined;
 }
