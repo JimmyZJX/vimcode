@@ -4,7 +4,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
-import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { IExtensionManagementService, IGlobalExtensionEnablementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -118,10 +118,11 @@ class VimContribution extends VimController implements IEditorContribution {
 		@IConfigurationService configurationService: IConfigurationService,
 		@IKeybindingService keybindingService: IKeybindingService,
 		@IExtensionManagementService extensionManagementService: IExtensionManagementService,
+		@IGlobalExtensionEnablementService extensionEnablementService: IGlobalExtensionEnablementService,
 		@INotificationService notificationService: INotificationService,
 		@ILogService logService: ILogService
 	) {
-		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, notificationService, logService);
+		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, extensionEnablementService, notificationService, logService);
 	}
 }
 

@@ -8,7 +8,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
-import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { IExtensionManagementService, IGlobalExtensionEnablementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -82,6 +82,7 @@ export class VimController extends Disposable {
 		private readonly configurationService: IConfigurationService,
 		private readonly keybindingService: IKeybindingService,
 		private readonly extensionManagementService: IExtensionManagementService,
+		private readonly extensionEnablementService: IGlobalExtensionEnablementService,
 		private readonly notificationService: INotificationService,
 		private readonly logService: ILogService
 	) {
@@ -104,7 +105,10 @@ export class VimController extends Disposable {
 		this._register(this.editor.onDidChangeModelContent(event => this.handleModelContentChanged(event)));
 		this._register(this.editor.onDidChangeModel(() => this.handleEditorModelChanged()));
 		this._register(this.extensionManagementService.onDidInstallExtensions(() => {
-			if (this.enabled) this.warnIfVSCodeVimInstalled();
+			if (this.enabled) this.warnIfVSCodeVimEnabled();
+		}));
+		this._register(this.extensionEnablementService.onDidChangeEnablement(() => {
+			if (this.enabled) this.warnIfVSCodeVimEnabled();
 		}));
 		this._register(this.configurationService.onDidChangeConfiguration(() => {
 			this.vim.setConfiguration(this.readVimCompatibilityConfiguration());
@@ -132,7 +136,7 @@ export class VimController extends Disposable {
 		this.enabled = enabled;
 		if (enabled) {
 			this.attachCurrentModelState();
-			this.warnIfVSCodeVimInstalled();
+			this.warnIfVSCodeVimEnabled();
 			this.logAmbiguousRemapConflicts();
 			this.syncEditorState();
 		} else {
@@ -171,15 +175,19 @@ export class VimController extends Disposable {
 		}
 	}
 
-	private warnIfVSCodeVimInstalled(): void {
+	private warnIfVSCodeVimEnabled(): void {
 		if (VimController.warnedAboutVSCodeVim) return;
 		this.extensionManagementService.getInstalled().then(extensions => {
-			const hasVSCodeVim = extensions.some(extension => extension.identifier.id.toLowerCase() === 'vscodevim.vim');
-			if (hasVSCodeVim && this.enabled && !VimController.warnedAboutVSCodeVim) {
+			const vsCodeVim = extensions.find(extension => extension.identifier.id.toLowerCase() === 'vscodevim.vim');
+			if (vsCodeVim === undefined) return;
+
+			const disabledExtensions = this.extensionEnablementService.getDisabledExtensions();
+			const vsCodeVimIsDisabled = disabledExtensions.some(extension => extension.id.toLowerCase() === vsCodeVim.identifier.id.toLowerCase());
+			if (!vsCodeVimIsDisabled && this.enabled && !VimController.warnedAboutVSCodeVim) {
 				VimController.warnedAboutVSCodeVim = true;
 				this.notificationService.warn(nls.localize(
 					'vim.vscodevimConflict',
-					"vimcode is enabled while the VSCodeVim extension is installed. Disable one of them to avoid conflicting Vim key handling."
+					"vimcode is enabled while the VSCodeVim extension is enabled. Disable one of them to avoid conflicting Vim key handling."
 				));
 			}
 		}, () => undefined);
