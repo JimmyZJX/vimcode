@@ -154,6 +154,8 @@ export class Vim {
     if (handleOverride === false) return false;
     if (handleOverride === true) return true;
 
+    if (this.isEscape(key)) return this.shouldHandleEscapeKey();
+
     if (this.modeState.kind === "search") return this.shouldHandleSearchKey(key);
 
     if (isCtrlKey(key) && !this.remapResolver.isPending()) {
@@ -199,6 +201,23 @@ export class Vim {
       || key === "ctrl-v"
       || key === "ctrl-y"
       || this.isEscape(key);
+  }
+
+  private shouldHandleEscapeKey(): boolean {
+    return this.modeState.kind !== "normal"
+      || this.hasMultipleCursorsOrSelection()
+      || this.pendingFind !== undefined
+      || this.pendingUnmatched !== undefined
+      || this.pendingDigraph !== undefined
+      || this.pendingLiteral !== undefined
+      || this.sharedActionResolver.isPending()
+      || this.remapResolver.isPending()
+      || this.normalChordResolver.isPending()
+      || this.modelState.marks.isPending()
+      || this.globalState.search.isPending()
+      || this.pendingCommand !== undefined
+      || this.pendingInsertRegister
+      || this.normalMode.isPending();
   }
 
   syncFromEditorState({ render = true }: { render?: boolean } = {}): EditorSyncResult {
@@ -366,6 +385,7 @@ export class Vim {
 
     const pendingResult = this.handlePendingKey(key);
     if (pendingResult !== undefined) return pendingResult;
+    if (this.isEscape(key)) return "not-handled";
 
     this.recordMacroKey(key);
 
@@ -558,6 +578,7 @@ export class Vim {
     }
 
     if (this.isEscape(key)) {
+      if (!this.shouldHandleEscapeKey()) return undefined;
       this.recordEscapeKey();
       this.handleEscapeKey();
       return "handled";

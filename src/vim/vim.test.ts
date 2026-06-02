@@ -267,6 +267,31 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
+  it("does not handle escape in plain normal mode", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    expect(vim.shouldHandleKey("<escape>")).toBe(false);
+    expect(vim.onKey("<escape>")).toBe("not-handled");
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
+    ]);
+  });
+
+  it("uses escape to cancel pending normal-mode operators", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["d"]);
+    expect(vim.shouldHandleKey("<escape>")).toBe(true);
+    expect(vim.onKey("<escape>")).toBe("handled");
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(vim.status.pending).toBe(false);
+    expect(editor.getText()).toBe("one");
+  });
+
   it("collapses normal-mode multicursor selections on escape", () => {
     const editor = new InMemoryVimEditor("one\ntwo");
     const vim = new Vim(editor);
