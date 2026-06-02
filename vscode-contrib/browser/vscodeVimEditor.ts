@@ -1,18 +1,18 @@
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
-import { CommonFindController } from '../../find/browser/findController.js';
-import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
-import { FindReplaceState } from '../../find/browser/findState.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
-import { IEditorDecorationsCollection } from '../../../common/editorCommon.js';
+import { IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
 import { EditSources } from '../../../common/textModelEditSource.js';
-import { CursorStyle, Position as VimPosition, TextEdit, TextRange, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
+import { CommonFindController } from '../../find/browser/findController.js';
+import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
+import { FindReplaceState } from '../../find/browser/findState.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
+import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
 
 type VimUndoTransaction = {
 	model: ITextModel;
@@ -201,7 +201,19 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		if (position === null) {
 			return;
 		}
-		this.editor.revealPositionInCenterIfOutsideViewport(position);
+
+		const scrollTop = this.editor.getScrollTop();
+		const viewportHeight = this.editor.getLayoutInfo().height;
+		const bandTop = scrollTop + viewportHeight * 0.15;
+		const bandBottom = scrollTop + viewportHeight * 0.85;
+		const cursorTop = this.editor.getTopForLineNumber(position.lineNumber);
+		const cursorBottom = this.editor.getBottomForLineNumber(position.lineNumber);
+
+		if (cursorTop < bandTop) {
+			this.editor.setScrollTop(scrollTop - (bandTop - cursorTop), ScrollType.Immediate);
+		} else if (cursorBottom > bandBottom) {
+			this.editor.setScrollTop(scrollTop + (cursorBottom - bandBottom), ScrollType.Immediate);
+		}
 	}
 
 	revealCurrentLine(target: HostRevealTarget): void {
