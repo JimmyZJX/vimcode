@@ -375,6 +375,9 @@ export class NormalMode {
       case "S":
         this.handleLineOperator("change");
         return handled({ enterInsert: true });
+      case "C":
+        changeMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
+        return handled({ enterInsert: true });
       case "D":
         deleteMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
         return handled();

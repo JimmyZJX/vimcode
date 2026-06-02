@@ -44,7 +44,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 375 enabled tests.
+  - `npm test -- --runInBand` passes with 378 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -60,7 +60,7 @@ Implemented first-slice behavior:
 - motion operators: `dw`, `de`, `cw`, `ce`, `yw`
 - insert commands: `i`, `a`, `I`, `A`, `o`, `O`
 - `x` and `X`
-- `D` delete-to-end-of-line
+- `D` delete-to-end-of-line and `C` change-to-end-of-line
 - very basic normal and visual `p` / `P`
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
 - `/...<enter>` and `?...<enter>` regex search with smart-case matching, `n`/`N` repeat, `*`/`#` word search, and search-as-operator ranges through a VSCode-native search capability boundary; pending search input uses a small single-line editor for cursor navigation, deletion, and clipboard paste while VSCode find decorations are updated without revealing the native Find widget, seeded with the last query while empty, and cleared after the Vim search commits
