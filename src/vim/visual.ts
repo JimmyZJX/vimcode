@@ -907,7 +907,7 @@ function blockwiseStateAfterMotion(
     state.goal,
     { allowEndOfLine: true }
   );
-  return { ...state, head: position, goal };
+  return { ...state, head: position, goal: motion.type === "endOfLine" ? { type: "endOfLine" } : goal };
 }
 
 function adjustCharwiseMotionHead(
@@ -1417,20 +1417,14 @@ function pasteOverBlockwise(
   const blockLines = content.text.split("\n");
   if (blockLines.length === 0) return;
 
-  const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
+  const { startRow, endRow, startColumn } = blockBounds(state);
   const edits: TextEdit[] = [];
 
   for (let row = startRow; row <= endRow; row++) {
     const blockLine = content.kind === "blockwise"
       ? blockLines[row - startRow] ?? ""
       : blockLines[0];
-    edits.push({
-      range: {
-        start: { row, column: Math.min(startColumn, editor.lineLength(row)) },
-        end: { row, column: Math.min(endColumn + 1, editor.lineLength(row)) },
-      },
-      text: blockLine,
-    });
+    edits.push({ range: blockRangeForRow(editor, state, row), text: blockLine });
   }
 
   beginVisualUndoTransaction(editor, state);
@@ -1511,15 +1505,12 @@ function deleteBlockwise(
   state: BlockwiseVisualState,
   { collapse }: { collapse: boolean }
 ): void {
-  const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
+  const { startRow, endRow, startColumn } = blockBounds(state);
   const edits: TextEdit[] = [];
   const deleted: string[] = [];
 
   for (let row = startRow; row <= endRow; row++) {
-    const range = {
-      start: { row, column: Math.min(startColumn, editor.lineLength(row)) },
-      end: { row, column: Math.min(endColumn + 1, editor.lineLength(row)) },
-    };
+    const range = blockRangeForRow(editor, state, row);
     deleted.push(rangeText(editor, range));
     edits.push({ range, text: "" });
   }
@@ -1586,24 +1577,34 @@ function blockInsertSelections(
   { side }: { side: "start" | "end" }
 ): VimSelection[] {
   const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
-  const column = side === "start" ? startColumn : endColumn + 1;
   const selections: VimSelection[] = [];
   for (let row = startRow; row <= endRow; row++) {
+    const column = side === "start"
+      ? startColumn
+      : state.goal?.type === "endOfLine" ? editor.lineLength(row) : endColumn + 1;
     selections.push(charwiseSelection({ row, column: Math.min(column, editor.lineLength(row)) }));
   }
   return selections;
 }
 
 function blockRanges(editor: VimEditorCapabilities, state: BlockwiseVisualState): TextRange[] {
-  const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
+  const { startRow, endRow } = blockBounds(state);
   const ranges: TextRange[] = [];
   for (let row = startRow; row <= endRow; row++) {
-    ranges.push({
-      start: { row, column: Math.min(startColumn, editor.lineLength(row)) },
-      end: { row, column: Math.min(endColumn + 1, editor.lineLength(row)) },
-    });
+    ranges.push(blockRangeForRow(editor, state, row));
   }
   return ranges;
+}
+
+function blockRangeForRow(editor: VimEditorCapabilities, state: BlockwiseVisualState, row: number): TextRange {
+  const { startColumn, endColumn } = blockBounds(state);
+  const lineLength = editor.lineLength(row);
+  return {
+    start: { row, column: Math.min(startColumn, lineLength) },
+    end: { row, column: state.goal?.type === "endOfLine"
+      ? lineLength
+      : Math.min(endColumn + 1, lineLength) },
+  };
 }
 
 function blockwiseText(editor: VimEditorCapabilities, state: BlockwiseVisualState): string {

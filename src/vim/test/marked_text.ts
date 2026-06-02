@@ -10,7 +10,7 @@
 
 import { InMemoryVimEditor } from "../editor.js";
 import { Vim } from "../vim.js";
-import { Position, VimMode, VimSelection, charwiseSelection, comparePositions, selectionAnchor, selectionHead } from "../state.js";
+import { Position, VimMode, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionAnchor, selectionHead } from "../state.js";
 
 export const cursorMarker = "ˇ";
 export const visualStartMarker = "«";
@@ -120,7 +120,7 @@ export function markedTextFromEditor(editor: InMemoryVimEditor, mode: VimMode["k
         : encodeVisualLineMarkedText(editor.getText(), head);
     case "visualBlock":
       if (selection.type !== "blockwise") return encodeMarkedText({ text: editor.getText(), row: head.row, column: head.column, mode: "normal" });
-      return encodeVisualBlockMarkedText(editor.getText(), selection.anchor, selection.head);
+      return encodeVisualBlockMarkedText(editor.getText(), selection.anchor, selection.head, selection.goal);
     default:
       return encodeMarkedText({ text: editor.getText(), row: head.row, column: head.column, mode: "normal" });
   }
@@ -207,7 +207,7 @@ function encodeVisualLineMarkedText(text: string, cursor: Position): string {
   ]);
 }
 
-function encodeVisualBlockMarkedText(text: string, anchor: Position, head: Position): string {
+function encodeVisualBlockMarkedText(text: string, anchor: Position, head: Position, goal?: VimSelectionGoal): string {
   const lines = text.split("\n");
   const startRow = Math.min(anchor.row, head.row);
   const endRow = Math.max(anchor.row, head.row);
@@ -219,12 +219,14 @@ function encodeVisualBlockMarkedText(text: string, anchor: Position, head: Posit
   for (let row = startRow; row <= endRow; row++) {
     const lineLength = lines[row]?.length ?? 0;
     if (startColumn >= lineLength) {
-      markers.push({ position: { row, column: lineLength }, marker: cursorMarker });
+      if (startColumn === lineLength || row === head.row) {
+        markers.push({ position: { row, column: lineLength }, marker: cursorMarker });
+      }
       continue;
     }
 
     const start = { row, column: startColumn };
-    const end = { row, column: Math.min(endColumn + 1, lineLength) };
+    const end = { row, column: goal?.type === "endOfLine" ? lineLength : Math.min(endColumn + 1, lineLength) };
     markers.push({ position: start, marker: visualStartMarker });
     markers.push({ position: cursorAtStart ? start : end, marker: cursorMarker });
     markers.push({ position: end, marker: visualEndMarker });

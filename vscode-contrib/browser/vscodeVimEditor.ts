@@ -524,14 +524,17 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 		for (let row = startRow; row <= endRow; row++) {
 			const lineLength = this.lineLength(row);
+			if (startColumn > lineLength && row !== selection.head.row) {
+				continue;
+			}
 			const selectionStartColumn = Math.min(startColumn, lineLength) + 1;
-			const selectionEndColumn = Math.min(endColumn + 1, lineLength) + 1;
+			const selectionEndColumn = (selection.goal?.type === 'endOfLine' ? lineLength : Math.min(endColumn + 1, lineLength)) + 1;
 			const positionColumn = cursorAtStart ? selectionStartColumn : selectionEndColumn;
 			const anchorColumn = cursorAtStart ? selectionEndColumn : selectionStartColumn;
 			selections.push(new Selection(row + 1, anchorColumn, row + 1, positionColumn));
 			const cursorColumn = cursorAtStart
 				? Math.min(startColumn, lineLength) + 1
-				: Math.min(endColumn, Math.max(0, lineLength - 1)) + 1;
+				: (selection.goal?.type === 'endOfLine' ? Math.max(0, lineLength - 1) : Math.min(endColumn, Math.max(0, lineLength - 1))) + 1;
 			cursorPositions.push(new VSCodePosition(row + 1, cursorColumn));
 		}
 
