@@ -29,6 +29,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
 	private hiddenFindState: FindReplaceState | undefined;
 	private hiddenFindModel: FindModelBoundToEditorModel | undefined;
+	private viewportControlledByCommand = false;
 	private nativeCommandInProgress = false;
 	private vimEditInProgress = false;
 	private undoTransaction: VimUndoTransaction | undefined;
@@ -197,6 +198,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	revealPrimaryCursorIfOutsideViewport(): void {
+		if (this.viewportControlledByCommand) {
+			this.viewportControlledByCommand = false;
+			return;
+		}
+		if (this.editor.hasPendingScrollAnimation()) {
+			return;
+		}
+
 		const position = this.editor.getPosition();
 		if (position === null) {
 			return;
@@ -210,13 +219,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		const cursorBottom = this.editor.getBottomForLineNumber(position.lineNumber);
 
 		if (cursorTop < bandTop) {
-			this.editor.setScrollTop(scrollTop - (bandTop - cursorTop), ScrollType.Immediate);
+			this.editor.setScrollTop(scrollTop - (bandTop - cursorTop), ScrollType.Smooth);
 		} else if (cursorBottom > bandBottom) {
-			this.editor.setScrollTop(scrollTop + (cursorBottom - bandBottom), ScrollType.Immediate);
+			this.editor.setScrollTop(scrollTop + (cursorBottom - bandBottom), ScrollType.Smooth);
 		}
 	}
 
 	revealCurrentLine(target: HostRevealTarget): void {
+		this.viewportControlledByCommand = true;
 		const position = this.editor.getPosition();
 		if (position === null) {
 			return;
@@ -267,6 +277,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): readonly VimSelection[] {
+		this.viewportControlledByCommand = true;
 		const viewModel = this.editor._getViewModel();
 		const visibleRange = viewModel?.getCompletelyVisibleViewRange();
 		const visibleLineCount = visibleRange === undefined
@@ -277,6 +288,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	scrollByLines(direction: HostDirection, count: number): void {
+		this.viewportControlledByCommand = true;
 		this.editor.trigger('vim', 'editorScroll', {
 			to: direction,
 			by: 'wrappedLine',
