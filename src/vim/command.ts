@@ -32,7 +32,7 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
   const { range, rest } = parseRange(editor, command);
   const trimmedRest = rest.trim();
   if (trimmedRest.length === 0) {
-    if (range !== undefined) moveToLine(editor, range.startRow);
+    if (range !== undefined) moveToLine(editor, range.endRowInclusive);
     return;
   }
 
@@ -92,21 +92,60 @@ function parseGotoLine(command: string): number | undefined {
 }
 
 function parseRange(editor: VimEditorCapabilities, command: string): { range: LineRange | undefined; rest: string } {
-  if (command.startsWith("%")) {
+  if (command.startsWith("%") && command.length > 1 && command[1] !== "+" && command[1] !== "-" && command[1] !== "," && command[1] !== ";") {
     return { range: wholeBufferRange(editor), rest: command.slice(1) };
   }
 
-  const rangeMatch = /^(\d+)(?:[,;](\d+))?(.*)$/.exec(command);
-  if (rangeMatch === null) return { range: undefined, rest: command };
-  if (rangeMatch[2] === undefined && rangeMatch[3].trim().length === 0) {
-    return { range: undefined, rest: command };
+  const first = parseAddress(editor, command, 0);
+  if (first === undefined) return { range: undefined, rest: command };
+
+  let nextIndex = first.nextIndex;
+  let endRow = first.row;
+  if (command[nextIndex] === "," || command[nextIndex] === ";") {
+    const second = parseAddress(editor, command, nextIndex + 1);
+    if (second !== undefined) {
+      endRow = second.row;
+      nextIndex = second.nextIndex;
+    }
   }
-  const startRow = Number(rangeMatch[1]) - 1;
-  const endRow = rangeMatch[2] === undefined ? startRow : Number(rangeMatch[2]) - 1;
+
   return {
-    range: normalizeLineRange(editor, startRow, endRow),
-    rest: rangeMatch[3],
+    range: normalizeLineRange(editor, first.row, endRow),
+    rest: command.slice(nextIndex),
   };
+}
+
+function parseAddress(editor: VimEditorCapabilities, command: string, startIndex: number): { row: number; nextIndex: number } | undefined {
+  let index = startIndex;
+  let row: number;
+  if (command[index] === "%") {
+    row = editor.lineCount() - 1;
+    index++;
+  } else if (command[index] === ".") {
+    row = selectionHead(editor.getSelections()[0]).row;
+    index++;
+  } else {
+    const match = /^\d+/.exec(command.slice(index));
+    if (match !== null) {
+      row = Number(match[0]) - 1;
+      index += match[0].length;
+    } else if (command[index] === "+" || command[index] === "-") {
+      row = selectionHead(editor.getSelections()[0]).row;
+    } else {
+      return undefined;
+    }
+  }
+
+  while (command[index] === "+" || command[index] === "-") {
+    const sign = command[index] === "+" ? 1 : -1;
+    index++;
+    const match = /^\d+/.exec(command.slice(index));
+    const offset = match === null ? 1 : Number(match[0]);
+    if (match !== null) index += match[0].length;
+    row += sign * offset;
+  }
+
+  return { row, nextIndex: index };
 }
 
 function currentLineRange(editor: VimEditorCapabilities, count: number): LineRange {

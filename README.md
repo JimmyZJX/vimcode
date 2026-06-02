@@ -44,7 +44,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 374 enabled tests.
+  - `npm test -- --runInBand` passes with 375 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -65,7 +65,7 @@ Implemented first-slice behavior:
 - unnamed register and lowercase named-register prefixes for the current yank/delete/change/paste subset
 - `/...<enter>` and `?...<enter>` regex search with smart-case matching, `n`/`N` repeat, `*`/`#` word search, and search-as-operator ranges through a VSCode-native search capability boundary; pending search input uses a small single-line editor for cursor navigation, deletion, and clipboard paste while VSCode find decorations are updated without revealing the native Find widget, seeded with the last query while empty, and cleared after the Vim search commits
 - first surround operators: `ys`, `yss`, `ds`, `cs`, and visual `S` for word/motion/quote/bracket ranges
-- first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, count override for repeated operator motions, `ctrl-a`/`ctrl-x` increment/decrement for decimal/hex/binary numbers, and `:` commands for goto, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
+- first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, count override for repeated operator motions, `ctrl-a`/`ctrl-x` increment/decrement for decimal/hex/binary numbers, and `:` commands for goto, line offsets, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
 - first macro slice: `q{register}` recording, `@{register}` / `@@` replay, counted replay, and `Q` replay-last for focused fixtures
 - first VSCode-hosted command slice: normal-mode `u`/`ctrl-r`, `ctrl-o`/`ctrl-i`, `gj`/`gk`, folded-line `j`/`k`, `ctrl-y`/`ctrl-e`, and `ctrl-u`/`ctrl-d`/`ctrl-b`/`ctrl-f` delegate to host editor/workbench capabilities
 - numbered/special register slice: register `0` and `1`-`9` storage/rotation for linewise deletes, small-delete `-`, black-hole `_`, search `/`, uppercase append registers, counted `p`/`P`, and linewise paste repeat basics
