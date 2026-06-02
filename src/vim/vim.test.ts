@@ -481,6 +481,17 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 1, column: 0 });
   });
 
+  it("supports VSCodeVim-style gh hover", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["g", "h"]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "editor.action.showHover", args: [] },
+    ]);
+  });
+
   it("supports write ex commands", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor);
@@ -1328,6 +1339,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.modeName).toBe("vim:normal");
     expect(head(editor)).toEqual({ row: 1, column: 2 });
+  });
+
+  it("extends visual-line mode with ctrl-d", () => {
+    const editor = new InMemoryVimEditor("one\ntwo\nthree\nfour\nfive\nsix");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["V", "ctrl-d"]);
+
+    expect(vim.modeName).toBe("vim:visualLine");
+    expect(editor.getSelections()).toEqual([
+      { type: "linewise", anchorLine: 0, headLine: 3, cursor: { row: 3, column: 0 }, goal: { type: "modelColumn", column: 0 } },
+    ]);
   });
 
   it("supports horizontal motions in visual-line mode", () => {

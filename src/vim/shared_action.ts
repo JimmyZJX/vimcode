@@ -58,6 +58,7 @@ const bindings: ReadonlyMap<string, SharedAction> = new Map([
   ["ctrl-f", { type: "page", key: "ctrl-f" }],
   ["ctrl-b", { type: "page", key: "ctrl-b" }],
   ["K", { type: "native", command: "editor.action.showHover" }],
+  ["g h", { type: "native", command: "editor.action.showHover" }],
   ["g d", { type: "native", command: "editor.action.revealDefinition" }],
   ["g D", { type: "native", command: "editor.action.goToDeclaration" }],
   ["g y", { type: "native", command: "editor.action.goToTypeDefinition" }],

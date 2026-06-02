@@ -30,6 +30,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private hiddenFindState: FindReplaceState | undefined;
 	private hiddenFindModel: FindModelBoundToEditorModel | undefined;
 	private viewportControlledByCommand = false;
+	private viewportRevealRequestId = 0;
 	private nativeCommandInProgress = false;
 	private vimEditInProgress = false;
 	private undoTransaction: VimUndoTransaction | undefined;
@@ -202,9 +203,6 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.viewportControlledByCommand = false;
 			return;
 		}
-		if (this.editor.hasPendingScrollAnimation()) {
-			return;
-		}
 
 		const position = this.editor.getPosition();
 		if (position === null) {
@@ -219,10 +217,22 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		const cursorBottom = this.editor.getBottomForLineNumber(position.lineNumber);
 
 		if (cursorTop < bandTop) {
-			this.editor.setScrollTop(scrollTop - (bandTop - cursorTop), ScrollType.Smooth);
+			this.scheduleViewportReveal(scrollTop - (bandTop - cursorTop));
 		} else if (cursorBottom > bandBottom) {
-			this.editor.setScrollTop(scrollTop + (cursorBottom - bandBottom), ScrollType.Smooth);
+			this.scheduleViewportReveal(scrollTop + (cursorBottom - bandBottom));
 		}
+	}
+
+	private scheduleViewportReveal(targetScrollTop: number): void {
+		const requestId = ++this.viewportRevealRequestId;
+		// Defer until after VSCode has finished processing the selection/cursor event for
+		// this command. Applying the smooth scroll synchronously can be overwritten by
+		// editor scroll stabilization, especially for visual selections.
+		queueMicrotask(() => {
+			if (requestId === this.viewportRevealRequestId) {
+				this.editor.setScrollTop(targetScrollTop, ScrollType.Smooth);
+			}
+		});
 	}
 
 	revealCurrentLine(target: HostRevealTarget): void {
@@ -265,8 +275,15 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
 			const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
 			const targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
-			if (extend && selection.type === 'charwise') {
-				return extendCharwiseSelection(this, selection, targetPosition, goal);
+			if (extend) {
+				switch (selection.type) {
+					case 'charwise':
+						return extendCharwiseSelection(this, selection, targetPosition, goal);
+					case 'linewise':
+						return { ...selection, headLine: targetPosition.row, cursor: targetPosition, goal };
+					case 'blockwise':
+						return { ...selection, head: targetPosition, cursor: targetPosition, goal };
+				}
 			}
 			// VSCode model positions are between characters and can point one column
 			// past the final character. Normal Vim cursors live on a character, except
@@ -277,7 +294,6 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): readonly VimSelection[] {
-		this.viewportControlledByCommand = true;
 		const viewModel = this.editor._getViewModel();
 		const visibleRange = viewModel?.getCompletelyVisibleViewRange();
 		const visibleLineCount = visibleRange === undefined

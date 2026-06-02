@@ -344,13 +344,30 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       const rowDelta = direction === "up" ? -count : count;
       const row = Math.max(0, Math.min(head.row + rowDelta, this.lineCount() - 1));
       const next = normalCursorPosition(this, { row, column: modelColumnForGoal(this, row, goal) });
-      if (extend && selection.type === "charwise") {
-        return {
-          ...selection,
-          head: exclusiveVisualHead(this, next),
-          cursor: next,
-          goal,
-        };
+      if (extend) {
+        switch (selection.type) {
+          case "charwise":
+            return {
+              ...selection,
+              head: exclusiveVisualHead(this, next),
+              cursor: next,
+              goal,
+            };
+          case "linewise":
+            return {
+              ...selection,
+              headLine: next.row,
+              cursor: next,
+              goal,
+            };
+          case "blockwise":
+            return {
+              ...selection,
+              head: next,
+              cursor: next,
+              goal,
+            };
+        }
       }
       return { ...charwiseSelection(next), goal };
     });

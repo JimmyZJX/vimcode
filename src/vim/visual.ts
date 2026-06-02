@@ -630,7 +630,30 @@ export class VisualMode {
 
   adoptSelectionFromHost(): void {
     const selection = this.editor.getSelections()[0];
-    if (selection?.type === "charwise") this.adoptCharwiseSelection(selection, { render: false, allowEmpty: true });
+    if (selection === undefined) return;
+    switch (selection.type) {
+      case "charwise":
+        this.adoptCharwiseSelection(selection, { render: false, allowEmpty: true });
+        return;
+      case "linewise":
+        this.state = {
+          kind: "linewise",
+          anchorLine: selection.anchorLine,
+          headLine: selection.headLine,
+          headColumn: selection.cursor?.column ?? 0,
+          cursor: selection.cursor,
+          goal: selection.goal,
+        };
+        return;
+      case "blockwise":
+        this.state = {
+          kind: "blockwise",
+          anchor: selection.anchor,
+          head: selection.cursor ?? selection.head,
+          goal: selection.goal,
+        };
+        return;
+    }
   }
 
   private adoptCharwiseSelection(
