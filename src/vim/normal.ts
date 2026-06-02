@@ -278,6 +278,13 @@ export class NormalMode {
       return handled();
     }
 
+    if (key === "%") {
+      const percent = this.takeCount(undefined);
+      if (percent !== undefined) {
+        return handled({ enterInsert: this.applyMotion({ type: "goToPercentage", percent }, 1) });
+      }
+    }
+
     const motion = motionForKey(key);
     if (motion !== undefined) {
       return handled({ enterInsert: this.applyMotion(motion, this.takeCount(1)) });

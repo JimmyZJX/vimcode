@@ -44,7 +44,7 @@ Done in this branch:
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 372 enabled tests.
+  - `npm test -- --runInBand` passes with 374 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -54,7 +54,7 @@ Implemented first-slice behavior:
 - pending operators
 - first text-object grammar: operator + `i`/`a` + `w`/`W`, simple quote/bracket objects, and first paragraph/sentence objects
 - visual mode slice: charwise `v`, visual-line `V`, and visual-block `ctrl-v` motions plus visual `d`/`x`, `y`, `c`/`s`, `iw`/`iW`, `p`/`P`, block `I`/`A` insert, optional VSCodeVim-compatible visual/visual-line multiline `I`/`A`, and other-end block movement for the enabled Zed fixtures
-- motions: `h`, `j`, `k`, `l`, `space`, `w`, `W`, `e`, `E`, `b`, `B`, `ge`, `gE`, `0`, `^`, `$`, `+`, `-`, `enter`, `gg`, `G`, `g_`, `f`, `F`, `t`, `T`, `;`, `,`, `%`, `]}`, `])`, `[{`, `[(`, `}`, `{`, `)`, `(`, and local mark jumps
+- motions: `h`, `j`, `k`, `l`, `space`, `w`, `W`, `e`, `E`, `b`, `B`, `ge`, `gE`, `0`, `^`, `$`, `+`, `-`, `enter`, `gg`, `G`, `g_`, `f`, `F`, `t`, `T`, `;`, `,`, `%`, counted `%`, `]}`, `])`, `[{`, `[(`, `}`, `{`, `)`, `(`, and local mark jumps
 - operators: `d`, `c`, `y`, including expanded basic `d`/`c` coverage for `0`, `h`, `l`, `$`, vertical linewise motions, `gg`, `G`, and `cc`
 - line operators: `dd`, `cc`, `yy`
 - motion operators: `dw`, `de`, `cw`, `ce`, `yw`

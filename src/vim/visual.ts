@@ -391,6 +391,11 @@ export class VisualMode {
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
+    if (key === "%" && this.countBuffer.length > 0) {
+      this.applyVisualMotion(state, { type: "goToPercentage", percent: this.takeCount(1) }, 1, { displayLine: false });
+      return handled();
+    }
+
     if (key === "%" && state.kind === "charwise") {
       const head = matchingPositionFromLine(this.editor, state.head);
       this.state = {

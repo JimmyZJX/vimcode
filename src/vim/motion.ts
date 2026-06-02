@@ -62,6 +62,7 @@ export type Motion =
   | { type: "previousSentence" }
   | { type: "endOfParagraph" }
   | { type: "startOfParagraph" }
+  | { type: "goToPercentage"; percent: number }
   | { type: "jump"; position: Position; line: boolean }
   | { type: "searchMatch"; range: TextRange }
   | FindMotion;
@@ -379,6 +380,8 @@ export function applyMotionOnce(
       return endOfParagraphMotion(editor, clipped, 1);
     case "startOfParagraph":
       return startOfParagraphMotion(editor, clipped, 1);
+    case "goToPercentage":
+      return goToPercentage(editor, clipped, motion.percent);
     case "jump":
       return motion.line ? firstNonWhitespace(editor, motion.position.row) : normalCursorPosition(editor, motion.position);
     case "searchMatch":
@@ -457,7 +460,7 @@ export function applyMotionWithGoal(
     const row = Math.max(0, Math.min(start.row + count - 1, editor.lineCount() - 1));
     return { position: lastNonWhitespace(editor, row) };
   }
-  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "jump" || motion.type === "searchMatch") {
+  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "goToPercentage" || motion.type === "jump" || motion.type === "searchMatch") {
     if (motion.type === "nextSentence") return { position: sentenceForward(editor, start, count) };
     if (motion.type === "previousSentence") return { position: sentenceBackward(editor, start, count) };
     if (motion.type === "endOfParagraph") return { position: endOfParagraphMotion(editor, start, count) };
@@ -547,7 +550,7 @@ export function motionRange(
     }
     return orderedRange(start, nextPosition(editor, end) ?? end);
   }
-  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "goToPercentage" || motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
     return orderedRange(start, end);
   }
   if (motion.type === "searchMatch") {
@@ -643,6 +646,11 @@ function documentText(editor: VimEditorCapabilities): string {
   const lines: string[] = [];
   for (let row = 0; row < editor.lineCount(); row++) lines.push(editor.line(row));
   return lines.join("\n");
+}
+
+function goToPercentage(editor: VimEditorCapabilities, start: Position, percent: number): Position {
+  const row = Math.max(0, Math.min(editor.lineCount() - 1, Math.floor(editor.lineCount() * percent / 100)));
+  return normalCursorPosition(editor, { row, column: start.column });
 }
 
 // Zed: `motion::start_of_paragraph` / `end_of_paragraph`. Paragraphs are runs of
