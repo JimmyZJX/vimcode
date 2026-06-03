@@ -58,11 +58,15 @@ export class SearchState {
   }
 
   start(backwards: boolean, editor: VimEditorCapabilities): void {
+    editor.beginSearchPreview();
     this.pending = { backwards, input: new SingleLineEditor("") };
     this.updatePendingSearchUi(editor);
   }
 
-  clearPending(): void {
+  clearPending(editor?: VimEditorCapabilities, { restoreViewport = false }: { restoreViewport?: boolean } = {}): void {
+    if (this.pending !== undefined) {
+      editor?.endSearchPreview({ restoreViewport });
+    }
     this.pending = undefined;
   }
 
@@ -91,6 +95,7 @@ export class SearchState {
           ? searchOptionsForQuery(query ?? "")
           : this.last?.options ?? searchOptionsForQuery(query ?? "");
       this.pending = undefined;
+      editor.endSearchPreview({ restoreViewport: false });
       if (query !== undefined && query.length > 0) {
         return this.setLast(query, backwards, registers, editor, options);
       }
@@ -116,11 +121,15 @@ export class SearchState {
       pendingQuery.length === 0
         ? this.last?.options ?? searchOptionsForQuery(query)
         : searchOptionsForQuery(query);
-    editor.updateSearch(
+    const direction = this.pending.backwards ? "backward" : "forward";
+    editor.updateSearch(query, direction, { ...options, reveal: true });
+    const match = editor.findSearchMatch(
       query,
-      this.pending.backwards ? "backward" : "forward",
-      { ...options, reveal: true }
+      selectionHead(editor.getSelections()[0]),
+      direction,
+      options
     );
+    if (match !== undefined) editor.revealRange(match);
   }
 
   setLast(

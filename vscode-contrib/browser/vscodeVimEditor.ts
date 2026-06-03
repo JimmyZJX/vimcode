@@ -28,9 +28,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
+	private searchPreviewViewport: { scrollTop: number; scrollLeft: number } | undefined;
 	private hiddenFindState: FindReplaceState | undefined;
 	private hiddenFindModel: FindModelBoundToEditorModel | undefined;
 	private viewportControlledByCommand = false;
+	private skipNextPrimaryReveal = false;
 	private viewportRevealRequestId = 0;
 	private nativeCommandInProgress = false;
 	private vimEditInProgress = false;
@@ -224,6 +226,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	revealPrimaryCursorIfOutsideViewport(): void {
+		if (this.skipNextPrimaryReveal) {
+			this.skipNextPrimaryReveal = false;
+			return;
+		}
 		if (this.viewportControlledByCommand) {
 			this.viewportControlledByCommand = false;
 			return;
@@ -245,6 +251,39 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.scheduleViewportReveal(scrollTop - (bandTop - cursorTop));
 		} else if (cursorBottom > bandBottom) {
 			this.scheduleViewportReveal(scrollTop + (cursorBottom - bandBottom));
+		}
+	}
+
+	revealRange(range: TextRange): void {
+		const scrollTop = this.editor.getScrollTop();
+		const viewportHeight = this.editor.getLayoutInfo().height;
+		const viewportBottom = scrollTop + viewportHeight;
+		const rangeTop = this.editor.getTopForPosition(range.start.row + 1, range.start.column + 1);
+		const rangeBottom = this.editor.getBottomForLineNumber(range.end.row + 1);
+
+		if (rangeTop < scrollTop) {
+			this.scheduleViewportReveal(rangeTop);
+		} else if (rangeBottom > viewportBottom) {
+			this.scheduleViewportReveal(scrollTop + (rangeBottom - viewportBottom));
+		}
+	}
+
+	beginSearchPreview(): void {
+		if (this.searchPreviewViewport !== undefined) {
+			return;
+		}
+		this.searchPreviewViewport = {
+			scrollTop: this.editor.getScrollTop(),
+			scrollLeft: this.editor.getScrollLeft(),
+		};
+	}
+
+	endSearchPreview({ restoreViewport = false }: { restoreViewport?: boolean } = {}): void {
+		const viewport = this.searchPreviewViewport;
+		this.searchPreviewViewport = undefined;
+		if (restoreViewport && viewport !== undefined) {
+			this.editor.setScrollPosition(viewport, ScrollType.Immediate);
+			this.skipNextPrimaryReveal = true;
 		}
 	}
 
@@ -411,6 +450,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	detachFromModel(): void {
+		this.endSearchPreview({ restoreViewport: false });
 		this.clearSearchHighlights();
 		this.setInsertPendingText(undefined);
 		this.closeUndoTransaction({ pushUndoStop: false });

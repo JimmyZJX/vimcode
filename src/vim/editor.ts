@@ -63,6 +63,7 @@ export interface VimEditorCapabilities {
   executeNativeCommand(command: string, args?: readonly unknown[], options?: NativeCommandOptions): void;
   isExecutingNativeCommand?(): boolean;
   revealPrimaryCursorIfOutsideViewport(): void;
+  revealRange(range: TextRange): void;
   revealCurrentLine(target: HostRevealTarget): void;
   executeFoldCommand(command: HostFoldCommand): void;
   moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
@@ -73,6 +74,8 @@ export interface VimEditorCapabilities {
   // highlights, and find-widget state share one source of truth. Locally, the
   // fake editor implements this as a model-buffer query while VSCode backs it
   // with the native find controller/model.
+  beginSearchPreview(): void;
+  endSearchPreview(options?: { restoreViewport?: boolean }): void;
   updateSearch(query: string, direction: SearchDirection, options?: SearchOptions): void;
   findSearchMatch(query: string, start: Position, direction: SearchDirection, options?: SearchOptions): SearchMatch | undefined;
   clearSearchHighlights(): void;
@@ -296,6 +299,8 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   revealPrimaryCursorIfOutsideViewport(): void {}
 
+  revealRange(_range: TextRange): void {}
+
   revealCurrentLine(_target: HostRevealTarget): void {}
 
   executeFoldCommand(_command: HostFoldCommand): void {}
@@ -316,6 +321,10 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   scrollByLines(_direction: HostDirection, _count: number): void {}
+
+  beginSearchPreview(): void {}
+
+  endSearchPreview(_options: { restoreViewport?: boolean } = {}): void {}
 
   updateSearch(_query: string, _direction: SearchDirection, _options: SearchOptions = {}): void {}
 

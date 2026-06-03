@@ -3,7 +3,7 @@ import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
 import { Vim, VimModelState, runKeys } from "./vim.js";
 import type { VimSystemClipboard } from "./registers.js";
-import { charwiseSelection, selectionHead } from "./state.js";
+import { TextRange, charwiseSelection, selectionHead } from "./state.js";
 
 function head(editor: InMemoryVimEditor) {
   return selectionHead(editor.getSelections()[0]);
@@ -35,9 +35,29 @@ class FakeAsyncClipboard implements VimSystemClipboard {
 
 class SearchTrackingEditor extends InMemoryVimEditor {
   clearSearchHighlightsCount = 0;
+  revealPrimaryCursorCount = 0;
+  searchPreviewStartCount = 0;
+  searchPreviewEndOptions: { restoreViewport?: boolean }[] = [];
+  revealedRanges: TextRange[] = [];
 
   override clearSearchHighlights(): void {
     this.clearSearchHighlightsCount++;
+  }
+
+  override revealPrimaryCursorIfOutsideViewport(): void {
+    this.revealPrimaryCursorCount++;
+  }
+
+  override beginSearchPreview(): void {
+    this.searchPreviewStartCount++;
+  }
+
+  override endSearchPreview(options: { restoreViewport?: boolean } = {}): void {
+    this.searchPreviewEndOptions.push(options);
+  }
+
+  override revealRange(range: TextRange): void {
+    this.revealedRanges.push(range);
   }
 }
 
@@ -1281,6 +1301,46 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["/", "a", "l", "p", "h", "space", "b", "e", "t", "a", "ctrl-left", "delete", "enter"]);
 
     expect(vim.readRegister("/")).toBe("alph eta");
+  });
+
+  it("reveals pending search matches before enter without moving the cursor", () => {
+    const editor = new SearchTrackingEditor("one two one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/"]);
+    editor.revealedRanges = [];
+
+    runKeys(vim, ["t"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+    expect(editor.revealedRanges[editor.revealedRanges.length - 1]).toEqual({
+      start: { row: 0, column: 4 },
+      end: { row: 0, column: 5 },
+    });
+
+    runKeys(vim, ["w"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+    expect(editor.revealedRanges[editor.revealedRanges.length - 1]).toEqual({
+      start: { row: 0, column: 4 },
+      end: { row: 0, column: 6 },
+    });
+
+    runKeys(vim, ["enter"]);
+
+    expect(editor.searchPreviewStartCount).toBe(1);
+    expect(editor.searchPreviewEndOptions).toEqual([{ restoreViewport: false }]);
+  });
+
+  it("keeps the original cursor and restores search preview viewport after escaping pending search", () => {
+    const editor = new SearchTrackingEditor("one two one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/", "t", "<escape>"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+    expect(editor.clearSearchHighlightsCount).toBeGreaterThan(0);
+    expect(editor.searchPreviewEndOptions).toContainEqual({ restoreViewport: true });
   });
 
   it("lets unknown ctrl chords fall through in search mode", () => {

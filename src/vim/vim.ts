@@ -289,7 +289,7 @@ export class Vim {
     this.remapResolver.clearPending();
     this.normalChordResolver.clearPending();
     this.modelState.marks.clearPending();
-    this.globalState.search.clearPending();
+    this.globalState.search.clearPending(this.editor, { restoreViewport: closeSearchHighlights });
     this.searchOriginMode = undefined;
     if (closeSearchHighlights && searchWasPending) this.editor.clearSearchHighlights();
     this.pendingCommand = undefined;
