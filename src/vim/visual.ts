@@ -72,6 +72,7 @@ type BlockwiseVisualState = {
 
 type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualState;
 type PendingTextObject = { around: boolean };
+type VisualKeyHandler = (state: VisualState) => VisualKeyResult | undefined;
 function handled(
   {
     exitVisual = false,
@@ -99,6 +100,51 @@ export class VisualMode {
   private pendingPrefix: "g" | undefined;
   private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
+
+  private readonly keyHandlers: ReadonlyMap<string, VisualKeyHandler> = new Map<string, VisualKeyHandler>([
+    ["g", () => this.startGPrefix()],
+    ["\"", () => this.startRegisterPrefix()],
+    ["v", state => this.toggleCharwise(state)],
+    ["V", state => this.toggleLinewise(state)],
+    ["ctrl-v", state => this.toggleBlockwise(state)],
+    ["I", state => this.insertBeforeOrAtBlockStart(state)],
+    ["A", state => this.insertAfterOrAtBlockEnd(state)],
+    ["S", state => this.startSurround(state)],
+    ["J", state => this.joinWithWhitespace(state)],
+    [">", state => this.indentKey(state, ">")],
+    ["<", state => this.indentKey(state, "<")],
+    ["=", state => this.indentKey(state, "=")],
+    ["ctrl-a", state => this.incrementOrDecrement(state, "ctrl-a")],
+    ["ctrl-x", state => this.incrementOrDecrement(state, "ctrl-x")],
+    ["u", state => this.convertKey(state, "u")],
+    ["U", state => this.convertKey(state, "U")],
+    ["~", state => this.convertKey(state, "~")],
+    ["i", () => this.startTextObject(false)],
+    ["a", () => this.startTextObject(true)],
+    ["o", state => this.otherEnd(state, { rowAware: true })],
+    ["O", state => this.otherEnd(state, { rowAware: false })],
+    ["Y", state => this.yankLinewiseKey(state)],
+    ["y", state => this.yankKey(state)],
+    ["D", state => this.deleteToLineEndKey(state)],
+    ["d", state => this.deleteKey(state)],
+    ["x", state => this.deleteKey(state)],
+    ["c", state => this.changeKey(state)],
+    ["s", state => this.changeKey(state)],
+    ["p", state => this.pasteKey(state)],
+    ["P", state => this.pasteKey(state)],
+    ["%", state => this.percentKey(state)],
+  ]);
+
+  private readonly gKeyHandlers: ReadonlyMap<string, VisualKeyHandler> = new Map<string, VisualKeyHandler>([
+    ["j", state => this.gDisplayLineMotion(state, "down")],
+    ["k", state => this.gDisplayLineMotion(state, "up")],
+    ["J", state => this.gJoin(state)],
+    ["u", state => this.gConvert(state, "u")],
+    ["U", state => this.gConvert(state, "U")],
+    ["~", state => this.gConvert(state, "~")],
+    ["ctrl-a", state => this.gIncrementOrDecrement(state, "ctrl-a")],
+    ["ctrl-x", state => this.gIncrementOrDecrement(state, "ctrl-x")],
+  ]);
 
   private visualMultilineInsert: boolean;
 
@@ -210,193 +256,201 @@ export class VisualMode {
 
     if (this.pendingPrefix === "g") {
       this.pendingPrefix = undefined;
-      if (key === "j" || key === "k") {
-        this.applyVisualMotion(state, { type: key === "j" ? "down" : "up" }, this.takeCount(1), { displayLine: true });
-        return handled({ nextMode: "visual" });
-      }
-      if (key === "J") {
-        this.join(state, { insertWhitespace: false });
-        return handled({ exitVisual: true, nextMode: "normal" });
-      }
-      if (key === "u" || key === "U" || key === "~") {
-        this.convert(state, convertTargetForKey(key));
-        return handled({ exitVisual: true, nextMode: "normal" });
-      }
-      if (key === "ctrl-a" || key === "ctrl-x") {
-        const delta = (key === "ctrl-a" ? 1 : -1) * this.takeCount(1);
-        incrementNumbers(this.editor, delta, delta);
-        this.state = undefined;
-        this.editor.setCursorStyle("block");
-        return handled({ exitVisual: true, nextMode: "normal" });
-      }
+      const handler = this.gKeyHandlers.get(key);
+      const result = handler?.(state);
+      if (result !== undefined) return result;
       this.exit();
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
-    if (key === "g") {
-      this.pendingPrefix = "g";
+    const handler = this.keyHandlers.get(key);
+    const result = handler?.(state);
+    if (result !== undefined) return result;
+
+    const motion = visualMotionForKey(key);
+    if (motion !== undefined) {
+      this.applyVisualMotion(state, motion, this.takeCount(1), { displayLine: false });
       return handled();
     }
 
-    if (key === '"') {
-      this.pendingRegister = true;
-      return handled();
-    }
+    this.exit();
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
 
-    if (key === "v") {
-      if (state.kind === "charwise") {
-        this.exit();
-        return handled({ exitVisual: true, nextMode: "normal" });
-      }
-      this.state = stateToCharwise(this.editor, state);
-      this.syncEditorSelection();
-      return handled({ nextMode: "visual" });
-    }
+  private startGPrefix(): VisualKeyResult {
+    this.pendingPrefix = "g";
+    return handled();
+  }
 
-    if (key === "V") {
-      if (state.kind === "linewise") {
-        this.exit();
-        return handled({ exitVisual: true, nextMode: "normal" });
-      }
-      this.state = stateToLinewise(state);
-      this.syncEditorSelection();
-      return handled({ nextMode: "visualLine" });
-    }
+  private startRegisterPrefix(): VisualKeyResult {
+    this.pendingRegister = true;
+    return handled();
+  }
 
-    if (key === "ctrl-v") {
-      if (state.kind === "blockwise") {
-        this.exit();
-        return handled({ exitVisual: true, nextMode: "normal" });
-      }
-      this.state = stateToBlockwise(state);
-      this.syncEditorSelection();
-      return handled({ nextMode: "visualBlock" });
+  private toggleCharwise(state: VisualState): VisualKeyResult {
+    if (state.kind === "charwise") {
+      this.exit();
+      return handled({ exitVisual: true, nextMode: "normal" });
     }
+    this.state = stateToCharwise(this.editor, state);
+    this.syncEditorSelection();
+    return handled({ nextMode: "visual" });
+  }
 
-    if (state.kind === "blockwise" && (key === "I" || key === "A")) {
+  private toggleLinewise(state: VisualState): VisualKeyResult {
+    if (state.kind === "linewise") {
+      this.exit();
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+    this.state = stateToLinewise(state);
+    this.syncEditorSelection();
+    return handled({ nextMode: "visualLine" });
+  }
+
+  private toggleBlockwise(state: VisualState): VisualKeyResult {
+    if (state.kind === "blockwise") {
+      this.exit();
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+    this.state = stateToBlockwise(state);
+    this.syncEditorSelection();
+    return handled({ nextMode: "visualBlock" });
+  }
+
+  private insertBeforeOrAtBlockStart(state: VisualState): VisualKeyResult | undefined {
+    return this.enterVisualInsert(state, "start");
+  }
+
+  private insertAfterOrAtBlockEnd(state: VisualState): VisualKeyResult | undefined {
+    return this.enterVisualInsert(state, "end");
+  }
+
+  private enterVisualInsert(state: VisualState, side: "start" | "end"): VisualKeyResult | undefined {
+    if (state.kind === "blockwise") {
       this.rememberState(state);
       beginVisualUndoTransaction(this.editor, state);
-      enterBlockInsert(this.editor, this.registers, undefined, state, {
-        deleteSelection: false,
-        side: key === "I" ? "start" : "end",
-      });
+      enterBlockInsert(this.editor, this.registers, undefined, state, { deleteSelection: false, side });
       this.state = undefined;
       this.editor.setCursorStyle("line");
       return handled({ exitVisual: true, enterInsert: true });
     }
 
-    if (this.visualMultilineInsert && (state.kind === "charwise" || state.kind === "linewise") && (key === "I" || key === "A")) {
+    if (this.visualMultilineInsert && (state.kind === "charwise" || state.kind === "linewise")) {
       this.rememberState(state);
       beginVisualUndoTransaction(this.editor, state);
-      this.editor.setSelections(visualMultilineInsertSelections(this.editor, state, { side: key === "I" ? "start" : "end" }));
+      this.editor.setSelections(visualMultilineInsertSelections(this.editor, state, { side }));
       this.state = undefined;
       this.editor.setCursorStyle("line");
       return handled({ exitVisual: true, enterInsert: true });
     }
 
-    if (key === "S") {
-      this.pendingSurround = {
-        ranges: visualSurroundRanges(this.editor, state),
-        linewise: state.kind === "linewise",
-        undoSelectionsBefore: visualCurrentUndoSelections(this.editor, state),
-      };
-      return handled();
-    }
+    return undefined;
+  }
 
-    if (key === "J") {
-      this.join(state, { insertWhitespace: true });
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
+  private startSurround(state: VisualState): VisualKeyResult {
+    this.pendingSurround = {
+      ranges: visualSurroundRanges(this.editor, state),
+      linewise: state.kind === "linewise",
+      undoSelectionsBefore: visualCurrentUndoSelections(this.editor, state),
+    };
+    return handled();
+  }
 
-    if (key === ">" || key === "<" || key === "=") {
-      const direction = indentDirectionForKey(key);
-      const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction);
-      this.indent(state, direction);
-      return handled({ exitVisual: true, nextMode: "normal", repeatAction });
-    }
+  private joinWithWhitespace(state: VisualState): VisualKeyResult {
+    this.join(state, { insertWhitespace: true });
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
 
-    if (key === "ctrl-a" || key === "ctrl-x") {
-      incrementNumbers(this.editor, (key === "ctrl-a" ? 1 : -1) * this.takeCount(1));
-      this.state = undefined;
-      this.editor.setCursorStyle("block");
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
+  private indentKey(state: VisualState, key: ">" | "<" | "="): VisualKeyResult {
+    const direction = indentDirectionForKey(key);
+    const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction);
+    this.indent(state, direction);
+    return handled({ exitVisual: true, nextMode: "normal", repeatAction });
+  }
 
-    if (key === "u" || key === "U" || key === "~") {
-      this.convert(state, convertTargetForKey(key));
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
+  private incrementOrDecrement(state: VisualState, key: "ctrl-a" | "ctrl-x"): VisualKeyResult {
+    incrementNumbers(this.editor, (key === "ctrl-a" ? 1 : -1) * this.takeCount(1));
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
 
-    if (key === "i" || key === "a") {
-      this.pendingTextObject = { around: key === "a" };
-      return handled();
-    }
+  private convertKey(state: VisualState, key: "u" | "U" | "~"): VisualKeyResult {
+    this.convert(state, convertTargetForKey(key));
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
 
-    if (key === "o" || key === "O") {
-      if (state.kind === "charwise") {
-        this.setCharwiseStates(currentCharwiseVisualStates(this.editor, state).map(state => otherEndState(state, { rowAware: key === "o" }) as CharwiseVisualState));
-      } else {
-        this.state = otherEndState(state, { rowAware: key === "o" });
-        this.syncEditorSelection();
-      }
-      return handled();
-    }
+  private startTextObject(around: boolean): VisualKeyResult {
+    this.pendingTextObject = { around };
+    return handled();
+  }
 
-    if (key === "Y") {
-      const cursor = this.yankLinewise(state, this.takeSelectedRegister());
-      if (cursor !== undefined) this.rememberState(state);
-      this.state = undefined;
-      this.editor.setCursorStyle("block");
-      this.editor.setSelections([charwiseSelection(cursor ?? visualStartPosition(state))]);
-      return handled({ exitVisual: true, nextMode: "normal" });
+  private otherEnd(state: VisualState, { rowAware }: { rowAware: boolean }): VisualKeyResult {
+    if (state.kind === "charwise") {
+      this.setCharwiseStates(currentCharwiseVisualStates(this.editor, state).map(state => otherEndState(state, { rowAware }) as CharwiseVisualState));
+    } else {
+      this.state = otherEndState(state, { rowAware });
+      this.syncEditorSelection();
     }
+    return handled();
+  }
 
-    if (key === "y") {
-      this.yank(state, this.takeSelectedRegister());
-      this.finishNormalAtVisualStarts(state);
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
+  private yankLinewiseKey(state: VisualState): VisualKeyResult {
+    const cursor = this.yankLinewise(state, this.takeSelectedRegister());
+    if (cursor !== undefined) this.rememberState(state);
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    this.editor.setSelections([charwiseSelection(cursor ?? visualStartPosition(state))]);
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
 
-    if (key === "D") {
-      this.rememberState(state);
-      this.deleteToLineEnd(state, this.takeSelectedRegister());
-      this.state = undefined;
-      this.editor.setCursorStyle("block");
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
+  private yankKey(state: VisualState): VisualKeyResult {
+    this.yank(state, this.takeSelectedRegister());
+    this.finishNormalAtVisualStarts(state);
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
 
-    if (key === "d" || key === "x") {
-      const selection = visualRepeatSelectionForState(this.editor, state);
-      this.rememberState(state);
-      this.delete(state, this.takeSelectedRegister());
-      this.state = undefined;
-      this.editor.setCursorStyle("block");
-      return handled({ exitVisual: true, nextMode: "normal", repeatAction: { selection, action: { type: "delete" } } });
-    }
+  private deleteToLineEndKey(state: VisualState): VisualKeyResult {
+    this.rememberState(state);
+    this.deleteToLineEnd(state, this.takeSelectedRegister());
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
 
-    if (key === "c" || key === "s") {
-      const selection = visualRepeatSelectionForState(this.editor, state);
-      this.rememberState(state);
-      this.change(state, this.takeSelectedRegister());
-      this.state = undefined;
-      this.editor.setCursorStyle("line");
-      return handled({ exitVisual: true, enterInsert: true, nextMode: "insert", pendingRepeatChange: { selection } });
-    }
+  private deleteKey(state: VisualState): VisualKeyResult {
+    const selection = visualRepeatSelectionForState(this.editor, state);
+    this.rememberState(state);
+    this.delete(state, this.takeSelectedRegister());
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal", repeatAction: { selection, action: { type: "delete" } } });
+  }
 
-    if (key === "p" || key === "P") {
-      const pastedState = this.paste(state, this.takeSelectedRegister());
-      this.rememberState(pastedState ?? state);
-      this.state = undefined;
-      this.editor.setCursorStyle("block");
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
+  private changeKey(state: VisualState): VisualKeyResult {
+    const selection = visualRepeatSelectionForState(this.editor, state);
+    this.rememberState(state);
+    this.change(state, this.takeSelectedRegister());
+    this.state = undefined;
+    this.editor.setCursorStyle("line");
+    return handled({ exitVisual: true, enterInsert: true, nextMode: "insert", pendingRepeatChange: { selection } });
+  }
 
-    if (key === "%" && this.countBuffer.length > 0) {
+  private pasteKey(state: VisualState): VisualKeyResult {
+    const pastedState = this.paste(state, this.takeSelectedRegister());
+    this.rememberState(pastedState ?? state);
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
+
+  private percentKey(state: VisualState): VisualKeyResult | undefined {
+    if (this.countBuffer.length > 0) {
       this.applyVisualMotion(state, { type: "goToPercentage", percent: this.takeCount(1) }, 1, { displayLine: false });
       return handled();
     }
 
-    if (key === "%" && state.kind === "charwise") {
+    if (state.kind === "charwise") {
       const head = matchingPositionFromLine(this.editor, state.head);
       this.state = {
         ...state,
@@ -408,13 +462,29 @@ export class VisualMode {
       return handled();
     }
 
-    const motion = visualMotionForKey(key);
-    if (motion !== undefined) {
-      this.applyVisualMotion(state, motion, this.takeCount(1), { displayLine: false });
-      return handled();
-    }
+    return undefined;
+  }
 
-    this.exit();
+  private gDisplayLineMotion(state: VisualState, direction: "up" | "down"): VisualKeyResult {
+    this.applyVisualMotion(state, { type: direction }, this.takeCount(1), { displayLine: true });
+    return handled({ nextMode: "visual" });
+  }
+
+  private gJoin(state: VisualState): VisualKeyResult {
+    this.join(state, { insertWhitespace: false });
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
+
+  private gConvert(state: VisualState, key: "u" | "U" | "~"): VisualKeyResult {
+    this.convert(state, convertTargetForKey(key));
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
+
+  private gIncrementOrDecrement(_state: VisualState, key: "ctrl-a" | "ctrl-x"): VisualKeyResult {
+    const delta = (key === "ctrl-a" ? 1 : -1) * this.takeCount(1);
+    incrementNumbers(this.editor, delta, delta);
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 

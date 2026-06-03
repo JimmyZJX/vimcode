@@ -43,6 +43,8 @@ type PendingSurround =
   | { type: "changeFrom" }
   | { type: "changeTo"; fromKey: string };
 
+type NormalKeyHandler = () => NormalKeyResult;
+
 export type NormalKeyResult = {
   keyResult: KeyResult;
   enterInsert: boolean;
@@ -69,6 +71,31 @@ export class NormalMode {
   private pendingReplaceCount: number | undefined;
   private pendingReplaceDigraph: { count: number; first?: string } | undefined;
   private selectedRegister: RegisterName | undefined;
+
+  private readonly keyHandlers: ReadonlyMap<string, NormalKeyHandler> = new Map([
+    ["i", () => this.insertBefore()],
+    ["a", () => this.insertAfter()],
+    ["I", () => this.insertFirstNonWhitespace()],
+    ["A", () => this.insertEndOfLine()],
+    ["o", () => this.openLineBelow()],
+    ["O", () => this.openLineAbove()],
+    ["r", () => this.startReplace()],
+    ["s", () => this.substituteCharacters()],
+    ["S", () => this.substituteLines()],
+    ["C", () => this.changeToEndOfLine()],
+    ["D", () => this.deleteToEndOfLine()],
+    ["X", () => this.deleteLeft()],
+    ["J", () => this.joinLines()],
+    ["ctrl-a", () => this.increment()],
+    ["ctrl-x", () => this.decrement()],
+    ["x", () => this.deleteRight()],
+    ["delete", () => this.deleteRight()],
+    ["~", () => this.toggleCase()],
+    ["p", () => this.pasteAfter()],
+    ["P", () => this.pasteBefore()],
+    ["+", () => this.moveDownFirstNonWhitespace()],
+    ["-", () => this.moveUpFirstNonWhitespace()],
+  ]);
 
   constructor(
     private readonly editor: VimEditorCapabilities,
@@ -323,102 +350,136 @@ export class NormalMode {
       return handled();
     }
 
-    switch (key) {
-      case "i": {
-        const insertCount = this.takeCount(1);
-        this.selectedRegister = undefined;
-        enterInsertAtSelections(this.editor, (pos) => pos);
-        return handled({ enterInsert: true, insertCount });
-      }
-      case "a": {
-        const insertCount = this.takeCount(1);
-        this.selectedRegister = undefined;
-        enterInsertAtSelections(this.editor, (pos) => ({
-          row: pos.row,
-          column: Math.min(pos.column + 1, this.editor.lineLength(pos.row)),
-        }));
-        return handled({ enterInsert: true, insertCount });
-      }
-      case "I": {
-        const insertCount = this.takeCount(1);
-        this.selectedRegister = undefined;
-        enterInsertAtSelections(this.editor, (pos) => firstNonWhitespace(this.editor.line(pos.row), pos.row));
-        return handled({ enterInsert: true, insertCount });
-      }
-      case "A": {
-        const insertCount = this.takeCount(1);
-        this.selectedRegister = undefined;
-        enterInsertAtSelections(this.editor, (pos) => ({ row: pos.row, column: this.editor.lineLength(pos.row) }));
-        return handled({ enterInsert: true, insertCount });
-      }
-      case "o": {
-        const insertCount = this.takeCount(1);
-        this.selectedRegister = undefined;
-        openLine(this.editor, { above: false }, keepUndoTransactionOpen());
-        return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
-      }
-      case "O": {
-        const insertCount = this.takeCount(1);
-        this.selectedRegister = undefined;
-        openLine(this.editor, { above: true }, keepUndoTransactionOpen());
-        return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
-      }
-      case "r":
-        this.pendingReplaceCount = this.takeCount(1);
-        return handled();
-      case "s": {
-        const count = this.takeCount(1);
-        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count, keepUndoTransactionOpen());
-        enterInsertAtSelections(this.editor, (pos) => pos);
-        return handled({ enterInsert: true });
-      }
-      case "S":
-        this.handleLineOperator("change");
-        return handled({ enterInsert: true });
-      case "C":
-        changeMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
-        return handled({ enterInsert: true });
-      case "D":
-        deleteMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
-        return handled();
-      case "X":
-        deleteCharactersBefore(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
-        return handled();
-      case "J":
-        this.joinFromSelections({ insertWhitespace: true });
-        return handled();
-      case "ctrl-a":
-        incrementNumbers(this.editor, this.takeCount(1));
-        return handled();
-      case "ctrl-x":
-        incrementNumbers(this.editor, -this.takeCount(1));
-        return handled();
-      case "x":
-      case "delete":
-        deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
-        return handled();
-      case "~":
-        toggleCaseCharacters(this.editor, this.takeCount(1));
-        this.selectedRegister = undefined;
-        return handled();
-      case "p":
-        paste(this.editor, this.registers, this.takeSelectedRegister(), { before: false, count: this.takeCount(1) });
-        return handled();
-      case "P":
-        paste(this.editor, this.registers, this.takeSelectedRegister(), { before: true, count: this.takeCount(1) });
-        return handled();
-      case "+":
-        this.moveToLineFirstNonWhitespace(this.takeCount(1));
-        this.selectedRegister = undefined;
-        return handled();
-      case "-":
-        this.moveToLineFirstNonWhitespace(-this.takeCount(1));
-        this.selectedRegister = undefined;
-        return handled();
-      default:
-        this.clearPending();
-        return handled();
-    }
+    const handler = this.keyHandlers.get(key);
+    if (handler !== undefined) return handler();
+
+    this.clearPending();
+    return handled();
+  }
+
+  private insertBefore(): NormalKeyResult {
+    const insertCount = this.takeCount(1);
+    this.selectedRegister = undefined;
+    enterInsertAtSelections(this.editor, (pos) => pos);
+    return handled({ enterInsert: true, insertCount });
+  }
+
+  private insertAfter(): NormalKeyResult {
+    const insertCount = this.takeCount(1);
+    this.selectedRegister = undefined;
+    enterInsertAtSelections(this.editor, (pos) => ({
+      row: pos.row,
+      column: Math.min(pos.column + 1, this.editor.lineLength(pos.row)),
+    }));
+    return handled({ enterInsert: true, insertCount });
+  }
+
+  private insertFirstNonWhitespace(): NormalKeyResult {
+    const insertCount = this.takeCount(1);
+    this.selectedRegister = undefined;
+    enterInsertAtSelections(this.editor, (pos) => firstNonWhitespace(this.editor.line(pos.row), pos.row));
+    return handled({ enterInsert: true, insertCount });
+  }
+
+  private insertEndOfLine(): NormalKeyResult {
+    const insertCount = this.takeCount(1);
+    this.selectedRegister = undefined;
+    enterInsertAtSelections(this.editor, (pos) => ({ row: pos.row, column: this.editor.lineLength(pos.row) }));
+    return handled({ enterInsert: true, insertCount });
+  }
+
+  private openLineBelow(): NormalKeyResult {
+    const insertCount = this.takeCount(1);
+    this.selectedRegister = undefined;
+    openLine(this.editor, { above: false }, keepUndoTransactionOpen());
+    return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
+  }
+
+  private openLineAbove(): NormalKeyResult {
+    const insertCount = this.takeCount(1);
+    this.selectedRegister = undefined;
+    openLine(this.editor, { above: true }, keepUndoTransactionOpen());
+    return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
+  }
+
+  private startReplace(): NormalKeyResult {
+    this.pendingReplaceCount = this.takeCount(1);
+    return handled();
+  }
+
+  private substituteCharacters(): NormalKeyResult {
+    const count = this.takeCount(1);
+    deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count, keepUndoTransactionOpen());
+    enterInsertAtSelections(this.editor, (pos) => pos);
+    return handled({ enterInsert: true });
+  }
+
+  private substituteLines(): NormalKeyResult {
+    this.handleLineOperator("change");
+    return handled({ enterInsert: true });
+  }
+
+  private changeToEndOfLine(): NormalKeyResult {
+    changeMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
+    return handled({ enterInsert: true });
+  }
+
+  private deleteToEndOfLine(): NormalKeyResult {
+    deleteMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
+    return handled();
+  }
+
+  private deleteLeft(): NormalKeyResult {
+    deleteCharactersBefore(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
+    return handled();
+  }
+
+  private joinLines(): NormalKeyResult {
+    this.joinFromSelections({ insertWhitespace: true });
+    return handled();
+  }
+
+  private increment(): NormalKeyResult {
+    incrementNumbers(this.editor, this.takeCount(1));
+    return handled();
+  }
+
+  private decrement(): NormalKeyResult {
+    incrementNumbers(this.editor, -this.takeCount(1));
+    return handled();
+  }
+
+  private deleteRight(): NormalKeyResult {
+    deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
+    return handled();
+  }
+
+  private toggleCase(): NormalKeyResult {
+    toggleCaseCharacters(this.editor, this.takeCount(1));
+    this.selectedRegister = undefined;
+    return handled();
+  }
+
+  private pasteAfter(): NormalKeyResult {
+    paste(this.editor, this.registers, this.takeSelectedRegister(), { before: false, count: this.takeCount(1) });
+    return handled();
+  }
+
+  private pasteBefore(): NormalKeyResult {
+    paste(this.editor, this.registers, this.takeSelectedRegister(), { before: true, count: this.takeCount(1) });
+    return handled();
+  }
+
+  private moveDownFirstNonWhitespace(): NormalKeyResult {
+    this.moveToLineFirstNonWhitespace(this.takeCount(1));
+    this.selectedRegister = undefined;
+    return handled();
+  }
+
+  private moveUpFirstNonWhitespace(): NormalKeyResult {
+    this.moveToLineFirstNonWhitespace(-this.takeCount(1));
+    this.selectedRegister = undefined;
+    return handled();
   }
 
   // Zed: `motion::Vim::motion`, which combines counts, forced-motion state,

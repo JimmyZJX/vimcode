@@ -5,8 +5,38 @@
 // - intentional differences: VSCode owns viewport, navigation history, undo/redo, and folding;
 //   this module only maps resolved actions to host capabilities.
 
-import { HostCommand, VimEditorCapabilities } from "../editor.js";
+import { HostCommand, HostFoldCommand, HostRevealTarget, VimEditorCapabilities } from "../editor.js";
 import { NormalChordAction } from "./chord.js";
+
+type ZKeyAction =
+  | { type: "reveal"; target: HostRevealTarget }
+  | { type: "fold"; command: HostFoldCommand };
+
+type HostKeyAction =
+  | { type: "command"; command: HostCommand }
+  | { type: "scroll"; direction: "up" | "down" };
+
+const zKeyActions: ReadonlyMap<string, ZKeyAction> = new Map([
+  ["z", { type: "reveal", target: "center" }],
+  ["t", { type: "reveal", target: "top" }],
+  ["b", { type: "reveal", target: "bottom" }],
+  ["a", { type: "fold", command: "toggle" }],
+  ["o", { type: "fold", command: "open" }],
+  ["c", { type: "fold", command: "close" }],
+  ["O", { type: "fold", command: "openRecursive" }],
+  ["C", { type: "fold", command: "closeRecursive" }],
+  ["R", { type: "fold", command: "openAll" }],
+  ["M", { type: "fold", command: "closeAll" }],
+]);
+
+const hostKeyActions: ReadonlyMap<string, HostKeyAction> = new Map([
+  ["ctrl-o", { type: "command", command: "navigateBack" }],
+  ["ctrl-i", { type: "command", command: "navigateForward" }],
+  ["u", { type: "command", command: "undo" }],
+  ["ctrl-r", { type: "command", command: "redo" }],
+  ["ctrl-y", { type: "scroll", direction: "up" }],
+  ["ctrl-e", { type: "scroll", direction: "down" }],
+]);
 
 export function handleHostAction(
   editor: VimEditorCapabilities,
@@ -23,39 +53,15 @@ export function handleHostAction(
 }
 
 function handleZKey(editor: VimEditorCapabilities, key: string): void {
-  switch (key) {
-    case "z":
-      editor.revealCurrentLine("center");
+  const action = zKeyActions.get(key);
+  if (action === undefined) return;
+  switch (action.type) {
+    case "reveal":
+      editor.revealCurrentLine(action.target);
       return;
-    case "t":
-      editor.revealCurrentLine("top");
+    case "fold":
+      editor.executeFoldCommand(action.command);
       return;
-    case "b":
-      editor.revealCurrentLine("bottom");
-      return;
-    case "a":
-      editor.executeFoldCommand("toggle");
-      return;
-    case "o":
-      editor.executeFoldCommand("open");
-      return;
-    case "c":
-      editor.executeFoldCommand("close");
-      return;
-    case "O":
-      editor.executeFoldCommand("openRecursive");
-      return;
-    case "C":
-      editor.executeFoldCommand("closeRecursive");
-      return;
-    case "R":
-      editor.executeFoldCommand("openAll");
-      return;
-    case "M":
-      editor.executeFoldCommand("closeAll");
-      return;
-    default:
-      return undefined;
   }
 }
 
@@ -64,26 +70,14 @@ function handleHostKey(
   key: string,
   takeCount: (defaultValue: number) => number
 ): HostCommand | undefined {
-  switch (key) {
-    case "ctrl-o":
-      editor.executeHostCommand("navigateBack");
-      return "navigateBack";
-    case "ctrl-i":
-      editor.executeHostCommand("navigateForward");
-      return "navigateForward";
-    case "u":
-      editor.executeHostCommand("undo");
-      return "undo";
-    case "ctrl-r":
-      editor.executeHostCommand("redo");
-      return "redo";
-    case "ctrl-y":
-      editor.scrollByLines("up", takeCount(1));
-      return undefined;
-    case "ctrl-e":
-      editor.scrollByLines("down", takeCount(1));
-      return undefined;
-    default:
+  const action = hostKeyActions.get(key);
+  if (action === undefined) return undefined;
+  switch (action.type) {
+    case "command":
+      editor.executeHostCommand(action.command);
+      return action.command;
+    case "scroll":
+      editor.scrollByLines(action.direction, takeCount(1));
       return undefined;
   }
 }

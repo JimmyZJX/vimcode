@@ -45,6 +45,15 @@ type PendingLiteral =
   | { type: "decimal"; digits: string }
   | { type: "hex"; digits: string; maxDigits: number };
 
+const sharedMotionByKey: ReadonlyMap<Extract<SharedAction, { type: "motion" }>["key"], Motion> = new Map([
+  ["gg", { type: "startOfDocument" }],
+  ["gj", { type: "down", displayLine: true }],
+  ["gk", { type: "up", displayLine: true }],
+  ["g_", { type: "lastNonWhitespace" }],
+  ["ge", { type: "previousWordEnd", bigWord: false }],
+  ["gE", { type: "previousWordEnd", bigWord: true }],
+]);
+
 export type VimStatus = {
   mode: VimMode["kind"];
   pending: boolean;
@@ -92,6 +101,18 @@ export class Vim {
   private insertRepeatSeparator = "";
   private insertOrigin: VimMode["kind"] | undefined;
   private pendingVisualRepeatChange: { selection: RecordedSelection } | undefined;
+  private readonly insertKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
+    ["ctrl-k", () => this.startInsertDigraph()],
+    ["ctrl-v", () => this.startPlainLiteral()],
+    ["ctrl-r", () => this.startInsertRegister()],
+    ["ctrl-w", () => this.deleteInsertPreviousWord()],
+    ["ctrl-u", () => this.deleteInsertLineStart()],
+    ["ctrl-y", () => this.insertCharacterFromAdjacentLine("above")],
+    ["ctrl-e", () => this.insertCharacterFromAdjacentLine("below")],
+  ]);
+  private readonly replaceKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
+    ["ctrl-k", () => this.startReplaceDigraph()],
+  ]);
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
 
@@ -508,30 +529,8 @@ export class Vim {
     }
 
     if (this.modeState.kind === "insert") {
-      if (key === "ctrl-k") {
-        this.pendingDigraph = { target: "insert" };
-        return "handled";
-      }
-      if (key === "ctrl-v") {
-        this.pendingLiteral = { type: "plain" };
-        return "handled";
-      }
-      if (key === "ctrl-r") {
-        this.pendingInsertRegister = true;
-        return "handled";
-      }
-      if (key === "ctrl-w") {
-        deleteToPreviousWord(this.editor, this.insertEditOptions());
-        return "handled";
-      }
-      if (key === "ctrl-u") {
-        deleteToBeginningOfLine(this.editor, this.insertEditOptions());
-        return "handled";
-      }
-      if (key === "ctrl-y" || key === "ctrl-e") {
-        insertCharacterFromAdjacentLine(this.editor, key === "ctrl-y" ? "above" : "below", this.insertEditOptions());
-        return "handled";
-      }
+      const handler = this.insertKeyHandlers.get(key);
+      if (handler !== undefined) return handler();
       const text = insertTextForKey(key);
       if (text !== undefined) {
         insertText(this.editor, text, this.insertEditOptions());
@@ -542,10 +541,8 @@ export class Vim {
     }
 
     if (this.modeState.kind === "replace") {
-      if (key === "ctrl-k") {
-        this.pendingDigraph = { target: "replace" };
-        return "handled";
-      }
+      const handler = this.replaceKeyHandlers.get(key);
+      if (handler !== undefined) return handler();
       const text = insertTextForKey(key);
       if (text !== undefined) {
         replaceModeText(this.editor, text, 1, this.insertEditOptions());
@@ -874,6 +871,41 @@ export class Vim {
     return keepUndoTransactionOpen();
   }
 
+  private startInsertDigraph(): KeyResult {
+    this.pendingDigraph = { target: "insert" };
+    return "handled";
+  }
+
+  private startReplaceDigraph(): KeyResult {
+    this.pendingDigraph = { target: "replace" };
+    return "handled";
+  }
+
+  private startPlainLiteral(): KeyResult {
+    this.pendingLiteral = { type: "plain" };
+    return "handled";
+  }
+
+  private startInsertRegister(): KeyResult {
+    this.pendingInsertRegister = true;
+    return "handled";
+  }
+
+  private deleteInsertPreviousWord(): KeyResult {
+    deleteToPreviousWord(this.editor, this.insertEditOptions());
+    return "handled";
+  }
+
+  private deleteInsertLineStart(): KeyResult {
+    deleteToBeginningOfLine(this.editor, this.insertEditOptions());
+    return "handled";
+  }
+
+  private insertCharacterFromAdjacentLine(side: "above" | "below"): KeyResult {
+    insertCharacterFromAdjacentLine(this.editor, side, this.insertEditOptions());
+    return "handled";
+  }
+
   private shouldResolveRemap(): boolean {
     if (this.remapResolver.isPending()) return true;
     return this.pendingFind === undefined
@@ -944,28 +976,12 @@ export class Vim {
 
   private handleSharedAction(action: SharedAction): void {
     switch (action.type) {
-      case "motion":
+      case "motion": {
         this.globalState.repeat.cancelCurrent();
-        switch (action.key) {
-          case "gg":
-            this.applyMotion({ type: "startOfDocument" }, this.takeCountForMotion(1));
-            return;
-          case "gj":
-            this.applyMotion({ type: "down", displayLine: true }, this.takeCountForMotion(1));
-            return;
-          case "gk":
-            this.applyMotion({ type: "up", displayLine: true }, this.takeCountForMotion(1));
-            return;
-          case "g_":
-            this.applyMotion({ type: "lastNonWhitespace" }, this.takeCountForMotion(1));
-            return;
-          case "ge":
-            this.applyMotion({ type: "previousWordEnd", bigWord: false }, this.takeCountForMotion(1));
-            return;
-          case "gE":
-            this.applyMotion({ type: "previousWordEnd", bigWord: true }, this.takeCountForMotion(1));
-            return;
-        }
+        const motion = sharedMotionByKey.get(action.key);
+        if (motion !== undefined) this.applyMotion(motion, this.takeCountForMotion(1));
+        return;
+      }
       case "normalGKey":
         if (this.modeState.kind === "normal") {
           this.normalMode.handleGKey(action.key);
