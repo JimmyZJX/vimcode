@@ -64,7 +64,9 @@ export type EditorSyncResult = {
   reason: string;
 };
 
-export type PreparedKey = { key: string };
+export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promise<KeyResult> };
+
+type PreparedKey = { key: string };
 
 export { VimGlobalState, VimModelState };
 
@@ -158,12 +160,21 @@ export class Vim {
   }
 
   /** Test helper for asserting the synchronous key preflight decision.
-      Production code should call [prepareKey] and use the returned [PreparedKey]. */
+      Production code should call [handleKey] and run the returned [KeyPlan]. */
   wouldHandleKeyForTest(key: string): boolean {
-    return this.prepareKey(key) !== null;
+    return this.handleKey(key) !== null;
   }
 
-  prepareKey(key: string): PreparedKey | null {
+  handleKey(key: string): KeyPlan | null {
+    const preparedKey = this.prepareKey(key);
+    if (preparedKey === null) return null;
+    return {
+      run: ({ clipboard }: { clipboard?: VimSystemClipboard } = {}) =>
+        this.onKeyAsync(preparedKey.key, { clipboard }),
+    };
+  }
+
+  private prepareKey(key: string): PreparedKey | null {
     const handleOverride = this.handleKeyOverride(key);
     if (handleOverride === false) return null;
     if (handleOverride === true) return { key };

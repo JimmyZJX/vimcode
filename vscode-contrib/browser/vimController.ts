@@ -20,7 +20,7 @@ import type { ITextModel } from '../../../common/model.js';
 import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
-import type { EditorSyncResult } from '../common/vim.js';
+import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
@@ -153,12 +153,6 @@ export class VimController extends Disposable {
 		}
 	}
 
-	private logRemap(message: string): void {
-		if (this.configurationService.getValue<unknown>('vim.debugRemap') === true) {
-			this.logService.info(`[vimcode.remap] ${message}`);
-		}
-	}
-
 	private shouldLogVisual(): boolean {
 		return this.configurationService.getValue<unknown>('vim.debugVisual') === true;
 	}
@@ -224,14 +218,14 @@ export class VimController extends Disposable {
 			return;
 		}
 		const key = keyFromEvent(event);
-		const preparedKey = key === undefined ? null : this.vim.prepareKey(key);
-		if (preparedKey === null || this.shouldLetNativeKeybindingHandle(event)) {
+		const keyPlan = key === undefined ? null : this.vim.handleKey(key);
+		if (keyPlan === null || this.shouldLetNativeKeybindingHandle(event)) {
 			return;
 		}
 
 		event.preventDefault();
 		event.stopPropagation();
-		void this.asyncKeyQueue.enqueue(async () => this.handleVimKey(preparedKey.key)).then(undefined, () => this.syncStatus());
+		void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan)).then(undefined, () => this.syncStatus());
 	}
 
 	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent): boolean {
@@ -276,13 +270,11 @@ export class VimController extends Disposable {
 		});
 	}
 
-	private async handleVimKey(key: string): Promise<void> {
-		this.logRemap(`key start key=${key} status=${formatRemapStatus(this.vim.status)} version=${this.editor.getModel()?.getVersionId() ?? 'none'} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+	private async runVimKeyPlan(keyPlan: KeyPlan): Promise<void> {
 		const clipboard = new ClipboardTransaction(this.vimClipboard);
 		await clipboard.with(async () => {
-			await this.vim.onKeyAsync(key, { clipboard });
+			await keyPlan.run({ clipboard });
 		});
-		this.logRemap(`key after key=${key} status=${formatRemapStatus(this.vim.status)} version=${this.editor.getModel()?.getVersionId() ?? 'none'} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		if (!this.vim.status.pending) {
 			this.vimEditor.revealPrimaryCursorIfOutsideViewport();
 			this.syncEditorState();
@@ -470,19 +462,19 @@ export class VimController extends Disposable {
 		this.clearRemapTimeout();
 		if (!status.remapPending) return;
 		const generation = ++this.remapTimeoutGeneration;
-		this.logRemap(`timer schedule generation=${generation} timeout=${status.remapTimeoutMs} status=${formatRemapStatus(status)}`);
 		this.remapTimeout = setTimeout(() => {
 			this.remapTimeout = undefined;
-			this.logRemap(`timer fire generation=${generation} current=${this.remapTimeoutGeneration} status=${formatRemapStatus(this.vim.status)}`);
 			if (generation !== this.remapTimeoutGeneration) return;
-			void this.asyncKeyQueue.enqueue(async () => this.handleVimKey(RemapTimeoutKey));
+			const keyPlan = this.vim.handleKey(RemapTimeoutKey);
+			if (keyPlan !== null) {
+				void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan));
+			}
 		}, status.remapTimeoutMs);
 	}
 
 	private clearRemapTimeout(): void {
 		this.remapTimeoutGeneration++;
 		if (this.remapTimeout !== undefined) {
-			this.logRemap(`timer clear generation=${this.remapTimeoutGeneration}`);
 			clearTimeout(this.remapTimeout);
 			this.remapTimeout = undefined;
 		}
@@ -550,11 +542,6 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 		default:
 			return `Unknown${suffix}`;
 	}
-}
-
-function formatRemapStatus(status: VimStatus): string {
-	const insertPendingText = status.insertPendingText === undefined ? '' : ` insertPending=${JSON.stringify(status.insertPendingText)}`;
-	return `${status.mode} pending=${status.pending} remapPending=${status.remapPending} chord=${JSON.stringify(status.chord)}${insertPendingText}`;
 }
 
 function formatVSCodeSelections(selections: readonly { selectionStartLineNumber: number; selectionStartColumn: number; positionLineNumber: number; positionColumn: number }[]): string {

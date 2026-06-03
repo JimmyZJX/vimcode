@@ -85,12 +85,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			description: nls.localize('vim.debugVisual', "Log vimcode mouse-selection and visual-mode synchronization decisions."),
 		},
-		'vim.debugRemap': {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.debugRemap', "Log vimcode remap pending-state and timeout decisions."),
-		},
 		'vim.timeout': {
 			type: 'number',
 			default: 1000,
