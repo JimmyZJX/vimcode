@@ -21,6 +21,7 @@ export type VimKeyRemapping = {
 export type RawVimConfiguration = Record<string, unknown>;
 
 export const NoopKey = "<nop>";
+export const RemapTimeoutKey = "<TimeoutFinished>";
 
 export type VimConfiguration = {
   leader: string;
@@ -35,6 +36,7 @@ export type VimConfiguration = {
   handleKeys: Readonly<Record<string, boolean>>;
   useCtrlKeys: boolean;
   useSystemClipboard: boolean;
+  timeout: number;
   visualMultilineInsert: boolean;
 };
 
@@ -51,6 +53,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   handleKeys: {},
   useCtrlKeys: true,
   useSystemClipboard: false,
+  timeout: 1000,
   visualMultilineInsert: true,
 };
 
@@ -78,7 +81,12 @@ export function mergeVimConfiguration(config: Partial<VimConfiguration> = {}): V
     ...config,
     leader: normalizeKey(config.leader ?? defaultVimConfiguration.leader, defaultVimConfiguration.leader),
     handleKeys: normalizeHandleKeys(config.handleKeys ?? defaultVimConfiguration.handleKeys),
+    timeout: normalizeTimeout(config.timeout ?? defaultVimConfiguration.timeout),
   };
+}
+
+function normalizeTimeout(timeout: number): number {
+  return Number.isFinite(timeout) ? Math.max(0, timeout) : defaultVimConfiguration.timeout;
 }
 
 function normalizeHandleKeys(handleKeys: Readonly<Record<string, boolean>>): Readonly<Record<string, boolean>> {
@@ -100,6 +108,7 @@ export type AmbiguousRemapConflict = {
 
 export class RemapResolver {
   private pendingKeys: string[] = [];
+  private pendingAmbiguousMapping: NormalizedRemapping | undefined;
   private readonly mappingsByMode: Record<VimRemapMode, readonly NormalizedRemapping[]>;
   private readonly conflicts: readonly AmbiguousRemapConflict[];
 
@@ -145,37 +154,72 @@ export class RemapResolver {
     return this.pendingKeys.join(" ");
   }
 
+  pendingInsertText(): string | undefined {
+    const key = this.pendingKeys[this.pendingKeys.length - 1];
+    if (key === undefined) return undefined;
+    if (key === "space") return " ";
+    return key.length === 1 ? key : undefined;
+  }
+
   clearPending(): void {
     this.pendingKeys = [];
+    this.pendingAmbiguousMapping = undefined;
   }
 
   handleKey(mode: VimRemapMode, key: string): RemapResolution {
+    if (key === RemapTimeoutKey) {
+      return this.handleTimeout();
+    }
+
     const keys = [...this.pendingKeys, key];
     const mappings = this.mappingsByMode[mode];
     const exact = findLast(mappings, mapping => sameKeys(mapping.before, keys));
+    const hasLongerMatch = mappings.some(mapping => isPrefix(keys, mapping.before) && !sameKeys(mapping.before, keys));
+
     if (exact !== undefined) {
-      this.pendingKeys = [];
+      if (hasLongerMatch) {
+        this.pendingKeys = keys;
+        this.pendingAmbiguousMapping = exact;
+        return { kind: "pending", chord: keys.join(" ") };
+      }
+      this.clearPending();
       return { kind: "matched", mapping: exact };
     }
 
-    if (mappings.some(mapping => isPrefix(keys, mapping.before))) {
+    if (hasLongerMatch) {
       this.pendingKeys = keys;
+      this.pendingAmbiguousMapping = undefined;
       return { kind: "pending", chord: keys.join(" ") };
     }
 
     if (this.pendingKeys.length > 0) {
-      this.pendingKeys = [];
+      const ambiguousMapping = this.pendingAmbiguousMapping;
+      this.clearPending();
+      if (ambiguousMapping !== undefined) {
+        return { kind: "matchedWithReplay", mapping: ambiguousMapping, keys: keys.slice(ambiguousMapping.before.length) };
+      }
       return { kind: "replay", keys };
     }
 
     return { kind: "noMatch" };
+  }
+
+  private handleTimeout(): RemapResolution {
+    const keys = this.pendingKeys;
+    const ambiguousMapping = this.pendingAmbiguousMapping;
+    this.clearPending();
+    if (keys.length === 0) return { kind: "handled" };
+    if (ambiguousMapping !== undefined) return { kind: "matched", mapping: ambiguousMapping };
+    return { kind: "replay", keys };
   }
 }
 
 export type RemapResolution =
   | { kind: "pending"; chord: string }
   | { kind: "matched"; mapping: NormalizedRemapping }
+  | { kind: "matchedWithReplay"; mapping: NormalizedRemapping; keys: readonly string[] }
   | { kind: "replay"; keys: readonly string[] }
+  | { kind: "handled" }
   | { kind: "noMatch" };
 
 export function remapModeForVimMode(mode: VimMode["kind"], { operatorPending }: { operatorPending: boolean }): VimRemapMode {

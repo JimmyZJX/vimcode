@@ -5,7 +5,7 @@ import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
-import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, PositionAffinity } from '../../../common/model.js';
+import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, InjectedTextCursorStops, PositionAffinity } from '../../../common/model.js';
 import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
@@ -24,6 +24,7 @@ type VimUndoTransaction = {
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
+	private readonly insertPendingDecorations: IEditorDecorationsCollection;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
@@ -41,6 +42,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		private readonly logUndo: (message: string) => void = () => undefined
 	) {
 		this.visualLineDecorations = editor.createDecorationsCollection();
+		this.insertPendingDecorations = editor.createDecorationsCollection();
 	}
 
 	lineCount(): number {
@@ -110,6 +112,29 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	setCursorStyle(style: CursorStyle): void {
 		this.editor.updateOptions({ cursorStyle: style === 'line' ? 'line' : style === 'block' ? 'block' : 'underline' });
+	}
+
+	setInsertPendingText(text: string | undefined): void {
+		if (text === undefined || text.length === 0 || !this.editor.hasModel()) {
+			this.insertPendingDecorations.clear();
+			return;
+		}
+		const decorations: IModelDeltaDecoration[] = (this.editor.getSelections() ?? []).map(selection => {
+			const position = selection.getPosition();
+			return {
+				range: Range.fromPositions(position),
+				options: {
+					description: 'vim-insert-pending-text',
+					after: {
+						content: text,
+						inlineClassName: 'ghost-text-decoration',
+						cursorStops: InjectedTextCursorStops.Left,
+					},
+					showIfCollapsed: true,
+				},
+			};
+		});
+		this.insertPendingDecorations.set(decorations);
 	}
 
 	beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void {
@@ -380,12 +405,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	dispose(): void {
+		this.setInsertPendingText(undefined);
 		this.clearSearchHighlights();
 		this.detachFromModel();
 	}
 
 	detachFromModel(): void {
 		this.clearSearchHighlights();
+		this.setInsertPendingText(undefined);
 		this.closeUndoTransaction({ pushUndoStop: false });
 		this.invalidateCachedSelections();
 		this.rememberedSelectionGoals.clear();

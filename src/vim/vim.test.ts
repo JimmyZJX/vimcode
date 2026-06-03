@@ -1,4 +1,4 @@
-import { layeredConfigValue, normalizeKey } from "./config.js";
+import { RemapTimeoutKey, layeredConfigValue, normalizeKey } from "./config.js";
 import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
 import { Vim, VimModelState, runKeys } from "./vim.js";
@@ -446,6 +446,69 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("one");
   });
 
+  it("shows pending insert remap text before the timeout finishes", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [{ before: ["f", "d"], after: ["<Esc>"] }],
+    });
+
+    runKeys(vim, ["A", "f"]);
+
+    expect(vim.modeName).toBe("vim:insert+");
+    expect(vim.status.insertPendingText).toBe("f");
+    expect(editor.getText()).toBe("one");
+  });
+
+  it("replays pending insert remap text when the timeout finishes", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [{ before: ["f", "d"], after: ["<Esc>"] }],
+    });
+
+    runKeys(vim, ["A", "f", RemapTimeoutKey]);
+
+    expect(vim.modeName).toBe("vim:insert");
+    expect(vim.status.insertPendingText).toBeUndefined();
+    expect(editor.getText()).toBe("onef");
+  });
+
+  it("waits on ambiguous remaps until timeout or a longer match", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [
+        { before: ["f"], after: ["F"] },
+        { before: ["f", "d"], after: ["<Esc>"] },
+      ],
+    });
+
+    runKeys(vim, ["A", "f"]);
+    expect(editor.getText()).toBe("one");
+    expect(vim.status.insertPendingText).toBe("f");
+
+    runKeys(vim, [RemapTimeoutKey]);
+    expect(editor.getText()).toBe("oneF");
+    expect(vim.modeName).toBe("vim:insert");
+
+    runKeys(vim, ["f", "d"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("oneF");
+  });
+
+  it("runs a shorter ambiguous remap before replaying the disambiguating key", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [
+        { before: ["f"], after: ["F"] },
+        { before: ["f", "d"], after: ["<Esc>"] },
+      ],
+    });
+
+    runKeys(vim, ["A", "f", "x"]);
+
+    expect(vim.modeName).toBe("vim:insert");
+    expect(editor.getText()).toBe("oneFx");
+  });
+
   it("supports <Nop> insert remaps", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor, {
@@ -553,7 +616,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 1 });
   });
 
-  it("executes short ambiguous remaps immediately and exposes conflicts for logging", () => {
+  it("waits for ambiguous remaps and exposes conflicts for logging", () => {
     const editor = new InMemoryVimEditor("abc");
     const vim = new Vim(editor, {
       normalModeKeyBindingsNonRecursive: [
@@ -563,6 +626,11 @@ describe("Zed-inspired Vim core smoke tests", () => {
     });
 
     runKeys(vim, ["q"]);
+
+    expect(vim.modeName).toBe("vim:normal+");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+
+    runKeys(vim, [RemapTimeoutKey]);
 
     expect(head(editor)).toEqual({ row: 0, column: 1 });
     expect(vim.ambiguousRemapConflicts()).toEqual([

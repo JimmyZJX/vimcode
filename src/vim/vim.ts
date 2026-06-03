@@ -51,6 +51,9 @@ export type VimStatus = {
   operator: Operator | undefined;
   chord: string;
   text: string;
+  remapPending: boolean;
+  remapTimeoutMs: number;
+  insertPendingText: string | undefined;
 };
 
 export type EditorSyncResult = {
@@ -134,6 +137,9 @@ export class Vim {
       operator: this.modeState.kind === "normal" ? this.normalMode.pendingOperatorName() : undefined,
       chord,
       text: chord.length > 0 ? `${mode.toUpperCase()} ${chord}` : mode.toUpperCase(),
+      remapPending: this.remapResolver.isPending(),
+      remapTimeoutMs: this.configuration.timeout,
+      insertPendingText: mode === "insert" || mode === "replace" ? this.remapResolver.pendingInsertText() : undefined,
     };
   }
 
@@ -375,8 +381,14 @@ export class Vim {
         case "matched":
           this.executeRemapping(resolution.mapping);
           return "handled";
+        case "matchedWithReplay":
+          this.executeRemapping(resolution.mapping);
+          for (const replayKey of resolution.keys) this.onKeyInternal(replayKey, { allowRemap: true });
+          return "handled";
         case "replay":
-          for (const replayKey of resolution.keys) this.onKeyInternal(replayKey, { allowRemap: false });
+          this.replayTimedOutRemapKeys(resolution.keys);
+          return "handled";
+        case "handled":
           return "handled";
         case "noMatch":
           break;
@@ -853,6 +865,12 @@ export class Vim {
   private currentRemapMode() {
     return remapModeForVimMode(this.modeState.kind, {
       operatorPending: this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined,
+    });
+  }
+
+  private replayTimedOutRemapKeys(keys: readonly string[]): void {
+    keys.forEach((key, index) => {
+      this.onKeyInternal(key, { allowRemap: index > 0 });
     });
   }
 

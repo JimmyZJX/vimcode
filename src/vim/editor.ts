@@ -53,6 +53,7 @@ export interface VimEditorCapabilities {
   getSelections(): readonly VimSelection[];
   setSelections(selections: readonly VimSelection[]): void;
   setCursorStyle(style: CursorStyle): void;
+  setInsertPendingText(text: string | undefined): void;
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options?: ApplyEditsOptions): void;
   beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void;
@@ -127,6 +128,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private pendingUndoSnapshot: UndoSnapshot | undefined;
   private pendingUndoSelectionsBefore: VimSelection[] | undefined;
   public cursorStyle: CursorStyle = "block";
+  public insertPendingText: string | undefined;
   public readonly nativeCommands: { command: string; args: readonly unknown[] }[] = [];
 
   constructor(text = "") {
@@ -215,6 +217,10 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   setCursorStyle(style: CursorStyle): void {
     this.cursorStyle = style;
+  }
+
+  setInsertPendingText(text: string | undefined): void {
+    this.insertPendingText = text;
   }
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {

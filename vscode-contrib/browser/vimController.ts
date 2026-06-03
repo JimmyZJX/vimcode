@@ -17,7 +17,7 @@ import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { CursorChangeReason, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import type { ITextModel } from '../../../common/model.js';
-import { VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
+import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
 import type { EditorSyncResult } from '../common/vim.js';
@@ -68,7 +68,8 @@ export class VimController extends Disposable {
 	private readonly vimOperatorContext: IContextKey<string>;
 	private readonly vimChordContext: IContextKey<string>;
 	private enabled = false;
-	private lastAmbiguousRemapWarningSignature = '';
+	private remapTimeout: ReturnType<typeof setTimeout> | undefined;
+	private remapTimeoutGeneration = 0;
 	private pendingUndoRedoContentSync = false;
 	private readonly originalCursorStyle = this.editor.getRawOptions().cursorStyle;
 	private readonly _onDidChangeStatus = this._register(new Emitter<VimStatus>());
@@ -121,6 +122,7 @@ export class VimController extends Disposable {
 	}
 
 	override dispose(): void {
+		this.clearRemapTimeout();
 		this.vimEditor.dispose();
 		this.syncDisabledStatus();
 		this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
@@ -137,7 +139,6 @@ export class VimController extends Disposable {
 		if (enabled) {
 			this.attachCurrentModelState();
 			this.warnIfVSCodeVimEnabled();
-			this.logAmbiguousRemapConflicts();
 			this.syncEditorState();
 		} else {
 			this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
@@ -146,22 +147,15 @@ export class VimController extends Disposable {
 		}
 	}
 
-	private logAmbiguousRemapConflicts(): void {
-		const conflicts = this.vim.ambiguousRemapConflicts();
-		const messages = [...new Set(conflicts.map(conflict =>
-			`vim.${conflict.mode} remap ${formatKeySequence(conflict.shorter)} shadows longer remap ${formatKeySequence(conflict.longer)}. vimcode executes the shorter mapping immediately and does not wait for ambiguous-map timeout.`
-		))];
-		const signature = messages.join('\n');
-		if (signature === this.lastAmbiguousRemapWarningSignature) return;
-		this.lastAmbiguousRemapWarningSignature = signature;
-		for (const message of messages) {
-			this.logService.warn(`[vimcode] ${message}`);
-		}
-	}
-
 	private logUndo(message: string): void {
 		if (this.configurationService.getValue<unknown>('vim.debugUndo') === true) {
 			this.logService.info(`[vimcode.undo] ${message}`);
+		}
+	}
+
+	private logRemap(message: string): void {
+		if (this.configurationService.getValue<unknown>('vim.debugRemap') === true) {
+			this.logService.info(`[vimcode.remap] ${message}`);
 		}
 	}
 
@@ -197,6 +191,7 @@ export class VimController extends Disposable {
 		const vimConfig = this.configurationService.getValue<Record<string, unknown>>('vim') ?? {};
 		const useCtrlKeys = this.configurationService.getValue<unknown>('vim.useCtrlKeys');
 		const useSystemClipboard = this.configurationService.getValue<unknown>('vim.useSystemClipboard');
+		const timeout = this.configurationService.getValue<unknown>('vim.timeout');
 		const visualMultilineInsert = this.configurationService.getValue<unknown>('vim.visualMultilineInsert');
 		return {
 			leader: typeof vimConfig.leader === 'string' ? vimConfig.leader : undefined,
@@ -206,6 +201,9 @@ export class VimController extends Disposable {
 			useSystemClipboard: typeof useSystemClipboard === 'boolean'
 				? useSystemClipboard
 				: typeof vimConfig.useSystemClipboard === 'boolean' ? vimConfig.useSystemClipboard : undefined,
+			timeout: typeof timeout === 'number'
+				? timeout
+				: typeof vimConfig.timeout === 'number' ? vimConfig.timeout : undefined,
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean'
 				? visualMultilineInsert
 				: typeof vimConfig.visualMultilineInsert === 'boolean' ? vimConfig.visualMultilineInsert : undefined,
@@ -278,10 +276,12 @@ export class VimController extends Disposable {
 	}
 
 	private async handleVimKey(key: string): Promise<void> {
+		this.logRemap(`key start key=${key} status=${formatRemapStatus(this.vim.status)} version=${this.editor.getModel()?.getVersionId() ?? 'none'} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		const clipboard = new ClipboardTransaction(this.vimClipboard);
 		await clipboard.with(async () => {
 			await this.vim.onKeyAsync(key, { clipboard });
 		});
+		this.logRemap(`key after key=${key} status=${formatRemapStatus(this.vim.status)} version=${this.editor.getModel()?.getVersionId() ?? 'none'} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		if (!this.vim.status.pending) {
 			this.vimEditor.revealPrimaryCursorIfOutsideViewport();
 			this.syncEditorState();
@@ -420,6 +420,8 @@ export class VimController extends Disposable {
 
 	private syncDetachedStatus(): void {
 		const status = this.vim.status;
+		this.clearRemapTimeout();
+		this.vimEditor.setInsertPendingText(undefined);
 		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 		this.vimActiveContext.set(true);
 		this.vimModeContext.set(vscodeVimModeContextValue(status));
@@ -431,6 +433,8 @@ export class VimController extends Disposable {
 	}
 
 	private syncDisabledStatus(): void {
+		this.clearRemapTimeout();
+		this.vimEditor.setInsertPendingText(undefined);
 		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 		this.vimActiveContext.set(false);
 		this.vimModeContext.set('Disabled');
@@ -456,7 +460,31 @@ export class VimController extends Disposable {
 		this.vimOperatorContext.set(status.operator ?? '');
 		this.vimChordContext.set(status.chord);
 		this.vimEditor.setCursorStyle(status.mode === 'insert' ? 'line' : 'block');
+		this.vimEditor.setInsertPendingText(status.insertPendingText);
+		this.updateRemapTimeout(status);
 		this._onDidChangeStatus.fire(status);
+	}
+
+	private updateRemapTimeout(status: VimStatus): void {
+		this.clearRemapTimeout();
+		if (!status.remapPending) return;
+		const generation = ++this.remapTimeoutGeneration;
+		this.logRemap(`timer schedule generation=${generation} timeout=${status.remapTimeoutMs} status=${formatRemapStatus(status)}`);
+		this.remapTimeout = setTimeout(() => {
+			this.remapTimeout = undefined;
+			this.logRemap(`timer fire generation=${generation} current=${this.remapTimeoutGeneration} status=${formatRemapStatus(this.vim.status)}`);
+			if (generation !== this.remapTimeoutGeneration) return;
+			void this.asyncKeyQueue.enqueue(async () => this.handleVimKey(RemapTimeoutKey));
+		}, status.remapTimeoutMs);
+	}
+
+	private clearRemapTimeout(): void {
+		this.remapTimeoutGeneration++;
+		if (this.remapTimeout !== undefined) {
+			this.logRemap(`timer clear generation=${this.remapTimeoutGeneration}`);
+			clearTimeout(this.remapTimeout);
+			this.remapTimeout = undefined;
+		}
 	}
 }
 
@@ -523,8 +551,9 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 	}
 }
 
-function formatKeySequence(keys: readonly string[]): string {
-	return keys.join(' ');
+function formatRemapStatus(status: VimStatus): string {
+	const insertPendingText = status.insertPendingText === undefined ? '' : ` insertPending=${JSON.stringify(status.insertPendingText)}`;
+	return `${status.mode} pending=${status.pending} remapPending=${status.remapPending} chord=${JSON.stringify(status.chord)}${insertPendingText}`;
 }
 
 function formatVSCodeSelections(selections: readonly { selectionStartLineNumber: number; selectionStartColumn: number; positionLineNumber: number; positionColumn: number }[]): string {
