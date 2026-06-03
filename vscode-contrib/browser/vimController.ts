@@ -224,13 +224,14 @@ export class VimController extends Disposable {
 			return;
 		}
 		const key = keyFromEvent(event);
-		if (!key || !this.vim.shouldHandleKey(key) || this.shouldLetNativeKeybindingHandle(event)) {
+		const preparedKey = key === undefined ? null : this.vim.prepareKey(key);
+		if (preparedKey === null || this.shouldLetNativeKeybindingHandle(event)) {
 			return;
 		}
 
 		event.preventDefault();
 		event.stopPropagation();
-		void this.asyncKeyQueue.enqueue(async () => this.handleVimKey(key)).then(undefined, () => this.syncStatus());
+		void this.asyncKeyQueue.enqueue(async () => this.handleVimKey(preparedKey.key)).then(undefined, () => this.syncStatus());
 	}
 
 	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent): boolean {

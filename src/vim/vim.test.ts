@@ -92,8 +92,8 @@ describe("Zed-inspired Vim core smoke tests", () => {
   it("uses vim.useCtrlKeys for unmapped built-in Ctrl keys", () => {
     const vim = new Vim(new InMemoryVimEditor("one\ntwo"), { useCtrlKeys: false });
 
-    expect(vim.shouldHandleKey("ctrl-d")).toBe(false);
-    expect(vim.shouldHandleKey("ctrl-h")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-d")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-h")).toBe(false);
   });
 
   it("keeps local marks in attached model state", () => {
@@ -120,7 +120,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       handleKeys: { "<C-d>": true },
     });
 
-    expect(vim.shouldHandleKey("ctrl-d")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("ctrl-d")).toBe(true);
   });
 
   it("handles mapped Ctrl keys even when they are not built-in Vim commands", () => {
@@ -130,7 +130,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       normalModeKeyBindingsNonRecursive: [{ before: ["<C-h>"], after: ["l"] }],
     });
 
-    expect(vim.shouldHandleKey("ctrl-h")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("ctrl-h")).toBe(true);
     runKeys(vim, ["ctrl-h"]);
 
     expect(head(editor)).toEqual({ row: 0, column: 1 });
@@ -139,14 +139,14 @@ describe("Zed-inspired Vim core smoke tests", () => {
   it("does not handle unmapped unsupported Ctrl keys by default", () => {
     const vim = new Vim(new InMemoryVimEditor("abc"));
 
-    expect(vim.shouldHandleKey("ctrl-h")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-h")).toBe(false);
   });
 
   it("delegates Zed-style normal-mode multicursor bindings to VSCode actions", () => {
     const editor = new InMemoryVimEditor("one one one");
     const vim = new Vim(editor);
 
-    expect(vim.shouldHandleKey("ctrl-n")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("ctrl-n")).toBe(true);
     runKeys(vim, ["ctrl-n", "g", "l", "g", "L", "g", ">", "g", "<", "g", "a"]);
 
     expect(vim.modeName).toBe("vim:normal");
@@ -291,7 +291,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor);
 
-    expect(vim.shouldHandleKey("<escape>")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("<escape>")).toBe(false);
     expect(vim.onKey("<escape>")).toBe("not-handled");
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.getSelections()).toEqual([
@@ -304,7 +304,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
 
     runKeys(vim, ["d"]);
-    expect(vim.shouldHandleKey("<escape>")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("<escape>")).toBe(true);
     expect(vim.onKey("<escape>")).toBe("handled");
 
     expect(vim.modeName).toBe("vim:normal");
@@ -527,6 +527,19 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.modeName).toBe("vim:insert");
     expect(editor.getText()).toBe("oneFx");
+  });
+
+  it("lets unrelated insert keys fall through even when insert remaps exist", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [{ before: ["f", "d"], after: ["<Esc>"] }],
+    });
+
+    runKeys(vim, ["A"]);
+
+    expect(vim.wouldHandleKeyForTest("backspace")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("left")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("tab")).toBe(false);
   });
 
   it("supports <Nop> insert remaps", () => {
@@ -1349,7 +1362,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["/"]);
 
-    expect(vim.shouldHandleKey("ctrl-a")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(false);
     expect(vim.onKey("ctrl-a")).toBe("not-handled");
     expect(vim.status.chord).toBe("/|");
   });

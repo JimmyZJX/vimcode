@@ -64,6 +64,8 @@ export type EditorSyncResult = {
   reason: string;
 };
 
+export type PreparedKey = { key: string };
+
 export { VimGlobalState, VimModelState };
 
 // Zed: `vim::Vim`. This class is the local main state holder; GPUI
@@ -155,39 +157,51 @@ export class Vim {
     return this.remapResolver.handleKeyOverride(key);
   }
 
-  shouldHandleKey(key: string): boolean {
+  /** Test helper for asserting the synchronous key preflight decision.
+      Production code should call [prepareKey] and use the returned [PreparedKey]. */
+  wouldHandleKeyForTest(key: string): boolean {
+    return this.prepareKey(key) !== null;
+  }
+
+  prepareKey(key: string): PreparedKey | null {
     const handleOverride = this.handleKeyOverride(key);
-    if (handleOverride === false) return false;
-    if (handleOverride === true) return true;
+    if (handleOverride === false) return null;
+    if (handleOverride === true) return { key };
 
-    if (this.isEscape(key)) return this.shouldHandleEscapeKey();
+    if (this.isEscape(key)) return this.shouldHandleEscapeKey() ? { key } : null;
 
-    if (this.modeState.kind === "search") return this.shouldHandleSearchKey(key);
+    if (this.modeState.kind === "search") return this.shouldHandleSearchKey(key) ? { key } : null;
 
     if (isCtrlKey(key) && !this.remapResolver.isPending()) {
       const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key);
       if (!isMapped) {
-        if (!this.configuration.useCtrlKeys) return false;
-        if (!isBuiltInCtrlKey(key)) return false;
+        if (!this.configuration.useCtrlKeys) return null;
+        if (!isBuiltInCtrlKey(key)) return null;
       }
     }
 
-    if (this.modeState.kind === "command") return true;
+    if (this.modeState.kind === "command") return { key };
 
-    return !((this.modeState.kind === "insert" || this.modeState.kind === "replace")
-      && !this.shouldHandleInsertKey(key)
-      && !this.status.pending);
+    if (this.modeState.kind === "insert" || this.modeState.kind === "replace") {
+      return this.shouldPrepareInsertOrReplaceKey(key) ? { key } : null;
+    }
+
+    return { key };
   }
 
-  shouldHandleInsertKey(key: string): boolean {
+  private shouldPrepareInsertOrReplaceKey(key: string): boolean {
     return this.remapResolver.isPending()
-      || this.remapResolver.hasMappings("insert")
+      || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key)
+      || this.pendingDigraph !== undefined
+      || this.pendingLiteral !== undefined
+      || this.pendingInsertRegister
       || key === "ctrl-k"
       || key === "ctrl-v"
       || key === "ctrl-r"
       || key === "ctrl-w"
       || key === "ctrl-u"
-      || this.isEscape(key);
+      || key === "ctrl-y"
+      || key === "ctrl-e";
   }
 
   private shouldHandleSearchKey(key: string): boolean {
