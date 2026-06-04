@@ -144,66 +144,6 @@ function isSurroundOperator(operator: PendingOperator): operator is PendingSurro
   return surroundOperatorTypes.has(operator.type as PendingSurroundOperator["type"]);
 }
 
-function isWaitingOperator(operator: PendingOperator): boolean {
-  switch (operator.type) {
-    case "addSurrounds":
-    case "deleteSurrounds":
-    case "changeSurrounds":
-    case "replace":
-    case "digraph":
-    case "register":
-      return true;
-    case "change":
-    case "delete":
-    case "yank":
-    case "object":
-    case "lowercase":
-    case "uppercase":
-    case "oppositeCase":
-    case "indent":
-    case "outdent":
-    case "autoIndent":
-      return false;
-  }
-}
-
-function operatorStatus(operator: PendingOperator): string {
-  switch (operator.type) {
-    case "change":
-      return "c";
-    case "delete":
-      return "d";
-    case "yank":
-      return "y";
-    case "object":
-      return operator.around ? "a" : "i";
-    case "lowercase":
-      return "gu";
-    case "uppercase":
-      return "gU";
-    case "oppositeCase":
-      return "g~";
-    case "indent":
-      return ">";
-    case "outdent":
-      return "<";
-    case "autoIndent":
-      return "=";
-    case "addSurrounds":
-      return "ys";
-    case "deleteSurrounds":
-      return "ds";
-    case "changeSurrounds":
-      return operator.fromKey === undefined ? "cs" : `cs${operator.fromKey}`;
-    case "replace":
-      return "r";
-    case "digraph":
-      return operator.first === undefined ? "ctrl-k" : `ctrl-k${operator.first}`;
-    case "register":
-      return "\"";
-  }
-}
-
 type NormalKeyHandler = () => NormalKeyResult;
 
 export type NormalKeyResult = {
@@ -222,6 +162,7 @@ function handled(
 export class NormalMode {
   private countBuffer = "";
   private pendingStack: PendingOperator[] = [];
+  private pendingChordKeys: string[] = [];
   private pendingPrefix: PendingPrefix | undefined;
   private selectedRegister: RegisterName | undefined;
 
@@ -254,6 +195,16 @@ export class NormalMode {
     private readonly editor: VimEditorCapabilities,
     private readonly registers: Registers
   ) {}
+
+  private pushPendingChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}): void {
+    if (this.pendingStack.length === 0 && this.pendingPrefix === undefined && this.selectedRegister === undefined) {
+      this.pendingChordKeys = [];
+    }
+    if (includeCount && this.countBuffer.length > 0) {
+      this.pendingChordKeys.push(...this.countBuffer);
+    }
+    this.pendingChordKeys.push(key);
+  }
 
   private activeEditOperator(): PendingEditOperator | undefined {
     return this.activeOperatorOfTypes(editOperatorTypes);
@@ -296,35 +247,43 @@ export class NormalMode {
     return item?.type === "object" ? item : undefined;
   }
 
-  private pushEditOperator(operator: Operator, count: number): void {
+  private pushEditOperator(operator: Operator, count: number, key: string): void {
+    this.pushPendingChordKey(key, { includeCount: true });
     this.pendingStack.push(pendingEditOperator(operator, count));
   }
 
   private pushObject(around: boolean): void {
+    this.pushPendingChordKey(around ? "a" : "i");
     this.pendingStack.push({ type: "object", around });
   }
 
-  private pushConvert(target: ConvertTarget, count: number): void {
+  private pushConvert(target: ConvertTarget, count: number, key: string): void {
+    this.pushPendingChordKey(`g${key}`, { includeCount: true });
     this.pendingStack.push(pendingConvertOperator(target, count));
   }
 
-  private pushIndent(direction: IndentDirection, count: number): void {
+  private pushIndent(direction: IndentDirection, count: number, key: string): void {
+    this.pushPendingChordKey(key, { includeCount: true });
     this.pendingStack.push(pendingIndentOperator(direction, count));
   }
 
   private pushSurround(surround: PendingSurroundOperator): void {
+    if (surround.type === "addSurrounds" && surround.target === undefined) this.pushPendingChordKey("s");
     this.pendingStack.push(surround);
   }
 
   private pushReplace(count: number): void {
+    this.pushPendingChordKey("r", { includeCount: true });
     this.pendingStack.push({ type: "replace", count });
   }
 
   private pushDigraph(count: number): void {
+    this.pushPendingChordKey("ctrl-k");
     this.pendingStack.push({ type: "digraph", count });
   }
 
   private pushRegister(): void {
+    this.pushPendingChordKey("\"", { includeCount: true });
     this.pendingStack.push({ type: "register" });
   }
 
@@ -437,46 +396,17 @@ export class NormalMode {
   }
 
   pendingChord(): string {
-    const count = this.countBuffer;
-    const activeTextObject = this.activeObject();
-    const stackPrefix = this.pendingStackPrefix();
-    if (activeTextObject !== undefined) return `${count}${stackPrefix}${activeTextObject.around ? "a" : "i"}`;
-    if (this.activeSurround() !== undefined) return `${count}${stackPrefix}s`;
-    if (this.activeRegister() !== undefined) return `${count}${stackPrefix}\"`;
-    if (this.pendingPrefix === "g") return `${count}g`;
-    if (this.selectedRegister !== undefined) return `${count}\"${this.selectedRegister}`;
-    if (stackPrefix !== "") return `${count}${stackPrefix}`;
-    return count;
-  }
-
-  private pendingStackPrefix(): string {
-    const item = this.pendingStack.find(stackItem => stackItem.type !== "object" && !isWaitingOperator(stackItem));
-    if (item === undefined) return "";
-    switch (item.type) {
-      case "change":
-      case "delete":
-      case "yank":
-      case "lowercase":
-      case "uppercase":
-      case "oppositeCase":
-      case "indent":
-      case "outdent":
-      case "autoIndent":
-      case "addSurrounds":
-      case "deleteSurrounds":
-      case "changeSurrounds":
-      case "replace":
-      case "digraph":
-      case "register":
-        return operatorStatus(item);
-      case "object":
-        return "";
+    if (this.pendingStack.length > 0 || this.selectedRegister !== undefined) {
+      return `${this.pendingChordKeys.join("")}${this.countBuffer}`;
     }
+    if (this.pendingPrefix === "g") return `${this.countBuffer}g`;
+    return this.countBuffer;
   }
 
   clearPending(): void {
     this.countBuffer = "";
     this.pendingStack = [];
+    this.pendingChordKeys = [];
     this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
   }
@@ -528,6 +458,7 @@ export class NormalMode {
         this.clearPending();
         return handled();
       }
+      this.pendingChordKeys.push(key);
       this.selectedRegister = registerName;
       return handled();
     }
@@ -553,7 +484,7 @@ export class NormalMode {
     }
 
     if (key === ">" || key === "<" || key === "=") {
-      this.pushIndent(indentDirectionForKey(key), this.takeCount(1));
+      this.pushIndent(indentDirectionForKey(key), this.takeCount(1), key);
       return handled();
     }
 
@@ -621,7 +552,7 @@ export class NormalMode {
         return handled({ enterInsert: this.handleLineOperator(operator) });
       }
       // Zed: `vim::Vim::push_operator`.
-      this.pushEditOperator(operator, this.takeCount(1));
+      this.pushEditOperator(operator, this.takeCount(1), key);
       return handled();
     }
 
@@ -793,7 +724,7 @@ export class NormalMode {
     }
 
     if ((key === "u" || key === "U" || key === "~") && this.activeEditOperator() === undefined) {
-      this.pushConvert(convertTargetForKey(key), this.takeCount(1));
+      this.pushConvert(convertTargetForKey(key), this.takeCount(1), key);
       return handled();
     }
 
@@ -934,6 +865,7 @@ export class NormalMode {
     const pending = this.activeDigraph();
     if (pending === undefined) return;
     if (pending.first === undefined) {
+      this.pendingChordKeys.push(key);
       this.replaceActiveDigraph({ ...pending, first: keyForInput(key) });
       return;
     }
@@ -952,6 +884,7 @@ export class NormalMode {
         return false;
       case "changeSurrounds":
         if (pending.fromKey === undefined) {
+          this.pendingChordKeys.push(key);
           this.replaceActiveSurround({ type: "changeSurrounds", fromKey: key });
         } else {
           this.popSurround();
@@ -984,10 +917,12 @@ export class NormalMode {
     }
 
     if (key === "i" || key === "a") {
+      this.pendingChordKeys.push(key);
       this.replaceActiveSurround({ ...pending, target: { type: "object", around: key === "a" } });
       return false;
     }
     if (key === "s") {
+      this.pendingChordKeys.push(key);
       const ranges = this.editor.getSelections().map(selection =>
         trimmedLineRange(this.editor, selectionHead(selection).row, pending.count));
       this.replaceActiveSurround({ ...pending, target: { type: "ranges", ranges, linewise: false } });
@@ -995,6 +930,7 @@ export class NormalMode {
     }
     const motion = motionForKey(key);
     if (motion !== undefined) {
+      this.pendingChordKeys.push(key);
       const ranges = this.editor.getSelections().map(selection =>
         motionRange(this.editor, selectionHead(selection), motion, pending.count));
       this.replaceActiveSurround({ ...pending, target: { type: "ranges", ranges, linewise: false } });
