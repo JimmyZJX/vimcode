@@ -16,7 +16,7 @@ import {
 } from "../single_line_editor.js";
 import { TextRange, selectionHead } from "../state.js";
 
-export type PendingSearch = { backwards: boolean; input: SingleLineEditor };
+export type PendingSearch = { type: "search"; backwards: boolean; input: SingleLineEditor };
 
 function singleLineEditorKey(key: string): SingleLineEditorKey | undefined {
   switch (key) {
@@ -38,51 +38,44 @@ function singleLineEditorKey(key: string): SingleLineEditorKey | undefined {
 }
 
 export class SearchState {
-  private pending: PendingSearch | undefined;
   private last:
     | { query: string; backwards: boolean; options: SearchOptions }
     | undefined;
 
-  isPending(): boolean {
-    return this.pending !== undefined;
-  }
-
-  pendingChord(): string {
-    if (this.pending === undefined) return "";
-    const value = this.pending.input.value();
-    const cursor = this.pending.input.cursorPosition();
-    return `${this.pending.backwards ? "?" : "/"}${value.slice(
+  pendingChord(pending: PendingSearch): string {
+    const value = pending.input.value();
+    const cursor = pending.input.cursorPosition();
+    return `${pending.backwards ? "?" : "/"}${value.slice(
       0,
       cursor
     )}|${value.slice(cursor)}`;
   }
 
-  start(backwards: boolean, editor: VimEditorCapabilities): void {
+  start(backwards: boolean, editor: VimEditorCapabilities): PendingSearch {
     editor.beginSearchPreview();
-    this.pending = { backwards, input: new SingleLineEditor("") };
-    this.updatePendingSearchUi(editor);
+    const pending = { type: "search" as const, backwards, input: new SingleLineEditor("") };
+    this.updatePendingSearchUi(pending, editor);
+    return pending;
   }
 
-  clearPending(editor?: VimEditorCapabilities, { restoreViewport = false }: { restoreViewport?: boolean } = {}): void {
-    if (this.pending !== undefined) {
+  clearPending(editor: VimEditorCapabilities | undefined, pending: PendingSearch | undefined, { restoreViewport = false }: { restoreViewport?: boolean } = {}): void {
+    if (pending !== undefined) {
       editor?.endSearchPreview({ restoreViewport });
     }
-    this.pending = undefined;
   }
 
-  appendText(text: string, editor: VimEditorCapabilities): void {
-    if (this.pending === undefined || text.length === 0) return;
-    this.pending.input.insert(text);
-    this.updatePendingSearchUi(editor);
+  appendText(pending: PendingSearch, text: string, editor: VimEditorCapabilities): void {
+    if (text.length === 0) return;
+    pending.input.insert(text);
+    this.updatePendingSearchUi(pending, editor);
   }
 
   handleKey(
+    pending: PendingSearch,
     key: string,
     registers: Registers,
     editor: VimEditorCapabilities
   ): Motion | undefined {
-    const pending = this.pending;
-    if (pending === undefined) return undefined;
     if (key === "enter") {
       const pendingQuery = pending.input.value();
       const query = pendingQuery.length > 0 ? pendingQuery : this.last?.query;
@@ -94,7 +87,6 @@ export class SearchState {
         pendingQuery.length > 0
           ? searchOptionsForQuery(query ?? "")
           : this.last?.options ?? searchOptionsForQuery(query ?? "");
-      this.pending = undefined;
       editor.endSearchPreview({ restoreViewport: false });
       if (query !== undefined && query.length > 0) {
         return this.setLast(query, backwards, registers, editor, options);
@@ -108,20 +100,19 @@ export class SearchState {
     } else if (key.length === 1) {
       pending.input.insert(key);
     }
-    this.updatePendingSearchUi(editor);
+    this.updatePendingSearchUi(pending, editor);
     return undefined;
   }
 
-  private updatePendingSearchUi(editor: VimEditorCapabilities): void {
-    if (this.pending === undefined) return;
-    const pendingQuery = this.pending.input.value();
+  private updatePendingSearchUi(pending: PendingSearch, editor: VimEditorCapabilities): void {
+    const pendingQuery = pending.input.value();
     const query =
       pendingQuery.length === 0 ? this.last?.query ?? "" : pendingQuery;
     const options =
       pendingQuery.length === 0
         ? this.last?.options ?? searchOptionsForQuery(query)
         : searchOptionsForQuery(query);
-    const direction = this.pending.backwards ? "backward" : "forward";
+    const direction = pending.backwards ? "backward" : "forward";
     editor.updateSearch(query, direction, { ...options, reveal: true });
     const match = editor.findSearchMatch(
       query,

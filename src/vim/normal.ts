@@ -170,19 +170,25 @@ function isWaitingOperator(operator: PendingOperator): boolean {
 function operatorStatus(operator: PendingOperator): string {
   switch (operator.type) {
     case "change":
+      return "c";
     case "delete":
+      return "d";
     case "yank":
-      return keyForOperator(editOperatorForPending(operator));
+      return "y";
     case "object":
       return operator.around ? "a" : "i";
     case "lowercase":
+      return "gu";
     case "uppercase":
+      return "gU";
     case "oppositeCase":
-      return `g${keyForConvertTarget(convertTargetForPending(operator))}`;
+      return "g~";
     case "indent":
+      return ">";
     case "outdent":
+      return "<";
     case "autoIndent":
-      return keyForIndentDirection(indentDirectionForPending(operator));
+      return "=";
     case "addSurrounds":
       return "ys";
     case "deleteSurrounds":
@@ -450,15 +456,12 @@ export class NormalMode {
       case "change":
       case "delete":
       case "yank":
-        return keyForOperator(editOperatorForPending(item));
       case "lowercase":
       case "uppercase":
       case "oppositeCase":
-        return `g${keyForConvertTarget(convertTargetForPending(item))}`;
       case "indent":
       case "outdent":
       case "autoIndent":
-        return keyForIndentDirection(indentDirectionForPending(item));
       case "addSurrounds":
       case "deleteSurrounds":
       case "changeSurrounds":
@@ -1270,17 +1273,6 @@ function keyForConvertTarget(target: ConvertTarget): string {
       return "U";
     case "toggle":
       return "~";
-  }
-}
-
-function keyForOperator(operator: Operator): string {
-  switch (operator) {
-    case "delete":
-      return "d";
-    case "change":
-      return "c";
-    case "yank":
-      return "y";
   }
 }
 

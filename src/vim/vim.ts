@@ -18,7 +18,7 @@ import { NormalChordAction, NormalChordResolver } from "./normal/chord.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
 import { handleHostAction } from "./normal/scroll.js";
-import { searchUnderCursorMotion } from "./normal/search.js";
+import { PendingSearch, searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
 import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
@@ -46,15 +46,17 @@ type PendingLiteralOperator =
 type PendingInsertRegisterOperator = { type: "insertRegister" };
 type PendingMarkOperator = { type: "mark" };
 type PendingJumpOperator = { type: "jump"; line: boolean };
+type PendingUnmatchedOperator = { type: "unmatchedForward" | "unmatchedBackward"; count: number };
 type PendingRecordRegisterOperator = { type: "recordRegister" };
 type PendingReplayRegisterOperator = { type: "replayRegister"; count: number };
+type PendingCommandOperator = { type: "command"; input: string };
 
-type PendingVimOperator = PendingFindOperator | PendingDigraphOperator | PendingLiteralOperator | PendingInsertRegisterOperator | PendingMarkOperator | PendingJumpOperator | PendingRecordRegisterOperator | PendingReplayRegisterOperator;
-
-type PendingUnmatched = { direction: "forward" | "backward"; count: number };
+type PendingVimOperator = PendingSearch | PendingFindOperator | PendingDigraphOperator | PendingLiteralOperator | PendingInsertRegisterOperator | PendingMarkOperator | PendingJumpOperator | PendingUnmatchedOperator | PendingRecordRegisterOperator | PendingReplayRegisterOperator | PendingCommandOperator;
 
 function pendingOperatorStatus(operator: PendingVimOperator): string {
   switch (operator.type) {
+    case "search":
+      return operator.backwards ? "?" : "/";
     case "findForward":
       return operator.before ? "t" : "f";
     case "findBackward":
@@ -69,10 +71,16 @@ function pendingOperatorStatus(operator: PendingVimOperator): string {
       return "m";
     case "jump":
       return operator.line ? "'" : "`";
+    case "unmatchedForward":
+      return "]";
+    case "unmatchedBackward":
+      return "[";
     case "recordRegister":
       return "q";
     case "replayRegister":
       return "@";
+    case "command":
+      return `:${operator.input}`;
   }
 }
 
@@ -115,13 +123,11 @@ export { VimGlobalState, VimModelState };
 // `VimEditorCapabilities`.
 export class Vim {
   private modeState: VimMode = { dialect: "vim", kind: "normal" };
-  private pendingUnmatched: PendingUnmatched | undefined;
   private readonly sharedActionResolver = new SharedActionResolver();
   private readonly normalChordResolver = new NormalChordResolver();
   private modelState: VimModelState;
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remapResolver = new RemapResolver(this.configuration);
-  private pendingCommand: string | undefined;
   private searchOriginMode: VimMode["kind"] | undefined;
   private pendingStack: PendingVimOperator[] = [];
   private insertRepeatCount = 1;
@@ -182,6 +188,18 @@ export class Vim {
     return item?.type === "findForward" || item?.type === "findBackward" ? item : undefined;
   }
 
+  private activeUnmatched(): PendingUnmatchedOperator | undefined {
+    const item = this.pendingStack[this.pendingStack.length - 1];
+    return item?.type === "unmatchedForward" || item?.type === "unmatchedBackward" ? item : undefined;
+  }
+
+  private popUnmatched(): PendingUnmatchedOperator | undefined {
+    const item = this.activeUnmatched();
+    if (item === undefined) return undefined;
+    this.pendingStack.pop();
+    return item;
+  }
+
   private popFind(): PendingFindOperator | undefined {
     const item = this.activeFind();
     if (item === undefined) return undefined;
@@ -206,6 +224,12 @@ export class Vim {
     const item = this.activePending("literal");
     if (item === undefined) this.pendingStack.push(literal);
     else this.pendingStack[this.pendingStack.length - 1] = literal;
+  }
+
+  private replaceActiveCommand(input: string): void {
+    const item = this.activePending("command");
+    if (item === undefined) this.pendingStack.push({ type: "command", input });
+    else this.pendingStack[this.pendingStack.length - 1] = { type: "command", input };
   }
 
   get mode(): VimMode {
@@ -320,13 +344,10 @@ export class Vim {
   private shouldHandleEscapeKey(): boolean {
     return this.modeState.kind !== "normal"
       || this.hasMultipleCursorsOrSelection()
-      || this.pendingUnmatched !== undefined
       || this.pendingStack.length > 0
       || this.sharedActionResolver.isPending()
       || this.remapResolver.isPending()
       || this.normalChordResolver.isPending()
-      || this.globalState.search.isPending()
-      || this.pendingCommand !== undefined
       || this.normalMode.isPending();
   }
 
@@ -386,32 +407,28 @@ export class Vim {
   }
 
   private clearPendingGrammar({ closeSearchHighlights }: { closeSearchHighlights: boolean }): void {
-    const searchWasPending = this.globalState.search.isPending();
-    this.pendingUnmatched = undefined;
+    const pendingSearch = this.activePending("search");
     this.sharedActionResolver.clearPending();
     this.remapResolver.clearPending();
     this.normalChordResolver.clearPending();
-    this.globalState.search.clearPending(this.editor, { restoreViewport: closeSearchHighlights });
+    this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
     this.searchOriginMode = undefined;
-    if (closeSearchHighlights && searchWasPending) this.editor.clearSearchHighlights();
-    this.pendingCommand = undefined;
+    if (closeSearchHighlights && pendingSearch !== undefined) this.editor.clearSearchHighlights();
     this.pendingStack = [];
     this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
-    return this.pendingUnmatched !== undefined || this.pendingStack.length > 0 || this.sharedActionResolver.isPending() || this.remapResolver.isPending() || this.normalChordResolver.isPending() || this.globalState.search.isPending() || this.pendingCommand !== undefined || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingStack.length > 0 || this.sharedActionResolver.isPending() || this.remapResolver.isPending() || this.normalChordResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
-    if (this.pendingCommand !== undefined) return `:${this.pendingCommand}`;
     const pendingOperator = this.pendingStack[this.pendingStack.length - 1];
+    if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
     if (pendingOperator !== undefined) return pendingOperatorStatus(pendingOperator);
     if (this.remapResolver.isPending()) return this.remapResolver.pendingChord();
-    if (this.globalState.search.isPending()) return this.globalState.search.pendingChord();
     if (this.sharedActionResolver.isPending()) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}${this.sharedActionResolver.pendingChord()}`;
     if (this.normalChordResolver.isPending()) return this.normalChordResolver.pendingChord();
-    if (this.pendingUnmatched !== undefined) return this.pendingUnmatched.direction === "forward" ? "]" : "[";
     return this.modeState.kind === "normal" ? this.normalMode.pendingChord() : "";
   }
 
@@ -542,10 +559,10 @@ export class Vim {
     }
 
     if (this.modeState.kind === "normal" && !this.normalMode.hasPendingNonCount() && (key === "]" || key === "[")) {
-      this.pendingUnmatched = {
-        direction: key === "]" ? "forward" : "backward",
+      this.pendingStack.push({
+        type: key === "]" ? "unmatchedForward" : "unmatchedBackward",
         count: this.takeCountForMotion(1),
-      };
+      });
       return "handled";
     }
 
@@ -600,7 +617,7 @@ export class Vim {
     }
 
     if (this.modeState.kind === "normal" && !this.normalMode.hasPendingNonCount() && key === ":") {
-      this.pendingCommand = "";
+      this.pendingStack.push({ type: "command", input: "" });
       this.setMode("command");
       return "handled";
     }
@@ -663,26 +680,28 @@ export class Vim {
     const macroResult = this.handlePendingMacroKey(key);
     if (macroResult !== undefined) return macroResult;
 
-    if (this.pendingCommand !== undefined) {
+    if (this.activePending("command") !== undefined) {
       this.handlePendingCommandKey(key);
       return "handled";
     }
 
-    if (this.globalState.search.isPending()) {
+    const pendingSearch = this.activePending("search");
+    if (pendingSearch !== undefined) {
       if (!this.shouldHandleSearchKey(key)) return "not-handled";
       this.recordRepeatKey(key);
       if (key === "ctrl-v" || key === "ctrl-y") {
-        this.globalState.search.appendText(this.globalState.registers.read("+"), this.editor);
+        this.globalState.search.appendText(pendingSearch, this.globalState.registers.read("+"), this.editor);
         return "handled";
       }
       const originMode = this.searchOriginMode ?? "normal";
-      const motion = this.globalState.search.handleKey(key, this.globalState.registers, this.editor);
+      const motion = this.globalState.search.handleKey(pendingSearch, key, this.globalState.registers, this.editor);
+      if (key === "enter") this.popPending("search");
       if (motion !== undefined) {
         this.searchOriginMode = undefined;
         this.setMode(originMode === "visual" || originMode === "visualLine" || originMode === "visualBlock" ? originMode : "normal");
         this.applyMotion(motion, 1);
         this.editor.clearSearchHighlights();
-      } else if (!this.globalState.search.isPending()) {
+      } else if (key === "enter") {
         this.searchOriginMode = undefined;
         this.setMode(originMode === "visual" || originMode === "visualLine" || originMode === "visualBlock" ? originMode : "normal");
       }
@@ -710,18 +729,18 @@ export class Vim {
       return "handled";
     }
 
-    if (this.modeState.kind === "normal" && this.pendingUnmatched !== undefined) {
-      const pending = this.pendingUnmatched;
-      this.pendingUnmatched = undefined;
+    const pendingUnmatched = this.activeUnmatched();
+    if (this.modeState.kind === "normal" && pendingUnmatched !== undefined) {
+      this.popUnmatched();
       if (key === "space") {
-        this.insertEmptyLines(pending.direction === "backward" ? "above" : "below", pending.count);
+        this.insertEmptyLines(pendingUnmatched.type === "unmatchedBackward" ? "above" : "below", pendingUnmatched.count);
         return "handled";
       }
       this.applyMotion(
-        pending.direction === "forward"
+        pendingUnmatched.type === "unmatchedForward"
           ? { type: "unmatchedForward", char: key }
           : { type: "unmatchedBackward", char: key },
-        pending.count);
+        pendingUnmatched.count);
       return "handled";
     }
 
@@ -964,11 +983,9 @@ export class Vim {
   private shouldResolveRemap(): boolean {
     if (this.remapResolver.isPending()) return true;
     return this.activeFind() === undefined
-      && this.pendingUnmatched === undefined
+      && this.activeUnmatched() === undefined
       && !this.sharedActionResolver.isPending()
       && !this.normalChordResolver.isPending()
-      && !this.globalState.search.isPending()
-      && this.pendingCommand === undefined
       && this.pendingStack.length === 0;
   }
 
@@ -1145,7 +1162,7 @@ export class Vim {
 
     if (key === "/" || key === "?") {
       this.searchOriginMode = this.modeState.kind;
-      this.globalState.search.start(key === "?", this.editor);
+      this.pendingStack.push(this.globalState.search.start(key === "?", this.editor));
       this.setMode("search");
       return true;
     }
@@ -1312,10 +1329,11 @@ export class Vim {
   }
 
   private handlePendingCommandKey(key: string): void {
-    if (this.pendingCommand === undefined) return;
+    const pending = this.activePending("command");
+    if (pending === undefined) return;
     if (key === "enter") {
-      const command = this.pendingCommand;
-      this.pendingCommand = undefined;
+      const command = pending.input;
+      this.popPending("command");
       this.setMode("normal");
       executeCommand(this.editor, command, {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
@@ -1323,10 +1341,10 @@ export class Vim {
       return;
     }
     if (key === "backspace") {
-      this.pendingCommand = this.pendingCommand.slice(0, -1);
+      this.replaceActiveCommand(pending.input.slice(0, -1));
       return;
     }
-    this.pendingCommand += key === "space" ? " " : key;
+    this.replaceActiveCommand(`${pending.input}${key === "space" ? " " : key}`);
   }
 
   private runNormalKeysForCommand(keys: readonly string[], range: LineRange | undefined): void {
