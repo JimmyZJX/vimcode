@@ -1067,6 +1067,41 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.readRegister(undefined)).toBe("one two ");
   });
 
+  it("applies operators to text objects through the pending stack", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["w", "d", "i", "w"]);
+
+    expect(editor.getText()).toBe("one  three");
+    expect(vim.readRegister(undefined)).toBe("two");
+  });
+
+  it("applies convert and indent text objects through the pending stack", () => {
+    const convertEditor = new InMemoryVimEditor("one two three");
+    const convertVim = new Vim(convertEditor);
+
+    runKeys(convertVim, ["w", "g", "U", "i", "w"]);
+    expect(convertEditor.getText()).toBe("one TWO three");
+
+    const indentEditor = new InMemoryVimEditor("one\n  two");
+    const indentVim = new Vim(indentEditor);
+
+    runKeys(indentVim, ["j", ">", "i", "w"]);
+    expect(indentEditor.getText()).toBe("one\n      two");
+  });
+
+  it("applies surround operations through the pending stack", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["w", "y", "s", "i", "w", ")"]);
+    expect(editor.getText()).toBe("one (two)");
+
+    runKeys(vim, ["d", "s", ")"]);
+    expect(editor.getText()).toBe("one two");
+  });
+
   it("deletes whole lines", () => {
     const editor = new InMemoryVimEditor("alpha\nbeta\ngamma");
     const vim = new Vim(editor);
