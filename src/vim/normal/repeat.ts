@@ -90,9 +90,6 @@ export class RepeatState {
 }
 
 export class MacroState {
-  private pendingRecordRegister = false;
-  private pendingReplayRegister = false;
-  private pendingReplayCount = 1;
   private recordingRegister: string | undefined;
   private current: string[] = [];
   private readonly recorded = new Map<string, readonly string[]>();
@@ -108,25 +105,7 @@ export class MacroState {
     return this.replaying;
   }
 
-  startRecordingPrefix(): void {
-    this.pendingRecordRegister = true;
-  }
-
-  startReplayPrefix(count: number): void {
-    this.pendingReplayRegister = true;
-    this.pendingReplayCount = count;
-  }
-
-  wantsRecordRegister(): boolean {
-    return this.pendingRecordRegister;
-  }
-
-  wantsReplayRegister(): boolean {
-    return this.pendingReplayRegister;
-  }
-
-  handleRecordRegister(key: string): void {
-    this.pendingRecordRegister = false;
+  startRecording(key: string): void {
     this.recordingRegister = key;
     this.current = [];
   }
@@ -145,10 +124,7 @@ export class MacroState {
     return true;
   }
 
-  replayRegisterKey(key: string, runKey: (key: string) => void): void {
-    this.pendingReplayRegister = false;
-    const count = this.pendingReplayCount;
-    this.pendingReplayCount = 1;
+  replayRegisterKey(key: string, count: number, runKey: (key: string) => void): void {
     const register = key === "@" ? this.lastReplayRegister : key;
     if (register === undefined) return;
     this.replay(register, count, runKey);

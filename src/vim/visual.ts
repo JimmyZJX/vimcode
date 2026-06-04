@@ -71,7 +71,11 @@ type BlockwiseVisualState = {
 };
 
 type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualState;
-type PendingTextObject = { around: boolean };
+type VisualPendingOperator =
+  | { type: "object"; around: boolean }
+  | { type: "addSurrounds"; ranges: readonly TextRange[]; linewise: boolean; undoSelectionsBefore: readonly VimSelection[] }
+  | { type: "register" }
+  | { type: "g" };
 type VisualKeyHandler = (state: VisualState) => VisualKeyResult | undefined;
 function handled(
   {
@@ -94,10 +98,7 @@ function handled(
 export class VisualMode {
   private state: VisualState | undefined;
   private lastState: VisualState | undefined;
-  private pendingTextObject: PendingTextObject | undefined;
-  private pendingSurround: { ranges: readonly TextRange[]; linewise: boolean; undoSelectionsBefore: readonly VimSelection[] } | undefined;
-  private pendingRegister = false;
-  private pendingPrefix: "g" | undefined;
+  private pendingStack: VisualPendingOperator[] = [];
   private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
 
@@ -160,14 +161,27 @@ export class VisualMode {
     this.visualMultilineInsert = configuration.visualMultilineInsert;
   }
 
+  private activePending<Type extends VisualPendingOperator["type"]>(type: Type): Extract<VisualPendingOperator, { type: Type }> | undefined {
+    const item = this.pendingStack[this.pendingStack.length - 1];
+    return item?.type === type ? item as Extract<VisualPendingOperator, { type: Type }> : undefined;
+  }
+
+  private popPending<Type extends VisualPendingOperator["type"]>(type: Type): Extract<VisualPendingOperator, { type: Type }> | undefined {
+    const item = this.activePending(type);
+    if (item === undefined) return undefined;
+    this.pendingStack.pop();
+    return item;
+  }
+
+  private clearPendingStack(): void {
+    this.pendingStack = [];
+  }
+
   enter(kind: VisualState["kind"] = "charwise"): void {
     const selections = this.editor.getSelections();
     const selection = selections[0];
     const head = selectionHead(selection);
-    this.pendingTextObject = undefined;
-    this.pendingSurround = undefined;
-    this.pendingRegister = false;
-    this.pendingPrefix = undefined;
+    this.clearPendingStack();
     this.selectedRegister = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("line");
@@ -195,10 +209,7 @@ export class VisualMode {
 
   clearState(): void {
     this.state = undefined;
-    this.pendingTextObject = undefined;
-    this.pendingSurround = undefined;
-    this.pendingRegister = false;
-    this.pendingPrefix = undefined;
+    this.clearPendingStack();
     this.selectedRegister = undefined;
     this.countBuffer = "";
   }
@@ -207,10 +218,7 @@ export class VisualMode {
     const state = this.state;
     if (state !== undefined) this.rememberState(state);
     this.state = undefined;
-    this.pendingTextObject = undefined;
-    this.pendingSurround = undefined;
-    this.pendingRegister = false;
-    this.pendingPrefix = undefined;
+    this.clearPendingStack();
     this.selectedRegister = undefined;
     this.countBuffer = "";
     this.editor.setCursorStyle("block");
@@ -223,25 +231,26 @@ export class VisualMode {
   }
 
   onKey(key: string): VisualKeyResult {
-    if (this.pendingRegister) {
-      this.pendingRegister = false;
+    if (this.activePending("register") !== undefined) {
+      this.popPending("register");
       const registerName = parseRegisterName(key);
       if (registerName !== undefined) this.selectedRegister = registerName;
       return handled();
     }
 
-    if (this.pendingSurround !== undefined) {
-      const pending = this.pendingSurround;
-      this.pendingSurround = undefined;
-      this.editor.beginUndoTransaction(pending.undoSelectionsBefore);
-      addSurrounds(this.editor, pending.ranges, key, { linewise: pending.linewise });
+    const pendingSurround = this.activePending("addSurrounds");
+    if (pendingSurround !== undefined) {
+      this.popPending("addSurrounds");
+      this.editor.beginUndoTransaction(pendingSurround.undoSelectionsBefore);
+      addSurrounds(this.editor, pendingSurround.ranges, key, { linewise: pendingSurround.linewise });
       this.state = undefined;
       this.editor.setCursorStyle("block");
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
-    if (this.pendingTextObject !== undefined) {
-      return this.handlePendingTextObject(key);
+    const pendingObject = this.activePending("object");
+    if (pendingObject !== undefined) {
+      return this.handlePendingTextObject(key, pendingObject);
     }
 
     const state = this.state;
@@ -254,8 +263,8 @@ export class VisualMode {
       return handled();
     }
 
-    if (this.pendingPrefix === "g") {
-      this.pendingPrefix = undefined;
+    if (this.activePending("g") !== undefined) {
+      this.popPending("g");
       const handler = this.gKeyHandlers.get(key);
       const result = handler?.(state);
       if (result !== undefined) return result;
@@ -278,12 +287,12 @@ export class VisualMode {
   }
 
   private startGPrefix(): VisualKeyResult {
-    this.pendingPrefix = "g";
+    this.pendingStack.push({ type: "g" });
     return handled();
   }
 
   private startRegisterPrefix(): VisualKeyResult {
-    this.pendingRegister = true;
+    this.pendingStack.push({ type: "register" });
     return handled();
   }
 
@@ -348,11 +357,12 @@ export class VisualMode {
   }
 
   private startSurround(state: VisualState): VisualKeyResult {
-    this.pendingSurround = {
+    this.pendingStack.push({
+      type: "addSurrounds",
       ranges: visualSurroundRanges(this.editor, state),
       linewise: state.kind === "linewise",
       undoSelectionsBefore: visualCurrentUndoSelections(this.editor, state),
-    };
+    });
     return handled();
   }
 
@@ -381,7 +391,7 @@ export class VisualMode {
   }
 
   private startTextObject(around: boolean): VisualKeyResult {
-    this.pendingTextObject = { around };
+    this.pendingStack.push({ type: "object", around });
     return handled();
   }
 
@@ -488,12 +498,11 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private handlePendingTextObject(key: string): VisualKeyResult {
-    const pendingTextObject = this.pendingTextObject;
-    this.pendingTextObject = undefined;
+  private handlePendingTextObject(key: string, pendingTextObject: Extract<VisualPendingOperator, { type: "object" }>): VisualKeyResult {
+    this.popPending("object");
     const state = this.state;
     const object = textObjectForKey(key);
-    if (pendingTextObject === undefined || state === undefined || object === undefined) {
+    if (state === undefined || object === undefined) {
       this.exit();
       return handled({ exitVisual: true, nextMode: "normal" });
     }
@@ -732,10 +741,7 @@ export class VisualMode {
   ): boolean {
     if (selection.type !== "charwise") return false;
     if (!allowEmpty && comparePositions(selection.anchor, selection.head) === 0) return false;
-    this.pendingTextObject = undefined;
-    this.pendingSurround = undefined;
-    this.pendingRegister = false;
-    this.pendingPrefix = undefined;
+    this.clearPendingStack();
     this.selectedRegister = undefined;
     this.countBuffer = "";
     this.state = externalSelectionToCharwiseState(this.editor, selection);
@@ -774,10 +780,7 @@ export class VisualMode {
   }
 
   private clearPendingInteraction(): void {
-    this.pendingTextObject = undefined;
-    this.pendingSurround = undefined;
-    this.pendingRegister = false;
-    this.pendingPrefix = undefined;
+    this.clearPendingStack();
     this.selectedRegister = undefined;
     this.countBuffer = "";
   }
@@ -796,7 +799,7 @@ export class VisualMode {
   }
 
   isExpectingRegisterName(): boolean {
-    return this.pendingRegister;
+    return this.activePending("register") !== undefined;
   }
 
   systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
