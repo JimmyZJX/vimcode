@@ -47,7 +47,8 @@ export type VimAction =
   | { type: "startSearch"; backwards: boolean }
   | { type: "searchUnderCursor"; backwards: boolean }
   | { type: "motion"; motion: Motion }
-  | { type: "pushEditOperator"; operator: Operator; key: string };
+  | { type: "pushEditOperator"; operator: Operator; key: string }
+  | { type: "pushRegister" };
 
 export type VimKeymapPhase = "motionMode" | "beforeRepeat" | "normalFallback";
 
@@ -58,6 +59,7 @@ export type VimKeymapContext = {
   normalModeHasPendingNonCount: boolean;
   normalModeHasOnlySelectedRegisterPending: boolean;
   normalModeCanResolveEditOperator: boolean;
+  visualModeHasPendingNonCount: boolean;
   repeatIsReplaying: boolean;
 };
 
@@ -299,9 +301,14 @@ function editOperatorForKey(key: string): Operator | undefined {
 }
 
 function resolveNormalFallbackAction(key: string, context: VimKeymapContext): VimAction | undefined {
+  if (context.mode === "visual" || context.mode === "visualLine" || context.mode === "visualBlock") {
+    return key === "\"" && !context.visualModeHasPendingNonCount ? { type: "pushRegister" } : undefined;
+  }
+
   if (context.mode !== "normal") return undefined;
 
   if (!context.normalModeHasPendingNonCount && key === ":") return { type: "startCommand" };
+  if (!context.normalModeHasPendingNonCount && key === "\"") return { type: "pushRegister" };
 
   const operator = editOperatorForKey(key);
   if (operator !== undefined

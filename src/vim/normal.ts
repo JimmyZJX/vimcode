@@ -15,7 +15,7 @@ import { deleteCharacters, deleteCharactersBefore, deleteLineRange, deleteLines,
 import { applyTextObjectOperator } from "./normal/object.js";
 import { paste } from "./normal/paste.js";
 import { yankLines, yankMotion } from "./normal/yank.js";
-import { RegisterName, Registers, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
+import { RegisterName, Registers, isSystemClipboardRegister } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
 import { ConvertTarget, convertRanges, toggleCaseCharacters } from "./normal/convert.js";
 import { IndentDirection, currentLineRanges, indentRanges } from "./normal/indent.js";
@@ -48,7 +48,6 @@ type PendingSurroundOperator =
 
 type PendingReplaceOperator = { type: "replace"; count: number };
 type PendingDigraphOperator = { type: "digraph"; count: number; first?: string };
-type PendingRegisterOperator = { type: "register" };
 
 type PendingSurroundTarget =
   | { type: "object"; around: boolean }
@@ -61,8 +60,7 @@ type PendingOperator =
   | PendingIndentOperator
   | PendingSurroundOperator
   | PendingReplaceOperator
-  | PendingDigraphOperator
-  | PendingRegisterOperator;
+  | PendingDigraphOperator;
 
 const editOperatorTypes = new Set<PendingEditOperator["type"]>(["change", "delete", "yank"]);
 const convertOperatorTypes = new Set<PendingConvertOperator["type"]>(["lowercase", "uppercase", "oppositeCase"]);
@@ -70,7 +68,6 @@ const indentOperatorTypes = new Set<PendingIndentOperator["type"]>(["indent", "o
 const surroundOperatorTypes = new Set<PendingSurroundOperator["type"]>(["addSurrounds", "deleteSurrounds", "changeSurrounds"]);
 const replaceOperatorTypes = new Set<PendingReplaceOperator["type"]>(["replace"]);
 const digraphOperatorTypes = new Set<PendingDigraphOperator["type"]>(["digraph"]);
-const registerOperatorTypes = new Set<PendingRegisterOperator["type"]>(["register"]);
 
 function pendingEditOperator(operator: Operator, count: number): PendingEditOperator {
   switch (operator) {
@@ -144,6 +141,19 @@ function isSurroundOperator(operator: PendingOperator): operator is PendingSurro
 
 type NormalKeyHandler = () => NormalKeyResult;
 
+type CountState = {
+  get: () => string;
+  append: (key: string) => void;
+  take: (defaultValue: number | undefined) => number | undefined;
+  clear: () => void;
+};
+
+type RegisterSelection = {
+  get: () => RegisterName | undefined;
+  take: () => RegisterName | undefined;
+  clear: () => void;
+};
+
 export type NormalKeyResult = {
   keyResult: KeyResult;
   enterInsert: boolean;
@@ -158,10 +168,8 @@ function handled(
 }
 
 export class NormalMode {
-  private countBuffer = "";
   private pendingStack: PendingOperator[] = [];
   private pendingChordKeys: string[] = [];
-  private selectedRegister: RegisterName | undefined;
 
   private readonly keyHandlers: ReadonlyMap<string, NormalKeyHandler> = new Map([
     ["i", () => this.insertBefore()],
@@ -190,15 +198,17 @@ export class NormalMode {
 
   constructor(
     private readonly editor: VimEditorCapabilities,
-    private readonly registers: Registers
+    private readonly registers: Registers,
+    private readonly registerSelection: RegisterSelection,
+    private readonly countState: CountState
   ) {}
 
   private pushPendingChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}): void {
-    if (this.pendingStack.length === 0 && this.selectedRegister === undefined) {
+    if (this.pendingStack.length === 0 && this.registerSelection.get() === undefined) {
       this.pendingChordKeys = [];
     }
-    if (includeCount && this.countBuffer.length > 0) {
-      this.pendingChordKeys.push(...this.countBuffer);
+    if (includeCount && this.countState.get().length > 0) {
+      this.pendingChordKeys.push(...this.countState.get());
     }
     this.pendingChordKeys.push(key);
   }
@@ -225,10 +235,6 @@ export class NormalMode {
 
   private activeDigraph(): PendingDigraphOperator | undefined {
     return this.activeOperatorOfTypes(digraphOperatorTypes);
-  }
-
-  private activeRegister(): PendingRegisterOperator | undefined {
-    return this.activeOperatorOfTypes(registerOperatorTypes);
   }
 
   private activeOperatorOfTypes<const Type extends PendingOperator["type"]>(types: ReadonlySet<Type>): Extract<PendingOperator, { type: Type }> | undefined {
@@ -279,11 +285,6 @@ export class NormalMode {
     this.pendingStack.push({ type: "digraph", count });
   }
 
-  private pushRegister(): void {
-    this.pushPendingChordKey("\"", { includeCount: true });
-    this.pendingStack.push({ type: "register" });
-  }
-
   private replaceActiveDigraph(digraph: PendingDigraphOperator): void {
     for (let index = this.pendingStack.length - 1; index >= 0; index--) {
       if (this.pendingStack[index].type === "digraph") {
@@ -328,10 +329,6 @@ export class NormalMode {
     return this.popOperatorOfTypes(digraphOperatorTypes);
   }
 
-  private popRegister(): PendingRegisterOperator | undefined {
-    return this.popOperatorOfTypes(registerOperatorTypes);
-  }
-
   private popOperatorOfTypes<const Type extends PendingOperator["type"]>(types: ReadonlySet<Type>): Extract<PendingOperator, { type: Type }> | undefined {
     for (let index = this.pendingStack.length - 1; index >= 0; index--) {
       const item = this.pendingStack[index];
@@ -351,7 +348,7 @@ export class NormalMode {
   }
 
   isPending(): boolean {
-    return this.pendingStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0;
+    return this.pendingStack.length > 0 || this.countState.get().length > 0;
   }
 
   pendingOperatorName(): Operator | undefined {
@@ -359,20 +356,17 @@ export class NormalMode {
     return operator === undefined ? undefined : editOperatorForPending(operator);
   }
 
-  isExpectingRegisterName(): boolean {
-    return this.activeRegister() !== undefined;
-  }
-
   systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
     if (key !== "p" && key !== "P") return undefined;
-    if (this.selectedRegister === undefined || isSystemClipboardRegister(this.selectedRegister)) {
-      return { registerName: this.selectedRegister };
+    const registerName = this.registerSelection.get();
+    if (registerName === undefined || isSystemClipboardRegister(registerName)) {
+      return { registerName };
     }
     return undefined;
   }
 
   hasPendingNonCount(): boolean {
-    return this.pendingStack.length > 0 || this.selectedRegister !== undefined;
+    return this.pendingStack.length > 0;
   }
 
   canResolveMotionCentrally(): boolean {
@@ -392,31 +386,18 @@ export class NormalMode {
     return handled();
   }
 
-  selectRegisterKey(key: string): void {
-    const registerName = parseRegisterName(key);
-    if (registerName !== undefined) this.selectedRegister = registerName;
-  }
-
-  takeSelectedRegisterForRepeat(): RegisterName | undefined {
-    return this.takeSelectedRegister();
-  }
-
-  hasOnlySelectedRegisterPending(): boolean {
-    return this.selectedRegister !== undefined && this.pendingStack.length === 0;
-  }
-
   pendingChord(): string {
-    if (this.pendingStack.length > 0 || this.selectedRegister !== undefined) {
-      return `${this.pendingChordKeys.join("")}${this.countBuffer}`;
+    if (this.pendingStack.length > 0) {
+      return `${this.pendingChordKeys.join("")}${this.countState.get()}`;
     }
-    return this.countBuffer;
+    return this.countState.get();
   }
 
   clearPending(): void {
-    this.countBuffer = "";
+    this.countState.clear();
     this.pendingStack = [];
     this.pendingChordKeys = [];
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
   }
 
   // Zed: assets/keymaps/vim.json plus `vim_operator` / `vim_mode` contexts.
@@ -459,25 +440,8 @@ export class NormalMode {
       return handled({ enterInsert: this.handleTextObject(object, pendingTextObject.around) });
     }
 
-    if (this.activeRegister() !== undefined) {
-      this.popRegister();
-      const registerName = parseRegisterName(key);
-      if (registerName === undefined) {
-        this.clearPending();
-        return handled();
-      }
-      this.pendingChordKeys.push(key);
-      this.selectedRegister = registerName;
-      return handled();
-    }
-
     if (this.isCountKey(key)) {
-      this.countBuffer += key;
-      return handled();
-    }
-
-    if (key === '"') {
-      this.pushRegister();
+      this.countState.append(key);
       return handled();
     }
 
@@ -528,19 +492,19 @@ export class NormalMode {
         return handled({ enterInsert: this.applyLinewiseOperatorToRow(targetRow) });
       }
       this.moveToLine(targetRow);
-      this.selectedRegister = undefined;
+      this.registerSelection.clear();
       return handled();
     }
 
     if (key === "enter") {
       this.moveToNextLineStart();
-      this.selectedRegister = undefined;
+      this.registerSelection.clear();
       return handled();
     }
 
     if (key === "backspace") {
       this.moveSelections({ type: "wrappingLeft" }, this.takeCount(1));
-      this.selectedRegister = undefined;
+      this.registerSelection.clear();
       return handled();
     }
 
@@ -553,14 +517,14 @@ export class NormalMode {
 
   private insertBefore(): NormalKeyResult {
     const insertCount = this.takeCount(1);
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     enterInsertAtSelections(this.editor, (pos) => pos);
     return handled({ enterInsert: true, insertCount });
   }
 
   private insertAfter(): NormalKeyResult {
     const insertCount = this.takeCount(1);
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     enterInsertAtSelections(this.editor, (pos) => ({
       row: pos.row,
       column: Math.min(pos.column + 1, this.editor.lineLength(pos.row)),
@@ -570,28 +534,28 @@ export class NormalMode {
 
   private insertFirstNonWhitespace(): NormalKeyResult {
     const insertCount = this.takeCount(1);
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     enterInsertAtSelections(this.editor, (pos) => firstNonWhitespace(this.editor.line(pos.row), pos.row));
     return handled({ enterInsert: true, insertCount });
   }
 
   private insertEndOfLine(): NormalKeyResult {
     const insertCount = this.takeCount(1);
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     enterInsertAtSelections(this.editor, (pos) => ({ row: pos.row, column: this.editor.lineLength(pos.row) }));
     return handled({ enterInsert: true, insertCount });
   }
 
   private openLineBelow(): NormalKeyResult {
     const insertCount = this.takeCount(1);
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     openLine(this.editor, { above: false }, keepUndoTransactionOpen());
     return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
   }
 
   private openLineAbove(): NormalKeyResult {
     const insertCount = this.takeCount(1);
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     openLine(this.editor, { above: true }, keepUndoTransactionOpen());
     return handled({ enterInsert: true, insertCount, insertSeparator: "\n" });
   }
@@ -650,7 +614,7 @@ export class NormalMode {
 
   private toggleCase(): NormalKeyResult {
     toggleCaseCharacters(this.editor, this.takeCount(1));
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     return handled();
   }
 
@@ -666,13 +630,13 @@ export class NormalMode {
 
   private moveDownFirstNonWhitespace(): NormalKeyResult {
     this.moveToLineFirstNonWhitespace(this.takeCount(1));
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     return handled();
   }
 
   private moveUpFirstNonWhitespace(): NormalKeyResult {
     this.moveToLineFirstNonWhitespace(-this.takeCount(1));
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
     return handled();
   }
 
@@ -693,7 +657,7 @@ export class NormalMode {
       const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
       if (hostSelections === undefined) this.moveSelections(motion, count);
       else this.editor.setSelections(hostSelections);
-      this.selectedRegister = undefined;
+      this.registerSelection.clear();
       return false;
     } else {
       return this.applyOperatorToMotion(editOperatorForPending(pending), motion, pending.count * count);
@@ -707,7 +671,7 @@ export class NormalMode {
         return handled({ enterInsert: this.applyLinewiseOperatorToRow(count - 1) });
       }
       this.moveToLine(count - 1);
-      this.selectedRegister = undefined;
+      this.registerSelection.clear();
       return handled();
     }
 
@@ -737,7 +701,7 @@ export class NormalMode {
       const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: true, extend: false });
       if (hostSelections === undefined) this.moveSelections(motion, count);
       else this.editor.setSelections(hostSelections);
-      this.selectedRegister = undefined;
+      this.registerSelection.clear();
       return handled();
     }
 
@@ -836,7 +800,7 @@ export class NormalMode {
       joinLines(this.editor, selectionHead(selection).row, count <= 1 ? 1 : count - 1, { insertWhitespace });
       break;
     }
-    this.selectedRegister = undefined;
+    this.registerSelection.clear();
   }
 
   private handleReplaceKey(key: string): void {
@@ -1116,21 +1080,16 @@ export class NormalMode {
   private takeCount(defaultValue: number): number;
   private takeCount(defaultValue: undefined): number | undefined;
   private takeCount(defaultValue: number | undefined): number | undefined {
-    if (this.countBuffer.length === 0) return defaultValue;
-    const count = Number(this.countBuffer);
-    this.countBuffer = "";
-    return count;
+    return this.countState.take(defaultValue);
   }
 
   private isCountKey(key: string): boolean {
     if (!/^\d$/.test(key)) return false;
-    return key !== "0" || this.countBuffer.length > 0;
+    return key !== "0" || this.countState.get().length > 0;
   }
 
   private takeSelectedRegister(): RegisterName | undefined {
-    const registerName = this.selectedRegister;
-    this.selectedRegister = undefined;
-    return registerName;
+    return this.registerSelection.take();
   }
 }
 

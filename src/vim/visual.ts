@@ -19,7 +19,7 @@ import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
 import { cursorAfterDeletingRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
-import { RegisterContent, RegisterName, Registers, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
+import { RegisterContent, RegisterName, Registers, isSystemClipboardRegister } from "./registers.js";
 import { addSurrounds } from "./surrounds.js";
 import {
   KeyResult,
@@ -73,9 +73,21 @@ type BlockwiseVisualState = {
 type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualState;
 type VisualPendingOperator =
   | { type: "object"; around: boolean }
-  | { type: "addSurrounds"; ranges: readonly TextRange[]; linewise: boolean; undoSelectionsBefore: readonly VimSelection[] }
-  | { type: "register" };
+  | { type: "addSurrounds"; ranges: readonly TextRange[]; linewise: boolean; undoSelectionsBefore: readonly VimSelection[] };
 type VisualKeyHandler = (state: VisualState) => VisualKeyResult | undefined;
+
+type CountState = {
+  get: () => string;
+  append: (key: string) => void;
+  take: (defaultValue: number | undefined) => number | undefined;
+  clear: () => void;
+};
+
+type RegisterSelection = {
+  get: () => RegisterName | undefined;
+  take: () => RegisterName | undefined;
+  clear: () => void;
+};
 function handled(
   {
     exitVisual = false,
@@ -98,11 +110,8 @@ export class VisualMode {
   private state: VisualState | undefined;
   private lastState: VisualState | undefined;
   private pendingStack: VisualPendingOperator[] = [];
-  private selectedRegister: RegisterName | undefined;
-  private countBuffer = "";
 
   private readonly keyHandlers: ReadonlyMap<string, VisualKeyHandler> = new Map<string, VisualKeyHandler>([
-    ["\"", () => this.startRegisterPrefix()],
     ["v", state => this.toggleCharwise(state)],
     ["V", state => this.toggleLinewise(state)],
     ["ctrl-v", state => this.toggleBlockwise(state)],
@@ -139,6 +148,8 @@ export class VisualMode {
   constructor(
     private readonly editor: VimEditorCapabilities,
     private readonly registers: Registers,
+    private readonly registerSelection: RegisterSelection,
+    private readonly countState: CountState,
     configuration: Pick<VimConfiguration, "visualMultilineInsert">
   ) {
     this.visualMultilineInsert = configuration.visualMultilineInsert;
@@ -160,6 +171,12 @@ export class VisualMode {
     return item;
   }
 
+  clearPending(): void {
+    this.clearPendingStack();
+    this.registerSelection.clear();
+    this.countState.clear();
+  }
+
   private clearPendingStack(): void {
     this.pendingStack = [];
   }
@@ -169,8 +186,8 @@ export class VisualMode {
     const selection = selections[0];
     const head = selectionHead(selection);
     this.clearPendingStack();
-    this.selectedRegister = undefined;
-    this.countBuffer = "";
+    this.registerSelection.clear();
+    this.countState.clear();
     this.editor.setCursorStyle("line");
     switch (kind) {
       case "charwise":
@@ -197,8 +214,8 @@ export class VisualMode {
   clearState(): void {
     this.state = undefined;
     this.clearPendingStack();
-    this.selectedRegister = undefined;
-    this.countBuffer = "";
+    this.registerSelection.clear();
+    this.countState.clear();
   }
 
   exit(): void {
@@ -206,8 +223,8 @@ export class VisualMode {
     if (state !== undefined) this.rememberState(state);
     this.state = undefined;
     this.clearPendingStack();
-    this.selectedRegister = undefined;
-    this.countBuffer = "";
+    this.registerSelection.clear();
+    this.countState.clear();
     this.editor.setCursorStyle("block");
     const selections = this.editor.getSelections();
     if (state === undefined || (state.kind !== "blockwise" && selections.length > 1)) {
@@ -218,13 +235,6 @@ export class VisualMode {
   }
 
   onKey(key: string): VisualKeyResult {
-    if (this.activePending("register") !== undefined) {
-      this.popPending("register");
-      const registerName = parseRegisterName(key);
-      if (registerName !== undefined) this.selectedRegister = registerName;
-      return handled();
-    }
-
     const pendingSurround = this.activePending("addSurrounds");
     if (pendingSurround !== undefined) {
       this.popPending("addSurrounds");
@@ -245,8 +255,8 @@ export class VisualMode {
       return handled({ exitVisual: true });
     }
 
-    if (isCountKey(key, this.countBuffer)) {
-      this.countBuffer += key;
+    if (isCountKey(key, this.countState.get())) {
+      this.countState.append(key);
       return handled();
     }
 
@@ -262,11 +272,6 @@ export class VisualMode {
 
     this.exit();
     return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
-  private startRegisterPrefix(): VisualKeyResult {
-    this.pendingStack.push({ type: "register" });
-    return handled();
   }
 
   private toggleCharwise(state: VisualState): VisualKeyResult {
@@ -428,7 +433,7 @@ export class VisualMode {
   }
 
   private percentKey(state: VisualState): VisualKeyResult | undefined {
-    if (this.countBuffer.length > 0) {
+    if (this.countState.get().length > 0) {
       this.applyVisualMotion(state, { type: "goToPercentage", percent: this.takeCount(1) }, 1, { displayLine: false });
       return handled();
     }
@@ -692,8 +697,8 @@ export class VisualMode {
     if (selection.type !== "charwise") return false;
     if (!allowEmpty && comparePositions(selection.anchor, selection.head) === 0) return false;
     this.clearPendingStack();
-    this.selectedRegister = undefined;
-    this.countBuffer = "";
+    this.registerSelection.clear();
+    this.countState.clear();
     this.state = externalSelectionToCharwiseState(this.editor, selection);
     this.editor.setCursorStyle("line");
     if (render && this.editor.getSelections().length <= 1) this.syncEditorSelection();
@@ -724,15 +729,13 @@ export class VisualMode {
   }
 
   private takeSelectedRegister(): RegisterName | undefined {
-    const registerName = this.selectedRegister;
-    this.selectedRegister = undefined;
-    return registerName;
+    return this.registerSelection.take();
   }
 
   private clearPendingInteraction(): void {
     this.clearPendingStack();
-    this.selectedRegister = undefined;
-    this.countBuffer = "";
+    this.registerSelection.clear();
+    this.countState.clear();
   }
 
   private rememberState(state: VisualState): void {
@@ -744,31 +747,21 @@ export class VisualMode {
     this.applyVisualMotion(this.state, motion, count, { displayLine: (motion.type === "up" || motion.type === "down") && motion.displayLine === true });
   }
 
-  takeCountForMotion(defaultValue: number): number {
-    return this.takeCount(defaultValue);
-  }
 
   hasPendingNonCount(): boolean {
     return this.pendingStack.length > 0;
   }
-
-  isExpectingRegisterName(): boolean {
-    return this.activePending("register") !== undefined;
-  }
-
   systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
     if (key !== "p" && key !== "P") return undefined;
-    if (this.selectedRegister === undefined || isSystemClipboardRegister(this.selectedRegister)) {
-      return { registerName: this.selectedRegister };
+    const registerName = this.registerSelection.get();
+    if (registerName === undefined || isSystemClipboardRegister(registerName)) {
+      return { registerName };
     }
     return undefined;
   }
 
   private takeCount(defaultValue: number): number {
-    if (this.countBuffer.length === 0) return defaultValue;
-    const count = Number(this.countBuffer);
-    this.countBuffer = "";
-    return count;
+    return this.countState.take(defaultValue) ?? defaultValue;
   }
 }
 

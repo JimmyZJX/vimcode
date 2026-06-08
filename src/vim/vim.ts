@@ -45,11 +45,12 @@ type PendingInsertRegisterOperator = { type: "insertRegister" };
 type PendingMarkOperator = { type: "mark" };
 type PendingJumpOperator = { type: "jump"; line: boolean };
 type PendingUnmatchedOperator = { type: "unmatchedForward" | "unmatchedBackward"; count: number };
+type PendingRegisterOperator = { type: "register" };
 type PendingRecordRegisterOperator = { type: "recordRegister" };
 type PendingReplayRegisterOperator = { type: "replayRegister"; count: number };
 type PendingCommandOperator = { type: "command"; input: string };
 
-type PendingVimOperator = PendingSearch | PendingFindOperator | PendingDigraphOperator | PendingLiteralOperator | PendingInsertRegisterOperator | PendingMarkOperator | PendingJumpOperator | PendingUnmatchedOperator | PendingRecordRegisterOperator | PendingReplayRegisterOperator | PendingCommandOperator;
+type PendingVimOperator = PendingSearch | PendingFindOperator | PendingDigraphOperator | PendingLiteralOperator | PendingInsertRegisterOperator | PendingMarkOperator | PendingJumpOperator | PendingUnmatchedOperator | PendingRegisterOperator | PendingRecordRegisterOperator | PendingReplayRegisterOperator | PendingCommandOperator;
 
 function pendingOperatorStatus(operator: PendingVimOperator): string {
   switch (operator.type) {
@@ -73,6 +74,8 @@ function pendingOperatorStatus(operator: PendingVimOperator): string {
       return "]";
     case "unmatchedBackward":
       return "[";
+    case "register":
+      return "\"";
     case "recordRegister":
       return "q";
     case "replayRegister":
@@ -112,6 +115,8 @@ export class Vim {
   private modeState: VimMode = { dialect: "vim", kind: "normal" };
   private readonly keymapResolver = new VimKeymapResolver();
   private modelState: VimModelState;
+  private selectedRegister: RegisterName | undefined;
+  private countBuffer = "";
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remapResolver = new RemapResolver(this.configuration);
   private searchOriginMode: VimMode["kind"] | undefined;
@@ -147,8 +152,26 @@ export class Vim {
     this.remapResolver = new RemapResolver(this.configuration);
     this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.editor.setCursorStyle("block");
-    this.normalMode = new NormalMode(editor, this.globalState.registers);
-    this.visualMode = new VisualMode(editor, this.globalState.registers, this.configuration);
+    this.normalMode = new NormalMode(editor, this.globalState.registers, {
+      get: () => this.selectedRegister,
+      take: () => this.takeSelectedRegister(),
+      clear: () => this.clearSelectedRegister(),
+    }, {
+      get: () => this.countBuffer,
+      append: key => this.appendCountKey(key),
+      take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
+      clear: () => this.clearCount(),
+    });
+    this.visualMode = new VisualMode(editor, this.globalState.registers, {
+      get: () => this.selectedRegister,
+      take: () => this.takeSelectedRegister(),
+      clear: () => this.clearSelectedRegister(),
+    }, {
+      get: () => this.countBuffer,
+      append: key => this.appendCountKey(key),
+      take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
+      clear: () => this.clearCount(),
+    }, this.configuration);
   }
 
   attachModelState(modelState: VimModelState): void {
@@ -244,6 +267,33 @@ export class Vim {
 
   readRegister(name: RegisterName | undefined): string {
     return this.globalState.registers.read(name);
+  }
+
+  private takeSelectedRegister(): RegisterName | undefined {
+    const registerName = this.selectedRegister;
+    this.selectedRegister = undefined;
+    return registerName;
+  }
+
+  private clearSelectedRegister(): void {
+    this.selectedRegister = undefined;
+  }
+
+  private takeCount(defaultValue: number): number;
+  private takeCount(defaultValue: undefined): number | undefined;
+  private takeCount(defaultValue: number | undefined): number | undefined {
+    if (this.countBuffer.length === 0) return defaultValue;
+    const count = Number(this.countBuffer);
+    this.countBuffer = "";
+    return count;
+  }
+
+  private appendCountKey(key: string): void {
+    this.countBuffer += key;
+  }
+
+  private clearCount(): void {
+    this.countBuffer = "";
   }
 
   ambiguousRemapConflicts(): readonly AmbiguousRemapConflict[] {
@@ -380,19 +430,22 @@ export class Vim {
     this.remapResolver.clearPending();
     this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
     this.searchOriginMode = undefined;
+    this.selectedRegister = undefined;
+    this.countBuffer = "";
     if (closeSearchHighlights && pendingSearch !== undefined) this.editor.clearSearchHighlights();
     this.pendingStack = [];
     this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
-    return this.pendingStack.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.pendingStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
     const pendingOperator = this.pendingStack[this.pendingStack.length - 1];
     if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
     if (pendingOperator !== undefined) return pendingOperatorStatus(pendingOperator);
+    if (this.selectedRegister !== undefined) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}\"${this.selectedRegister}`;
     if (this.remapResolver.isPending()) return this.remapResolver.pendingChord();
     if (this.keymapResolver.isPending()) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}${this.keymapResolver.pendingChord()}`;
     return this.modeState.kind === "normal" ? this.normalMode.pendingChord() : "";
@@ -468,7 +521,7 @@ export class Vim {
       }
 
       if (!this.globalState.repeat.isReplaying()) {
-        this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalMode.pendingChord() });
+        this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalPendingChordForRepeat() });
         this.globalState.repeat.recordKey(key);
       }
 
@@ -557,8 +610,13 @@ export class Vim {
 
   private recordSharedFiniteKey(key: string): void {
     if (this.globalState.repeat.isReplaying()) return;
-    this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalMode.pendingChord() });
+    this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalPendingChordForRepeat() });
     this.globalState.repeat.recordKey(key);
+  }
+
+  private normalPendingChordForRepeat(): string {
+    const chord = this.normalMode.pendingChord();
+    return this.selectedRegister === undefined ? chord : `${chord}\"${this.selectedRegister}`;
   }
 
   private resolveKeymapAction(key: string, phase: VimKeymapPhase): VimAction | undefined {
@@ -566,9 +624,10 @@ export class Vim {
       mode: this.modeState.kind,
       normalModeIsPending: this.normalMode.isPending(),
       normalModeHasPendingOperator: this.normalMode.pendingOperatorName() !== undefined,
-      normalModeHasPendingNonCount: this.normalMode.hasPendingNonCount(),
-      normalModeHasOnlySelectedRegisterPending: this.normalMode.hasOnlySelectedRegisterPending(),
+      normalModeHasPendingNonCount: this.normalMode.hasPendingNonCount() || this.selectedRegister !== undefined,
+      normalModeHasOnlySelectedRegisterPending: this.selectedRegister !== undefined && !this.normalMode.hasPendingNonCount(),
       normalModeCanResolveEditOperator: this.normalMode.canResolveEditOperatorCentrally(),
+      visualModeHasPendingNonCount: this.visualMode.hasPendingNonCount(),
       repeatIsReplaying: this.globalState.repeat.isReplaying(),
     });
   }
@@ -589,7 +648,7 @@ export class Vim {
         return "handled";
       case "repeatLastChange":
         this.globalState.repeat.replay(this.normalMode.takeCountForRepeat(), {
-          registerName: this.normalMode.takeSelectedRegisterForRepeat(),
+          registerName: this.takeSelectedRegister(),
           runKey: key => this.onKey(key),
           runVisualAction: (selection, repeatAction) => this.replayVisualAction(selection, repeatAction),
         });
@@ -637,6 +696,9 @@ export class Vim {
         return "handled";
       case "pushEditOperator":
         return this.applyNormalResult(this.normalMode.handleEditOperatorKey(action.operator, action.key));
+      case "pushRegister":
+        this.pendingStack.push({ type: "register" });
+        return "handled";
       case "changeList": {
         this.globalState.repeat.cancelCurrent();
         const position = this.modelState.changeList.move(this.takeCountForMotion(1), action.direction);
@@ -749,6 +811,13 @@ export class Vim {
     const macroResult = this.handlePendingMacroKey(key);
     if (macroResult !== undefined) return macroResult;
 
+    const pendingRegister = this.activePending("register");
+    if (pendingRegister !== undefined) {
+      this.popPending("register");
+      this.handlePendingRegisterKey(key);
+      return "handled";
+    }
+
     if (this.activePending("command") !== undefined) {
       this.handlePendingCommandKey(key);
       return "handled";
@@ -797,6 +866,16 @@ export class Vim {
     }
 
     return undefined;
+  }
+
+  private handlePendingRegisterKey(key: string): void {
+    const registerName = parseRegisterName(key);
+    if (registerName !== undefined) {
+      this.selectedRegister = registerName;
+      return;
+    }
+    if (this.modeState.kind === "normal") this.normalMode.clearPending();
+    else if (this.isVisualMode()) this.visualMode.clearPending();
   }
 
   private handlePendingSearchKey(key: string, pendingSearch: Extract<PendingVimOperator, { type: "search" }>): KeyResult | null {
@@ -1411,9 +1490,7 @@ export class Vim {
   }
 
   private takeCountForMotion(defaultValue: number): number {
-    if (this.modeState.kind === "normal") return this.normalMode.takeCountForMotion(defaultValue);
-    if (this.isVisualMode()) return this.visualMode.takeCountForMotion(defaultValue);
-    return defaultValue;
+    return this.takeCount(defaultValue);
   }
 
   private isMotionMode(): boolean {
@@ -1421,9 +1498,7 @@ export class Vim {
   }
 
   private modeIsExpectingRegisterName(): boolean {
-    if (this.modeState.kind === "normal") return this.normalMode.isExpectingRegisterName();
-    if (this.isVisualMode()) return this.visualMode.isExpectingRegisterName();
-    return false;
+    return this.activePending("register") !== undefined;
   }
 
   private isVisualMode(): boolean {
