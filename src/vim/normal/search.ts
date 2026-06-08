@@ -37,6 +37,17 @@ function singleLineEditorKey(key: string): SingleLineEditorKey | undefined {
   }
 }
 
+export function isSearchInputKey(key: string): boolean {
+  return key.length === 1
+    || key === "enter"
+    || key === "ctrl-v"
+    || key === "ctrl-y"
+    || key === "<escape>"
+    || key === "escape"
+    || key === "ctrl-["
+    || singleLineEditorKey(key) !== undefined;
+}
+
 export class SearchState {
   private last:
     | { query: string; backwards: boolean; options: SearchOptions }
@@ -76,6 +87,11 @@ export class SearchState {
     registers: Registers,
     editor: VimEditorCapabilities
   ): Motion | undefined {
+    if (key === "ctrl-v" || key === "ctrl-y") {
+      this.appendText(pending, registers.read("+"), editor);
+      return undefined;
+    }
+
     if (key === "enter") {
       const pendingQuery = pending.input.value();
       const query = pendingQuery.length > 0 ? pendingQuery : this.last?.query;

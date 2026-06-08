@@ -11,7 +11,7 @@ function head(editor: InMemoryVimEditor) {
 
 async function runKeysAsync(vim: Vim, keys: readonly string[], clipboard: VimSystemClipboard): Promise<void> {
   for (const key of keys) {
-    await vim.onKeyAsync(key, { clipboard });
+    await vim.handleKey(key)?.run({ clipboard });
   }
 }
 
@@ -292,7 +292,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
 
     expect(vim.wouldHandleKeyForTest("<escape>")).toBe(false);
-    expect(vim.onKey("<escape>")).toBe("not-handled");
+    expect(vim.onKey("<escape>")).toBeNull();
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.getSelections()).toEqual([
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
@@ -1398,7 +1398,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["/"]);
 
     expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(false);
-    expect(vim.onKey("ctrl-a")).toBe("not-handled");
+    expect(vim.onKey("ctrl-a")).toBeNull();
     expect(vim.status.chord).toBe("/|");
   });
 

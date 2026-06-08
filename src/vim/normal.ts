@@ -64,8 +64,6 @@ type PendingOperator =
   | PendingDigraphOperator
   | PendingRegisterOperator;
 
-type PendingPrefix = "g" | "indent";
-
 const editOperatorTypes = new Set<PendingEditOperator["type"]>(["change", "delete", "yank"]);
 const convertOperatorTypes = new Set<PendingConvertOperator["type"]>(["lowercase", "uppercase", "oppositeCase"]);
 const indentOperatorTypes = new Set<PendingIndentOperator["type"]>(["indent", "outdent", "autoIndent"]);
@@ -163,7 +161,6 @@ export class NormalMode {
   private countBuffer = "";
   private pendingStack: PendingOperator[] = [];
   private pendingChordKeys: string[] = [];
-  private pendingPrefix: PendingPrefix | undefined;
   private selectedRegister: RegisterName | undefined;
 
   private readonly keyHandlers: ReadonlyMap<string, NormalKeyHandler> = new Map([
@@ -197,7 +194,7 @@ export class NormalMode {
   ) {}
 
   private pushPendingChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}): void {
-    if (this.pendingStack.length === 0 && this.pendingPrefix === undefined && this.selectedRegister === undefined) {
+    if (this.pendingStack.length === 0 && this.selectedRegister === undefined) {
       this.pendingChordKeys = [];
     }
     if (includeCount && this.countBuffer.length > 0) {
@@ -354,7 +351,7 @@ export class NormalMode {
   }
 
   isPending(): boolean {
-    return this.pendingStack.length > 0 || this.pendingPrefix !== undefined || this.selectedRegister !== undefined || this.countBuffer.length > 0;
+    return this.pendingStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0;
   }
 
   pendingOperatorName(): Operator | undefined {
@@ -375,9 +372,24 @@ export class NormalMode {
   }
 
   hasPendingNonCount(): boolean {
-    return this.pendingStack.length > 0
-      || this.pendingPrefix !== undefined
-      || this.selectedRegister !== undefined;
+    return this.pendingStack.length > 0 || this.selectedRegister !== undefined;
+  }
+
+  canResolveMotionCentrally(): boolean {
+    return this.activeEditOperator() !== undefined && this.activeObject() === undefined;
+  }
+
+  canResolveEditOperatorCentrally(): boolean {
+    return this.activeObject() === undefined;
+  }
+
+  handleEditOperatorKey(operator: Operator, key: string): NormalKeyResult {
+    if (this.activeEditOperator()?.type === operator) {
+      return handled({ enterInsert: this.handleLineOperator(operator) });
+    }
+    // Zed: `vim::Vim::push_operator`.
+    this.pushEditOperator(operator, this.takeCount(1), key);
+    return handled();
   }
 
   selectRegisterKey(key: string): void {
@@ -390,16 +402,13 @@ export class NormalMode {
   }
 
   hasOnlySelectedRegisterPending(): boolean {
-    return this.selectedRegister !== undefined
-      && this.pendingStack.length === 0
-      && this.pendingPrefix === undefined;
+    return this.selectedRegister !== undefined && this.pendingStack.length === 0;
   }
 
   pendingChord(): string {
     if (this.pendingStack.length > 0 || this.selectedRegister !== undefined) {
       return `${this.pendingChordKeys.join("")}${this.countBuffer}`;
     }
-    if (this.pendingPrefix === "g") return `${this.countBuffer}g`;
     return this.countBuffer;
   }
 
@@ -407,7 +416,6 @@ export class NormalMode {
     this.countBuffer = "";
     this.pendingStack = [];
     this.pendingChordKeys = [];
-    this.pendingPrefix = undefined;
     this.selectedRegister = undefined;
   }
 
@@ -463,18 +471,8 @@ export class NormalMode {
       return handled();
     }
 
-    if (this.pendingPrefix === "g") {
-      this.pendingPrefix = undefined;
-      return this.handleGKey(key);
-    }
-
     if (this.isCountKey(key)) {
       this.countBuffer += key;
-      return handled();
-    }
-
-    if (key === "g") {
-      this.pendingPrefix = "g";
       return handled();
     }
 
@@ -543,16 +541,6 @@ export class NormalMode {
     if (key === "backspace") {
       this.moveSelections({ type: "wrappingLeft" }, this.takeCount(1));
       this.selectedRegister = undefined;
-      return handled();
-    }
-
-    if (isOperatorKey(key)) {
-      const operator = operatorForKey(key);
-      if (this.activeEditOperator()?.type === operator) {
-        return handled({ enterInsert: this.handleLineOperator(operator) });
-      }
-      // Zed: `vim::Vim::push_operator`.
-      this.pushEditOperator(operator, this.takeCount(1), key);
       return handled();
     }
 
@@ -1160,10 +1148,6 @@ function keyForInput(key: string): string {
   return key === "space" ? " " : key;
 }
 
-function isOperatorKey(key: string): boolean {
-  return key === "d" || key === "c" || key === "y";
-}
-
 function indentDirectionForKey(key: string): IndentDirection {
   switch (key) {
     case ">":
@@ -1209,20 +1193,5 @@ function keyForConvertTarget(target: ConvertTarget): string {
       return "U";
     case "toggle":
       return "~";
-  }
-}
-
-// Zed: assets/keymaps/vim.json maps `d`, `c`, and `y` to `PushDelete`,
-// `PushChange`, and `PushYank`, which call `push_operator` in vim.rs.
-function operatorForKey(key: string): Operator {
-  switch (key) {
-    case "d":
-      return "delete";
-    case "c":
-      return "change";
-    case "y":
-      return "yank";
-    default:
-      throw new Error(`not an operator key: ${key}`);
   }
 }

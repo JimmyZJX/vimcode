@@ -74,8 +74,7 @@ type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualSt
 type VisualPendingOperator =
   | { type: "object"; around: boolean }
   | { type: "addSurrounds"; ranges: readonly TextRange[]; linewise: boolean; undoSelectionsBefore: readonly VimSelection[] }
-  | { type: "register" }
-  | { type: "g" };
+  | { type: "register" };
 type VisualKeyHandler = (state: VisualState) => VisualKeyResult | undefined;
 function handled(
   {
@@ -103,7 +102,6 @@ export class VisualMode {
   private countBuffer = "";
 
   private readonly keyHandlers: ReadonlyMap<string, VisualKeyHandler> = new Map<string, VisualKeyHandler>([
-    ["g", () => this.startGPrefix()],
     ["\"", () => this.startRegisterPrefix()],
     ["v", state => this.toggleCharwise(state)],
     ["V", state => this.toggleLinewise(state)],
@@ -134,17 +132,6 @@ export class VisualMode {
     ["p", state => this.pasteKey(state)],
     ["P", state => this.pasteKey(state)],
     ["%", state => this.percentKey(state)],
-  ]);
-
-  private readonly gKeyHandlers: ReadonlyMap<string, VisualKeyHandler> = new Map<string, VisualKeyHandler>([
-    ["j", state => this.gDisplayLineMotion(state, "down")],
-    ["k", state => this.gDisplayLineMotion(state, "up")],
-    ["J", state => this.gJoin(state)],
-    ["u", state => this.gConvert(state, "u")],
-    ["U", state => this.gConvert(state, "U")],
-    ["~", state => this.gConvert(state, "~")],
-    ["ctrl-a", state => this.gIncrementOrDecrement(state, "ctrl-a")],
-    ["ctrl-x", state => this.gIncrementOrDecrement(state, "ctrl-x")],
   ]);
 
   private visualMultilineInsert: boolean;
@@ -263,15 +250,6 @@ export class VisualMode {
       return handled();
     }
 
-    if (this.activePending("g") !== undefined) {
-      this.popPending("g");
-      const handler = this.gKeyHandlers.get(key);
-      const result = handler?.(state);
-      if (result !== undefined) return result;
-      this.exit();
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
-
     const handler = this.keyHandlers.get(key);
     const result = handler?.(state);
     if (result !== undefined) return result;
@@ -284,11 +262,6 @@ export class VisualMode {
 
     this.exit();
     return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
-  private startGPrefix(): VisualKeyResult {
-    this.pendingStack.push({ type: "g" });
-    return handled();
   }
 
   private startRegisterPrefix(): VisualKeyResult {
@@ -473,29 +446,6 @@ export class VisualMode {
     }
 
     return undefined;
-  }
-
-  private gDisplayLineMotion(state: VisualState, direction: "up" | "down"): VisualKeyResult {
-    this.applyVisualMotion(state, { type: direction }, this.takeCount(1), { displayLine: true });
-    return handled({ nextMode: "visual" });
-  }
-
-  private gJoin(state: VisualState): VisualKeyResult {
-    this.join(state, { insertWhitespace: false });
-    return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
-  private gConvert(state: VisualState, key: "u" | "U" | "~"): VisualKeyResult {
-    this.convert(state, convertTargetForKey(key));
-    return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
-  private gIncrementOrDecrement(_state: VisualState, key: "ctrl-a" | "ctrl-x"): VisualKeyResult {
-    const delta = (key === "ctrl-a" ? 1 : -1) * this.takeCount(1);
-    incrementNumbers(this.editor, delta, delta);
-    this.state = undefined;
-    this.editor.setCursorStyle("block");
-    return handled({ exitVisual: true, nextMode: "normal" });
   }
 
   private handlePendingTextObject(key: string, pendingTextObject: Extract<VisualPendingOperator, { type: "object" }>): VisualKeyResult {
@@ -796,6 +746,10 @@ export class VisualMode {
 
   takeCountForMotion(defaultValue: number): number {
     return this.takeCount(defaultValue);
+  }
+
+  hasPendingNonCount(): boolean {
+    return this.pendingStack.length > 0;
   }
 
   isExpectingRegisterName(): boolean {
