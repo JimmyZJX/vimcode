@@ -71,9 +71,13 @@ type BlockwiseVisualState = {
 };
 
 type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualState;
-type VisualPendingOperator =
+export type VisualPendingOperator =
   | { type: "object"; around: boolean }
   | { type: "addSurrounds"; ranges: readonly TextRange[]; linewise: boolean; undoSelectionsBefore: readonly VimSelection[] };
+export type VisualPendingState = {
+  stack: VisualPendingOperator[];
+};
+
 type VisualKeyHandler = (state: VisualState) => VisualKeyResult | undefined;
 
 type CountState = {
@@ -109,7 +113,6 @@ function handled(
 export class VisualMode {
   private state: VisualState | undefined;
   private lastState: VisualState | undefined;
-  private pendingStack: VisualPendingOperator[] = [];
 
   private readonly keyHandlers: ReadonlyMap<string, VisualKeyHandler> = new Map<string, VisualKeyHandler>([
     ["v", state => this.toggleCharwise(state)],
@@ -150,6 +153,7 @@ export class VisualMode {
     private readonly registers: Registers,
     private readonly registerSelection: RegisterSelection,
     private readonly countState: CountState,
+    private readonly pendingState: VisualPendingState,
     configuration: Pick<VimConfiguration, "visualMultilineInsert">
   ) {
     this.visualMultilineInsert = configuration.visualMultilineInsert;
@@ -160,14 +164,14 @@ export class VisualMode {
   }
 
   private activePending<Type extends VisualPendingOperator["type"]>(type: Type): Extract<VisualPendingOperator, { type: Type }> | undefined {
-    const item = this.pendingStack[this.pendingStack.length - 1];
+    const item = this.pendingState.stack[this.pendingState.stack.length - 1];
     return item?.type === type ? item as Extract<VisualPendingOperator, { type: Type }> : undefined;
   }
 
   private popPending<Type extends VisualPendingOperator["type"]>(type: Type): Extract<VisualPendingOperator, { type: Type }> | undefined {
     const item = this.activePending(type);
     if (item === undefined) return undefined;
-    this.pendingStack.pop();
+    this.pendingState.stack.pop();
     return item;
   }
 
@@ -178,7 +182,7 @@ export class VisualMode {
   }
 
   private clearPendingStack(): void {
-    this.pendingStack = [];
+    this.pendingState.stack = [];
   }
 
   enter(kind: VisualState["kind"] = "charwise"): void {
@@ -335,7 +339,7 @@ export class VisualMode {
   }
 
   private startSurround(state: VisualState): VisualKeyResult {
-    this.pendingStack.push({
+    this.pendingState.stack.push({
       type: "addSurrounds",
       ranges: visualSurroundRanges(this.editor, state),
       linewise: state.kind === "linewise",
@@ -369,7 +373,7 @@ export class VisualMode {
   }
 
   private startTextObject(around: boolean): VisualKeyResult {
-    this.pendingStack.push({ type: "object", around });
+    this.pendingState.stack.push({ type: "object", around });
     return handled();
   }
 
@@ -749,7 +753,7 @@ export class VisualMode {
 
 
   hasPendingNonCount(): boolean {
-    return this.pendingStack.length > 0;
+    return this.pendingState.stack.length > 0;
   }
   systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
     if (key !== "p" && key !== "P") return undefined;

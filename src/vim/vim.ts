@@ -14,7 +14,7 @@ import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToB
 import { resolveVimAction, VimAction, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
-import type { NormalKeyResult } from "./normal.js";
+import type { NormalKeyResult, NormalPendingState } from "./normal.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
 import { PendingSearch, isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
@@ -25,7 +25,7 @@ import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
 import { KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
-import type { VisualKeyResult, VisualResultMode } from "./visual.js";
+import type { VisualKeyResult, VisualPendingState, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
 
 type PendingFindOperator =
@@ -114,6 +114,8 @@ export { VimGlobalState, VimModelState };
 export class Vim {
   private modeState: VimMode = { dialect: "vim", kind: "normal" };
   private readonly keymapResolver = new VimKeymapResolver();
+  private readonly normalPendingState: NormalPendingState = { stack: [], chordKeys: [] };
+  private readonly visualPendingState: VisualPendingState = { stack: [] };
   private modelState: VimModelState;
   private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
@@ -161,7 +163,7 @@ export class Vim {
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
-    });
+    }, this.normalPendingState);
     this.visualMode = new VisualMode(editor, this.globalState.registers, {
       get: () => this.selectedRegister,
       take: () => this.takeSelectedRegister(),
@@ -171,7 +173,7 @@ export class Vim {
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
-    }, this.configuration);
+    }, this.visualPendingState, this.configuration);
   }
 
   attachModelState(modelState: VimModelState): void {
