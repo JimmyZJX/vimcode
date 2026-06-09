@@ -9,6 +9,9 @@ import { VimMode } from "./state.js";
 export type VimRemapMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock" | "operatorPending";
 
 export type VimCommandMapping = string | { command: string; args?: unknown | unknown[] };
+export type RemapWhenEvaluator = (when: string | undefined) => boolean;
+
+const alwaysActiveRemapWhen: RemapWhenEvaluator = () => true;
 
 export type VimKeyRemapping = {
   before: readonly string[];
@@ -16,6 +19,7 @@ export type VimKeyRemapping = {
   commands?: readonly VimCommandMapping[];
   silent?: boolean;
   recursive?: boolean;
+  when?: string;
 };
 
 export type RawVimConfiguration = Record<string, unknown>;
@@ -98,6 +102,7 @@ export type NormalizedRemapping = {
   after: readonly string[];
   commands: readonly VimCommandMapping[];
   recursive: boolean;
+  when?: string;
 };
 
 export type AmbiguousRemapConflict = {
@@ -134,12 +139,12 @@ export class RemapResolver {
     return this.pendingKeys.length > 0;
   }
 
-  hasMappings(mode: VimRemapMode): boolean {
-    return this.mappingsByMode[mode].length > 0;
+  hasMappings(mode: VimRemapMode, whenEvaluator: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
+    return this.activeMappings(mode, whenEvaluator).length > 0;
   }
 
-  hasMappingStartingWith(mode: VimRemapMode, key: string): boolean {
-    return this.mappingsByMode[mode].some(mapping => mapping.before[0] === normalizeKey(key, this.config.leader));
+  hasMappingStartingWith(mode: VimRemapMode, key: string, whenEvaluator: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
+    return this.activeMappings(mode, whenEvaluator).some(mapping => mapping.before[0] === normalizeKey(key, this.config.leader));
   }
 
   ambiguousConflicts(): readonly AmbiguousRemapConflict[] {
@@ -166,13 +171,13 @@ export class RemapResolver {
     this.pendingAmbiguousMapping = undefined;
   }
 
-  handleKey(mode: VimRemapMode, key: string): RemapResolution {
+  handleKey(mode: VimRemapMode, key: string, whenEvaluator: RemapWhenEvaluator = alwaysActiveRemapWhen): RemapResolution {
     if (key === RemapTimeoutKey) {
-      return this.handleTimeout();
+      return this.handleTimeout(whenEvaluator);
     }
 
     const keys = [...this.pendingKeys, key];
-    const mappings = this.mappingsByMode[mode];
+    const mappings = this.activeMappings(mode, whenEvaluator);
     const exact = findLast(mappings, mapping => sameKeys(mapping.before, keys));
     const hasLongerMatch = mappings.some(mapping => isPrefix(keys, mapping.before) && !sameKeys(mapping.before, keys));
 
@@ -204,13 +209,23 @@ export class RemapResolver {
     return { kind: "noMatch" };
   }
 
-  private handleTimeout(): RemapResolution {
+  private handleTimeout(whenEvaluator: RemapWhenEvaluator): RemapResolution {
     const keys = this.pendingKeys;
     const ambiguousMapping = this.pendingAmbiguousMapping;
     this.clearPending();
     if (keys.length === 0) return { kind: "handled" };
-    if (ambiguousMapping !== undefined) return { kind: "matched", mapping: ambiguousMapping };
+    if (ambiguousMapping !== undefined && this.mappingIsActive(ambiguousMapping, whenEvaluator)) {
+      return { kind: "matched", mapping: ambiguousMapping };
+    }
     return { kind: "replay", keys };
+  }
+
+  private activeMappings(mode: VimRemapMode, whenEvaluator: RemapWhenEvaluator): readonly NormalizedRemapping[] {
+    return this.mappingsByMode[mode].filter(mapping => this.mappingIsActive(mapping, whenEvaluator));
+  }
+
+  private mappingIsActive(mapping: NormalizedRemapping, whenEvaluator: RemapWhenEvaluator): boolean {
+    return whenEvaluator(mapping.when);
   }
 }
 
@@ -252,6 +267,7 @@ function normalizeRemappings(leader: string, mappings: readonly VimKeyRemapping[
     after: (mapping.after ?? []).map(key => normalizeKey(key, leader)),
     commands: mapping.commands ?? [],
     recursive: mapping.recursive ?? recursive,
+    when: mapping.when,
   })).filter(mapping => mapping.before.length > 0 && (mapping.after.length > 0 || mapping.commands.length > 0));
 }
 

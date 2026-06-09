@@ -37,6 +37,10 @@ function remappingSchema(description: string): IConfigurationPropertySchema {
 					type: 'array',
 					description: nls.localize('vim.remap.commands', "VS Code commands or Vim command-line commands to run."),
 				},
+				when: {
+					type: 'string',
+					description: nls.localize('vim.remap.when', "VS Code when-clause expression that must be true for this remapping to be active."),
+				},
 				silent: { type: 'boolean' },
 				recursive: { type: 'boolean' },
 			},

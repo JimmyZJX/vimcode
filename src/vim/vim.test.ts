@@ -15,6 +15,12 @@ async function runKeysAsync(vim: Vim, keys: readonly string[], clipboard: VimSys
   }
 }
 
+async function runKeysWithWhen(vim: Vim, keys: readonly string[], activeWhen: string): Promise<void> {
+  for (const key of keys) {
+    await vim.handleKey(key, { remapWhen: when => when === undefined || when === activeWhen })?.run();
+  }
+}
+
 class FakeAsyncClipboard implements VimSystemClipboard {
   readCount = 0;
   writes: string[] = [];
@@ -552,6 +558,36 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.modeName).toBe("vim:insert");
     expect(editor.getText()).toBe("one");
+  });
+
+  it("activates insert remaps only when their when clause matches", async () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [{ before: ["x", "y"], after: ["Z"], when: "vimcode.test" }],
+    });
+
+    runKeys(vim, ["A"]);
+
+    expect(vim.handleKey("x", { remapWhen: when => when !== "vimcode.test" })).toBeNull();
+
+    await runKeysWithWhen(vim, ["x", "y"], "vimcode.test");
+
+    expect(vim.modeName).toBe("vim:insert");
+    expect(editor.getText()).toBe("oneZ");
+  });
+
+  it("recognizes normal-mode chord remaps only when their when clause matches", async () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["!", "r"], after: ["l"], when: "vimcode.test" }],
+    });
+
+    expect(vim.hasActiveRemapStartingWithOrPending("!", when => when !== "vimcode.test")).toBe(false);
+    expect(vim.hasActiveRemapStartingWithOrPending("!", when => when === "vimcode.test")).toBe(true);
+
+    await runKeysWithWhen(vim, ["!", "r"], "vimcode.test");
+
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
   });
 
   it("supports VSCodeVim-style visual remaps", () => {

@@ -7,7 +7,8 @@ import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import type { ContextKeyExpression, IContextKeyServiceTarget } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionManagementService, IGlobalExtensionEnablementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
@@ -70,6 +71,7 @@ export class VimController extends Disposable {
 	private enabled = false;
 	private remapTimeout: ReturnType<typeof setTimeout> | undefined;
 	private remapTimeoutGeneration = 0;
+	private readonly remapWhenExpressionCache = new Map<string, ContextKeyExpression | undefined>();
 	private pendingUndoRedoContentSync = false;
 	private readonly originalCursorStyle = this.editor.getRawOptions().cursorStyle;
 	private readonly _onDidChangeStatus = this._register(new Emitter<VimStatus>());
@@ -218,14 +220,40 @@ export class VimController extends Disposable {
 			return;
 		}
 		const key = keyFromEvent(event);
-		const keyPlan = key === undefined ? null : this.vim.handleKey(key);
-		if (keyPlan === null || this.shouldLetNativeKeybindingHandle(event)) {
+		const remapWhen = (when: string | undefined) => this.evaluateRemapWhen(when, event.target);
+		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { remapWhen });
+		const vimRemapOwnsKey = key !== undefined && this.vim.hasActiveRemapStartingWithOrPending(key, remapWhen);
+		if (keyPlan === null || (!vimRemapOwnsKey && this.shouldLetNativeKeybindingHandle(event))) {
 			return;
 		}
 
 		event.preventDefault();
 		event.stopPropagation();
 		void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan)).then(undefined, () => this.syncStatus());
+	}
+
+	private evaluateRemapWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
+		if (when === undefined || when.trim().length === 0) {
+			return true;
+		}
+		const expression = this.remapWhenExpression(when);
+		if (expression === undefined) {
+			return false;
+		}
+		return expression.evaluate(this.contextKeyService.getContext(target));
+	}
+
+	private remapWhenExpression(when: string): ContextKeyExpression | undefined {
+		if (!this.remapWhenExpressionCache.has(when)) {
+			let expression: ContextKeyExpression | undefined;
+			try {
+				expression = ContextKeyExpr.deserialize(when);
+			} catch (_error) {
+				expression = undefined;
+			}
+			this.remapWhenExpressionCache.set(when, expression);
+		}
+		return this.remapWhenExpressionCache.get(when);
 	}
 
 	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent): boolean {
@@ -578,7 +606,7 @@ function readRemaps(value: unknown): VimKeyRemapping[] {
 	if (!Array.isArray(value)) return [];
 	return value.flatMap(item => {
 		if (typeof item !== 'object' || item === null) return [];
-		const remap = item as { before?: unknown; after?: unknown; commands?: unknown; silent?: unknown; recursive?: unknown };
+		const remap = item as { before?: unknown; after?: unknown; commands?: unknown; silent?: unknown; recursive?: unknown; when?: unknown };
 		if (!Array.isArray(remap.before) || !remap.before.every(key => typeof key === 'string')) return [];
 		return [{
 			before: remap.before,
@@ -586,6 +614,7 @@ function readRemaps(value: unknown): VimKeyRemapping[] {
 			commands: Array.isArray(remap.commands) ? readRemapCommands(remap.commands) : undefined,
 			silent: typeof remap.silent === 'boolean' ? remap.silent : undefined,
 			recursive: typeof remap.recursive === 'boolean' ? remap.recursive : undefined,
+			when: typeof remap.when === 'string' ? remap.when : undefined,
 		}];
 	});
 }

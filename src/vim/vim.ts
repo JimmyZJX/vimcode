@@ -7,6 +7,7 @@
 
 import { LineRange, executeCommand } from "./command.js";
 import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
+import type { RemapWhenEvaluator } from "./config.js";
 import { lookupDigraph } from "./digraph.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
@@ -54,6 +55,8 @@ export type EditorSyncResult = {
 };
 
 export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promise<void> };
+
+const alwaysActiveRemapWhen: RemapWhenEvaluator = () => true;
 
 export { VimGlobalState, VimModelState };
 
@@ -205,19 +208,24 @@ export class Vim {
     return this.handleKey(key) !== null;
   }
 
-  handleKey(key: string): KeyPlan | null {
-    if (!this.ownsKey(key)) return null;
+  handleKey(key: string, { remapWhen = alwaysActiveRemapWhen }: { remapWhen?: RemapWhenEvaluator } = {}): KeyPlan | null {
+    if (!this.ownsKey(key, remapWhen)) return null;
     return {
       run: async ({ clipboard }: { clipboard?: VimSystemClipboard } = {}) => {
         await this.globalState.registers.withSystemClipboard(clipboard, async () => {
           await this.refreshSystemClipboardRegisterForKey(key);
-          this.dispatchKey(key, { allowRemap: true });
+          this.dispatchKey(key, { allowRemap: true, remapWhen });
         });
       },
     };
   }
 
-  private ownsKey(key: string): boolean {
+  hasActiveRemapStartingWithOrPending(key: string, remapWhen: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
+    return this.remapResolver.isPending()
+      || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
+  }
+
+  private ownsKey(key: string, remapWhen: RemapWhenEvaluator): boolean {
     const handleOverride = this.handleKeyOverride(key);
     if (handleOverride !== undefined) return handleOverride;
 
@@ -229,22 +237,22 @@ export class Vim {
     if (this.isEscape(key)) return this.shouldHandleEscapeKey();
 
     if (isCtrlKey(key)) {
-      const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key);
+      const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
       if (!isMapped) {
         return this.configuration.useCtrlKeys && isBuiltInCtrlKey(key);
       }
     }
 
     if (this.modeState.kind === "insert" || this.modeState.kind === "replace") {
-      return this.shouldPrepareInsertOrReplaceKey(key);
+      return this.shouldPrepareInsertOrReplaceKey(key, remapWhen);
     }
 
     return true;
   }
 
-  private shouldPrepareInsertOrReplaceKey(key: string): boolean {
+  private shouldPrepareInsertOrReplaceKey(key: string, remapWhen: RemapWhenEvaluator): boolean {
     return this.remapResolver.isPending()
-      || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key)
+      || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen)
       || this.operatorStack.length > 0
       || key === "ctrl-k"
       || key === "ctrl-v"
@@ -350,7 +358,7 @@ export class Vim {
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyResult | null {
-    return this.dispatchKey(key, { allowRemap: true });
+    return this.dispatchKey(key, { allowRemap: true, remapWhen: alwaysActiveRemapWhen });
   }
 
   private async refreshSystemClipboardRegisterForKey(key: string): Promise<void> {
@@ -372,13 +380,13 @@ export class Vim {
     return undefined;
   }
 
-  private dispatchKey(key: string, { allowRemap }: { allowRemap: boolean }): KeyResult | null {
+  private dispatchKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyResult | null {
     const textBefore = this.editor.getText();
     const modeBefore = this.modeState.kind;
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
 
-      const remapResult = this.dispatchRemapKey(key, { allowRemap });
+      const remapResult = this.dispatchRemapKey(key, { allowRemap, remapWhen });
       if (remapResult !== undefined) return remapResult;
 
       const pendingResult = this.handlePendingKey(key);
@@ -412,21 +420,21 @@ export class Vim {
     }
   }
 
-  private dispatchRemapKey(key: string, { allowRemap }: { allowRemap: boolean }): KeyResult | undefined {
+  private dispatchRemapKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyResult | undefined {
     if (!(allowRemap && this.shouldResolveRemap())) return undefined;
-    const resolution = this.remapResolver.handleKey(this.currentRemapMode(), key);
+    const resolution = this.remapResolver.handleKey(this.currentRemapMode(), key, remapWhen);
     switch (resolution.kind) {
       case "pending":
         return "handled";
       case "matched":
-        this.executeRemapping(resolution.mapping);
+        this.executeRemapping(resolution.mapping, remapWhen);
         return "handled";
       case "matchedWithReplay":
-        this.executeRemapping(resolution.mapping);
-        for (const replayKey of resolution.keys) this.dispatchKey(replayKey, { allowRemap: true });
+        this.executeRemapping(resolution.mapping, remapWhen);
+        for (const replayKey of resolution.keys) this.dispatchKey(replayKey, { allowRemap: true, remapWhen });
         return "handled";
       case "replay":
-        this.replayTimedOutRemapKeys(resolution.keys);
+        this.replayTimedOutRemapKeys(resolution.keys, remapWhen);
         return "handled";
       case "handled":
         return "handled";
@@ -1118,17 +1126,17 @@ export class Vim {
     });
   }
 
-  private replayTimedOutRemapKeys(keys: readonly string[]): void {
+  private replayTimedOutRemapKeys(keys: readonly string[], remapWhen: RemapWhenEvaluator): void {
     keys.forEach((key, index) => {
-      this.dispatchKey(key, { allowRemap: index > 0 });
+      this.dispatchKey(key, { allowRemap: index > 0, remapWhen });
     });
   }
 
-  private executeRemapping(mapping: NormalizedRemapping): void {
+  private executeRemapping(mapping: NormalizedRemapping, remapWhen: RemapWhenEvaluator): void {
     const skipFirstRecursiveKey = mapping.recursive && isPrefixOrEqual(mapping.before, mapping.after);
     for (const [index, key] of mapping.after.entries()) {
       if (key === NoopKey) continue;
-      this.dispatchKey(key, { allowRemap: mapping.recursive && !(skipFirstRecursiveKey && index === 0) });
+      this.dispatchKey(key, { allowRemap: mapping.recursive && !(skipFirstRecursiveKey && index === 0), remapWhen });
     }
     for (const command of mapping.commands) this.executeMappedCommand(command);
   }
