@@ -32,7 +32,14 @@ export function yankRange(
     copied.push(rangeText(editor, rangeForHead(selectionHead(selection))));
   }
 
-  if (copied.length > 0) registers.writeYank(registerName, copied.join("\n"), "characterwise");
+  if (copied.length > 0) {
+    registers.writeYank(
+      registerName,
+      copied.join("\n"),
+      "characterwise",
+      copied.map(text => ({ text, kind: "characterwise" }))
+    );
+  }
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
 }
 
@@ -49,7 +56,14 @@ export function yankLines(
     copied.push(linewiseContent(editor, selectionHead(selection).row, count));
   }
 
-  if (copied.length > 0) registers.writeYank(registerName, copied.join(""), "linewise");
+  if (copied.length > 0) {
+    registers.writeYank(
+      registerName,
+      copied.join(""),
+      "linewise",
+      copied.map(text => ({ text, kind: "linewise" }))
+    );
+  }
   editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
 }
 

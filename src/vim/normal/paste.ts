@@ -7,7 +7,7 @@
 
 import { VimEditorCapabilities } from "../editor.js";
 import { positionAfterInsertedText } from "../insert.js";
-import { RegisterName, Registers } from "../registers.js";
+import { RegisterContent, RegisterName, RegisterPart, Registers } from "../registers.js";
 import { TextEdit, VimSelection, charwiseSelection, selectionHead } from "../state.js";
 
 // Zed: `normal::paste::Vim::paste`.
@@ -20,12 +20,73 @@ export function paste(
   const content = registers.readContent(registerName);
   if (content.text.length === 0) return;
 
+  const distributed = distributedRegisterParts(content, editor.getSelections().length);
+  if (distributed !== undefined) {
+    pasteDistributed(editor, distributed, { before, count });
+    return;
+  }
+
   if (content.kind === "linewise") {
     pasteLinewise(editor, content.text, { before, count });
   } else if (content.kind === "blockwise") {
     pasteBlockwise(editor, content.text, { before, count });
   } else {
     pasteCharacterwise(editor, content.text.repeat(count), { before });
+  }
+}
+
+function distributedRegisterParts(content: RegisterContent, selectionCount: number): readonly RegisterPart[] | undefined {
+  if (selectionCount <= 1) return undefined;
+  if (content.parts?.length === selectionCount) return content.parts;
+
+  const lines = linesForPlainTextDistribution(content.text, selectionCount);
+  return lines === undefined ? undefined : lines.map(text => ({ text, kind: "characterwise" }));
+}
+
+function linesForPlainTextDistribution(text: string, selectionCount: number): readonly string[] | undefined {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const withoutFinalLineSeparator = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+  const lines = withoutFinalLineSeparator.split("\n");
+  return lines.length === selectionCount ? lines : undefined;
+}
+
+function pasteDistributed(
+  editor: VimEditorCapabilities,
+  parts: readonly RegisterPart[],
+  { before, count }: { before: boolean; count: number }
+): void {
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+  const selections = editor.getSelections();
+
+  for (let index = 0; index < selections.length; index++) {
+    const part = parts[index];
+    const selection = selections[index];
+    if (part === undefined || selection === undefined) continue;
+    pushPasteEditsForSelection(editor, edits, selectionsAfter, selection, part, { before, count });
+  }
+
+  editor.applyEdits(edits, selectionsAfter);
+}
+
+function pushPasteEditsForSelection(
+  editor: VimEditorCapabilities,
+  edits: TextEdit[],
+  selectionsAfter: VimSelection[],
+  selection: VimSelection,
+  part: RegisterPart,
+  { before, count }: { before: boolean; count: number }
+): void {
+  switch (part.kind) {
+    case "characterwise":
+      pushCharacterwisePasteEdit(editor, edits, selectionsAfter, selection, part.text.repeat(count), { before });
+      return;
+    case "linewise":
+      pushLinewisePasteEdit(editor, edits, selectionsAfter, selection, repeatedLinewiseText(part.text, count), { before });
+      return;
+    case "blockwise":
+      pushBlockwisePasteEdits(editor, edits, selectionsAfter, selection, part.text, { before, count });
+      return;
   }
 }
 
@@ -37,14 +98,25 @@ function pasteCharacterwise(
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   for (const selection of editor.getSelections()) {
-    const head = selectionHead(selection);
-    const insertAt = before
-      ? head
-      : { row: head.row, column: Math.min(head.column + 1, editor.lineLength(head.row)) };
-    edits.push({ range: { start: insertAt, end: insertAt }, text });
-    selectionsAfter.push(charwiseSelection(cursorAtEndOfInsertedText(insertAt, text)));
+    pushCharacterwisePasteEdit(editor, edits, selectionsAfter, selection, text, { before });
   }
   editor.applyEdits(edits, selectionsAfter);
+}
+
+function pushCharacterwisePasteEdit(
+  editor: VimEditorCapabilities,
+  edits: TextEdit[],
+  selectionsAfter: VimSelection[],
+  selection: VimSelection,
+  text: string,
+  { before }: { before: boolean }
+): void {
+  const head = selectionHead(selection);
+  const insertAt = before
+    ? head
+    : { row: head.row, column: Math.min(head.column + 1, editor.lineLength(head.row)) };
+  edits.push({ range: { start: insertAt, end: insertAt }, text });
+  selectionsAfter.push(charwiseSelection(cursorAtEndOfInsertedText(insertAt, text)));
 }
 
 function cursorAtEndOfInsertedText(start: ReturnType<typeof selectionHead>, text: string): ReturnType<typeof selectionHead> {
@@ -60,22 +132,33 @@ function pasteBlockwise(
   text: string,
   { before, count }: { before: boolean; count: number }
 ): void {
-  const blockLines = Array(count).fill(text).join("\n").split("\n");
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
 
   for (const selection of editor.getSelections()) {
-    const head = selectionHead(selection);
-    const column = before ? head.column : head.column;
-    for (let index = 0; index < blockLines.length; index++) {
-      const row = Math.min(head.row + index, editor.lineCount() - 1);
-      const insertAt = { row, column: Math.min(column, editor.lineLength(row)) };
-      edits.push({ range: { start: insertAt, end: insertAt }, text: blockLines[index] });
-    }
-    selectionsAfter.push(charwiseSelection({ row: head.row, column: head.column + blockLines[0].length }));
+    pushBlockwisePasteEdits(editor, edits, selectionsAfter, selection, text, { before, count });
   }
 
   editor.applyEdits(edits, selectionsAfter);
+}
+
+function pushBlockwisePasteEdits(
+  editor: VimEditorCapabilities,
+  edits: TextEdit[],
+  selectionsAfter: VimSelection[],
+  selection: VimSelection,
+  text: string,
+  { before, count }: { before: boolean; count: number }
+): void {
+  const blockLines = Array(count).fill(text).join("\n").split("\n");
+  const head = selectionHead(selection);
+  const column = before ? head.column : head.column;
+  for (let index = 0; index < blockLines.length; index++) {
+    const row = Math.min(head.row + index, editor.lineCount() - 1);
+    const insertAt = { row, column: Math.min(column, editor.lineLength(row)) };
+    edits.push({ range: { start: insertAt, end: insertAt }, text: blockLines[index] });
+  }
+  selectionsAfter.push(charwiseSelection({ row: head.row, column: head.column + (blockLines[0]?.length ?? 0) }));
 }
 
 function pasteLinewise(
@@ -83,20 +166,35 @@ function pasteLinewise(
   text: string,
   { before, count }: { before: boolean; count: number }
 ): void {
-  const lineText = text.endsWith("\n") ? text.slice(0, -1) : text;
-  const repeatedLineText = Array(count).fill(lineText).join("\n");
+  const repeatedLineText = repeatedLinewiseText(text, count);
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
 
   for (const selection of editor.getSelections()) {
-    const head = selectionHead(selection);
-    const insertAt = before
-      ? { row: head.row, column: 0 }
-      : { row: head.row, column: editor.lineLength(head.row) };
-    const insertedText = before ? `${repeatedLineText}\n` : `\n${repeatedLineText}`;
-    edits.push({ range: { start: insertAt, end: insertAt }, text: insertedText });
-    selectionsAfter.push(charwiseSelection({ row: before ? head.row : head.row + 1, column: 0 }));
+    pushLinewisePasteEdit(editor, edits, selectionsAfter, selection, repeatedLineText, { before });
   }
 
   editor.applyEdits(edits, selectionsAfter);
+}
+
+function repeatedLinewiseText(text: string, count: number): string {
+  const lineText = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return Array(count).fill(lineText).join("\n");
+}
+
+function pushLinewisePasteEdit(
+  editor: VimEditorCapabilities,
+  edits: TextEdit[],
+  selectionsAfter: VimSelection[],
+  selection: VimSelection,
+  repeatedLineText: string,
+  { before }: { before: boolean }
+): void {
+  const head = selectionHead(selection);
+  const insertAt = before
+    ? { row: head.row, column: 0 }
+    : { row: head.row, column: editor.lineLength(head.row) };
+  const insertedText = before ? `${repeatedLineText}\n` : `\n${repeatedLineText}`;
+  edits.push({ range: { start: insertAt, end: insertAt }, text: insertedText });
+  selectionsAfter.push(charwiseSelection({ row: before ? head.row : head.row + 1, column: 0 }));
 }

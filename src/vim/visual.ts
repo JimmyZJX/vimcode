@@ -20,7 +20,7 @@ import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
 import { cursorAfterDeletingRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
-import { RegisterContent, RegisterName, Registers, isSystemClipboardRegister } from "./registers.js";
+import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
 import { VimOperatorStack } from "./operator.js";
 import { addSurrounds } from "./surrounds.js";
 import {
@@ -444,11 +444,15 @@ export class VisualMode {
   private yank(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        this.registers.writeYank(
-          registerName,
-          currentCharwiseVisualRanges(this.editor, state).map(range => rangeText(this.editor, range)).join("\n"),
-          "characterwise"
-        );
+        {
+          const copied = currentCharwiseVisualRanges(this.editor, state).map(range => rangeText(this.editor, range));
+          this.registers.writeYank(
+            registerName,
+            copied.join("\n"),
+            "characterwise",
+            copied.map(text => ({ text, kind: "characterwise" }))
+          );
+        }
         break;
       case "linewise":
         this.registers.writeYank(registerName, linewiseText(this.editor, state), "linewise");
@@ -482,7 +486,12 @@ export class VisualMode {
         edits.push({ range: { start, end }, text: "" });
         copied.push(rangeText(this.editor, { start, end }));
       }
-      this.registers.writeDelete(registerName, copied.join("\n"), "blockwise");
+      this.registers.writeDelete(
+        registerName,
+        copied.join("\n"),
+        "blockwise",
+        copied.map(text => ({ text, kind: "blockwise" }))
+      );
       const cursorColumn = Math.max(0, Math.min(startColumn, this.editor.lineLength(startRow)) - 1);
       this.editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: cursorColumn })]);
       return;
@@ -1331,6 +1340,12 @@ function pasteOverCharwise(
   state: CharwiseVisualState,
   content: RegisterContent
 ): VisualState | undefined {
+  const ranges = currentCharwiseVisualRanges(editor, state);
+  const distributed = distributedRegisterParts(content, ranges.length);
+  if (distributed !== undefined) {
+    return pasteDistributedOverCharwise(editor, registers, state, ranges, distributed);
+  }
+
   const range = charwiseVisualRange(editor, state);
   const deletedText = rangeText(editor, range);
   if (content.kind === "blockwise") {
@@ -1338,16 +1353,78 @@ function pasteOverCharwise(
     return undefined;
   }
 
-  const replacementText = content.kind === "linewise" ? `\n${ensureTrailingNewline(content.text)}` : content.text;
-  const cursor = content.kind === "linewise"
-    ? { row: range.start.row + 1, column: 0 }
-    : cursorAtEndOfInsertedText(range.start, replacementText);
-  const pastedRange = { start: range.start, end: positionAfterInsertedText(range.start, replacementText) };
+  const replacement = replacementForRegisterPart(content);
+  const pastedRange = { start: range.start, end: positionAfterInsertedText(range.start, replacement.text) };
 
   registers.write(undefined, deletedText, "characterwise");
   beginVisualUndoTransaction(editor, state);
-  editor.applyEdits([{ range, text: replacementText }], [charwiseSelection(cursor)]);
+  editor.applyEdits([{ range, text: replacement.text }], [charwiseSelection(cursorAfterReplacement(range.start, replacement))]);
   return charwiseStateForRange(editor, pastedRange);
+}
+
+function distributedRegisterParts(content: RegisterContent, selectionCount: number): readonly RegisterPart[] | undefined {
+  if (selectionCount <= 1) return undefined;
+  if (content.parts?.length === selectionCount) return content.parts;
+
+  const lines = linesForPlainTextDistribution(content.text, selectionCount);
+  return lines === undefined ? undefined : lines.map(text => ({ text, kind: "characterwise" }));
+}
+
+function linesForPlainTextDistribution(text: string, selectionCount: number): readonly string[] | undefined {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const withoutFinalLineSeparator = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+  const lines = withoutFinalLineSeparator.split("\n");
+  return lines.length === selectionCount ? lines : undefined;
+}
+
+function pasteDistributedOverCharwise(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  state: CharwiseVisualState,
+  ranges: readonly TextRange[],
+  parts: readonly RegisterPart[]
+): VisualState | undefined {
+  const edits: TextEdit[] = [];
+  const selectionsAfter: VimSelection[] = [];
+  const deleted: string[] = [];
+  let firstPastedRange: TextRange | undefined;
+
+  for (let index = 0; index < ranges.length; index++) {
+    const range = ranges[index];
+    const part = parts[index];
+    if (range === undefined || part === undefined) continue;
+    const replacement = replacementForRegisterPart(part);
+    deleted.push(rangeText(editor, range));
+    edits.push({ range, text: replacement.text });
+    selectionsAfter.push(charwiseSelection(cursorAfterReplacement(range.start, replacement)));
+    firstPastedRange ??= { start: range.start, end: positionAfterInsertedText(range.start, replacement.text) };
+  }
+
+  if (deleted.length === 0) return undefined;
+  registers.write(
+    undefined,
+    deleted.join("\n"),
+    "characterwise",
+    deleted.map(text => ({ text, kind: "characterwise" }))
+  );
+  editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(editor, state));
+  editor.applyEdits(edits, selectionsAfter);
+  return firstPastedRange === undefined ? undefined : charwiseStateForRange(editor, firstPastedRange);
+}
+
+type ReplacementText = { text: string; kind: RegisterPart["kind"] };
+
+function replacementForRegisterPart(part: RegisterPart): ReplacementText {
+  return {
+    text: part.kind === "linewise" ? `\n${ensureTrailingNewline(part.text)}` : part.text,
+    kind: part.kind,
+  };
+}
+
+function cursorAfterReplacement(start: Position, replacement: ReplacementText): Position {
+  return replacement.kind === "linewise"
+    ? { row: start.row + 1, column: 0 }
+    : cursorAtEndOfInsertedText(start, replacement.text);
 }
 
 function pasteBlockwiseOverCharwise(
@@ -1476,7 +1553,14 @@ function deleteCharwiseVisualRanges(
     selectionsAfter.push(charwiseSelection(cursorForRange(editor, range)));
   }
 
-  if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
+  if (copied.length > 0) {
+    registers.writeDelete(
+      registerName,
+      copied.join("\n"),
+      "characterwise",
+      copied.map(text => ({ text, kind: "characterwise" }))
+    );
+  }
   editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(editor, state));
   editor.applyEdits(edits, selectionsAfter, options);
 }
@@ -1498,7 +1582,12 @@ function deleteBlockwise(
     edits.push({ range, text: "" });
   }
 
-  registers.writeDelete(registerName, deleted.join("\n"), "blockwise");
+  registers.writeDelete(
+    registerName,
+    deleted.join("\n"),
+    "blockwise",
+    deleted.map(text => ({ text, kind: "blockwise" }))
+  );
   const selectionsAfter = collapse
     ? [charwiseSelection({ row: startRow, column: startColumn })]
     : blockInsertSelections(editor, state, { side: "start" });

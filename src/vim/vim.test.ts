@@ -1247,6 +1247,131 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("one twoone ");
   });
 
+  it("distributes multicursor yanks across matching paste cursors", () => {
+    const editor = new InMemoryVimEditor("one two\nred blue\nA\nB");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      charwiseSelection({ row: 0, column: 0 }),
+      charwiseSelection({ row: 1, column: 0 }),
+    ]);
+    runKeys(vim, ["y", "w"]);
+
+    expect(vim.readRegister(undefined)).toBe("one \nred ");
+
+    editor.setSelections([
+      charwiseSelection({ row: 2, column: 0 }),
+      charwiseSelection({ row: 3, column: 0 }),
+    ]);
+    runKeys(vim, ["p"]);
+
+    expect(editor.getText()).toBe("one two\nred blue\nAone \nBred ");
+  });
+
+  it("does not include multicursor yank separators in distributed paste parts", () => {
+    const editor = new InMemoryVimEditor("abc001def\nabc001def");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 3 }, head: { row: 0, column: 5 } },
+      { type: "charwise", anchor: { row: 1, column: 3 }, head: { row: 1, column: 5 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["y"]);
+
+    editor.setSelections([
+      charwiseSelection({ row: 0, column: 7 }),
+      charwiseSelection({ row: 1, column: 7 }),
+    ]);
+    runKeys(vim, ["p"]);
+
+    expect(editor.getText()).toBe("abc001de00f\nabc001de00f");
+  });
+
+  it("normalizes CRLF separators when distributing plain clipboard text", async () => {
+    const editor = new InMemoryVimEditor("abc001def\nabc001def");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard("00\r\n00");
+
+    editor.setSelections([
+      charwiseSelection({ row: 0, column: 7 }),
+      charwiseSelection({ row: 1, column: 7 }),
+    ]);
+    await runKeysAsync(vim, ["\"", "+", "p"], clipboard);
+
+    expect(editor.getText()).toBe("abc001de00f\nabc001de00f");
+  });
+
+  it("distributes plain newline clipboard text across matching paste cursors", async () => {
+    const editor = new InMemoryVimEditor("A\nB");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard("one\nred");
+
+    editor.setSelections([
+      charwiseSelection({ row: 0, column: 0 }),
+      charwiseSelection({ row: 1, column: 0 }),
+    ]);
+    await runKeysAsync(vim, ["\"", "+", "p"], clipboard);
+
+    expect(editor.getText()).toBe("Aone\nBred");
+  });
+
+  it("distributes multicursor visual yanks across matching visual paste selections", () => {
+    const editor = new InMemoryVimEditor("one two\nred blue\nA\nB");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["y"]);
+
+    expect(vim.readRegister(undefined)).toBe("one\nred");
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 2, column: 0 }, head: { row: 2, column: 1 } },
+      { type: "charwise", anchor: { row: 3, column: 0 }, head: { row: 3, column: 1 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    runKeys(vim, ["p"]);
+
+    expect(editor.getText()).toBe("one two\nred blue\none\nred");
+  });
+
+  it("distributes plain newline clipboard text across matching visual paste selections", async () => {
+    const editor = new InMemoryVimEditor("A\nB");
+    const vim = new Vim(editor);
+    const clipboard = new FakeAsyncClipboard("one\nred");
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 1 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 1 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    await runKeysAsync(vim, ["\"", "+", "p"], clipboard);
+
+    expect(editor.getText()).toBe("one\nred");
+  });
+
+  it("distributes linewise-classified plain clipboard text across matching visual paste selections", async () => {
+    const editor = new InMemoryVimEditor("seed\nA\nB");
+    const vim = new Vim(editor, { useSystemClipboard: true });
+    const clipboard = new FakeAsyncClipboard("");
+
+    await runKeysAsync(vim, ["y", "y"], clipboard);
+    clipboard.text = "one\nred";
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 1 } },
+      { type: "charwise", anchor: { row: 2, column: 0 }, head: { row: 2, column: 1 } },
+    ]);
+    vim.syncFromEditorState({ render: false });
+    await runKeysAsync(vim, ["p"], clipboard);
+
+    expect(editor.getText()).toBe("seed\none\nred");
+  });
+
   it("reads system clipboard registers asynchronously only when they are used", async () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor);

@@ -87,7 +87,12 @@ function changeParagraphRange(
     selectionsAfter.push(charwiseSelection(range.start));
   }
   if (copied.length === 0) return false;
-  registers.writeDelete(registerName, copied.join("\n"), "characterwise");
+  registers.writeDelete(
+    registerName,
+    copied.join("\n"),
+    "characterwise",
+    copied.map(text => ({ text, kind: "characterwise" }))
+  );
   editor.applyEdits(edits, selectionsAfter);
   return true;
 }

@@ -63,7 +63,14 @@ export function deleteRange(
     selectionsAfter.push(charwiseSelection(cursorForRange(editor, range, head)));
   }
 
-  if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
+  if (copied.length > 0) {
+    registers.writeDelete(
+      registerName,
+      copied.join("\n"),
+      "characterwise",
+      copied.map(text => ({ text, kind: "characterwise" }))
+    );
+  }
   editor.applyEdits(edits, selectionsAfter, options);
 }
 
@@ -103,7 +110,14 @@ export function deleteLineRange(
     selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, rangeInfo.cursorRow ?? rangeInfo.startRow, rangeInfo.column, rangeInfo.endRow - rangeInfo.startRow + 1)));
   }
 
-  if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");
+  if (copied.length > 0) {
+    registers.writeDelete(
+      registerName,
+      copied.join(""),
+      "linewise",
+      copied.map(text => ({ text, kind: "linewise" }))
+    );
+  }
   editor.applyEdits(edits, selectionsAfter);
 }
 
@@ -127,7 +141,14 @@ export function deleteLines(
     selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, row, head.column, count)));
   }
 
-  if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");
+  if (copied.length > 0) {
+    registers.writeDelete(
+      registerName,
+      copied.join(""),
+      "linewise",
+      copied.map(text => ({ text, kind: "linewise" }))
+    );
+  }
   editor.applyEdits(edits, selectionsAfter);
 }
 
@@ -194,6 +215,13 @@ export function deleteCharacters(
     })));
   }
 
-  if (copied.length > 0) registers.writeDelete(registerName, copied.join("\n"), "characterwise");
+  if (copied.length > 0) {
+    registers.writeDelete(
+      registerName,
+      copied.join("\n"),
+      "characterwise",
+      copied.map(text => ({ text, kind: "characterwise" }))
+    );
+  }
   editor.applyEdits(edits, selectionsAfter, options);
 }

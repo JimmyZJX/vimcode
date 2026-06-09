@@ -79,7 +79,14 @@ export function changeLineRange(
     selectionsAfter.push({ type: "charwise" as const, anchor: { row: cursorRow, column: indent.length }, head: { row: cursorRow, column: indent.length } });
   }
 
-  if (copied.length > 0) registers.writeDelete(registerName, copied.join(""), "linewise");
+  if (copied.length > 0) {
+    registers.writeDelete(
+      registerName,
+      copied.join(""),
+      "linewise",
+      copied.map(text => ({ text, kind: "linewise" }))
+    );
+  }
   editor.applyEdits(edits, selectionsAfter, keepUndoTransactionOpen());
   return true;
 }

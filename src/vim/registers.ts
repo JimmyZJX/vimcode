@@ -12,9 +12,15 @@
 export type RegisterName = '"' | LowercaseLetter | UppercaseLetter | DigitRegister | "_" | "-" | "/" | "+" | "*";
 export type RegisterKind = "characterwise" | "linewise" | "blockwise";
 
+export type RegisterPart = {
+  text: string;
+  kind: RegisterKind;
+};
+
 export type RegisterContent = {
   text: string;
   kind: RegisterKind;
+  parts?: readonly RegisterPart[];
 };
 
 export interface VimSystemClipboard {
@@ -78,10 +84,15 @@ export class Registers {
     }
   }
 
-  write(name: RegisterName | undefined, text: string, kind: RegisterKind = "characterwise"): void {
+  write(
+    name: RegisterName | undefined,
+    text: string,
+    kind: RegisterKind = "characterwise",
+    parts?: readonly RegisterPart[]
+  ): void {
     if (name === "_") return;
 
-    const content = { text, kind };
+    const content: RegisterContent = parts === undefined ? { text, kind } : { text, kind, parts };
     if (name !== undefined && isUppercaseLetter(name)) {
       const lower = lowercaseRegister(name);
       const current = this.named.get(lower) ?? emptyRegister;
@@ -101,13 +112,25 @@ export class Registers {
     }
   }
 
-  writeYank(name: RegisterName | undefined, text: string, kind: RegisterKind = "characterwise"): void {
-    this.write(name, text, kind);
-    if (name === undefined || name === '"') this.numbered.set("0", { text, kind });
+  writeYank(
+    name: RegisterName | undefined,
+    text: string,
+    kind: RegisterKind = "characterwise",
+    parts?: readonly RegisterPart[]
+  ): void {
+    this.write(name, text, kind, parts);
+    if (name === undefined || name === '"') {
+      this.numbered.set("0", parts === undefined ? { text, kind } : { text, kind, parts });
+    }
   }
 
-  writeDelete(name: RegisterName | undefined, text: string, kind: RegisterKind = "characterwise"): void {
-    const content = { text, kind };
+  writeDelete(
+    name: RegisterName | undefined,
+    text: string,
+    kind: RegisterKind = "characterwise",
+    parts?: readonly RegisterPart[]
+  ): void {
+    const content: RegisterContent = parts === undefined ? { text, kind } : { text, kind, parts };
     if (name === '"') {
       this.unnamed = content;
       this.numbered.set("0", content);
@@ -125,7 +148,7 @@ export class Registers {
       return;
     }
 
-    this.write(name, text, kind);
+    this.write(name, text, kind, parts);
   }
 
   writeSearch(query: string): void {
