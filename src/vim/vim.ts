@@ -494,16 +494,15 @@ export class Vim {
     return this.dispatchVimAction(normalFallbackAction);
   }
 
-  private dispatchModeFallbackKey(key: string): KeyResult | null {
+  private dispatchModeFallbackKey(_key: string): KeyResult | null {
     if (this.isVisualMode()) {
       const modeBefore = this.modeState.kind;
-      const result = this.visualMode.onKey(key);
-      return this.applyVisualResult(result, modeBefore);
+      return this.applyVisualResult(this.visualMode.handleUnhandledKey(), modeBefore);
     }
 
     if (this.modeState.kind !== "normal") return null;
 
-    return this.applyNormalResult(this.normalMode.onKey(key));
+    return this.applyNormalResult(this.normalMode.handleUnhandledKey());
   }
 
   private handleWaitingOperatorKey(key: string): KeyResult | undefined {

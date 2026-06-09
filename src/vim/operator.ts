@@ -1,10 +1,11 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - source: state::Operator and vim::Vim::operator_stack
-// - translated concepts: one central pending/operator stack owned by Vim.
-// - intentional differences: during the migration, variants still include a few local
-//   fields (counts, visual undo selections, command input) so existing normal/visual
-//   execution helpers can keep their behavior while storage becomes central.
+// - translated concepts: one central pending/operator stack owned by Vim, plus
+//   helpers for status text and waiting-input classification.
+// - intentional differences: some variants still carry local fields (counts, visual
+//   undo selections, command input) so existing normal/visual execution helpers can
+//   keep their behavior while the architecture converges on Zed's operator_stack.
 
 import type { PendingSearch } from "./normal/search.js";
 import type { ConvertTarget } from "./normal/convert.js";

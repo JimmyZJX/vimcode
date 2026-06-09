@@ -1,11 +1,10 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - sources: assets/keymaps/vim.json, vim::Vim::action, vim::Vim::push_operator
-// - translated concepts: resolve keys into Vim actions before executing them against
-//   the central Vim state.
-// - intentional differences: this is an incremental spine for the VSCode adapter. The
-//   existing NormalMode/VisualMode key parsers remain as fallback until their behavior
-//   is migrated into action dispatch.
+// - translated concepts: key sequences resolve to semantic Vim actions, which are
+//   executed by Vim against central mode/operator state.
+// - intentional differences: VSCode key ownership is decided before this resolver runs,
+//   and a few legacy fallback paths remain while behavior is migrated into actions.
 
 import type { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget } from "./editor.js";
 import { Motion, motionForKey } from "./motion.js";
@@ -123,72 +122,122 @@ export type FiniteKeymapResolution =
 
 type ScopedBinding = { scope: FiniteKeymapScope; action: VimAction };
 
-const finiteBindings: ReadonlyMap<string, ScopedBinding> = new Map([
-  ["g g", shared({ type: "motion", motion: { type: "startOfDocument" } })],
-  ["g j", shared({ type: "motion", motion: { type: "down", displayLine: true } })],
-  ["g k", shared({ type: "motion", motion: { type: "up", displayLine: true } })],
-  ["g _", shared({ type: "motion", motion: { type: "lastNonWhitespace" } })],
-  ["g e", shared({ type: "motion", motion: { type: "previousWordEnd", bigWord: false } })],
-  ["g E", shared({ type: "motion", motion: { type: "previousWordEnd", bigWord: true } })],
-  ["g v", shared({ type: "restoreVisualSelection" })],
-  ["g i", shared({ type: "insertAtPrevious" })],
-  ["g u", shared({ type: "pushConvert", target: "lower" })],
-  ["g U", shared({ type: "pushConvert", target: "upper" })],
-  ["g ~", shared({ type: "pushConvert", target: "toggle" })],
-  ["g J", shared({ type: "join", insertWhitespace: false })],
-  ["g ;", shared({ type: "changeList", direction: "older" })],
-  ["g ,", shared({ type: "changeList", direction: "newer" })],
-  ["g n", shared({ type: "searchSelection", reversed: false })],
-  ["g N", shared({ type: "searchSelection", reversed: true })],
-  ["g ctrl-a", shared({ type: "incrementStep", direction: "increment" })],
-  ["g ctrl-x", shared({ type: "incrementStep", direction: "decrement" })],
-  ["ctrl-n", shared({ type: "multiCursor", command: "editor.action.addSelectionToNextFindMatch" })],
-  ["g l", shared({ type: "multiCursor", command: "editor.action.addSelectionToNextFindMatch" })],
-  ["g L", shared({ type: "multiCursor", command: "editor.action.addSelectionToPreviousFindMatch" })],
-  ["g >", shared({ type: "multiCursor", command: "editor.action.moveSelectionToNextFindMatch" })],
-  ["g <", shared({ type: "multiCursor", command: "editor.action.moveSelectionToPreviousFindMatch" })],
-  ["g a", shared({ type: "multiCursor", command: "editor.action.selectHighlights" })],
-  ["ctrl-d", shared({ type: "page", direction: "down", halfPage: true })],
-  ["ctrl-u", shared({ type: "page", direction: "up", halfPage: true })],
-  ["ctrl-f", shared({ type: "page", direction: "down", halfPage: false })],
-  ["ctrl-b", shared({ type: "page", direction: "up", halfPage: false })],
-  ["K", shared({ type: "native", command: "editor.action.showHover" })],
-  ["g h", shared({ type: "native", command: "editor.action.showHover" })],
-  ["g d", shared({ type: "native", command: "editor.action.revealDefinition" })],
-  ["g D", shared({ type: "native", command: "editor.action.goToDeclaration" })],
-  ["g y", shared({ type: "native", command: "editor.action.goToTypeDefinition" })],
-  ["g I", shared({ type: "native", command: "editor.action.goToImplementation" })],
-  ["g r r", shared({ type: "native", command: "editor.action.referenceSearch.trigger" })],
-  ["g r n", shared({ type: "native", command: "editor.action.rename" })],
-  ["g r a", shared({ type: "native", command: "editor.action.quickFix" })],
-  ["g ]", shared({ type: "native", command: "editor.action.marker.next" })],
-  ["g [", shared({ type: "native", command: "editor.action.marker.prev" })],
-  ["g x", shared({ type: "native", command: "editor.action.openLink" })],
+const finiteBindings = bindingMap([
+  sharedBinding("g g", move({ type: "startOfDocument" })),
+  sharedBinding("g j", move({ type: "down", displayLine: true })),
+  sharedBinding("g k", move({ type: "up", displayLine: true })),
+  sharedBinding("g _", move({ type: "lastNonWhitespace" })),
+  sharedBinding("g e", move({ type: "previousWordEnd", bigWord: false })),
+  sharedBinding("g E", move({ type: "previousWordEnd", bigWord: true })),
+  sharedBinding("g v", { type: "restoreVisualSelection" }),
+  sharedBinding("g i", { type: "insertAtPrevious" }),
+  sharedBinding("g u", pushConvert("lower")),
+  sharedBinding("g U", pushConvert("upper")),
+  sharedBinding("g ~", pushConvert("toggle")),
+  sharedBinding("g J", join({ insertWhitespace: false })),
+  sharedBinding("g ;", { type: "changeList", direction: "older" }),
+  sharedBinding("g ,", { type: "changeList", direction: "newer" }),
+  sharedBinding("g n", { type: "searchSelection", reversed: false }),
+  sharedBinding("g N", { type: "searchSelection", reversed: true }),
+  sharedBinding("g ctrl-a", incrementStep("increment")),
+  sharedBinding("g ctrl-x", incrementStep("decrement")),
+  sharedBinding("ctrl-n", multiCursor("editor.action.addSelectionToNextFindMatch")),
+  sharedBinding("g l", multiCursor("editor.action.addSelectionToNextFindMatch")),
+  sharedBinding("g L", multiCursor("editor.action.addSelectionToPreviousFindMatch")),
+  sharedBinding("g >", multiCursor("editor.action.moveSelectionToNextFindMatch")),
+  sharedBinding("g <", multiCursor("editor.action.moveSelectionToPreviousFindMatch")),
+  sharedBinding("g a", multiCursor("editor.action.selectHighlights")),
+  sharedBinding("ctrl-d", page({ direction: "down", halfPage: true })),
+  sharedBinding("ctrl-u", page({ direction: "up", halfPage: true })),
+  sharedBinding("ctrl-f", page({ direction: "down", halfPage: false })),
+  sharedBinding("ctrl-b", page({ direction: "up", halfPage: false })),
+  sharedBinding("K", native("editor.action.showHover")),
+  sharedBinding("g h", native("editor.action.showHover")),
+  sharedBinding("g d", native("editor.action.revealDefinition")),
+  sharedBinding("g D", native("editor.action.goToDeclaration")),
+  sharedBinding("g y", native("editor.action.goToTypeDefinition")),
+  sharedBinding("g I", native("editor.action.goToImplementation")),
+  sharedBinding("g r r", native("editor.action.referenceSearch.trigger")),
+  sharedBinding("g r n", native("editor.action.rename")),
+  sharedBinding("g r a", native("editor.action.quickFix")),
+  sharedBinding("g ]", native("editor.action.marker.next")),
+  sharedBinding("g [", native("editor.action.marker.prev")),
+  sharedBinding("g x", native("editor.action.openLink")),
 
-  ["ctrl-o", normal({ type: "hostCommand", command: "navigateBack" })],
-  ["ctrl-i", normal({ type: "hostCommand", command: "navigateForward" })],
-  ["u", normal({ type: "hostCommand", command: "undo" })],
-  ["ctrl-r", normal({ type: "hostCommand", command: "redo" })],
-  ["ctrl-y", normal({ type: "scrollLines", direction: "up" })],
-  ["ctrl-e", normal({ type: "scrollLines", direction: "down" })],
-  ["z z", normal({ type: "revealCurrentLine", target: "center" })],
-  ["z t", normal({ type: "revealCurrentLine", target: "top" })],
-  ["z b", normal({ type: "revealCurrentLine", target: "bottom" })],
-  ["z a", normal({ type: "fold", command: "toggle" })],
-  ["z o", normal({ type: "fold", command: "open" })],
-  ["z c", normal({ type: "fold", command: "close" })],
-  ["z O", normal({ type: "fold", command: "openRecursive" })],
-  ["z C", normal({ type: "fold", command: "closeRecursive" })],
-  ["z R", normal({ type: "fold", command: "openAll" })],
-  ["z M", normal({ type: "fold", command: "closeAll" })],
+  normalBinding("ctrl-o", hostCommand("navigateBack")),
+  normalBinding("ctrl-i", hostCommand("navigateForward")),
+  normalBinding("u", hostCommand("undo")),
+  normalBinding("ctrl-r", hostCommand("redo")),
+  normalBinding("ctrl-y", scrollLines("up")),
+  normalBinding("ctrl-e", scrollLines("down")),
+  normalBinding("z z", revealCurrentLine("center")),
+  normalBinding("z t", revealCurrentLine("top")),
+  normalBinding("z b", revealCurrentLine("bottom")),
+  normalBinding("z a", fold("toggle")),
+  normalBinding("z o", fold("open")),
+  normalBinding("z c", fold("close")),
+  normalBinding("z O", fold("openRecursive")),
+  normalBinding("z C", fold("closeRecursive")),
+  normalBinding("z R", fold("openAll")),
+  normalBinding("z M", fold("closeAll")),
 ]);
 
-function shared(action: VimAction): ScopedBinding {
-  return { scope: "shared", action };
+type Binding = readonly [string, ScopedBinding];
+
+function bindingMap(bindings: readonly Binding[]): ReadonlyMap<string, ScopedBinding> {
+  return new Map(bindings);
 }
 
-function normal(action: VimAction): ScopedBinding {
-  return { scope: "normal", action };
+function sharedBinding(key: string, action: VimAction): Binding {
+  return [key, { scope: "shared", action }];
+}
+
+function normalBinding(key: string, action: VimAction): Binding {
+  return [key, { scope: "normal", action }];
+}
+
+function move(motion: Motion): VimAction {
+  return { type: "motion", motion };
+}
+
+function pushConvert(target: ConvertTarget): VimAction {
+  return { type: "pushConvert", target };
+}
+
+function join({ insertWhitespace }: { insertWhitespace: boolean }): VimAction {
+  return { type: "join", insertWhitespace };
+}
+
+function incrementStep(direction: "increment" | "decrement"): VimAction {
+  return { type: "incrementStep", direction };
+}
+
+function multiCursor(command: string): VimAction {
+  return { type: "multiCursor", command };
+}
+
+function page({ direction, halfPage }: { direction: HostDirection; halfPage: boolean }): VimAction {
+  return { type: "page", direction, halfPage };
+}
+
+function native(command: string): VimAction {
+  return { type: "native", command };
+}
+
+function hostCommand(command: HostCommand): VimAction {
+  return { type: "hostCommand", command };
+}
+
+function scrollLines(direction: HostDirection): VimAction {
+  return { type: "scrollLines", direction };
+}
+
+function revealCurrentLine(target: HostRevealTarget): VimAction {
+  return { type: "revealCurrentLine", target };
+}
+
+function fold(command: HostFoldCommand): VimAction {
+  return { type: "fold", command };
 }
 
 const prefixesByScope: ReadonlyMap<FiniteKeymapScope, ReadonlySet<string>> = (() => {
@@ -483,10 +532,27 @@ function normalCommandForKey(key: string): NormalCommand | undefined {
   }
 }
 
+function normalCommandIsAllowed(command: NormalCommand, context: VimKeymapContext): boolean {
+  switch (command.type) {
+    case "percentOrMatching":
+    case "goToLineOrEnd":
+    case "moveToNextLineStart":
+    case "moveWrappingLeft":
+      return !context.normalModeHasPendingNonCount
+        || context.normalModeCanResolveEditOperator
+        || context.normalModeHasOnlySelectedRegisterPending;
+    default:
+      return !context.normalModeHasPendingNonCount
+        || context.normalModeHasOnlySelectedRegisterPending;
+  }
+}
+
 function resolveNormalFallbackAction(key: string, context: VimKeymapContext): VimAction | undefined {
   if (context.mode === "visual" || context.mode === "visualLine" || context.mode === "visualBlock") {
     if (context.visualModeHasPendingNonCount) return undefined;
     if (isCountKey(key, context.countText)) return { type: "pushCount", key };
+    if (key === "0") return { type: "motion", motion: { type: "startOfLine" } };
+    if (key === "G") return { type: "motion", motion: { type: "endOfDocument" } };
     if (key === "\"") return { type: "pushRegister" };
     const command = visualCommandForKey(key);
     return command === undefined ? undefined : { type: "visualCommand", command };
@@ -500,6 +566,8 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
       || context.normalModeHasOnlySelectedRegisterPending)) {
     return { type: "pushCount", key };
   }
+
+  if (key === "0") return { type: "motion", motion: { type: "startOfLine" } };
 
   if (!context.normalModeHasPendingNonCount && key === ":") return { type: "startCommand" };
   if (!context.normalModeHasPendingNonCount && key === "\"") return { type: "pushRegister" };
@@ -525,7 +593,7 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
   }
 
   const command = normalCommandForKey(key);
-  if (command !== undefined && (!context.normalModeHasPendingNonCount || context.normalModeHasOnlySelectedRegisterPending)) {
+  if (command !== undefined && normalCommandIsAllowed(command, context)) {
     return { type: "normalCommand", command };
   }
 

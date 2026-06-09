@@ -1,8 +1,8 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - source: `visual` module
-// - translated concepts: visual-mode state, visual motion extension, visual-line and
-//   visual-block lowering, and visual delete/yank/change/paste operations
+// - translated concepts: visual-mode state and execution helpers for actions resolved
+//   by keymap.ts, plus visual-line/block lowering and visual edits
 // - intentional differences: this is still a model-buffer subset. Zed lowers visual
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
@@ -12,7 +12,7 @@ import type { VisualCommand } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
-import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, matchingPositionFromLine, Motion, motionForKey } from "./motion.js";
+import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, matchingPositionFromLine, Motion } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { IndentDirection, indentRanges, visualIndentRanges } from "./normal/indent.js";
@@ -188,18 +188,7 @@ export class VisualMode {
     }
   }
 
-  onKey(key: string): VisualKeyResult {
-    const state = this.state;
-    if (state === undefined) {
-      return handled({ exitVisual: true });
-    }
-
-    const motion = visualMotionForKey(key);
-    if (motion !== undefined) {
-      this.applyVisualMotion(state, motion, this.takeCount(1), { displayLine: false });
-      return handled();
-    }
-
+  handleUnhandledKey(): VisualKeyResult {
     this.exit();
     return handled({ exitVisual: true, nextMode: "normal" });
   }
@@ -822,11 +811,6 @@ function visualObjectPosition(editor: VimEditorCapabilities, state: VisualState)
     case "blockwise":
       return state.head;
   }
-}
-
-function visualMotionForKey(key: string): Motion | undefined {
-  if (key === "G") return { type: "endOfDocument" };
-  return motionForKey(key);
 }
 
 function visualMatchingCursor(editor: VimEditorCapabilities, state: CharwiseVisualState, match: Position): Position | undefined {

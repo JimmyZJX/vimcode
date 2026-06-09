@@ -1,9 +1,10 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - sources: crates/vim/src/normal.rs, assets/keymaps/vim.json
-// - translated concepts: normal-mode key dispatch, count accumulation, pending operators
-// - intentional differences: this first slice hard-codes a small keymap instead of using
-//   Zed's declarative key-context system.
+// - translated concepts: normal-mode execution helpers for actions resolved by
+//   keymap.ts and the central Vim operator stack.
+// - intentional differences: a few ambiguous fallback paths still live here while they
+//   are migrated into semantic actions.
 
 import type { NormalCommand } from "./keymap.js";
 import { lookupDigraph } from "./digraph.js";
@@ -257,45 +258,7 @@ export class NormalMode {
     this.registerSelection.clear();
   }
 
-  // Zed: assets/keymaps/vim.json plus `vim_operator` / `vim_mode` contexts.
-  // This first slice hard-codes the tiny keymap until we introduce a Zed-like
-  // declarative keymap file.
-  onKey(key: string): NormalKeyResult {
-    if (key === "%") {
-      const percent = this.takeCount(undefined);
-      if (percent !== undefined) {
-        return handled({ enterInsert: this.applyMotion({ type: "goToPercentage", percent }, 1) });
-      }
-    }
-
-    const motion = motionForKey(key);
-    if (motion !== undefined) {
-      return handled({ enterInsert: this.applyMotion(motion, this.takeCount(1)) });
-    }
-
-    if (key === "G") {
-      const maybeLine = this.takeCount(undefined);
-      const targetRow = maybeLine === undefined ? this.editor.lineCount() - 1 : maybeLine - 1;
-      if (this.operatorStack.activeEditOperator() !== undefined) {
-        return handled({ enterInsert: this.applyLinewiseOperatorToRow(targetRow) });
-      }
-      this.moveToLine(targetRow);
-      this.registerSelection.clear();
-      return handled();
-    }
-
-    if (key === "enter") {
-      this.moveToNextLineStart();
-      this.registerSelection.clear();
-      return handled();
-    }
-
-    if (key === "backspace") {
-      this.moveSelections({ type: "wrappingLeft" }, this.takeCount(1));
-      this.registerSelection.clear();
-      return handled();
-    }
-
+  handleUnhandledKey(): NormalKeyResult {
     this.clearPending();
     return handled();
   }
