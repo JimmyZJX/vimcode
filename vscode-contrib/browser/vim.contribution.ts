@@ -25,6 +25,15 @@ const VimActiveNavigableListFocusContext = ContextKeyExpr.and(
 	VimActiveListFocusContext,
 	ContextKeyExpr.has('listSupportsKeyboardNavigation')
 );
+const VimActiveNormalContext = ContextKeyExpr.and(
+	ContextKeyExpr.has('vim.active'),
+	ContextKeyExpr.has('vim.normal')
+);
+const VimActiveNormalNotebookInputContext = ContextKeyExpr.and(
+	VimActiveNormalContext,
+	ContextKeyExpr.has('inputFocus'),
+	ContextKeyExpr.has('notebookEditorFocused')
+);
 
 function remappingSchema(description: string): IConfigurationPropertySchema {
 	return {
@@ -86,7 +95,44 @@ function registerVimListKeybindings(): void {
 	KeybindingsRegistry.registerKeybindingRule({ id: 'list.focusLast', weight, when: VimActiveListFocusContext, primary: KeyMod.Shift | KeyCode.KeyG });
 }
 
+function registerVimNotebookKeybindings(): void {
+	const weight = KeybindingWeight.WorkbenchContrib + 50;
+	KeybindingsRegistry.registerKeybindingRule({
+		id: 'notebook.cell.quitEdit',
+		weight,
+		when: ContextKeyExpr.and(
+			VimActiveNormalNotebookInputContext,
+			ContextKeyExpr.not('editorHasSelection'),
+			ContextKeyExpr.not('editorHoverVisible')
+		),
+		primary: KeyCode.Escape,
+	});
+	KeybindingsRegistry.registerKeybindingRule({
+		id: 'notebook.focusNextEditor',
+		weight,
+		when: ContextKeyExpr.and(
+			VimActiveNormalNotebookInputContext,
+			ContextKeyExpr.has('editorTextFocus'),
+			ContextKeyExpr.notEquals('notebookEditorCursorAtBoundary', 'none'),
+			ContextKeyExpr.notEquals('notebookEditorCursorAtBoundary', 'top')
+		),
+		primary: KeyCode.KeyJ,
+	});
+	KeybindingsRegistry.registerKeybindingRule({
+		id: 'notebook.focusPreviousEditor',
+		weight,
+		when: ContextKeyExpr.and(
+			VimActiveNormalNotebookInputContext,
+			ContextKeyExpr.has('editorTextFocus'),
+			ContextKeyExpr.notEquals('notebookEditorCursorAtBoundary', 'bottom'),
+			ContextKeyExpr.notEquals('notebookEditorCursorAtBoundary', 'none')
+		),
+		primary: KeyCode.KeyK,
+	});
+}
+
 registerVimListKeybindings();
+registerVimNotebookKeybindings();
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'vim',
