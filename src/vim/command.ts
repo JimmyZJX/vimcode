@@ -14,6 +14,47 @@ export type CommandOptions = {
   runNormalKeys?: (keys: readonly string[], range: LineRange | undefined) => void;
 };
 
+type VimCommandAbbreviation = readonly [required: string, optional: string];
+
+type SimpleCommandContext = {
+  editor: VimEditorCapabilities;
+  range: LineRange | undefined;
+};
+
+type SimpleCommandSpec = {
+  name: VimCommandAbbreviation;
+  run: (context: SimpleCommandContext) => void;
+};
+
+// Zed's command registry encodes Vim abbreviations as a required prefix plus
+// optional suffix, e.g. [("q", "uit")] accepts [:q], [:qu], [:qui], and [:quit].
+const simpleCommands: readonly SimpleCommandSpec[] = [
+  {
+    name: ["noh", "lsearch"],
+    run: ({ editor }) => editor.clearSearchHighlights(),
+  },
+  {
+    name: ["w", "rite"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.save", [], { syncSelectionAfter: true }),
+  },
+  {
+    name: ["q", "uit"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeActiveEditor"),
+  },
+  {
+    name: ["j", "oin"],
+    run: ({ editor, range }) => joinRange(editor, range ?? currentLineRange(editor, 2)),
+  },
+  {
+    name: ["d", "elete"],
+    run: ({ editor, range }) => deleteRange(editor, range ?? currentLineRange(editor, 1)),
+  },
+  {
+    name: ["sor", "t"],
+    run: ({ editor, range }) => sortRange(editor, range ?? wholeBufferRange(editor)),
+  },
+];
+
 export function executeCommand(editor: VimEditorCapabilities, rawCommand: string, options: CommandOptions = {}): void {
   const command = rawCommand.trimStart();
   if (command.length === 0) return;
@@ -36,30 +77,7 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
     return;
   }
 
-  if (trimmedRest === "noh" || trimmedRest === "nohlsearch") {
-    editor.clearSearchHighlights();
-    return;
-  }
-
-  if (trimmedRest === "w" || trimmedRest === "write") {
-    editor.executeNativeCommand("workbench.action.files.save", [], { syncSelectionAfter: true });
-    return;
-  }
-
-  if (trimmedRest === "j" || trimmedRest === "join") {
-    joinRange(editor, range ?? currentLineRange(editor, 2));
-    return;
-  }
-
-  if (trimmedRest === "d" || trimmedRest === "delete") {
-    deleteRange(editor, range ?? currentLineRange(editor, 1));
-    return;
-  }
-
-  if (trimmedRest === "sort") {
-    sortRange(editor, range ?? wholeBufferRange(editor));
-    return;
-  }
+  if (dispatchSimpleCommand({ editor, range }, trimmedRest)) return;
 
   if (trimmedRest.startsWith("g") || trimmedRest.startsWith("v")) {
     matchingLines(editor, range ?? wholeBufferRange(editor), trimmedRest);
@@ -77,6 +95,21 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
 }
 
 export type LineRange = { startRow: number; endRowInclusive: number };
+
+function dispatchSimpleCommand(context: SimpleCommandContext, command: string): boolean {
+  const spec = simpleCommands.find(spec => matchesVimCommandAbbreviation(command, spec.name));
+  if (spec === undefined) return false;
+  spec.run(context);
+  return true;
+}
+
+function matchesVimCommandAbbreviation(command: string, [required, optional]: VimCommandAbbreviation): boolean {
+  const fullName = `${required}${optional}`;
+  return command.length >= required.length
+    && command.length <= fullName.length
+    && command.startsWith(required)
+    && fullName.startsWith(command);
+}
 
 function commandSearch(editor: VimEditorCapabilities, command: string): void {
   const backwards = command.startsWith("?");
