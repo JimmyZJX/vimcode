@@ -14,10 +14,16 @@ import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToB
 import { resolveVimAction, VimAction, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
-import type { NormalKeyResult, NormalPendingState } from "./normal.js";
+import type { NormalKeyResult } from "./normal.js";
+import { VimOperatorStack, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
+import type {
+  PendingFindOperator,
+  PendingLiteralOperator,
+  TopLevelPendingOperator,
+} from "./operator.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
-import { PendingSearch, isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
+import { isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
 import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
@@ -25,65 +31,8 @@ import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
 import { KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode } from "./visual.js";
-import type { VisualKeyResult, VisualPendingState, VisualResultMode } from "./visual.js";
+import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
-
-type PendingFindOperator =
-  | { type: "findForward"; before: boolean; count: number }
-  | { type: "findBackward"; after: boolean; count: number };
-
-type PendingDigraphOperator =
-  | { type: "digraph"; target: "insert" | "replace"; first?: string }
-  | { type: "digraph"; target: "find"; pending: PendingFindOperator; first?: string };
-
-type PendingLiteralOperator =
-  | { type: "literal"; kind: "plain" }
-  | { type: "literal"; kind: "decimal"; digits: string }
-  | { type: "literal"; kind: "hex"; digits: string; maxDigits: number };
-
-type PendingInsertRegisterOperator = { type: "insertRegister" };
-type PendingMarkOperator = { type: "mark" };
-type PendingJumpOperator = { type: "jump"; line: boolean };
-type PendingUnmatchedOperator = { type: "unmatchedForward" | "unmatchedBackward"; count: number };
-type PendingRegisterOperator = { type: "register" };
-type PendingRecordRegisterOperator = { type: "recordRegister" };
-type PendingReplayRegisterOperator = { type: "replayRegister"; count: number };
-type PendingCommandOperator = { type: "command"; input: string };
-
-type PendingVimOperator = PendingSearch | PendingFindOperator | PendingDigraphOperator | PendingLiteralOperator | PendingInsertRegisterOperator | PendingMarkOperator | PendingJumpOperator | PendingUnmatchedOperator | PendingRegisterOperator | PendingRecordRegisterOperator | PendingReplayRegisterOperator | PendingCommandOperator;
-
-function pendingOperatorStatus(operator: PendingVimOperator): string {
-  switch (operator.type) {
-    case "search":
-      return operator.backwards ? "?" : "/";
-    case "findForward":
-      return operator.before ? "t" : "f";
-    case "findBackward":
-      return operator.after ? "T" : "F";
-    case "digraph":
-      return operator.first === undefined ? "ctrl-k" : `ctrl-k${operator.first}`;
-    case "literal":
-      return operator.kind === "plain" ? "ctrl-v" : `ctrl-v${operator.digits}`;
-    case "insertRegister":
-      return "ctrl-r";
-    case "mark":
-      return "m";
-    case "jump":
-      return operator.line ? "'" : "`";
-    case "unmatchedForward":
-      return "]";
-    case "unmatchedBackward":
-      return "[";
-    case "register":
-      return "\"";
-    case "recordRegister":
-      return "q";
-    case "replayRegister":
-      return "@";
-    case "command":
-      return `:${operator.input}`;
-  }
-}
 
 export type VimStatus = {
   mode: VimMode["kind"];
@@ -114,15 +63,13 @@ export { VimGlobalState, VimModelState };
 export class Vim {
   private modeState: VimMode = { dialect: "vim", kind: "normal" };
   private readonly keymapResolver = new VimKeymapResolver();
-  private readonly normalPendingState: NormalPendingState = { stack: [], chordKeys: [] };
-  private readonly visualPendingState: VisualPendingState = { stack: [] };
+  private readonly operatorStack = new VimOperatorStack();
   private modelState: VimModelState;
   private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remapResolver = new RemapResolver(this.configuration);
   private searchOriginMode: VimMode["kind"] | undefined;
-  private pendingStack: PendingVimOperator[] = [];
   private insertRepeatCount = 1;
   private insertRepeatText = "";
   private insertRepeatSeparator = "";
@@ -163,7 +110,7 @@ export class Vim {
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
-    }, this.normalPendingState);
+    }, this.operatorStack);
     this.visualMode = new VisualMode(editor, this.globalState.registers, {
       get: () => this.selectedRegister,
       take: () => this.takeSelectedRegister(),
@@ -173,7 +120,7 @@ export class Vim {
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
-    }, this.visualPendingState, this.configuration);
+    }, this.operatorStack, this.configuration);
   }
 
   attachModelState(modelState: VimModelState): void {
@@ -187,60 +134,6 @@ export class Vim {
     this.remapResolver = new RemapResolver(this.configuration);
     this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.visualMode.setConfiguration(this.configuration);
-  }
-
-  private activePending<Type extends PendingVimOperator["type"]>(type: Type): Extract<PendingVimOperator, { type: Type }> | undefined {
-    const item = this.pendingStack[this.pendingStack.length - 1];
-    return item?.type === type ? item as Extract<PendingVimOperator, { type: Type }> : undefined;
-  }
-
-  private activeFind(): PendingFindOperator | undefined {
-    const item = this.pendingStack[this.pendingStack.length - 1];
-    return item?.type === "findForward" || item?.type === "findBackward" ? item : undefined;
-  }
-
-  private activeUnmatched(): PendingUnmatchedOperator | undefined {
-    const item = this.pendingStack[this.pendingStack.length - 1];
-    return item?.type === "unmatchedForward" || item?.type === "unmatchedBackward" ? item : undefined;
-  }
-
-  private popUnmatched(): PendingUnmatchedOperator | undefined {
-    const item = this.activeUnmatched();
-    if (item === undefined) return undefined;
-    this.pendingStack.pop();
-    return item;
-  }
-
-  private popFind(): PendingFindOperator | undefined {
-    const item = this.activeFind();
-    if (item === undefined) return undefined;
-    this.pendingStack.pop();
-    return item;
-  }
-
-  private popPending<Type extends PendingVimOperator["type"]>(type: Type): Extract<PendingVimOperator, { type: Type }> | undefined {
-    const item = this.activePending(type);
-    if (item === undefined) return undefined;
-    this.pendingStack.pop();
-    return item;
-  }
-
-  private replaceActiveDigraph(digraph: PendingDigraphOperator): void {
-    const item = this.activePending("digraph");
-    if (item === undefined) this.pendingStack.push(digraph);
-    else this.pendingStack[this.pendingStack.length - 1] = digraph;
-  }
-
-  private replaceActiveLiteral(literal: PendingLiteralOperator): void {
-    const item = this.activePending("literal");
-    if (item === undefined) this.pendingStack.push(literal);
-    else this.pendingStack[this.pendingStack.length - 1] = literal;
-  }
-
-  private replaceActiveCommand(input: string): void {
-    const item = this.activePending("command");
-    if (item === undefined) this.pendingStack.push({ type: "command", input });
-    else this.pendingStack[this.pendingStack.length - 1] = { type: "command", input };
   }
 
   get mode(): VimMode {
@@ -328,10 +221,10 @@ export class Vim {
     const handleOverride = this.handleKeyOverride(key);
     if (handleOverride !== undefined) return handleOverride;
 
-    const pendingSearch = this.activePending("search");
+    const pendingSearch = this.operatorStack.activeTopLevel("search");
     if (pendingSearch !== undefined) return isSearchInputKey(key);
 
-    if (this.pendingStack.length > 0 || this.remapResolver.isPending()) return true;
+    if (this.operatorStack.length > 0 || this.remapResolver.isPending()) return true;
 
     if (this.isEscape(key)) return this.shouldHandleEscapeKey();
 
@@ -352,7 +245,7 @@ export class Vim {
   private shouldPrepareInsertOrReplaceKey(key: string): boolean {
     return this.remapResolver.isPending()
       || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key)
-      || this.pendingStack.length > 0
+      || this.operatorStack.length > 0
       || key === "ctrl-k"
       || key === "ctrl-v"
       || key === "ctrl-r"
@@ -365,7 +258,7 @@ export class Vim {
   private shouldHandleEscapeKey(): boolean {
     return this.modeState.kind !== "normal"
       || this.hasMultipleCursorsOrSelection()
-      || this.pendingStack.length > 0
+      || this.operatorStack.length > 0
       || this.keymapResolver.isPending()
       || this.remapResolver.isPending()
       || this.normalMode.isPending();
@@ -427,7 +320,7 @@ export class Vim {
   }
 
   private clearPendingGrammar({ closeSearchHighlights }: { closeSearchHighlights: boolean }): void {
-    const pendingSearch = this.activePending("search");
+    const pendingSearch = this.operatorStack.activeTopLevel("search");
     this.keymapResolver.clearPending();
     this.remapResolver.clearPending();
     this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
@@ -435,18 +328,18 @@ export class Vim {
     this.selectedRegister = undefined;
     this.countBuffer = "";
     if (closeSearchHighlights && pendingSearch !== undefined) this.editor.clearSearchHighlights();
-    this.pendingStack = [];
+    this.operatorStack.clear();
     this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
-    return this.pendingStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   private pendingChord(): string {
-    const pendingOperator = this.pendingStack[this.pendingStack.length - 1];
+    const pendingOperator = this.operatorStack.top();
     if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
-    if (pendingOperator !== undefined) return pendingOperatorStatus(pendingOperator);
+    if (isTopLevelPendingOperator(pendingOperator)) return pendingOperatorStatus(pendingOperator);
     if (this.selectedRegister !== undefined) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}\"${this.selectedRegister}`;
     if (this.remapResolver.isPending()) return this.remapResolver.pendingChord();
     if (this.keymapResolver.isPending()) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}${this.keymapResolver.pendingChord()}`;
@@ -466,7 +359,7 @@ export class Vim {
   }
 
   private systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
-    if (this.activePending("insertRegister") !== undefined) {
+    if (this.operatorStack.activeTopLevel("insertRegister") !== undefined) {
       const registerName = parseRegisterName(key);
       return isSystemClipboardRegister(registerName) ? { registerName } : undefined;
     }
@@ -485,27 +378,8 @@ export class Vim {
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
 
-      if (allowRemap && this.shouldResolveRemap()) {
-        const resolution = this.remapResolver.handleKey(this.currentRemapMode(), key);
-        switch (resolution.kind) {
-          case "pending":
-            return "handled";
-          case "matched":
-            this.executeRemapping(resolution.mapping);
-            return "handled";
-          case "matchedWithReplay":
-            this.executeRemapping(resolution.mapping);
-            for (const replayKey of resolution.keys) this.dispatchKey(replayKey, { allowRemap: true });
-            return "handled";
-          case "replay":
-            this.replayTimedOutRemapKeys(resolution.keys);
-            return "handled";
-          case "handled":
-            return "handled";
-          case "noMatch":
-            break;
-        }
-      }
+      const remapResult = this.dispatchRemapKey(key, { allowRemap });
+      if (remapResult !== undefined) return remapResult;
 
       const pendingResult = this.handlePendingKey(key);
       if (pendingResult !== undefined) return pendingResult;
@@ -513,73 +387,150 @@ export class Vim {
 
       this.recordMacroKey(key);
 
-      const finiteKeymapResult = this.handleFiniteKeymapKey(key);
-      if (finiteKeymapResult !== undefined) return finiteKeymapResult;
+      const earlyKeymapResult = this.dispatchEarlyKeymapKey(key);
+      if (earlyKeymapResult !== undefined) return earlyKeymapResult;
 
-      const beforeRepeatAction = this.resolveKeymapAction(key, "beforeRepeat");
-      if (beforeRepeatAction !== undefined) {
-        const result = this.dispatchVimAction(beforeRepeatAction);
-        if (result !== undefined) return result;
-      }
+      this.recordRepeatableKey(key);
 
-      if (!this.globalState.repeat.isReplaying()) {
-        this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalPendingChordForRepeat() });
-        this.globalState.repeat.recordKey(key);
-      }
+      const waitingOperatorResult = this.handleWaitingOperatorKey(key);
+      if (waitingOperatorResult !== undefined) return waitingOperatorResult;
 
-      if (this.modeState.kind === "insert") {
-        const handler = this.insertKeyHandlers.get(key);
-        if (handler !== undefined) return handler();
-        const text = insertTextForKey(key);
-        if (text !== undefined) {
-          insertText(this.editor, text, this.insertEditOptions());
-          this.insertRepeatText += text;
-          return "handled";
-        }
-        return null;
-      }
+      const insertLikeResult = this.dispatchInsertLikeKey(key);
+      if (insertLikeResult !== undefined) return insertLikeResult;
 
-      if (this.modeState.kind === "replace") {
-        const handler = this.replaceKeyHandlers.get(key);
-        if (handler !== undefined) return handler();
-        const text = insertTextForKey(key);
-        if (text !== undefined) {
-          replaceModeText(this.editor, text, 1, this.insertEditOptions());
-          this.insertRepeatText += text;
-          return "handled";
-        }
-        return null;
-      }
+      const motionModeResult = this.dispatchMotionModeKey(key);
+      if (motionModeResult !== undefined) return motionModeResult;
 
-      if (this.shouldResolveMotionModeAction()) {
-        const motionModeAction = this.resolveKeymapAction(key, "motionMode");
-        if (motionModeAction !== undefined) {
-          const result = this.dispatchVimAction(motionModeAction);
-          if (result !== undefined) return result;
-        }
-      }
+      const fallbackKeymapResult = this.dispatchFallbackKeymapKey(key);
+      if (fallbackKeymapResult !== undefined) return fallbackKeymapResult;
 
-      const normalFallbackAction = this.resolveKeymapAction(key, "normalFallback");
-      if (normalFallbackAction !== undefined) {
-        const result = this.dispatchVimAction(normalFallbackAction);
-        if (result !== undefined) return result;
-      }
-
-      if (this.isVisualMode()) {
-        const modeBefore = this.modeState.kind;
-        const result = this.visualMode.onKey(key);
-        return this.applyVisualResult(result, modeBefore);
-      }
-
-      if (this.modeState.kind !== "normal") {
-        return null;
-      }
-
-      return this.applyNormalResult(this.normalMode.onKey(key));
+      return this.dispatchModeFallbackKey(key);
     } finally {
       if (this.editor.getText() !== textBefore) {
         this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
       }
+    }
+  }
+
+  private dispatchRemapKey(key: string, { allowRemap }: { allowRemap: boolean }): KeyResult | undefined {
+    if (!(allowRemap && this.shouldResolveRemap())) return undefined;
+    const resolution = this.remapResolver.handleKey(this.currentRemapMode(), key);
+    switch (resolution.kind) {
+      case "pending":
+        return "handled";
+      case "matched":
+        this.executeRemapping(resolution.mapping);
+        return "handled";
+      case "matchedWithReplay":
+        this.executeRemapping(resolution.mapping);
+        for (const replayKey of resolution.keys) this.dispatchKey(replayKey, { allowRemap: true });
+        return "handled";
+      case "replay":
+        this.replayTimedOutRemapKeys(resolution.keys);
+        return "handled";
+      case "handled":
+        return "handled";
+      case "noMatch":
+        return undefined;
+    }
+  }
+
+  private dispatchEarlyKeymapKey(key: string): KeyResult | undefined {
+    const finiteKeymapResult = this.handleFiniteKeymapKey(key);
+    if (finiteKeymapResult !== undefined) return finiteKeymapResult;
+
+    const beforeRepeatAction = this.resolveKeymapAction(key, "beforeRepeat");
+    if (beforeRepeatAction !== undefined) {
+      const result = this.dispatchVimAction(beforeRepeatAction);
+      if (result !== undefined) return result;
+    }
+    return undefined;
+  }
+
+  private recordRepeatableKey(key: string): void {
+    if (this.globalState.repeat.isReplaying()) return;
+    this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalPendingChordForRepeat() });
+    this.globalState.repeat.recordKey(key);
+  }
+
+  private dispatchInsertLikeKey(key: string): KeyResult | null | undefined {
+    if (this.modeState.kind === "insert") {
+      const handler = this.insertKeyHandlers.get(key);
+      if (handler !== undefined) return handler();
+      const text = insertTextForKey(key);
+      if (text !== undefined) {
+        insertText(this.editor, text, this.insertEditOptions());
+        this.insertRepeatText += text;
+        return "handled";
+      }
+      return null;
+    }
+
+    if (this.modeState.kind === "replace") {
+      const handler = this.replaceKeyHandlers.get(key);
+      if (handler !== undefined) return handler();
+      const text = insertTextForKey(key);
+      if (text !== undefined) {
+        replaceModeText(this.editor, text, 1, this.insertEditOptions());
+        this.insertRepeatText += text;
+        return "handled";
+      }
+      return null;
+    }
+
+    return undefined;
+  }
+
+  private dispatchMotionModeKey(key: string): KeyResult | undefined {
+    if (!this.shouldResolveMotionModeAction()) return undefined;
+    const motionModeAction = this.resolveKeymapAction(key, "motionMode");
+    if (motionModeAction === undefined) return undefined;
+    return this.dispatchVimAction(motionModeAction);
+  }
+
+  private dispatchFallbackKeymapKey(key: string): KeyResult | undefined {
+    const normalFallbackAction = this.resolveKeymapAction(key, "normalFallback");
+    if (normalFallbackAction === undefined) return undefined;
+    return this.dispatchVimAction(normalFallbackAction);
+  }
+
+  private dispatchModeFallbackKey(key: string): KeyResult | null {
+    if (this.isVisualMode()) {
+      const modeBefore = this.modeState.kind;
+      const result = this.visualMode.onKey(key);
+      return this.applyVisualResult(result, modeBefore);
+    }
+
+    if (this.modeState.kind !== "normal") return null;
+
+    return this.applyNormalResult(this.normalMode.onKey(key));
+  }
+
+  private handleWaitingOperatorKey(key: string): KeyResult | undefined {
+    const mode = this.modeState.kind;
+    if (!(mode === "normal" || mode === "visual" || mode === "visualLine" || mode === "visualBlock")) return undefined;
+    const waitingInput = this.operatorStack.waitingInput(mode, key);
+    switch (waitingInput?.type) {
+      case undefined:
+        return undefined;
+      case "normalDigraph":
+        return this.applyNormalResult(this.normalMode.handlePendingDigraphKey(key));
+      case "normalReplace":
+        return this.applyNormalResult(this.normalMode.handlePendingReplaceKey(key));
+      case "normalSurround":
+        return this.applyNormalResult(this.normalMode.handlePendingSurroundKey(key));
+      case "normalConvert":
+        return this.applyNormalResult(this.normalMode.handlePendingConvertKey(key));
+      case "normalIndent":
+        return this.applyNormalResult(this.normalMode.handlePendingIndentKey(key));
+      case "normalTextObject":
+        return this.applyNormalResult(this.normalMode.handlePendingTextObjectKey(key));
+      case "normalSurroundPrefix":
+        return this.applyNormalResult(this.normalMode.handlePendingSurroundPrefixKey());
+      case "visualSurround":
+        return this.applyVisualResult(this.visualMode.handlePendingSurroundKey(key), this.modeState.kind);
+      case "visualTextObject":
+        return this.applyVisualResult(this.visualMode.handlePendingTextObjectKey(key), this.modeState.kind);
     }
   }
 
@@ -621,6 +572,15 @@ export class Vim {
     return this.selectedRegister === undefined ? chord : `${chord}\"${this.selectedRegister}`;
   }
 
+  private normalChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}) {
+    return {
+      key,
+      includeCount,
+      countText: this.countBuffer,
+      hasSelectedRegister: this.selectedRegister !== undefined,
+    };
+  }
+
   private resolveKeymapAction(key: string, phase: VimKeymapPhase): VimAction | undefined {
     return resolveVimAction(key, phase, {
       mode: this.modeState.kind,
@@ -630,6 +590,7 @@ export class Vim {
       normalModeHasOnlySelectedRegisterPending: this.selectedRegister !== undefined && !this.normalMode.hasPendingNonCount(),
       normalModeCanResolveEditOperator: this.normalMode.canResolveEditOperatorCentrally(),
       visualModeHasPendingNonCount: this.visualMode.hasPendingNonCount(),
+      countText: this.countBuffer,
       repeatIsReplaying: this.globalState.repeat.isReplaying(),
     });
   }
@@ -637,13 +598,13 @@ export class Vim {
   private dispatchVimAction(action: VimAction): KeyResult | undefined {
     switch (action.type) {
       case "pushMark":
-        this.pendingStack.push({ type: "mark" });
+        this.operatorStack.push({ type: "mark" });
         return "handled";
       case "pushJump":
-        this.pendingStack.push({ type: "jump", line: action.line });
+        this.operatorStack.push({ type: "jump", line: action.line });
         return "handled";
       case "pushUnmatched":
-        this.pendingStack.push({
+        this.operatorStack.push({
           type: action.direction === "forward" ? "unmatchedForward" : "unmatchedBackward",
           count: this.takeCountForMotion(1),
         });
@@ -659,7 +620,7 @@ export class Vim {
         this.globalState.repeat.cancelCurrent();
         return undefined;
       case "startCommand":
-        this.pendingStack.push({ type: "command", input: "" });
+        this.operatorStack.push({ type: "command", input: "" });
         this.setMode("command");
         return "handled";
       case "enterVisual":
@@ -677,14 +638,14 @@ export class Vim {
         this.repeatFind({ reversed: action.reversed });
         return "handled";
       case "pushFindForward":
-        this.pendingStack.push({ type: "findForward", before: action.before, count: this.takeCountForMotion(1) });
+        this.operatorStack.push({ type: "findForward", before: action.before, count: this.takeCountForMotion(1) });
         return "handled";
       case "pushFindBackward":
-        this.pendingStack.push({ type: "findBackward", after: action.after, count: this.takeCountForMotion(1) });
+        this.operatorStack.push({ type: "findBackward", after: action.after, count: this.takeCountForMotion(1) });
         return "handled";
       case "startSearch":
         this.searchOriginMode = this.modeState.kind;
-        this.pendingStack.push(this.globalState.search.start(action.backwards, this.editor));
+        this.operatorStack.push(this.globalState.search.start(action.backwards, this.editor));
         this.setMode("search");
         return "handled";
       case "searchUnderCursor":
@@ -698,8 +659,21 @@ export class Vim {
         return "handled";
       case "pushEditOperator":
         return this.applyNormalResult(this.normalMode.handleEditOperatorKey(action.operator, action.key));
+      case "pushObject":
+        this.operatorStack.pushObject(action.around, this.normalChordKey(action.key));
+        return "handled";
+      case "pushIndent":
+        this.operatorStack.pushIndent(action.direction, this.takeCountForMotion(1), this.normalChordKey(action.key, { includeCount: true }));
+        return "handled";
+      case "normalCommand":
+        return this.applyNormalResult(this.normalMode.handleCommand(action.command));
+      case "visualCommand":
+        return this.applyVisualResult(this.visualMode.handleCommand(action.command), this.modeState.kind);
       case "pushRegister":
-        this.pendingStack.push({ type: "register" });
+        this.operatorStack.push({ type: "register" });
+        return "handled";
+      case "pushCount":
+        this.appendCountKey(action.key);
         return "handled";
       case "changeList": {
         this.globalState.repeat.cancelCurrent();
@@ -731,7 +705,8 @@ export class Vim {
         return "handled";
       case "pushConvert":
         if (this.modeState.kind === "normal") {
-          this.normalMode.handleGKey(keyForConvertTarget(action.target));
+          const key = keyForConvertTarget(action.target);
+          this.operatorStack.pushConvert(action.target, this.takeCountForMotion(1), this.normalChordKey(`g${key}`, { includeCount: true }));
         } else if (this.isVisualMode()) {
           this.visualMode.convertSelections(action.target);
           this.setMode("normal");
@@ -739,7 +714,7 @@ export class Vim {
         return "handled";
       case "join":
         if (this.modeState.kind === "normal") {
-          this.normalMode.handleGKey("J");
+          return this.applyNormalResult(this.normalMode.handleCommand({ type: "join", insertWhitespace: action.insertWhitespace }));
         } else if (this.isVisualMode()) {
           this.visualMode.joinSelections({ insertWhitespace: action.insertWhitespace });
           this.setMode("normal");
@@ -789,16 +764,16 @@ export class Vim {
   }
 
   private handlePendingKey(key: string): KeyResult | null | undefined {
-    if (this.activePending("digraph") !== undefined) {
+    if (this.operatorStack.activeTopLevel("insertDigraph") !== undefined) {
       this.handlePendingDigraphKey(key);
       return "handled";
     }
 
-    if (this.activePending("literal") !== undefined) {
+    if (this.operatorStack.activeTopLevel("literal") !== undefined) {
       return this.handlePendingLiteralKey(key);
     }
 
-    if (this.activePending("insertRegister") !== undefined) {
+    if (this.operatorStack.activeTopLevel("insertRegister") !== undefined) {
       this.handlePendingInsertRegisterKey(key);
       return "handled";
     }
@@ -813,48 +788,48 @@ export class Vim {
     const macroResult = this.handlePendingMacroKey(key);
     if (macroResult !== undefined) return macroResult;
 
-    const pendingRegister = this.activePending("register");
+    const pendingRegister = this.operatorStack.activeTopLevel("register");
     if (pendingRegister !== undefined) {
-      this.popPending("register");
+      this.operatorStack.popTopLevel("register");
       this.handlePendingRegisterKey(key);
       return "handled";
     }
 
-    if (this.activePending("command") !== undefined) {
+    if (this.operatorStack.activeTopLevel("command") !== undefined) {
       this.handlePendingCommandKey(key);
       return "handled";
     }
 
-    const pendingSearch = this.activePending("search");
+    const pendingSearch = this.operatorStack.activeTopLevel("search");
     if (pendingSearch !== undefined) {
       if (!isSearchInputKey(key)) return null;
       return this.handlePendingSearchKey(key, pendingSearch);
     }
 
-    if (this.activeFind() !== undefined) {
+    if (this.operatorStack.activeFind() !== undefined) {
       this.recordRepeatKey(key);
       this.handlePendingFindKey(key);
       return "handled";
     }
 
-    const pendingMark = this.activePending("mark");
+    const pendingMark = this.operatorStack.activeTopLevel("mark");
     if (this.modeState.kind === "normal" && pendingMark !== undefined) {
-      this.popPending("mark");
+      this.operatorStack.popTopLevel("mark");
       this.modelState.marks.createMark(this.editor, key);
       return "handled";
     }
 
-    const pendingJump = this.activePending("jump");
+    const pendingJump = this.operatorStack.activeTopLevel("jump");
     if (this.modeState.kind === "normal" && pendingJump !== undefined) {
-      this.popPending("jump");
+      this.operatorStack.popTopLevel("jump");
       const motion = this.modelState.marks.jumpMotion(this.editor, key, { line: pendingJump.line });
       if (motion !== undefined) this.applyMotion(motion, 1);
       return "handled";
     }
 
-    const pendingUnmatched = this.activeUnmatched();
+    const pendingUnmatched = this.operatorStack.activeUnmatched();
     if (this.modeState.kind === "normal" && pendingUnmatched !== undefined) {
-      this.popUnmatched();
+      this.operatorStack.popUnmatched();
       if (key === "space") {
         this.insertEmptyLines(pendingUnmatched.type === "unmatchedBackward" ? "above" : "below", pendingUnmatched.count);
         return "handled";
@@ -880,11 +855,11 @@ export class Vim {
     else if (this.isVisualMode()) this.visualMode.clearPending();
   }
 
-  private handlePendingSearchKey(key: string, pendingSearch: Extract<PendingVimOperator, { type: "search" }>): KeyResult | null {
+  private handlePendingSearchKey(key: string, pendingSearch: Extract<TopLevelPendingOperator, { type: "search" }>): KeyResult | null {
     this.recordRepeatKey(key);
     const originMode = this.searchOriginMode ?? "normal";
     const motion = this.globalState.search.handleKey(pendingSearch, key, this.globalState.registers, this.editor);
-    if (key === "enter") this.popPending("search");
+    if (key === "enter") this.operatorStack.popTopLevel("search");
     if (motion !== undefined) {
       this.searchOriginMode = undefined;
       this.setMode(originMode === "visual" || originMode === "visualLine" || originMode === "visualBlock" ? originMode : "normal");
@@ -912,16 +887,16 @@ export class Vim {
   }
 
   private handlePendingMacroKey(key: string): KeyResult | undefined {
-    const pendingRecordRegister = this.activePending("recordRegister");
+    const pendingRecordRegister = this.operatorStack.activeTopLevel("recordRegister");
     if (this.modeState.kind === "normal" && pendingRecordRegister !== undefined) {
-      this.popPending("recordRegister");
+      this.operatorStack.popTopLevel("recordRegister");
       this.globalState.macro.startRecording(key);
       return "handled";
     }
 
-    const pendingReplayRegister = this.activePending("replayRegister");
+    const pendingReplayRegister = this.operatorStack.activeTopLevel("replayRegister");
     if (this.modeState.kind === "normal" && pendingReplayRegister !== undefined) {
-      this.popPending("replayRegister");
+      this.operatorStack.popTopLevel("replayRegister");
       this.recordMacroKey(key);
       this.globalState.macro.replayRegisterKey(key, pendingReplayRegister.count, key => this.onKey(key));
       return "handled";
@@ -933,13 +908,13 @@ export class Vim {
     }
 
     if (this.modeState.kind === "normal" && key === "q") {
-      this.pendingStack.push({ type: "recordRegister" });
+      this.operatorStack.push({ type: "recordRegister" });
       return "handled";
     }
 
     if (this.modeState.kind === "normal" && key === "@") {
       this.recordMacroKey(key);
-      this.pendingStack.push({ type: "replayRegister", count: this.normalMode.takeCountForMotion(1) });
+      this.operatorStack.push({ type: "replayRegister", count: this.normalMode.takeCountForMotion(1) });
       return "handled";
     }
 
@@ -1096,22 +1071,22 @@ export class Vim {
   }
 
   private startInsertDigraph(): KeyResult {
-    this.pendingStack.push({ type: "digraph", target: "insert" });
+    this.operatorStack.push({ type: "insertDigraph", target: "insert" });
     return "handled";
   }
 
   private startReplaceDigraph(): KeyResult {
-    this.pendingStack.push({ type: "digraph", target: "replace" });
+    this.operatorStack.push({ type: "insertDigraph", target: "replace" });
     return "handled";
   }
 
   private startPlainLiteral(): KeyResult {
-    this.pendingStack.push({ type: "literal", kind: "plain" });
+    this.operatorStack.push({ type: "literal", kind: "plain" });
     return "handled";
   }
 
   private startInsertRegister(): KeyResult {
-    this.pendingStack.push({ type: "insertRegister" });
+    this.operatorStack.push({ type: "insertRegister" });
     return "handled";
   }
 
@@ -1132,10 +1107,10 @@ export class Vim {
 
   private shouldResolveRemap(): boolean {
     if (this.remapResolver.isPending()) return true;
-    return this.activeFind() === undefined
-      && this.activeUnmatched() === undefined
+    return this.operatorStack.activeFind() === undefined
+      && this.operatorStack.activeUnmatched() === undefined
       && !this.keymapResolver.isPending()
-      && this.pendingStack.length === 0;
+      && this.operatorStack.length === 0;
   }
 
   private currentRemapMode() {
@@ -1225,10 +1200,10 @@ export class Vim {
   }
 
   private handlePendingFindKey(key: string): void {
-    const pending = this.popFind();
+    const pending = this.operatorStack.popFind();
     if (pending === undefined) return;
     if (key === "ctrl-k") {
-      this.pendingStack.push({ type: "digraph", target: "find", pending });
+      this.operatorStack.push({ type: "insertDigraph", target: "find", pending });
       return;
     }
     this.applyFindChar(pending, keyForInput(key));
@@ -1248,19 +1223,19 @@ export class Vim {
   }
 
   private handlePendingDigraphKey(key: string): void {
-    const pending = this.activePending("digraph");
+    const pending = this.operatorStack.activeTopLevel("insertDigraph");
     if (pending === undefined) return;
     if (this.isEscape(key)) {
-      this.popPending("digraph");
+      this.operatorStack.popTopLevel("insertDigraph");
       return;
     }
     const input = keyForInput(key);
     if (pending.first === undefined) {
-      this.replaceActiveDigraph({ ...pending, first: input });
+      this.operatorStack.replaceActiveInsertDigraph({ ...pending, first: input });
       return;
     }
 
-    this.popPending("digraph");
+    this.operatorStack.popTopLevel("insertDigraph");
     const text = lookupDigraph(pending.first, input);
     switch (pending.target) {
       case "insert":
@@ -1278,7 +1253,7 @@ export class Vim {
   }
 
   private handlePendingLiteralKey(key: string): KeyResult | undefined {
-    const pending = this.activePending("literal");
+    const pending = this.operatorStack.activeTopLevel("literal");
     if (pending === undefined) return "handled";
 
     if (pending.kind === "plain") {
@@ -1291,7 +1266,7 @@ export class Vim {
       if (/^[0-9]$/.test(key)) {
         return this.handlePendingLiteralKeyWithState({ type: "literal", kind: "decimal", digits: key });
       }
-      this.popPending("literal");
+      this.operatorStack.popTopLevel("literal");
       this.insertLiteralText(literalTextForKey(key));
       return "handled";
     }
@@ -1300,7 +1275,7 @@ export class Vim {
       if (/^[0-9]$/.test(key)) {
         return this.handlePendingLiteralKeyWithState({ ...pending, digits: pending.digits + key });
       }
-      this.popPending("literal");
+      this.operatorStack.popTopLevel("literal");
       this.insertLiteralCodepoint(Number(pending.digits));
       if (this.isEscape(key)) {
         this.recordEscapeKey();
@@ -1316,11 +1291,11 @@ export class Vim {
       return this.handlePendingLiteralKeyWithState({ ...pending, digits: pending.digits + key });
     }
     if (/^[0-9a-fA-F]$/.test(key)) {
-      this.popPending("literal");
+      this.operatorStack.popTopLevel("literal");
       this.insertLiteralCodepoint(Number.parseInt(pending.digits + key, 16));
       return "handled";
     }
-    this.popPending("literal");
+    this.operatorStack.popTopLevel("literal");
     if (pending.digits.length > 0) this.insertLiteralCodepoint(Number.parseInt(pending.digits, 16));
     const text = insertTextForKey(key);
     if (text !== undefined) this.insertLiteralText(text);
@@ -1328,9 +1303,9 @@ export class Vim {
   }
 
   private handlePendingLiteralKeyWithState(next: PendingLiteralOperator): KeyResult {
-    this.replaceActiveLiteral(next);
+    this.operatorStack.replaceActiveLiteral(next);
     if (next.kind === "decimal" && next.digits.length >= 3) {
-      this.popPending("literal");
+      this.operatorStack.popTopLevel("literal");
       this.insertLiteralCodepoint(Number(next.digits));
     }
     return "handled";
@@ -1350,7 +1325,7 @@ export class Vim {
   }
 
   private handlePendingInsertRegisterKey(key: string): void {
-    this.popPending("insertRegister");
+    this.operatorStack.popTopLevel("insertRegister");
     if (this.isEscape(key)) return;
     const registerName = parseRegisterName(key);
     if (registerName === undefined) return;
@@ -1358,11 +1333,11 @@ export class Vim {
   }
 
   private handlePendingCommandKey(key: string): void {
-    const pending = this.activePending("command");
+    const pending = this.operatorStack.activeTopLevel("command");
     if (pending === undefined) return;
     if (key === "enter") {
       const command = pending.input;
-      this.popPending("command");
+      this.operatorStack.popTopLevel("command");
       this.setMode("normal");
       executeCommand(this.editor, command, {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
@@ -1370,10 +1345,10 @@ export class Vim {
       return;
     }
     if (key === "backspace") {
-      this.replaceActiveCommand(pending.input.slice(0, -1));
+      this.operatorStack.replaceActiveCommand(pending.input.slice(0, -1));
       return;
     }
-    this.replaceActiveCommand(`${pending.input}${key === "space" ? " " : key}`);
+    this.operatorStack.replaceActiveCommand(`${pending.input}${key === "space" ? " " : key}`);
   }
 
   private runNormalKeysForCommand(keys: readonly string[], range: LineRange | undefined): void {
@@ -1500,7 +1475,7 @@ export class Vim {
   }
 
   private modeIsExpectingRegisterName(): boolean {
-    return this.activePending("register") !== undefined;
+    return this.operatorStack.activeTopLevel("register") !== undefined;
   }
 
   private isVisualMode(): boolean {

@@ -10,12 +10,56 @@
 import type { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget } from "./editor.js";
 import { Motion, motionForKey } from "./motion.js";
 import type { ConvertTarget } from "./normal/convert.js";
+import type { IndentDirection } from "./normal/indent.js";
 import type { Operator, VimMode } from "./state.js";
 
 export type VisualModeTarget =
   | { mode: "visual"; kind: "charwise" }
   | { mode: "visualLine"; kind: "linewise" }
   | { mode: "visualBlock"; kind: "blockwise" };
+
+export type VisualCommand =
+  | { type: "toggleCharwise" }
+  | { type: "toggleLinewise" }
+  | { type: "toggleBlockwise" }
+  | { type: "insertAtSelection"; side: "start" | "end" }
+  | { type: "startSurround" }
+  | { type: "join"; insertWhitespace: boolean }
+  | { type: "indent"; key: ">" | "<" | "=" }
+  | { type: "incrementStep"; direction: "increment" | "decrement" }
+  | { type: "convert"; key: "u" | "U" | "~" }
+  | { type: "startTextObject"; around: boolean }
+  | { type: "otherEnd"; rowAware: boolean }
+  | { type: "yankLinewise" }
+  | { type: "yank" }
+  | { type: "deleteToLineEnd" }
+  | { type: "delete" }
+  | { type: "change" }
+  | { type: "paste" }
+  | { type: "percentOrMatching" };
+
+export type NormalCommand =
+  | { type: "insertBefore" }
+  | { type: "insertAfter" }
+  | { type: "insertFirstNonWhitespace" }
+  | { type: "insertEndOfLine" }
+  | { type: "openLine"; above: boolean }
+  | { type: "pushReplace" }
+  | { type: "substituteCharacters" }
+  | { type: "substituteLines" }
+  | { type: "changeToEndOfLine" }
+  | { type: "deleteToEndOfLine" }
+  | { type: "deleteLeft" }
+  | { type: "deleteRight" }
+  | { type: "join"; insertWhitespace: boolean }
+  | { type: "incrementStep"; direction: "increment" | "decrement" }
+  | { type: "toggleCase" }
+  | { type: "paste"; before: boolean }
+  | { type: "moveLineFirstNonWhitespace"; direction: "up" | "down" }
+  | { type: "percentOrMatching" }
+  | { type: "goToLineOrEnd" }
+  | { type: "moveToNextLineStart" }
+  | { type: "moveWrappingLeft" };
 
 export type VimAction =
   | { type: "pushMark" }
@@ -48,7 +92,12 @@ export type VimAction =
   | { type: "searchUnderCursor"; backwards: boolean }
   | { type: "motion"; motion: Motion }
   | { type: "pushEditOperator"; operator: Operator; key: string }
-  | { type: "pushRegister" };
+  | { type: "pushObject"; around: boolean; key: string }
+  | { type: "pushIndent"; direction: IndentDirection; key: string }
+  | { type: "pushRegister" }
+  | { type: "pushCount"; key: string }
+  | { type: "normalCommand"; command: NormalCommand }
+  | { type: "visualCommand"; command: VisualCommand };
 
 export type VimKeymapPhase = "motionMode" | "beforeRepeat" | "normalFallback";
 
@@ -60,6 +109,7 @@ export type VimKeymapContext = {
   normalModeHasOnlySelectedRegisterPending: boolean;
   normalModeCanResolveEditOperator: boolean;
   visualModeHasPendingNonCount: boolean;
+  countText: string;
   repeatIsReplaying: boolean;
 };
 
@@ -287,6 +337,19 @@ function resolveBeforeRepeatAction(key: string, context: VimKeymapContext): VimA
   return undefined;
 }
 
+function indentDirectionForKey(key: string): IndentDirection | undefined {
+  switch (key) {
+    case ">":
+      return "in";
+    case "<":
+      return "out";
+    case "=":
+      return "auto";
+    default:
+      return undefined;
+  }
+}
+
 function editOperatorForKey(key: string): Operator | undefined {
   switch (key) {
     case "d":
@@ -300,12 +363,143 @@ function editOperatorForKey(key: string): Operator | undefined {
   }
 }
 
+function isCountKey(key: string, countText: string): boolean {
+  return /^\d$/.test(key) && (key !== "0" || countText.length > 0);
+}
+
+function visualCommandForKey(key: string): VisualCommand | undefined {
+  switch (key) {
+    case "v":
+      return { type: "toggleCharwise" };
+    case "V":
+      return { type: "toggleLinewise" };
+    case "ctrl-v":
+      return { type: "toggleBlockwise" };
+    case "I":
+      return { type: "insertAtSelection", side: "start" };
+    case "A":
+      return { type: "insertAtSelection", side: "end" };
+    case "S":
+      return { type: "startSurround" };
+    case "J":
+      return { type: "join", insertWhitespace: true };
+    case ">":
+    case "<":
+    case "=":
+      return { type: "indent", key };
+    case "ctrl-a":
+      return { type: "incrementStep", direction: "increment" };
+    case "ctrl-x":
+      return { type: "incrementStep", direction: "decrement" };
+    case "u":
+    case "U":
+    case "~":
+      return { type: "convert", key };
+    case "i":
+      return { type: "startTextObject", around: false };
+    case "a":
+      return { type: "startTextObject", around: true };
+    case "o":
+      return { type: "otherEnd", rowAware: true };
+    case "O":
+      return { type: "otherEnd", rowAware: false };
+    case "Y":
+      return { type: "yankLinewise" };
+    case "y":
+      return { type: "yank" };
+    case "D":
+      return { type: "deleteToLineEnd" };
+    case "d":
+    case "x":
+      return { type: "delete" };
+    case "c":
+    case "s":
+      return { type: "change" };
+    case "p":
+    case "P":
+      return { type: "paste" };
+    case "%":
+      return { type: "percentOrMatching" };
+    default:
+      return undefined;
+  }
+}
+
+function normalCommandForKey(key: string): NormalCommand | undefined {
+  switch (key) {
+    case "i":
+      return { type: "insertBefore" };
+    case "a":
+      return { type: "insertAfter" };
+    case "I":
+      return { type: "insertFirstNonWhitespace" };
+    case "A":
+      return { type: "insertEndOfLine" };
+    case "o":
+      return { type: "openLine", above: false };
+    case "O":
+      return { type: "openLine", above: true };
+    case "r":
+      return { type: "pushReplace" };
+    case "s":
+      return { type: "substituteCharacters" };
+    case "S":
+      return { type: "substituteLines" };
+    case "C":
+      return { type: "changeToEndOfLine" };
+    case "D":
+      return { type: "deleteToEndOfLine" };
+    case "X":
+      return { type: "deleteLeft" };
+    case "J":
+      return { type: "join", insertWhitespace: true };
+    case "ctrl-a":
+      return { type: "incrementStep", direction: "increment" };
+    case "ctrl-x":
+      return { type: "incrementStep", direction: "decrement" };
+    case "x":
+    case "delete":
+      return { type: "deleteRight" };
+    case "~":
+      return { type: "toggleCase" };
+    case "p":
+      return { type: "paste", before: false };
+    case "P":
+      return { type: "paste", before: true };
+    case "+":
+      return { type: "moveLineFirstNonWhitespace", direction: "down" };
+    case "-":
+      return { type: "moveLineFirstNonWhitespace", direction: "up" };
+    case "%":
+      return { type: "percentOrMatching" };
+    case "G":
+      return { type: "goToLineOrEnd" };
+    case "enter":
+      return { type: "moveToNextLineStart" };
+    case "backspace":
+      return { type: "moveWrappingLeft" };
+    default:
+      return undefined;
+  }
+}
+
 function resolveNormalFallbackAction(key: string, context: VimKeymapContext): VimAction | undefined {
   if (context.mode === "visual" || context.mode === "visualLine" || context.mode === "visualBlock") {
-    return key === "\"" && !context.visualModeHasPendingNonCount ? { type: "pushRegister" } : undefined;
+    if (context.visualModeHasPendingNonCount) return undefined;
+    if (isCountKey(key, context.countText)) return { type: "pushCount", key };
+    if (key === "\"") return { type: "pushRegister" };
+    const command = visualCommandForKey(key);
+    return command === undefined ? undefined : { type: "visualCommand", command };
   }
 
   if (context.mode !== "normal") return undefined;
+
+  if (isCountKey(key, context.countText)
+    && (!context.normalModeHasPendingNonCount
+      || context.normalModeCanResolveEditOperator
+      || context.normalModeHasOnlySelectedRegisterPending)) {
+    return { type: "pushCount", key };
+  }
 
   if (!context.normalModeHasPendingNonCount && key === ":") return { type: "startCommand" };
   if (!context.normalModeHasPendingNonCount && key === "\"") return { type: "pushRegister" };
@@ -317,6 +511,22 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
       || context.normalModeHasPendingOperator
       || context.normalModeHasOnlySelectedRegisterPending)) {
     return { type: "pushEditOperator", operator, key };
+  }
+
+  if (context.normalModeHasPendingOperator
+    && context.normalModeCanResolveEditOperator
+    && (key === "i" || key === "a")) {
+    return { type: "pushObject", around: key === "a", key };
+  }
+
+  const indentDirection = indentDirectionForKey(key);
+  if (indentDirection !== undefined && !context.normalModeHasPendingNonCount) {
+    return { type: "pushIndent", direction: indentDirection, key };
+  }
+
+  const command = normalCommandForKey(key);
+  if (command !== undefined && (!context.normalModeHasPendingNonCount || context.normalModeHasOnlySelectedRegisterPending)) {
+    return { type: "normalCommand", command };
   }
 
   switch (key) {

@@ -8,6 +8,7 @@
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
 import { VimConfiguration } from "./config.js";
+import type { VisualCommand } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
@@ -20,6 +21,7 @@ import { incrementNumbers } from "./normal/increment.js";
 import { cursorAfterDeletingRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, Registers, isSystemClipboardRegister } from "./registers.js";
+import { VimOperatorStack } from "./operator.js";
 import { addSurrounds } from "./surrounds.js";
 import {
   KeyResult,
@@ -71,15 +73,6 @@ type BlockwiseVisualState = {
 };
 
 type VisualState = CharwiseVisualState | LinewiseVisualState | BlockwiseVisualState;
-export type VisualPendingOperator =
-  | { type: "object"; around: boolean }
-  | { type: "addSurrounds"; ranges: readonly TextRange[]; linewise: boolean; undoSelectionsBefore: readonly VimSelection[] };
-export type VisualPendingState = {
-  stack: VisualPendingOperator[];
-};
-
-type VisualKeyHandler = (state: VisualState) => VisualKeyResult | undefined;
-
 type CountState = {
   get: () => string;
   append: (key: string) => void;
@@ -114,38 +107,6 @@ export class VisualMode {
   private state: VisualState | undefined;
   private lastState: VisualState | undefined;
 
-  private readonly keyHandlers: ReadonlyMap<string, VisualKeyHandler> = new Map<string, VisualKeyHandler>([
-    ["v", state => this.toggleCharwise(state)],
-    ["V", state => this.toggleLinewise(state)],
-    ["ctrl-v", state => this.toggleBlockwise(state)],
-    ["I", state => this.insertBeforeOrAtBlockStart(state)],
-    ["A", state => this.insertAfterOrAtBlockEnd(state)],
-    ["S", state => this.startSurround(state)],
-    ["J", state => this.joinWithWhitespace(state)],
-    [">", state => this.indentKey(state, ">")],
-    ["<", state => this.indentKey(state, "<")],
-    ["=", state => this.indentKey(state, "=")],
-    ["ctrl-a", state => this.incrementOrDecrement(state, "ctrl-a")],
-    ["ctrl-x", state => this.incrementOrDecrement(state, "ctrl-x")],
-    ["u", state => this.convertKey(state, "u")],
-    ["U", state => this.convertKey(state, "U")],
-    ["~", state => this.convertKey(state, "~")],
-    ["i", () => this.startTextObject(false)],
-    ["a", () => this.startTextObject(true)],
-    ["o", state => this.otherEnd(state, { rowAware: true })],
-    ["O", state => this.otherEnd(state, { rowAware: false })],
-    ["Y", state => this.yankLinewiseKey(state)],
-    ["y", state => this.yankKey(state)],
-    ["D", state => this.deleteToLineEndKey(state)],
-    ["d", state => this.deleteKey(state)],
-    ["x", state => this.deleteKey(state)],
-    ["c", state => this.changeKey(state)],
-    ["s", state => this.changeKey(state)],
-    ["p", state => this.pasteKey(state)],
-    ["P", state => this.pasteKey(state)],
-    ["%", state => this.percentKey(state)],
-  ]);
-
   private visualMultilineInsert: boolean;
 
   constructor(
@@ -153,7 +114,7 @@ export class VisualMode {
     private readonly registers: Registers,
     private readonly registerSelection: RegisterSelection,
     private readonly countState: CountState,
-    private readonly pendingState: VisualPendingState,
+    private readonly operatorStack: VimOperatorStack,
     configuration: Pick<VimConfiguration, "visualMultilineInsert">
   ) {
     this.visualMultilineInsert = configuration.visualMultilineInsert;
@@ -163,17 +124,6 @@ export class VisualMode {
     this.visualMultilineInsert = configuration.visualMultilineInsert;
   }
 
-  private activePending<Type extends VisualPendingOperator["type"]>(type: Type): Extract<VisualPendingOperator, { type: Type }> | undefined {
-    const item = this.pendingState.stack[this.pendingState.stack.length - 1];
-    return item?.type === type ? item as Extract<VisualPendingOperator, { type: Type }> : undefined;
-  }
-
-  private popPending<Type extends VisualPendingOperator["type"]>(type: Type): Extract<VisualPendingOperator, { type: Type }> | undefined {
-    const item = this.activePending(type);
-    if (item === undefined) return undefined;
-    this.pendingState.stack.pop();
-    return item;
-  }
 
   clearPending(): void {
     this.clearPendingStack();
@@ -182,7 +132,7 @@ export class VisualMode {
   }
 
   private clearPendingStack(): void {
-    this.pendingState.stack = [];
+    this.operatorStack.clear();
   }
 
   enter(kind: VisualState["kind"] = "charwise"): void {
@@ -239,34 +189,10 @@ export class VisualMode {
   }
 
   onKey(key: string): VisualKeyResult {
-    const pendingSurround = this.activePending("addSurrounds");
-    if (pendingSurround !== undefined) {
-      this.popPending("addSurrounds");
-      this.editor.beginUndoTransaction(pendingSurround.undoSelectionsBefore);
-      addSurrounds(this.editor, pendingSurround.ranges, key, { linewise: pendingSurround.linewise });
-      this.state = undefined;
-      this.editor.setCursorStyle("block");
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
-
-    const pendingObject = this.activePending("object");
-    if (pendingObject !== undefined) {
-      return this.handlePendingTextObject(key, pendingObject);
-    }
-
     const state = this.state;
     if (state === undefined) {
       return handled({ exitVisual: true });
     }
-
-    if (isCountKey(key, this.countState.get())) {
-      this.countState.append(key);
-      return handled();
-    }
-
-    const handler = this.keyHandlers.get(key);
-    const result = handler?.(state);
-    if (result !== undefined) return result;
 
     const motion = visualMotionForKey(key);
     if (motion !== undefined) {
@@ -276,6 +202,56 @@ export class VisualMode {
 
     this.exit();
     return handled({ exitVisual: true, nextMode: "normal" });
+  }
+
+  handleCommand(command: VisualCommand): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled({ exitVisual: true });
+    switch (command.type) {
+      case "toggleCharwise":
+        return this.toggleCharwise(state);
+      case "toggleLinewise":
+        return this.toggleLinewise(state);
+      case "toggleBlockwise":
+        return this.toggleBlockwise(state);
+      case "insertAtSelection":
+        return command.side === "start"
+          ? this.insertBeforeOrAtBlockStart(state) ?? handled()
+          : this.insertAfterOrAtBlockEnd(state) ?? handled();
+      case "startSurround":
+        return this.startSurround(state);
+      case "join":
+        this.join(state, { insertWhitespace: command.insertWhitespace });
+        return handled({ exitVisual: true, nextMode: "normal" });
+      case "indent":
+        return this.indentKey(state, command.key);
+      case "incrementStep":
+        incrementNumbers(this.editor, (command.direction === "increment" ? 1 : -1) * this.takeCount(1));
+        this.state = undefined;
+        this.editor.setCursorStyle("block");
+        return handled({ exitVisual: true, nextMode: "normal" });
+      case "convert":
+        this.convert(state, convertTargetForKey(command.key));
+        return handled({ exitVisual: true, nextMode: "normal" });
+      case "startTextObject":
+        return this.startTextObject(command.around);
+      case "otherEnd":
+        return this.otherEnd(state, { rowAware: command.rowAware });
+      case "yankLinewise":
+        return this.yankLinewiseKey(state);
+      case "yank":
+        return this.yankKey(state);
+      case "deleteToLineEnd":
+        return this.deleteToLineEndKey(state);
+      case "delete":
+        return this.deleteKey(state);
+      case "change":
+        return this.changeKey(state);
+      case "paste":
+        return this.pasteKey(state);
+      case "percentOrMatching":
+        return this.percentKey(state) ?? handled();
+    }
   }
 
   private toggleCharwise(state: VisualState): VisualKeyResult {
@@ -339,18 +315,12 @@ export class VisualMode {
   }
 
   private startSurround(state: VisualState): VisualKeyResult {
-    this.pendingState.stack.push({
-      type: "addSurrounds",
+    this.operatorStack.pushVisualAddSurrounds({
       ranges: visualSurroundRanges(this.editor, state),
       linewise: state.kind === "linewise",
       undoSelectionsBefore: visualCurrentUndoSelections(this.editor, state),
     });
     return handled();
-  }
-
-  private joinWithWhitespace(state: VisualState): VisualKeyResult {
-    this.join(state, { insertWhitespace: true });
-    return handled({ exitVisual: true, nextMode: "normal" });
   }
 
   private indentKey(state: VisualState, key: ">" | "<" | "="): VisualKeyResult {
@@ -360,20 +330,8 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal", repeatAction });
   }
 
-  private incrementOrDecrement(state: VisualState, key: "ctrl-a" | "ctrl-x"): VisualKeyResult {
-    incrementNumbers(this.editor, (key === "ctrl-a" ? 1 : -1) * this.takeCount(1));
-    this.state = undefined;
-    this.editor.setCursorStyle("block");
-    return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
-  private convertKey(state: VisualState, key: "u" | "U" | "~"): VisualKeyResult {
-    this.convert(state, convertTargetForKey(key));
-    return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
   private startTextObject(around: boolean): VisualKeyResult {
-    this.pendingState.stack.push({ type: "object", around });
+    this.operatorStack.push({ type: "object", around });
     return handled();
   }
 
@@ -457,11 +415,21 @@ export class VisualMode {
     return undefined;
   }
 
-  private handlePendingTextObject(key: string, pendingTextObject: Extract<VisualPendingOperator, { type: "object" }>): VisualKeyResult {
-    this.popPending("object");
+  handlePendingSurroundKey(key: string): VisualKeyResult {
+    const pendingSurround = this.operatorStack.popVisualOperator("visualAddSurrounds");
+    if (pendingSurround === undefined) return handled();
+    this.editor.beginUndoTransaction(pendingSurround.undoSelectionsBefore);
+    addSurrounds(this.editor, pendingSurround.ranges, key, { linewise: pendingSurround.linewise });
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
+
+  handlePendingTextObjectKey(key: string): VisualKeyResult {
+    const pendingTextObject = this.operatorStack.popVisualOperator("object");
     const state = this.state;
     const object = textObjectForKey(key);
-    if (state === undefined || object === undefined) {
+    if (state === undefined || object === undefined || pendingTextObject === undefined) {
       this.exit();
       return handled({ exitVisual: true, nextMode: "normal" });
     }
@@ -753,7 +721,7 @@ export class VisualMode {
 
 
   hasPendingNonCount(): boolean {
-    return this.pendingState.stack.length > 0;
+    return this.operatorStack.length > 0;
   }
   systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
     if (key !== "p" && key !== "P") return undefined;
@@ -793,11 +761,6 @@ function convertTargetForKey(key: string): ConvertTarget {
     default:
       throw new Error(`not a visual convert key: ${key}`);
   }
-}
-
-function isCountKey(key: string, countBuffer: string): boolean {
-  if (!/^\d$/.test(key)) return false;
-  return key !== "0" || countBuffer.length > 0;
 }
 
 function externalSelectionToCharwiseState(editor: VimEditorCapabilities, selection: Extract<VimSelection, { type: "charwise" }>): CharwiseVisualState {

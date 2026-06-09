@@ -5,6 +5,7 @@
 // - intentional differences: this first slice hard-codes a small keymap instead of using
 //   Zed's declarative key-context system.
 
+import type { NormalCommand } from "./keymap.js";
 import { lookupDigraph } from "./digraph.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
@@ -23,128 +24,15 @@ import { incrementNumbers } from "./normal/increment.js";
 import { joinLines } from "./normal/join.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
 import { KeyResult, Operator, TextRange, VimSelection, charwiseSelection, selectionHead } from "./state.js";
-
-export type PendingEditOperator =
-  | { type: "change"; count: number }
-  | { type: "delete"; count: number }
-  | { type: "yank"; count: number };
-
-export type PendingObjectOperator = { type: "object"; around: boolean };
-
-export type PendingConvertOperator =
-  | { type: "lowercase"; count: number }
-  | { type: "uppercase"; count: number }
-  | { type: "oppositeCase"; count: number };
-
-export type PendingIndentOperator =
-  | { type: "indent"; count: number }
-  | { type: "outdent"; count: number }
-  | { type: "autoIndent"; count: number };
-
-export type PendingSurroundOperator =
-  | { type: "addSurrounds"; count: number; target?: PendingSurroundTarget }
-  | { type: "deleteSurrounds" }
-  | { type: "changeSurrounds"; fromKey?: string };
-
-export type PendingReplaceOperator = { type: "replace"; count: number };
-export type PendingDigraphOperator = { type: "digraph"; count: number; first?: string };
-
-export type PendingSurroundTarget =
-  | { type: "object"; around: boolean }
-  | { type: "ranges"; ranges: readonly TextRange[]; linewise: boolean };
-
-export type NormalPendingOperator =
-  | PendingEditOperator
-  | PendingObjectOperator
-  | PendingConvertOperator
-  | PendingIndentOperator
-  | PendingSurroundOperator
-  | PendingReplaceOperator
-  | PendingDigraphOperator;
-
-const editOperatorTypes = new Set<PendingEditOperator["type"]>(["change", "delete", "yank"]);
-const convertOperatorTypes = new Set<PendingConvertOperator["type"]>(["lowercase", "uppercase", "oppositeCase"]);
-const indentOperatorTypes = new Set<PendingIndentOperator["type"]>(["indent", "outdent", "autoIndent"]);
-const surroundOperatorTypes = new Set<PendingSurroundOperator["type"]>(["addSurrounds", "deleteSurrounds", "changeSurrounds"]);
-const replaceOperatorTypes = new Set<PendingReplaceOperator["type"]>(["replace"]);
-const digraphOperatorTypes = new Set<PendingDigraphOperator["type"]>(["digraph"]);
-
-function pendingEditOperator(operator: Operator, count: number): PendingEditOperator {
-  switch (operator) {
-    case "change":
-      return { type: "change", count };
-    case "delete":
-      return { type: "delete", count };
-    case "yank":
-      return { type: "yank", count };
-  }
-}
-
-function editOperatorForPending(operator: PendingEditOperator): Operator {
-  switch (operator.type) {
-    case "change":
-      return "change";
-    case "delete":
-      return "delete";
-    case "yank":
-      return "yank";
-  }
-}
-
-function pendingConvertOperator(target: ConvertTarget, count: number): PendingConvertOperator {
-  switch (target) {
-    case "lower":
-      return { type: "lowercase", count };
-    case "upper":
-      return { type: "uppercase", count };
-    case "toggle":
-      return { type: "oppositeCase", count };
-  }
-}
-
-function convertTargetForPending(operator: PendingConvertOperator): ConvertTarget {
-  switch (operator.type) {
-    case "lowercase":
-      return "lower";
-    case "uppercase":
-      return "upper";
-    case "oppositeCase":
-      return "toggle";
-  }
-}
-
-function pendingIndentOperator(direction: IndentDirection, count: number): PendingIndentOperator {
-  switch (direction) {
-    case "in":
-      return { type: "indent", count };
-    case "out":
-      return { type: "outdent", count };
-    case "auto":
-      return { type: "autoIndent", count };
-  }
-}
-
-function indentDirectionForPending(operator: PendingIndentOperator): IndentDirection {
-  switch (operator.type) {
-    case "indent":
-      return "in";
-    case "outdent":
-      return "out";
-    case "autoIndent":
-      return "auto";
-  }
-}
-
-function isSurroundOperator(operator: NormalPendingOperator): operator is PendingSurroundOperator {
-  return surroundOperatorTypes.has(operator.type as PendingSurroundOperator["type"]);
-}
-
-export type NormalPendingState = {
-  stack: NormalPendingOperator[];
-  chordKeys: string[];
-};
-
-type NormalKeyHandler = () => NormalKeyResult;
+import {
+  VimOperatorStack,
+  PendingConvertOperator,
+  PendingIndentOperator,
+  PendingSurroundOperator,
+  convertTargetForPending,
+  editOperatorForPending,
+  indentDirectionForPending,
+} from "./operator.js";
 
 type CountState = {
   get: () => string;
@@ -174,189 +62,33 @@ function handled(
 
 export class NormalMode {
 
-  private readonly keyHandlers: ReadonlyMap<string, NormalKeyHandler> = new Map([
-    ["i", () => this.insertBefore()],
-    ["a", () => this.insertAfter()],
-    ["I", () => this.insertFirstNonWhitespace()],
-    ["A", () => this.insertEndOfLine()],
-    ["o", () => this.openLineBelow()],
-    ["O", () => this.openLineAbove()],
-    ["r", () => this.startReplace()],
-    ["s", () => this.substituteCharacters()],
-    ["S", () => this.substituteLines()],
-    ["C", () => this.changeToEndOfLine()],
-    ["D", () => this.deleteToEndOfLine()],
-    ["X", () => this.deleteLeft()],
-    ["J", () => this.joinLines()],
-    ["ctrl-a", () => this.increment()],
-    ["ctrl-x", () => this.decrement()],
-    ["x", () => this.deleteRight()],
-    ["delete", () => this.deleteRight()],
-    ["~", () => this.toggleCase()],
-    ["p", () => this.pasteAfter()],
-    ["P", () => this.pasteBefore()],
-    ["+", () => this.moveDownFirstNonWhitespace()],
-    ["-", () => this.moveUpFirstNonWhitespace()],
-  ]);
-
   constructor(
     private readonly editor: VimEditorCapabilities,
     private readonly registers: Registers,
     private readonly registerSelection: RegisterSelection,
     private readonly countState: CountState,
-    private readonly pendingState: NormalPendingState
+    private readonly operatorStack: VimOperatorStack
   ) {}
 
-  private pushPendingChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}): void {
-    if (this.pendingState.stack.length === 0 && this.registerSelection.get() === undefined) {
-      this.pendingState.chordKeys = [];
-    }
-    if (includeCount && this.countState.get().length > 0) {
-      this.pendingState.chordKeys.push(...this.countState.get());
-    }
-    this.pendingState.chordKeys.push(key);
-  }
-
-  private activeEditOperator(): PendingEditOperator | undefined {
-    return this.activeOperatorOfTypes(editOperatorTypes);
-  }
-
-  private activeConvert(): PendingConvertOperator | undefined {
-    return this.activeOperatorOfTypes(convertOperatorTypes);
-  }
-
-  private activeIndent(): PendingIndentOperator | undefined {
-    return this.activeOperatorOfTypes(indentOperatorTypes);
-  }
-
-  private activeSurround(): PendingSurroundOperator | undefined {
-    return this.activeOperatorOfTypes(surroundOperatorTypes);
-  }
-
-  private activeReplace(): PendingReplaceOperator | undefined {
-    return this.activeOperatorOfTypes(replaceOperatorTypes);
-  }
-
-  private activeDigraph(): PendingDigraphOperator | undefined {
-    return this.activeOperatorOfTypes(digraphOperatorTypes);
-  }
-
-  private activeOperatorOfTypes<const Type extends NormalPendingOperator["type"]>(types: ReadonlySet<Type>): Extract<NormalPendingOperator, { type: Type }> | undefined {
-    for (let index = this.pendingState.stack.length - 1; index >= 0; index--) {
-      const item = this.pendingState.stack[index];
-      if (types.has(item.type as Type)) return item as Extract<NormalPendingOperator, { type: Type }>;
-    }
-    return undefined;
-  }
-
-  private activeObject(): PendingObjectOperator | undefined {
-    const item = this.pendingState.stack[this.pendingState.stack.length - 1];
-    return item?.type === "object" ? item : undefined;
-  }
-
-  private pushEditOperator(operator: Operator, count: number, key: string): void {
-    this.pushPendingChordKey(key, { includeCount: true });
-    this.pendingState.stack.push(pendingEditOperator(operator, count));
-  }
-
-  private pushObject(around: boolean): void {
-    this.pushPendingChordKey(around ? "a" : "i");
-    this.pendingState.stack.push({ type: "object", around });
-  }
-
-  private pushConvert(target: ConvertTarget, count: number, key: string): void {
-    this.pushPendingChordKey(`g${key}`, { includeCount: true });
-    this.pendingState.stack.push(pendingConvertOperator(target, count));
-  }
-
-  private pushIndent(direction: IndentDirection, count: number, key: string): void {
-    this.pushPendingChordKey(key, { includeCount: true });
-    this.pendingState.stack.push(pendingIndentOperator(direction, count));
-  }
-
-  private pushSurround(surround: PendingSurroundOperator): void {
-    if (surround.type === "addSurrounds" && surround.target === undefined) this.pushPendingChordKey("s");
-    this.pendingState.stack.push(surround);
-  }
-
-  private pushReplace(count: number): void {
-    this.pushPendingChordKey("r", { includeCount: true });
-    this.pendingState.stack.push({ type: "replace", count });
-  }
-
-  private pushDigraph(count: number): void {
-    this.pushPendingChordKey("ctrl-k");
-    this.pendingState.stack.push({ type: "digraph", count });
-  }
-
-  private replaceActiveDigraph(digraph: PendingDigraphOperator): void {
-    for (let index = this.pendingState.stack.length - 1; index >= 0; index--) {
-      if (this.pendingState.stack[index].type === "digraph") {
-        this.pendingState.stack[index] = digraph;
-        return;
-      }
-    }
-    this.pendingState.stack.push(digraph);
+  private normalChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}) {
+    return {
+      key,
+      includeCount,
+      countText: this.countState.get(),
+      hasSelectedRegister: this.registerSelection.get() !== undefined,
+    };
   }
 
   private replaceActiveSurround(surround: PendingSurroundOperator): void {
-    for (let index = this.pendingState.stack.length - 1; index >= 0; index--) {
-      if (isSurroundOperator(this.pendingState.stack[index])) {
-        this.pendingState.stack[index] = surround;
-        return;
-      }
-    }
-    this.pushSurround(surround);
-  }
-
-  private popEditOperator(): PendingEditOperator | undefined {
-    return this.popOperatorOfTypes(editOperatorTypes);
-  }
-
-  private popConvert(): PendingConvertOperator | undefined {
-    return this.popOperatorOfTypes(convertOperatorTypes);
-  }
-
-  private popIndent(): PendingIndentOperator | undefined {
-    return this.popOperatorOfTypes(indentOperatorTypes);
-  }
-
-  private popSurround(): PendingSurroundOperator | undefined {
-    return this.popOperatorOfTypes(surroundOperatorTypes);
-  }
-
-  private popReplace(): PendingReplaceOperator | undefined {
-    return this.popOperatorOfTypes(replaceOperatorTypes);
-  }
-
-  private popDigraph(): PendingDigraphOperator | undefined {
-    return this.popOperatorOfTypes(digraphOperatorTypes);
-  }
-
-  private popOperatorOfTypes<const Type extends NormalPendingOperator["type"]>(types: ReadonlySet<Type>): Extract<NormalPendingOperator, { type: Type }> | undefined {
-    for (let index = this.pendingState.stack.length - 1; index >= 0; index--) {
-      const item = this.pendingState.stack[index];
-      if (types.has(item.type as Type)) {
-        this.pendingState.stack.splice(index, 1);
-        return item as Extract<NormalPendingOperator, { type: Type }>;
-      }
-    }
-    return undefined;
-  }
-
-  private popObject(): PendingObjectOperator | undefined {
-    const item = this.pendingState.stack[this.pendingState.stack.length - 1];
-    if (item?.type !== "object") return undefined;
-    this.pendingState.stack.pop();
-    return item;
+    if (!this.operatorStack.replaceActiveSurround(surround)) this.operatorStack.pushSurround(surround);
   }
 
   isPending(): boolean {
-    return this.pendingState.stack.length > 0 || this.countState.get().length > 0;
+    return this.operatorStack.length > 0 || this.countState.get().length > 0;
   }
 
   pendingOperatorName(): Operator | undefined {
-    const operator = this.activeEditOperator();
+    const operator = this.operatorStack.activeEditOperator();
     return operator === undefined ? undefined : editOperatorForPending(operator);
   }
 
@@ -370,37 +102,158 @@ export class NormalMode {
   }
 
   hasPendingNonCount(): boolean {
-    return this.pendingState.stack.length > 0;
+    return this.operatorStack.length > 0;
   }
 
   canResolveMotionCentrally(): boolean {
-    return this.activeEditOperator() !== undefined && this.activeObject() === undefined;
+    return this.operatorStack.activeEditOperator() !== undefined && this.operatorStack.activeObject() === undefined;
   }
 
   canResolveEditOperatorCentrally(): boolean {
-    return this.activeObject() === undefined;
+    return this.operatorStack.activeObject() === undefined;
   }
 
   handleEditOperatorKey(operator: Operator, key: string): NormalKeyResult {
-    if (this.activeEditOperator()?.type === operator) {
+    if (this.operatorStack.activeEditOperator()?.type === operator) {
       return handled({ enterInsert: this.handleLineOperator(operator) });
     }
     // Zed: `vim::Vim::push_operator`.
-    this.pushEditOperator(operator, this.takeCount(1), key);
+    this.operatorStack.pushEditOperator(operator, this.takeCount(1), this.normalChordKey(key, { includeCount: true }));
     return handled();
   }
 
+  handlePendingDigraphKey(key: string): NormalKeyResult {
+    this.handleDigraphKey(key);
+    return handled();
+  }
+
+  handlePendingReplaceKey(key: string): NormalKeyResult {
+    this.handleReplaceKey(key);
+    return handled();
+  }
+
+  handlePendingSurroundKey(key: string): NormalKeyResult {
+    return handled({ enterInsert: this.handleSurroundKey(key) });
+  }
+
+  handlePendingSurroundPrefixKey(): NormalKeyResult {
+    const activeOperator = this.operatorStack.activeEditOperator();
+    if (activeOperator === undefined) return handled();
+    switch (activeOperator.type) {
+      case "yank":
+        this.operatorStack.pushSurround({ type: "addSurrounds", count: activeOperator.count });
+        this.operatorStack.popEditOperator();
+        return handled();
+      case "delete":
+        this.operatorStack.pushSurround({ type: "deleteSurrounds" });
+        this.operatorStack.popEditOperator();
+        return handled();
+      case "change":
+        this.operatorStack.pushSurround({ type: "changeSurrounds" });
+        this.operatorStack.popEditOperator();
+        return handled();
+    }
+  }
+
+  handlePendingConvertKey(key: string): NormalKeyResult {
+    this.handleConvertKey(key);
+    return handled();
+  }
+
+  handlePendingIndentKey(key: string): NormalKeyResult {
+    this.handleIndentKey(key);
+    return handled();
+  }
+
+  handlePendingTextObjectKey(key: string): NormalKeyResult {
+    const pendingTextObject = this.operatorStack.activeObject();
+    if (pendingTextObject === undefined) return handled();
+    const object = textObjectForKey(key);
+    if (object === undefined) {
+      this.clearPending();
+      return handled();
+    }
+    return handled({ enterInsert: this.handleTextObject(object, pendingTextObject.around) });
+  }
+
+  handleCommand(command: NormalCommand): NormalKeyResult {
+    switch (command.type) {
+      case "insertBefore":
+        return this.insertBefore();
+      case "insertAfter":
+        return this.insertAfter();
+      case "insertFirstNonWhitespace":
+        return this.insertFirstNonWhitespace();
+      case "insertEndOfLine":
+        return this.insertEndOfLine();
+      case "openLine":
+        return command.above ? this.openLineAbove() : this.openLineBelow();
+      case "pushReplace":
+        return this.startReplace();
+      case "substituteCharacters":
+        return this.substituteCharacters();
+      case "substituteLines":
+        return this.substituteLines();
+      case "changeToEndOfLine":
+        return this.changeToEndOfLine();
+      case "deleteToEndOfLine":
+        return this.deleteToEndOfLine();
+      case "deleteLeft":
+        return this.deleteLeft();
+      case "deleteRight":
+        return this.deleteRight();
+      case "join":
+        this.joinFromSelections({ insertWhitespace: command.insertWhitespace });
+        return handled();
+      case "incrementStep":
+        incrementNumbers(this.editor, (command.direction === "increment" ? 1 : -1) * this.takeCount(1));
+        return handled();
+      case "toggleCase":
+        return this.toggleCase();
+      case "paste":
+        return command.before ? this.pasteBefore() : this.pasteAfter();
+      case "moveLineFirstNonWhitespace":
+        this.moveToLineFirstNonWhitespace(command.direction === "down" ? this.takeCount(1) : -this.takeCount(1));
+        this.registerSelection.clear();
+        return handled();
+      case "percentOrMatching": {
+        const percent = this.takeCount(undefined);
+        return percent === undefined
+          ? handled({ enterInsert: this.applyMotion({ type: "matching" }, 1) })
+          : handled({ enterInsert: this.applyMotion({ type: "goToPercentage", percent }, 1) });
+      }
+      case "goToLineOrEnd": {
+        const maybeLine = this.takeCount(undefined);
+        const targetRow = maybeLine === undefined ? this.editor.lineCount() - 1 : maybeLine - 1;
+        if (this.operatorStack.activeEditOperator() !== undefined) {
+          return handled({ enterInsert: this.applyLinewiseOperatorToRow(targetRow) });
+        }
+        this.moveToLine(targetRow);
+        this.registerSelection.clear();
+        return handled();
+      }
+      case "moveToNextLineStart":
+        this.moveToNextLineStart();
+        this.registerSelection.clear();
+        return handled();
+      case "moveWrappingLeft":
+        this.moveSelections({ type: "wrappingLeft" }, this.takeCount(1));
+        this.registerSelection.clear();
+        return handled();
+    }
+  }
+
   pendingChord(): string {
-    if (this.pendingState.stack.length > 0) {
-      return `${this.pendingState.chordKeys.join("")}${this.countState.get()}`;
+    if (this.operatorStack.length > 0) {
+      return `${this.operatorStack.chordText()}${this.countState.get()}`;
     }
     return this.countState.get();
   }
 
   clearPending(): void {
     this.countState.clear();
-    this.pendingState.stack = [];
-    this.pendingState.chordKeys = [];
+    this.operatorStack.clear();
+    this.operatorStack.clearChordKeys();
     this.registerSelection.clear();
   }
 
@@ -408,75 +261,6 @@ export class NormalMode {
   // This first slice hard-codes the tiny keymap until we introduce a Zed-like
   // declarative keymap file.
   onKey(key: string): NormalKeyResult {
-    if (this.activeDigraph() !== undefined) {
-      this.handleDigraphKey(key);
-      return handled();
-    }
-
-    if (this.activeReplace() !== undefined) {
-      this.handleReplaceKey(key);
-      return handled();
-    }
-
-    if (this.activeSurround() !== undefined) {
-      return handled({ enterInsert: this.handleSurroundKey(key) });
-    }
-
-    const activeConvert = this.activeConvert();
-    if (activeConvert !== undefined && this.activeObject() === undefined) {
-      this.handleConvertKey(key);
-      return handled();
-    }
-
-    const activeIndent = this.activeIndent();
-    if (activeIndent !== undefined && this.activeObject() === undefined) {
-      this.handleIndentKey(key);
-      return handled();
-    }
-
-    const pendingTextObject = this.activeObject();
-    if (pendingTextObject !== undefined) {
-      const object = textObjectForKey(key);
-      if (object === undefined) {
-        this.clearPending();
-        return handled();
-      }
-      return handled({ enterInsert: this.handleTextObject(object, pendingTextObject.around) });
-    }
-
-    if (this.isCountKey(key)) {
-      this.countState.append(key);
-      return handled();
-    }
-
-    if (key === ">" || key === "<" || key === "=") {
-      this.pushIndent(indentDirectionForKey(key), this.takeCount(1), key);
-      return handled();
-    }
-
-    const activeOperator = this.activeEditOperator();
-    if (activeOperator !== undefined && key === "s") {
-      switch (activeOperator.type) {
-        case "yank":
-          this.pushSurround({ type: "addSurrounds", count: activeOperator.count });
-          this.popEditOperator();
-          return handled();
-        case "delete":
-          this.pushSurround({ type: "deleteSurrounds" });
-          this.popEditOperator();
-          return handled();
-        case "change":
-          this.pushSurround({ type: "changeSurrounds" });
-          this.popEditOperator();
-          return handled();
-      }
-    }
-
-    if (activeOperator !== undefined && (key === "i" || key === "a")) {
-      this.pushObject(key === "a");
-      return handled();
-    }
-
     if (key === "%") {
       const percent = this.takeCount(undefined);
       if (percent !== undefined) {
@@ -492,7 +276,7 @@ export class NormalMode {
     if (key === "G") {
       const maybeLine = this.takeCount(undefined);
       const targetRow = maybeLine === undefined ? this.editor.lineCount() - 1 : maybeLine - 1;
-      if (this.activeEditOperator() !== undefined) {
+      if (this.operatorStack.activeEditOperator() !== undefined) {
         return handled({ enterInsert: this.applyLinewiseOperatorToRow(targetRow) });
       }
       this.moveToLine(targetRow);
@@ -511,9 +295,6 @@ export class NormalMode {
       this.registerSelection.clear();
       return handled();
     }
-
-    const handler = this.keyHandlers.get(key);
-    if (handler !== undefined) return handler();
 
     this.clearPending();
     return handled();
@@ -565,7 +346,7 @@ export class NormalMode {
   }
 
   private startReplace(): NormalKeyResult {
-    this.pushReplace(this.takeCount(1));
+    this.operatorStack.pushReplace(this.takeCount(1), this.normalChordKey("r", { includeCount: true }));
     return handled();
   }
 
@@ -596,21 +377,6 @@ export class NormalMode {
     return handled();
   }
 
-  private joinLines(): NormalKeyResult {
-    this.joinFromSelections({ insertWhitespace: true });
-    return handled();
-  }
-
-  private increment(): NormalKeyResult {
-    incrementNumbers(this.editor, this.takeCount(1));
-    return handled();
-  }
-
-  private decrement(): NormalKeyResult {
-    incrementNumbers(this.editor, -this.takeCount(1));
-    return handled();
-  }
-
   private deleteRight(): NormalKeyResult {
     deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), this.takeCount(1));
     return handled();
@@ -632,22 +398,10 @@ export class NormalMode {
     return handled();
   }
 
-  private moveDownFirstNonWhitespace(): NormalKeyResult {
-    this.moveToLineFirstNonWhitespace(this.takeCount(1));
-    this.registerSelection.clear();
-    return handled();
-  }
-
-  private moveUpFirstNonWhitespace(): NormalKeyResult {
-    this.moveToLineFirstNonWhitespace(-this.takeCount(1));
-    this.registerSelection.clear();
-    return handled();
-  }
-
   // Zed: `motion::Vim::motion`, which combines counts, forced-motion state,
   // active operators, and mode-specific motion handling.
   applyMotion(motion: Motion, count: number): boolean {
-    const pendingSurround = this.activeSurround();
+    const pendingSurround = this.operatorStack.activeSurround();
     if (pendingSurround?.type === "addSurrounds" && pendingSurround.target === undefined) {
       const ranges = this.editor.getSelections().map(selection =>
         motionRange(this.editor, selectionHead(selection), motion, pendingSurround.count * count));
@@ -655,7 +409,7 @@ export class NormalMode {
       return false;
     }
 
-    const pending = this.popEditOperator();
+    const pending = this.operatorStack.popEditOperator();
 
     if (pending === undefined) {
       const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
@@ -666,51 +420,6 @@ export class NormalMode {
     } else {
       return this.applyOperatorToMotion(editOperatorForPending(pending), motion, pending.count * count);
     }
-  }
-
-  handleGKey(key: string): NormalKeyResult {
-    if (key === "g") {
-      const count = this.takeCount(1);
-      if (this.activeEditOperator() !== undefined) {
-        return handled({ enterInsert: this.applyLinewiseOperatorToRow(count - 1) });
-      }
-      this.moveToLine(count - 1);
-      this.registerSelection.clear();
-      return handled();
-    }
-
-    if ((key === "u" || key === "U" || key === "~") && this.activeEditOperator() === undefined) {
-      this.pushConvert(convertTargetForKey(key), this.takeCount(1), key);
-      return handled();
-    }
-
-    if (key === "J" && this.activeEditOperator() === undefined) {
-      this.joinFromSelections({ insertWhitespace: false });
-      return handled();
-    }
-
-    if ((key === "ctrl-a" || key === "ctrl-x") && this.activeEditOperator() === undefined) {
-      const delta = (key === "ctrl-a" ? 1 : -1) * this.takeCount(1);
-      incrementNumbers(this.editor, delta, delta);
-      return handled();
-    }
-
-    if (key === "_") {
-      return handled({ enterInsert: this.applyMotion({ type: "lastNonWhitespace" }, this.takeCount(1)) });
-    }
-
-    if ((key === "j" || key === "k") && this.activeEditOperator() === undefined) {
-      const count = this.takeCount(1);
-      const motion: Motion = { type: key === "j" ? "down" : "up" };
-      const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: true, extend: false });
-      if (hostSelections === undefined) this.moveSelections(motion, count);
-      else this.editor.setSelections(hostSelections);
-      this.registerSelection.clear();
-      return handled();
-    }
-
-    this.clearPending();
-    return handled();
   }
 
   private moveSelections(motion: Motion, count: number): void {
@@ -763,15 +472,15 @@ export class NormalMode {
   }
 
   private handleIndentKey(key: string): void {
-    const pending = this.activeIndent();
+    const pending = this.operatorStack.activeIndent();
     if (pending === undefined) return;
 
     if (key === "i" || key === "a") {
-      this.pushObject(key === "a");
+      this.operatorStack.pushObject(key === "a", this.normalChordKey(key));
       return;
     }
 
-    this.popIndent();
+    this.operatorStack.popIndent();
     const direction = indentDirectionForPending(pending);
     if (key === keyForIndentDirection(direction)) {
       indentRanges(this.editor, currentLineRanges(this.editor, pending.count * this.takeCount(1)), direction);
@@ -808,42 +517,42 @@ export class NormalMode {
   }
 
   private handleReplaceKey(key: string): void {
-    const pending = this.popReplace();
+    const pending = this.operatorStack.popReplace();
     if (pending === undefined || key.length === 0) return;
     if (key === "ctrl-k") {
-      this.pushDigraph(pending.count);
+      this.operatorStack.pushDigraph(pending.count, this.normalChordKey("ctrl-k"));
       return;
     }
     replaceCharacters(this.editor, keyForInput(key), pending.count);
   }
 
   private handleDigraphKey(key: string): void {
-    const pending = this.activeDigraph();
+    const pending = this.operatorStack.activeDigraph();
     if (pending === undefined) return;
     if (pending.first === undefined) {
-      this.pendingState.chordKeys.push(key);
-      this.replaceActiveDigraph({ ...pending, first: keyForInput(key) });
+      this.operatorStack.pushChordKey(key);
+      this.operatorStack.replaceActiveDigraph({ ...pending, first: keyForInput(key) });
       return;
     }
-    this.popDigraph();
+    this.operatorStack.popDigraph();
     replaceCharacters(this.editor, lookupDigraph(pending.first, keyForInput(key)), pending.count);
   }
 
   private handleSurroundKey(key: string): boolean {
-    const pending = this.activeSurround();
+    const pending = this.operatorStack.activeSurround();
     if (pending === undefined) return false;
 
     switch (pending.type) {
       case "deleteSurrounds":
-        this.popSurround();
+        this.operatorStack.popSurround();
         deleteSurrounds(this.editor, key);
         return false;
       case "changeSurrounds":
         if (pending.fromKey === undefined) {
-          this.pendingState.chordKeys.push(key);
+          this.operatorStack.pushChordKey(key);
           this.replaceActiveSurround({ type: "changeSurrounds", fromKey: key });
         } else {
-          this.popSurround();
+          this.operatorStack.popSurround();
           changeSurrounds(this.editor, pending.fromKey, key);
         }
         return false;
@@ -854,7 +563,7 @@ export class NormalMode {
 
   private handleAddSurroundsKey(pending: Extract<PendingSurroundOperator, { type: "addSurrounds" }>, key: string): boolean {
     if (pending.target?.type === "ranges") {
-      this.popSurround();
+      this.operatorStack.popSurround();
       addSurrounds(this.editor, pending.target.ranges, key, { linewise: pending.target.linewise });
       return false;
     }
@@ -873,12 +582,12 @@ export class NormalMode {
     }
 
     if (key === "i" || key === "a") {
-      this.pendingState.chordKeys.push(key);
+      this.operatorStack.pushChordKey(key);
       this.replaceActiveSurround({ ...pending, target: { type: "object", around: key === "a" } });
       return false;
     }
     if (key === "s") {
-      this.pendingState.chordKeys.push(key);
+      this.operatorStack.pushChordKey(key);
       const ranges = this.editor.getSelections().map(selection =>
         trimmedLineRange(this.editor, selectionHead(selection).row, pending.count));
       this.replaceActiveSurround({ ...pending, target: { type: "ranges", ranges, linewise: false } });
@@ -886,7 +595,7 @@ export class NormalMode {
     }
     const motion = motionForKey(key);
     if (motion !== undefined) {
-      this.pendingState.chordKeys.push(key);
+      this.operatorStack.pushChordKey(key);
       const ranges = this.editor.getSelections().map(selection =>
         motionRange(this.editor, selectionHead(selection), motion, pending.count));
       this.replaceActiveSurround({ ...pending, target: { type: "ranges", ranges, linewise: false } });
@@ -897,15 +606,15 @@ export class NormalMode {
   }
 
   private handleConvertKey(key: string): void {
-    const pending = this.activeConvert();
+    const pending = this.operatorStack.activeConvert();
     if (pending === undefined) return;
 
     if (key === "i" || key === "a") {
-      this.pushObject(key === "a");
+      this.operatorStack.pushObject(key === "a", this.normalChordKey(key));
       return;
     }
 
-    this.popConvert();
+    this.operatorStack.popConvert();
     const target = convertTargetForPending(pending);
     if (key === keyForConvertTarget(target)) {
       this.convertCurrentLines(target, pending.count * this.takeCount(1));
@@ -943,10 +652,10 @@ export class NormalMode {
   }
 
   private handleTextObject(object: TextObject, around: boolean): boolean {
-    const pendingTextObject = this.popObject();
+    const pendingTextObject = this.operatorStack.popObject();
     if (pendingTextObject === undefined) return false;
 
-    const pendingOperator = this.popEditOperator();
+    const pendingOperator = this.operatorStack.popEditOperator();
     if (pendingOperator !== undefined) {
       const objectCount = this.takeCount(1);
       const count = pendingOperator.count * objectCount;
@@ -954,13 +663,13 @@ export class NormalMode {
       return applyTextObjectOperator(this.editor, this.registers, registerName, editOperatorForPending(pendingOperator), object, { around, count });
     }
 
-    const pendingConvert = this.popConvert();
+    const pendingConvert = this.operatorStack.popConvert();
     if (pendingConvert !== undefined) {
       this.applyConvertTextObject(pendingConvert, object, around);
       return false;
     }
 
-    const pendingIndent = this.popIndent();
+    const pendingIndent = this.operatorStack.popIndent();
     if (pendingIndent !== undefined) {
       this.applyIndentTextObject(pendingIndent, object, around);
       return false;
@@ -1026,7 +735,7 @@ export class NormalMode {
   }
 
   private applyLinewiseOperatorToRow(targetRow: number): boolean {
-    const pending = this.popEditOperator();
+    const pending = this.operatorStack.popEditOperator();
     if (pending === undefined) return false;
 
     const registerName = this.takeSelectedRegister();
@@ -1053,7 +762,7 @@ export class NormalMode {
   // Zed: `dd`/`cc`/`yy` are represented as operator + `motion::Motion::CurrentLine`.
   private handleLineOperator(operator: Operator): boolean {
     const postCount = this.takeCount(1);
-    const pending = this.popEditOperator();
+    const pending = this.operatorStack.popEditOperator();
     const pendingCount = pending?.count ?? 1;
     const count = pendingCount * postCount;
 
@@ -1087,11 +796,6 @@ export class NormalMode {
     return this.countState.take(defaultValue);
   }
 
-  private isCountKey(key: string): boolean {
-    if (!/^\d$/.test(key)) return false;
-    return key !== "0" || this.countState.get().length > 0;
-  }
-
   private takeSelectedRegister(): RegisterName | undefined {
     return this.registerSelection.take();
   }
@@ -1111,19 +815,6 @@ function keyForInput(key: string): string {
   return key === "space" ? " " : key;
 }
 
-function indentDirectionForKey(key: string): IndentDirection {
-  switch (key) {
-    case ">":
-      return "in";
-    case "<":
-      return "out";
-    case "=":
-      return "auto";
-    default:
-      throw new Error(`not an indent key: ${key}`);
-  }
-}
-
 function keyForIndentDirection(direction: IndentDirection): string {
   switch (direction) {
     case "in":
@@ -1132,19 +823,6 @@ function keyForIndentDirection(direction: IndentDirection): string {
       return "<";
     case "auto":
       return "=";
-  }
-}
-
-function convertTargetForKey(key: string): ConvertTarget {
-  switch (key) {
-    case "u":
-      return "lower";
-    case "U":
-      return "upper";
-    case "~":
-      return "toggle";
-    default:
-      throw new Error(`not a convert key: ${key}`);
   }
 }
 
