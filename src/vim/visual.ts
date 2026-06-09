@@ -857,10 +857,9 @@ function charwiseStateAfterMotion(
     return { ...state, head, cursor: undefined, goal: { type: "endOfLine" } };
   }
   const result = applyMotionWithGoal(editor, state.head, motion, 1, state.goal);
-  const head = adjustCharwiseMotionHead(editor, state.head, result.position, motion);
   return {
     ...state,
-    head,
+    head: result.position,
     cursor: undefined,
     goal: result.goal ?? (motion.type === "nextWordStart" ? { type: "modelColumn", column: result.position.column } : undefined),
   };
@@ -907,21 +906,6 @@ function blockwiseStateAfterMotion(
     { allowEndOfLine: true }
   );
   return { ...state, head: position, goal: motion.type === "endOfLine" ? { type: "endOfLine" } : goal };
-}
-
-function adjustCharwiseMotionHead(
-  editor: VimEditorCapabilities,
-  previousHead: Position,
-  rawHead: Position,
-  motion: Motion
-): Position {
-  if (motion.type === "nextWordStart" && rawHead.row === previousHead.row && rawHead.column > previousHead.column) {
-    const line = editor.line(rawHead.row);
-    if (rawHead.column > 0 && /\s/.test(line[rawHead.column - 1])) {
-      return { row: rawHead.row, column: rawHead.column - 1 };
-    }
-  }
-  return rawHead;
 }
 
 function stateToCharwise(editor: VimEditorCapabilities, state: VisualState): CharwiseVisualState {

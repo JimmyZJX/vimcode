@@ -562,7 +562,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["v", "w", "q"]);
 
-    expect(editor.getText()).toBe("ABC def");
+    expect(editor.getText()).toBe("ABC Def");
     expect(vim.modeName).toBe("vim:normal");
   });
 
@@ -781,7 +781,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getSelections()[0]).toMatchObject({
       type: "charwise",
       anchor: { row: 0, column: 0 },
-      cursor: { row: 0, column: 3 },
+      cursor: { row: 0, column: 4 },
     });
   });
 
@@ -842,7 +842,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["v", "w", "g", "U"]);
 
-    expect(editor.getText()).toBe("ABC def");
+    expect(editor.getText()).toBe("ABC Def");
     expect(vim.modeName).toBe("vim:normal");
     expect(head(editor)).toEqual({ row: 0, column: 0 });
 
@@ -1481,6 +1481,36 @@ describe("Zed-inspired Vim core smoke tests", () => {
         anchor: { row: 0, column: 3 },
         head: { row: 0, column: 0 },
         cursor: { row: 0, column: 0 },
+      },
+    ]);
+    expect(vim.modeName).toBe("vim:visual");
+  });
+
+  it("keeps visual w cursor on the next word start", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "w"]);
+
+    expect(editor.getSelections()).toEqual([
+      {
+        type: "charwise",
+        anchor: { row: 0, column: 0 },
+        head: { row: 0, column: 5 },
+        cursor: { row: 0, column: 4 },
+        goal: { type: "modelColumn", column: 4 },
+      },
+    ]);
+
+    runKeys(vim, ["w"]);
+
+    expect(editor.getSelections()).toEqual([
+      {
+        type: "charwise",
+        anchor: { row: 0, column: 0 },
+        head: { row: 0, column: 9 },
+        cursor: { row: 0, column: 8 },
+        goal: { type: "modelColumn", column: 8 },
       },
     ]);
     expect(vim.modeName).toBe("vim:visual");
