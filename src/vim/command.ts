@@ -24,6 +24,12 @@ type SimpleCommandContext = {
 type SimpleCommandSpec = {
   name: VimCommandAbbreviation;
   run: (context: SimpleCommandContext) => void;
+  bang?: (context: SimpleCommandContext) => void;
+};
+
+type ParsedSimpleCommand = {
+  name: string;
+  bang: boolean;
 };
 
 // Zed's command registry encodes Vim abbreviations as a required prefix plus
@@ -40,6 +46,7 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
   {
     name: ["q", "uit"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeActiveEditor"),
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.revertAndCloseActiveEditor"),
   },
   {
     name: ["j", "oin"],
@@ -97,10 +104,22 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
 export type LineRange = { startRow: number; endRowInclusive: number };
 
 function dispatchSimpleCommand(context: SimpleCommandContext, command: string): boolean {
-  const spec = simpleCommands.find(spec => matchesVimCommandAbbreviation(command, spec.name));
+  const parsed = parseSimpleCommand(command);
+  const spec = simpleCommands.find(spec => matchesVimCommandAbbreviation(parsed.name, spec.name));
   if (spec === undefined) return false;
+  if (parsed.bang) {
+    if (spec.bang === undefined) return false;
+    spec.bang(context);
+    return true;
+  }
   spec.run(context);
   return true;
+}
+
+function parseSimpleCommand(command: string): ParsedSimpleCommand {
+  return command.endsWith("!")
+    ? { name: command.slice(0, -1), bang: true }
+    : { name: command, bang: false };
 }
 
 function matchesVimCommandAbbreviation(command: string, [required, optional]: VimCommandAbbreviation): boolean {

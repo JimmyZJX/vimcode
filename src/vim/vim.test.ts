@@ -646,6 +646,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
+  it("supports bang quit ex commands", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [":", "q", "!", "enter", ":", "q", "u", "!", "enter"]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.revertAndCloseActiveEditor", args: [] },
+      { command: "workbench.action.revertAndCloseActiveEditor", args: [] },
+    ]);
+  });
+
   it("supports Vim-style abbreviated ex commands", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor);

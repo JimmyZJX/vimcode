@@ -1,6 +1,7 @@
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
+import { CursorChangeReason } from '../../../common/cursorEvents.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
@@ -13,6 +14,10 @@ import { FindReplaceState } from '../../find/browser/findState.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
+
+type ExplicitSelectionEditor = ICodeEditor & {
+	setSelections(selections: readonly Selection[], source?: string, reason?: CursorChangeReason): void;
+};
 
 type VimUndoTransaction = {
 	model: ITextModel;
@@ -109,7 +114,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			: 'vim';
 		this.updateVisualLineDecorations(selections);
 		this.rememberSelections(selections, lowered.selections);
-		this.editor.setSelections(lowered.selections, source);
+		(this.editor as ExplicitSelectionEditor).setSelections(lowered.selections, source, CursorChangeReason.Explicit);
 	}
 
 	setCursorStyle(style: CursorStyle): void {
