@@ -1,11 +1,13 @@
+import { KeyChord, KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import * as nls from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionManagementService, IGlobalExtensionEnablementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { KeybindingWeight, KeybindingsRegistry } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -13,6 +15,16 @@ import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorContributionInstantiation, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { VimController } from './vimController.js';
+
+const VimActiveListFocusContext = ContextKeyExpr.and(
+	ContextKeyExpr.has('vim.active'),
+	ContextKeyExpr.has('listFocus'),
+	ContextKeyExpr.not('inputFocus')
+);
+const VimActiveNavigableListFocusContext = ContextKeyExpr.and(
+	VimActiveListFocusContext,
+	ContextKeyExpr.has('listSupportsKeyboardNavigation')
+);
 
 function remappingSchema(description: string): IConfigurationPropertySchema {
 	return {
@@ -47,6 +59,34 @@ function remappingSchema(description: string): IConfigurationPropertySchema {
 		},
 	};
 }
+
+function registerVimListKeybindings(): void {
+	const weight = KeybindingWeight.WorkbenchContrib + 50;
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.focusFirst', weight, when: VimActiveListFocusContext, primary: KeyChord(KeyCode.KeyG, KeyCode.KeyG) });
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.collapse', weight, when: VimActiveListFocusContext, primary: KeyCode.KeyH });
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.focusDown', weight, when: VimActiveListFocusContext, primary: KeyCode.KeyJ });
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.focusUp', weight, when: VimActiveListFocusContext, primary: KeyCode.KeyK });
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.select', weight, when: VimActiveListFocusContext, primary: KeyCode.KeyL });
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.toggleExpand', weight, when: VimActiveListFocusContext, primary: KeyCode.KeyO });
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.toggleKeyboardNavigation', weight, when: VimActiveNavigableListFocusContext, primary: KeyCode.Slash });
+	KeybindingsRegistry.registerKeybindingRule({
+		id: 'list.focusPageDown',
+		weight,
+		when: VimActiveListFocusContext,
+		primary: KeyMod.CtrlCmd | KeyCode.KeyD,
+		mac: { primary: KeyMod.WinCtrl | KeyCode.KeyD },
+	});
+	KeybindingsRegistry.registerKeybindingRule({
+		id: 'list.focusPageUp',
+		weight,
+		when: VimActiveListFocusContext,
+		primary: KeyMod.CtrlCmd | KeyCode.KeyU,
+		mac: { primary: KeyMod.WinCtrl | KeyCode.KeyU },
+	});
+	KeybindingsRegistry.registerKeybindingRule({ id: 'list.focusLast', weight, when: VimActiveListFocusContext, primary: KeyMod.Shift | KeyCode.KeyG });
+}
+
+registerVimListKeybindings();
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'vim',
