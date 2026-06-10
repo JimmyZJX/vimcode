@@ -59,6 +59,7 @@ export type VimAction =
   | { type: "cancelRepeat" }
   | { type: "startCommand" }
   | { type: "toggleVisual"; mode: VisualModeKind }
+  | { type: "forceMotion"; force: "charwise" | "linewise" }
   | { type: "enterReplace" }
   | { type: "changeList"; direction: "older" | "newer" }
   | { type: "insertAtPrevious" }
@@ -125,6 +126,7 @@ const finiteBindings = bindingMap([
   sharedBinding("g j", move({ type: "down", displayLine: true })),
   sharedBinding("g k", move({ type: "up", displayLine: true })),
   sharedBinding("g _", move({ type: "lastNonWhitespace" })),
+  sharedBinding("g M", move({ type: "middleOfLine" })),
   sharedBinding("g e", move({ type: "previousWordEnd", bigWord: false })),
   sharedBinding("g E", move({ type: "previousWordEnd", bigWord: true })),
   sharedBinding("g v", { type: "restoreVisualSelection" }),
@@ -568,6 +570,14 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
   const command = normalCommandForKey(key);
   if (command !== undefined && normalCommandIsAllowed(command, context)) {
     return { type: "normalCommand", command };
+  }
+
+  // Vim `o_v`/`o_V`: with a pending operator, `v`/`V` force the motion
+  // charwise/linewise instead of entering visual mode.
+  if (isEditOperatorContext(context.operator)) {
+    if (key === "v") return { type: "forceMotion", force: "charwise" };
+    if (key === "V") return { type: "forceMotion", force: "linewise" };
+    return undefined;
   }
 
   const visualMode = visualModeForKey(key);

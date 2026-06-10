@@ -37,6 +37,8 @@ export function reverseFindMotion(motion: FindMotion): FindMotion {
   }
 }
 
+// Zed: `motion::Motion`, including `Motion::MiddleOfLine` and the forced-motion
+// wrapper applied when `v` is pressed with a pending operator (Vim `o_v`).
 export type Motion =
   | { type: "left" }
   | { type: "wrappingLeft" }
@@ -47,6 +49,7 @@ export type Motion =
   | { type: "startOfLine" }
   | { type: "firstNonWhitespace" }
   | { type: "lastNonWhitespace" }
+  | { type: "middleOfLine" }
   | { type: "endOfLine" }
   | { type: "startOfDocument" }
   | { type: "startOfFile" }
@@ -63,6 +66,7 @@ export type Motion =
   | { type: "endOfParagraph" }
   | { type: "startOfParagraph" }
   | { type: "goToPercentage"; percent: number }
+  | { type: "forcedCharwise"; motion: Motion }
   | { type: "jump"; position: Position; line: boolean }
   | { type: "searchMatch"; range: TextRange }
   | FindMotion;
@@ -182,7 +186,7 @@ function firstNonWhitespace(editor: VimEditorCapabilities, row: number): Positio
   return { row, column: firstNonWhitespaceColumn(editor.line(row)) };
 }
 
-function firstNonWhitespaceColumn(line: string): number {
+export function firstNonWhitespaceColumn(line: string): number {
   const first = line.search(/\S/);
   return first < 0 ? 0 : first;
 }
@@ -350,6 +354,10 @@ export function applyMotionOnce(
       return firstNonWhitespaceOrCurrent(editor, clipped);
     case "lastNonWhitespace":
       return lastNonWhitespace(editor, clipped.row);
+    case "middleOfLine":
+      return middleOfLine(editor, clipped.row, 50);
+    case "forcedCharwise":
+      return applyMotionOnce(editor, start, motion.motion);
     case "endOfLine":
       return endOfLine(editor, clipped.row);
     case "startOfDocument":
@@ -399,6 +407,29 @@ export function applyMotionOnce(
 
 // Local helper corresponding to Zed's repeated `times` argument threaded through
 // `vim::Vim::motion` and `motion::Motion::move_point`.
+/** Motions whose natural operator range includes the character the motion
+    lands on (Vim "inclusive" motions); used to toggle inclusivity for forced
+    charwise motions. */
+function isInclusiveMotion(motion: Motion): boolean {
+  switch (motion.type) {
+    case "endOfLine":
+    case "nextWordEnd":
+    case "previousWordEnd":
+    case "lastNonWhitespace":
+    case "matching":
+    case "findForward":
+    case "goToPercentage":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function middleOfLine(editor: VimEditorCapabilities, row: number, percent: number): Position {
+  const column = Math.floor((editor.lineLength(row) * percent) / 100);
+  return normalCursorPosition(editor, { row, column });
+}
+
 export function applyMotion(
   editor: VimEditorCapabilities,
   start: Position,
@@ -460,6 +491,15 @@ export function applyMotionWithGoal(
     const row = Math.max(0, Math.min(start.row + count - 1, editor.lineCount() - 1));
     return { position: lastNonWhitespace(editor, row) };
   }
+  if (motion.type === "middleOfLine") {
+    // Vim `gM`: middle of the line, or [count] percent of the line width. A
+    // count of 1 is indistinguishable from no count here; Vim's `1gM` is a
+    // corner case this approximation accepts.
+    return { position: middleOfLine(editor, start.row, count > 1 ? count : 50) };
+  }
+  if (motion.type === "forcedCharwise") {
+    return applyMotionWithGoal(editor, start, motion.motion, count, goal, { allowEndOfLine });
+  }
   if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "goToPercentage" || motion.type === "jump" || motion.type === "searchMatch") {
     if (motion.type === "nextSentence") return { position: sentenceForward(editor, start, count) };
     if (motion.type === "previousSentence") return { position: sentenceBackward(editor, start, count) };
@@ -519,6 +559,36 @@ export function motionRange(
   motion: Motion,
   count: number
 ): TextRange {
+  // Vim `o_v` (Zed: forced-motion handling in `motion::Motion::range`): `v`
+  // after an operator forces the motion charwise. Linewise motions become
+  // exclusive charwise ranges at the goal column; charwise motions toggle
+  // inclusivity, adjusting the ordered range end by one character.
+  if (motion.type === "forcedCharwise") {
+    const inner = motion.motion;
+    if (inner.type === "up" || inner.type === "down") {
+      const target = applyMotion(editor, start, inner, count);
+      const column = Math.min(start.column, editor.lineLength(target.row));
+      // Vim `exclusive-linewise` rule 1: an exclusive motion ending in column
+      // one instead ends at the end of the previous line. (Rule 2 — becoming
+      // linewise when the start is at/before the first non-blank — is handled
+      // by the operator layer, which can apply linewise operations.)
+      if (column === 0 && target.row > start.row) {
+        const previousRow = target.row - 1;
+        return orderedRange(start, { row: previousRow, column: editor.lineLength(previousRow) });
+      }
+      return orderedRange(start, { row: target.row, column });
+    }
+    const range = motionRange(editor, start, inner, count);
+    if (isInclusiveMotion(inner)) {
+      const end = { row: range.end.row, column: Math.max(0, range.end.column - 1) };
+      return { start: range.start, end: comparePositions(end, range.start) < 0 ? range.start : end };
+    }
+    const endLineLength = editor.lineLength(range.end.row);
+    return {
+      start: range.start,
+      end: { row: range.end.row, column: Math.min(range.end.column + 1, endLineLength) },
+    };
+  }
   const end = applyMotion(editor, start, motion, count);
   if (motion.type === "right") {
     return {

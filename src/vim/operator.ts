@@ -12,10 +12,14 @@ import type { ConvertTarget } from "./normal/convert.js";
 import type { IndentDirection } from "./normal/indent.js";
 import type { Operator, TextRange, VimMode, VimSelection } from "./state.js";
 
+/** Vim `o_v`/`o_V`: `v`/`V` between an operator and its motion force the
+    motion charwise (toggling inclusivity) or linewise. */
+export type ForcedMotion = "charwise" | "linewise";
+
 export type PendingEditOperator =
-  | { type: "change"; count: number }
-  | { type: "delete"; count: number }
-  | { type: "yank"; count: number };
+  | { type: "change"; count: number; forcedMotion?: ForcedMotion }
+  | { type: "delete"; count: number; forcedMotion?: ForcedMotion }
+  | { type: "yank"; count: number; forcedMotion?: ForcedMotion };
 
 export type PendingObjectOperator = { type: "object"; around: boolean };
 
@@ -370,6 +374,13 @@ export class VimOperatorStack {
 
   popEditOperator(): PendingEditOperator | undefined {
     return this.popNormalOperatorOfTypes(editOperatorTypes);
+  }
+
+  forceMotion(force: ForcedMotion): void {
+    const pending = this.activeEditOperator();
+    if (pending === undefined) return;
+    this.replaceActiveOfTypes(editOperatorTypes, { ...pending, forcedMotion: force });
+    this.pushChordKey(force === "charwise" ? "v" : "V");
   }
 
   popConvert(): PendingConvertOperator | undefined {

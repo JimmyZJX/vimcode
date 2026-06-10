@@ -697,6 +697,9 @@ export class Vim {
         this.operatorStack.push({ type: "command", input: "" });
         this.setMode("command");
         return "handled";
+      case "forceMotion":
+        this.operatorStack.forceMotion(action.force);
+        return "handled";
       case "toggleVisual":
         if (this.isVisualMode()) {
           return this.applyVisualResult(this.visualMode.toggleMode(action.mode), this.modeState.kind);

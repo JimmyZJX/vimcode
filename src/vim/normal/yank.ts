@@ -4,10 +4,10 @@
 // - translated concepts: yank by motion and yank current line
 // - intentional differences: this first slice writes only an unnamed clipboard string.
 
-import { VimEditorCapabilities, rangeText } from "../editor.js";
+import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
 import { Motion, motionRange } from "../motion.js";
 import { RegisterName, Registers } from "../registers.js";
-import { TextRange, charwiseSelection, selectionHead } from "../state.js";
+import { TextRange, charwiseSelection, comparePositions, selectionHead } from "../state.js";
 
 // Zed: `normal::yank::Vim::yank_motion`.
 export function yankMotion(
@@ -26,11 +26,8 @@ export function yankRange(
   registerName: RegisterName | undefined,
   rangeForHead: (head: ReturnType<typeof selectionHead>) => TextRange
 ): void {
-  const copied: string[] = [];
-
-  for (const selection of editor.getSelections()) {
-    copied.push(rangeText(editor, rangeForHead(selectionHead(selection))));
-  }
+  const ranges = editor.getSelections().map(selection => rangeForHead(selectionHead(selection)));
+  const copied = ranges.map(range => rangeText(editor, range));
 
   if (copied.length > 0) {
     registers.writeYank(
@@ -40,10 +37,36 @@ export function yankRange(
       copied.map(text => ({ text, kind: "characterwise" }))
     );
   }
-  editor.setSelections(editor.getSelections().map((selection) => charwiseSelection(selectionHead(selection))));
+  // Vim moves the cursor to the start of the yanked region (in effect only
+  // for backward motions, where the range starts before the cursor).
+  editor.setSelections(editor.getSelections().map((selection, index) => {
+    const head = selectionHead(selection);
+    const start = ranges[index]?.start ?? head;
+    return charwiseSelection(comparePositions(start, head) < 0 ? start : head);
+  }));
 }
 
 // Zed: `normal::Vim::yank_line` dispatches `Motion::CurrentLine` to `yank_motion`.
+export function yankLineRanges(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  rows: readonly { startRow: number; endRow: number; column: number }[]
+): void {
+  const copied = rows.map(({ startRow, endRow }) => linewiseContent(editor, startRow, endRow - startRow + 1));
+  if (copied.length > 0) {
+    registers.writeYank(
+      registerName,
+      copied.join(""),
+      "linewise",
+      copied.map(text => ({ text, kind: "linewise" }))
+    );
+  }
+  // Vim moves the cursor to the start of a linewise-yanked region.
+  editor.setSelections(rows.map(({ startRow, column }) =>
+    charwiseSelection(normalCursorPosition(editor, { row: startRow, column }))));
+}
+
 export function yankLines(
   editor: VimEditorCapabilities,
   registers: Registers,

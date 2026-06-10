@@ -10,13 +10,13 @@ import type { NormalCommand } from "./keymap.js";
 import { lookupDigraph } from "./digraph.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
-import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
+import { Motion, applyMotion as applyMotionToPosition, applyMotionWithGoal, firstNonWhitespaceColumn, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { changeLineRange, changeLines, changeMotion } from "./normal/change.js";
 import { deleteCharacters, deleteCharactersBefore, deleteLineRange, deleteLines, deleteMotion } from "./normal/delete.js";
 import { applyTextObjectOperator } from "./normal/object.js";
 import { paste } from "./normal/paste.js";
-import { yankLines, yankMotion } from "./normal/yank.js";
+import { yankLineRanges, yankLines, yankMotion } from "./normal/yank.js";
 import { RegisterName, Registers, isSystemClipboardRegister } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
 import { ConvertTarget, convertRanges, toggleCaseCharacters } from "./normal/convert.js";
@@ -25,6 +25,7 @@ import { joinLines } from "./normal/join.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
 import { KeyResult, Operator, TextRange, VimSelection, charwiseSelection, selectionHead } from "./state.js";
 import {
+  ForcedMotion,
   VimOperatorStack,
   PendingConvertOperator,
   PendingIndentOperator,
@@ -367,7 +368,7 @@ export class NormalMode {
       this.registerSelection.clear();
       return false;
     } else {
-      return this.applyOperatorToMotion(editOperatorForPending(pending), motion, pending.count * count);
+      return this.applyOperatorToMotion(editOperatorForPending(pending), motion, pending.count * count, pending.forcedMotion);
     }
   }
 
@@ -630,9 +631,39 @@ export class NormalMode {
   // Zed: `normal::Vim::normal_motion` dispatches active operators to
   // `normal::change::Vim::change_motion`, `normal::delete::Vim::delete_motion`,
   // or `normal::yank::Vim::yank_motion`.
-  private applyOperatorToMotion(operator: Operator, motion: Motion, count: number): boolean {
+  private applyOperatorToMotion(operator: Operator, motion: Motion, count: number, forcedMotion?: ForcedMotion): boolean {
     const registerName = this.takeSelectedRegister();
     const sourceSelections = this.editor.getSelections();
+    // Vim `o_V`: a forced-linewise motion operates on whole lines from the
+    // cursor row through the motion target row.
+    if (forcedMotion === "linewise") {
+      const targetSelections = sourceSelections.map(selection =>
+        charwiseSelection(applyMotionToPosition(this.editor, selectionHead(selection), motion, count)));
+      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections, { includeSameRow: true });
+    }
+    // Vim `o_v`: wrapping the motion bypasses the linewise specializations
+    // below and routes through the forced-charwise range in [motionRange].
+    if (forcedMotion === "charwise") {
+      // Vim `exclusive-linewise` rule 2: a forced-charwise vertical motion
+      // whose range would end in column one, starting at or before the first
+      // non-blank, becomes a linewise operation on the rows above the target
+      // (condition checked on the primary selection).
+      if (motion.type === "up" || motion.type === "down") {
+        const head = selectionHead(sourceSelections[0]);
+        const target = applyMotionToPosition(this.editor, head, motion, count);
+        if (target.row > head.row
+          && Math.min(head.column, this.editor.lineLength(target.row)) === 0
+          && head.column <= firstNonWhitespaceColumn(this.editor.line(head.row))) {
+          const verticalMotion = motion;
+          const targetSelections = sourceSelections.map(selection => {
+            const targetPosition = applyMotionToPosition(this.editor, selectionHead(selection), verticalMotion, count);
+            return charwiseSelection({ row: Math.max(0, targetPosition.row - 1), column: targetPosition.column });
+          });
+          return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections, { includeSameRow: true });
+        }
+      }
+      motion = { type: "forcedCharwise", motion };
+    }
     const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
     if (hostSelections !== undefined) {
       return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, hostSelections);
@@ -679,6 +710,7 @@ export class NormalMode {
         deleteLineRange(this.editor, this.registers, registerName, rows);
         return false;
       case "yank":
+        yankLineRanges(this.editor, this.registers, registerName, rows);
         return false;
     }
   }

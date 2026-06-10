@@ -122,9 +122,10 @@ function pushCharacterwisePasteEdit(
 function cursorAtEndOfInsertedText(start: ReturnType<typeof selectionHead>, text: string): ReturnType<typeof selectionHead> {
   const after = positionAfterInsertedText(start, text);
   if (text.length === 0) return start;
-  if (!text.includes("\n")) return { row: after.row, column: Math.max(start.column, after.column - 1) };
-  const lines = text.split("\n");
-  return { row: after.row, column: Math.max(0, lines[lines.length - 1].length - 1) };
+  // Vim: pasting multi-line charwise text leaves the cursor on the first
+  // pasted character; single-line charwise paste leaves it on the last.
+  if (text.includes("\n")) return start;
+  return { row: after.row, column: Math.max(start.column, after.column - 1) };
 }
 
 function pasteBlockwise(
