@@ -49,7 +49,7 @@ Done in this branch:
   "Mouse and selection-sync invariants" below.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 423 enabled tests.
+  - `npm test -- --runInBand` passes with 429 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -315,18 +315,35 @@ Near-term:
      `toggleVisual` action in both normal and visual mode.
    - `] }`, `] )`, `[ {`, `[ (`, `] space`, `[ space` are plain finite chords; the
      `pushUnmatched` waiting-operator type and its plumbing are deleted.
-   Remaining (the big step): migrate the single-key switches
+   - Waiting-input dispatch is unified: `VimOperatorStack.waitingInput` is the single
+     classification of what the stack is waiting for (top-level pending operators and
+     normal/visual operator inputs), with its variant order as the one precedence
+     list, dispatched once in `Vim.dispatchKey` (`dispatchWaitingInput`) before any
+     keymap resolution. Waiting input structurally beats bindings, so binding
+     conditions no longer need to encode dispatch order. This fixed real bugs:
+     waiting-input keys are now macro-recorded (macros containing `f x`, `/foo`,
+     `"a`, `ma` replay correctly), and `f q`/`m q` while recording no longer stop
+     the recording.
+   - Recording is positionally uniform: macro and repeat recording happen once in
+     `dispatchKey` before any keymap resolution; whether a key starts/extends a
+     dot-repeat recording is decided by `RepeatState` (start-key filter, in-flight
+     recordings) and non-repeatable actions cancel in their dispatch arms. The
+     `beforeRepeat` phase is gone (merged into the fallback resolver), and `d'a`
+     dot-repeat now works (jump targets are repeat-recorded).
+   - Dispatch results are named: `KeyDispatchResult` (`"handled"` | `"native"`)
+     replaces the `KeyResult | null | undefined` sentinel soup; `"native"` means
+     Vim explicitly declines the key for the host editor's default handling, and
+     `undefined` (resolver-internal only) means "not mine, try the next resolver".
+   Remaining for the big step: migrate the single-key switches
    (`resolveMotionModeAction`, `normalCommandForKey`, `visualCommandForKey`,
    `motionForKey` dispatch) into the finite binding table with per-binding context
-   predicates over `VimKeymapContext`, dissolving the `motionMode`/`beforeRepeat`/
-   `normalFallback` phases into binding conditions. Caution: today several bindings
-   are implicitly gated by dispatch *order* (waiting-input interception runs between
-   the early and late phases — e.g. `r 3` works because pending replace sees the key
-   before count resolution). Each migrated binding's condition must encode that
-   ordering explicitly (typically by excluding `operator == other`), so migrate and
-   test in small batches. A follow-up after that: unify `handlePendingKey` and
-   `handleWaitingOperatorKey`/`waitingInput` into one stack-driven waiting-input
-   dispatcher.
+   predicates over `VimKeymapContext`, using a temporary differential oracle (new
+   table vs old phases over the enumerated context space) to keep each batch
+   provably behavior-preserving. All ordering prerequisites are done: waiting input
+   is structurally first, recording is positionally uniform, and the two remaining
+   phases (`motionMode`, `normalFallback`) differ only in binding precedence.
+   Known dot-repeat gap to fix alongside: `isRepeatableStartKey` is missing `J`,
+   `X`, `D`, `C`, `s`, `S`, so `.` does not repeat those changes yet.
 3. Expand the editor capability interface into grouped capabilities:
    - document/model reads
    - selections

@@ -63,6 +63,16 @@ export type CursorStyle = "block" | "line" | "underline";
 
 export type KeyResult = "handled" | "not-handled";
 
+/** Result of dispatching one key through Vim's resolver chain.
+    - ["handled"]: Vim consumed the key.
+    - ["native"]: Vim explicitly declines the key and the host editor's default
+      handling should run instead (e.g. ordinary typing in insert mode, non-input
+      keys while the search prompt is open, or an escape Vim has no use for).
+    Resolver-internal functions additionally return [undefined] when the key is
+    not theirs, letting the dispatcher try the next resolver; [undefined] must
+    never escape [Vim.onKey]. */
+export type KeyDispatchResult = KeyResult | "native";
+
 export function isVisualModeKind(kind: VimMode["kind"]): kind is "visual" | "visualLine" | "visualBlock" {
   return kind === "visual" || kind === "visualLine" || kind === "visualBlock";
 }

@@ -89,7 +89,7 @@ export type VimAction =
   | { type: "normalCommand"; command: NormalCommand }
   | { type: "visualCommand"; command: VisualCommand };
 
-export type VimKeymapPhase = "motionMode" | "beforeRepeat" | "normalFallback";
+export type VimKeymapPhase = "motionMode" | "normalFallback";
 
 // Zed: the key context from `vim::Vim::extend_key_context` (`vim_mode`,
 // `vim_operator`). Binding conditions are written against this vocabulary
@@ -326,8 +326,6 @@ export function resolveVimAction(
   switch (phase) {
     case "motionMode":
       return resolveMotionModeAction(key);
-    case "beforeRepeat":
-      return resolveBeforeRepeatAction(key, context);
     case "normalFallback":
       return resolveNormalFallbackAction(key, context);
   }
@@ -368,29 +366,6 @@ function motionActionForKey(key: string): VimAction | undefined {
   if (key === "0" || key === "%") return undefined;
   const motion = motionForKey(key);
   return motion === undefined ? undefined : { type: "motion", motion };
-}
-
-function resolveBeforeRepeatAction(key: string, context: VimKeymapContext): VimAction | undefined {
-  if (context.mode !== "normal") return undefined;
-
-  const idle = context.operator === "none" && context.countText.length === 0;
-
-  if (idle && key === "m") return { type: "pushMark" };
-
-  // Jumps are plain motions when idle and motion targets for a pending edit
-  // operator (`d'a`). A pending text object owns the quote/backtick key
-  // instead (`di'`, `da\``).
-  if ((idle || isEditOperatorContext(context.operator)) && (key === "'" || key === "`")) {
-    return { type: "pushJump", line: key === "'" };
-  }
-
-  if (key === "." && !context.repeatIsReplaying) {
-    return context.operator === "none"
-      ? { type: "repeatLastChange" }
-      : { type: "cancelRepeat" };
-  }
-
-  return undefined;
 }
 
 function indentDirectionForKey(key: string): IndentDirection | undefined {
@@ -548,6 +523,23 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
   }
 
   if (context.mode !== "normal") return undefined;
+
+  const idle = context.operator === "none" && context.countText.length === 0;
+
+  if (idle && key === "m") return { type: "pushMark" };
+
+  // Jumps are plain motions when idle and motion targets for a pending edit
+  // operator (`d'a`). A pending text object owns the quote/backtick key
+  // instead (`di'`, `da\``).
+  if ((idle || isEditOperatorContext(context.operator)) && (key === "'" || key === "`")) {
+    return { type: "pushJump", line: key === "'" };
+  }
+
+  if (key === "." && !context.repeatIsReplaying) {
+    return context.operator === "none"
+      ? { type: "repeatLastChange" }
+      : { type: "cancelRepeat" };
+  }
 
   if (isCountKey(key, context.countText) && context.operator !== "object") {
     return { type: "pushCount", key };

@@ -300,7 +300,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
 
     expect(vim.wouldHandleKeyForTest("<escape>")).toBe(false);
-    expect(vim.onKey("<escape>")).toBeNull();
+    expect(vim.onKey("<escape>")).toBe("native");
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.getSelections()).toEqual([
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 0 } },
@@ -1120,6 +1120,55 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("records waiting-input keys into macros", () => {
+    // Regression: keys consumed by waiting input (find targets, search input,
+    // register names, mark names) must be macro-recorded so replays work.
+    const findEditor = new InMemoryVimEditor("axbxc\naxbxc");
+    const findVim = new Vim(findEditor);
+    runKeys(findVim, ["q", "q", "f", "x", "x", "q", "j", "0", "@", "q"]);
+    expect(findEditor.getText()).toBe("abxc\nabxc");
+
+    const searchEditor = new InMemoryVimEditor("one two\none two");
+    const searchVim = new Vim(searchEditor);
+    runKeys(searchVim, ["q", "q", "/", "t", "w", "o", "enter", "x", "q", "j", "0", "@", "q"]);
+    expect(searchEditor.getText()).toBe("one wo\none wo");
+
+    const registerEditor = new InMemoryVimEditor("abc\ndef");
+    const registerVim = new Vim(registerEditor);
+    runKeys(registerVim, ["q", "q", "\"", "z", "y", "y", "q", "j", "@", "q"]);
+    expect(registerVim.readRegister("z")).toBe("def\n");
+  });
+
+  it("lets waiting input win over macro control keys", () => {
+    // Regression: while recording, `f q` finds the character q and `m q` sets
+    // mark q; the recording-stop key only applies when nothing is waiting.
+    const findEditor = new InMemoryVimEditor("abqc");
+    const findVim = new Vim(findEditor);
+    runKeys(findVim, ["q", "q", "f", "q", "x", "q"]);
+    expect(findEditor.getText()).toBe("abc");
+
+    const markEditor = new InMemoryVimEditor("abc");
+    const markVim = new Vim(markEditor);
+    runKeys(markVim, ["q", "q", "m", "q", "q", "l", "l", "`", "q"]);
+    expect(head(markEditor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("does not record the macro-stop key into the macro", () => {
+    const editor = new InMemoryVimEditor("aaa");
+    const vim = new Vim(editor);
+    runKeys(vim, ["q", "q", "x", "q", "@", "q"]);
+    expect(editor.getText()).toBe("a");
+  });
+
+  it("dot-repeats a delete with a jump-motion target", () => {
+    // Regression: the `'` and mark keys of `d'a` are repeat-recorded, so `.`
+    // replays the full change (recording is positionally uniform now).
+    const editor = new InMemoryVimEditor("one\ntwo\nthree\nfour\nfive");
+    const vim = new Vim(editor);
+    runKeys(vim, ["j", "m", "a", "k", "d", "'", "a", "j", "m", "a", "k", "."]);
+    expect(editor.getText()).toBe("three\nfour\nfive");
+  });
+
   it("deletes inner single-quote and backtick objects", () => {
     // Regression: a pending text object owns the quote/backtick key; it must
     // not be stolen by the `'`/`` ` `` jump bindings (`d'a` still jumps).
@@ -1623,7 +1672,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["/"]);
 
     expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(false);
-    expect(vim.onKey("ctrl-a")).toBeNull();
+    expect(vim.onKey("ctrl-a")).toBe("native");
     expect(vim.status.chord).toBe("/|");
   });
 

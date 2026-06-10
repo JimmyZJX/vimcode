@@ -16,7 +16,7 @@ import { resolveVimAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeyma
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
-import { VimOperatorStack, isEditOperatorContext, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
+import { VimOperatorStack, WaitingInput, isEditOperatorContext, isSelfEscapingWaitingInput, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
 import type {
   PendingFindOperator,
   PendingLiteralOperator,
@@ -30,7 +30,7 @@ import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
-import { KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
+import { KeyDispatchResult, KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode, visualKindForMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
@@ -362,7 +362,7 @@ export class Vim {
   // Zed: key dispatch normally arrives through GPUI actions registered by
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
-  onKey(key: string): KeyResult | null {
+  onKey(key: string): KeyDispatchResult {
     return this.dispatchKey(key, { allowRemap: true, remapWhen: alwaysActiveRemapWhen });
   }
 
@@ -385,7 +385,7 @@ export class Vim {
     return undefined;
   }
 
-  private dispatchKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyResult | null {
+  private dispatchKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyDispatchResult {
     const textBefore = this.editor.getText();
     const modeBefore = this.modeState.kind;
     try {
@@ -394,19 +394,41 @@ export class Vim {
       const remapResult = this.dispatchRemapKey(key, { allowRemap, remapWhen });
       if (remapResult !== undefined) return remapResult;
 
-      const pendingResult = this.handlePendingKey(key);
-      if (pendingResult !== undefined) return pendingResult;
-      if (this.isEscape(key)) return null;
+      // Zed: `vim_mode == waiting` contexts. One classification of what the
+      // operator stack is waiting for, dispatched at one place; the precedence
+      // list lives in [VimOperatorStack.waitingInput]. Only the self-escaping
+      // classes (insert digraph/literal/register) see the escape key; for all
+      // other waiting input the central escape handling cancels first.
+      const waiting = this.operatorStack.waitingInput(this.modeState.kind, key);
+      if (waiting !== undefined && isSelfEscapingWaitingInput(waiting)) {
+        return this.dispatchWaitingInput(waiting, key) ?? "native";
+      }
 
+      if (this.isEscape(key)) {
+        if (!this.shouldHandleEscapeKey()) return "native";
+        this.recordEscapeKey();
+        this.handleEscapeKey();
+        return "handled";
+      }
+
+      if (waiting !== undefined) {
+        const waitingResult = this.dispatchWaitingInput(waiting, key);
+        if (waitingResult !== undefined) return waitingResult;
+      }
+
+      const macroControlResult = this.handleMacroControlKey(key);
+      if (macroControlResult !== undefined) return macroControlResult;
+
+      // Recording is positionally uniform: macro keys and repeatable keys are
+      // recorded once, before any keymap resolution. Whether a key actually
+      // starts or extends a dot-repeat recording is decided by the repeat
+      // state (change-initiating start keys, in-flight recordings), and
+      // actions that are not repeatable cancel via their dispatch arms.
       this.recordMacroKey(key);
-
-      const earlyKeymapResult = this.dispatchEarlyKeymapKey(key);
-      if (earlyKeymapResult !== undefined) return earlyKeymapResult;
-
       this.recordRepeatableKey(key);
 
-      const waitingOperatorResult = this.handleWaitingOperatorKey(key);
-      if (waitingOperatorResult !== undefined) return waitingOperatorResult;
+      const finiteKeymapResult = this.handleFiniteKeymapKey(key);
+      if (finiteKeymapResult !== undefined) return finiteKeymapResult;
 
       const insertLikeResult = this.dispatchInsertLikeKey(key);
       if (insertLikeResult !== undefined) return insertLikeResult;
@@ -448,25 +470,13 @@ export class Vim {
     }
   }
 
-  private dispatchEarlyKeymapKey(key: string): KeyResult | undefined {
-    const finiteKeymapResult = this.handleFiniteKeymapKey(key);
-    if (finiteKeymapResult !== undefined) return finiteKeymapResult;
-
-    const beforeRepeatAction = this.resolveKeymapAction(key, "beforeRepeat");
-    if (beforeRepeatAction !== undefined) {
-      const result = this.dispatchVimAction(beforeRepeatAction);
-      if (result !== undefined) return result;
-    }
-    return undefined;
-  }
-
   private recordRepeatableKey(key: string): void {
     if (this.globalState.repeat.isReplaying()) return;
     this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalPendingChordForRepeat() });
     this.globalState.repeat.recordKey(key);
   }
 
-  private dispatchInsertLikeKey(key: string): KeyResult | null | undefined {
+  private dispatchInsertLikeKey(key: string): KeyDispatchResult | undefined {
     if (this.modeState.kind === "insert") {
       const handler = this.insertKeyHandlers.get(key);
       if (handler !== undefined) return handler();
@@ -476,7 +486,7 @@ export class Vim {
         this.insertRepeatText += text;
         return "handled";
       }
-      return null;
+      return "native";
     }
 
     if (this.modeState.kind === "replace") {
@@ -488,7 +498,7 @@ export class Vim {
         this.insertRepeatText += text;
         return "handled";
       }
-      return null;
+      return "native";
     }
 
     return undefined;
@@ -507,43 +517,115 @@ export class Vim {
     return this.dispatchVimAction(normalFallbackAction);
   }
 
-  private dispatchModeFallbackKey(_key: string): KeyResult | null {
+  private dispatchModeFallbackKey(_key: string): KeyDispatchResult {
     if (this.isVisualMode()) {
       const modeBefore = this.modeState.kind;
       return this.applyVisualResult(this.visualMode.handleUnhandledKey(), modeBefore);
     }
 
-    if (this.modeState.kind !== "normal") return null;
+    if (this.modeState.kind !== "normal") return "native";
 
     return this.applyNormalResult(this.normalMode.handleUnhandledKey());
   }
 
-  private handleWaitingOperatorKey(key: string): KeyResult | undefined {
-    const mode = this.modeState.kind;
-    if (!(mode === "normal" || isVisualModeKind(mode))) return undefined;
-    const waitingInput = this.operatorStack.waitingInput(mode, key);
-    switch (waitingInput?.type) {
-      case undefined:
-        return undefined;
+  // The single waiting-input dispatcher. Recording policy per class:
+  // waiting-input keys are recorded into macros (so replays of `f x`, `"a`,
+  // `/foo`, `ma` work), search/find input is recorded for dot-repeat, and
+  // operator inputs (replace chars, surround targets, object selectors) are
+  // recorded for both, exactly like keys that flow through the keymap phases.
+  private dispatchWaitingInput(waiting: WaitingInput, key: string): KeyDispatchResult | undefined {
+    switch (waiting.type) {
+      case "insertDigraph":
+        if (!this.isEscape(key)) this.recordMacroKey(key);
+        this.handlePendingDigraphKey(key);
+        return "handled";
+      case "literal":
+        if (!this.isEscape(key)) this.recordMacroKey(key);
+        return this.handlePendingLiteralKey(key);
+      case "insertRegister":
+        if (!this.isEscape(key)) this.recordMacroKey(key);
+        this.handlePendingInsertRegisterKey(key);
+        return "handled";
+      case "recordRegister":
+        this.operatorStack.popTopLevel("recordRegister");
+        this.globalState.macro.startRecording(key);
+        return "handled";
+      case "replayRegister": {
+        const pending = this.operatorStack.popTopLevel("replayRegister");
+        if (pending === undefined) return "handled";
+        this.recordMacroKey(key);
+        this.globalState.macro.replayRegisterKey(key, pending.count, key => this.onKey(key));
+        return "handled";
+      }
+      case "register":
+        this.recordMacroKey(key);
+        this.operatorStack.popTopLevel("register");
+        this.handlePendingRegisterKey(key);
+        return "handled";
+      case "command":
+        this.recordMacroKey(key);
+        this.handlePendingCommandKey(key);
+        return "handled";
+      case "search": {
+        const pendingSearch = this.operatorStack.activeTopLevel("search");
+        if (pendingSearch === undefined) return undefined;
+        if (!isSearchInputKey(key)) return "native";
+        this.recordMacroKey(key);
+        return this.handlePendingSearchKey(key, pendingSearch);
+      }
+      case "find":
+        this.recordMacroKey(key);
+        this.recordRepeatKey(key);
+        this.handlePendingFindKey(key);
+        return "handled";
+      case "mark":
+        this.recordMacroKey(key);
+        this.operatorStack.popTopLevel("mark");
+        this.modelState.marks.createMark(this.editor, key);
+        return "handled";
+      case "jump": {
+        const pendingJump = this.operatorStack.popTopLevel("jump");
+        if (pendingJump === undefined) return "handled";
+        this.recordMacroKey(key);
+        // The jump target extends an in-flight change recording (`d'a`).
+        this.recordRepeatKey(key);
+        const motion = this.modelState.marks.jumpMotion(this.editor, key, { line: pendingJump.line });
+        if (motion !== undefined) this.applyMotion(motion, 1);
+        return "handled";
+      }
       case "normalDigraph":
+        this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingDigraphKey(key));
       case "normalReplace":
+        this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingReplaceKey(key));
       case "normalSurround":
+        this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingSurroundKey(key));
       case "normalConvert":
+        this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingConvertKey(key));
       case "normalIndent":
+        this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingIndentKey(key));
       case "normalTextObject":
+        this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingTextObjectKey(key));
       case "normalSurroundPrefix":
+        this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingSurroundPrefixKey());
       case "visualSurround":
+        this.recordWaitingOperatorKey(key);
         return this.applyVisualResult(this.visualMode.handlePendingSurroundKey(key), this.modeState.kind);
       case "visualTextObject":
+        this.recordWaitingOperatorKey(key);
         return this.applyVisualResult(this.visualMode.handlePendingTextObjectKey(key), this.modeState.kind);
     }
+  }
+
+  private recordWaitingOperatorKey(key: string): void {
+    this.recordMacroKey(key);
+    this.recordRepeatableKey(key);
   }
 
   private handleFiniteKeymapKey(key: string): KeyResult | undefined {
@@ -554,29 +636,20 @@ export class Vim {
     const resolution = this.keymapResolver.handleKey(key, { allowShared, allowNormal });
     switch (resolution.kind) {
       case "pending":
-        if (resolution.scope === "shared") this.recordSharedFiniteKey(key);
         return "handled";
       case "action":
-        if (resolution.scope === "shared") this.recordSharedFiniteKey(key);
         this.dispatchVimAction(resolution.action);
         return "handled";
       case "cancelled":
-        if (resolution.scope === "shared") {
-          if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.recordKey(key);
-          if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
-            this.normalMode.clearPending();
-          }
+        if (resolution.scope === "shared"
+          && this.modeState.kind === "normal"
+          && this.normalMode.pendingOperatorName() !== undefined) {
+          this.normalMode.clearPending();
         }
         return "handled";
       case "noMatch":
         return undefined;
     }
-  }
-
-  private recordSharedFiniteKey(key: string): void {
-    if (this.globalState.repeat.isReplaying()) return;
-    this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalPendingChordForRepeat() });
-    this.globalState.repeat.recordKey(key);
   }
 
   private normalPendingChordForRepeat(): string {
@@ -767,73 +840,6 @@ export class Vim {
     }
   }
 
-  private handlePendingKey(key: string): KeyResult | null | undefined {
-    if (this.operatorStack.activeTopLevel("insertDigraph") !== undefined) {
-      this.handlePendingDigraphKey(key);
-      return "handled";
-    }
-
-    if (this.operatorStack.activeTopLevel("literal") !== undefined) {
-      return this.handlePendingLiteralKey(key);
-    }
-
-    if (this.operatorStack.activeTopLevel("insertRegister") !== undefined) {
-      this.handlePendingInsertRegisterKey(key);
-      return "handled";
-    }
-
-    if (this.isEscape(key)) {
-      if (!this.shouldHandleEscapeKey()) return undefined;
-      this.recordEscapeKey();
-      this.handleEscapeKey();
-      return "handled";
-    }
-
-    const macroResult = this.handlePendingMacroKey(key);
-    if (macroResult !== undefined) return macroResult;
-
-    const pendingRegister = this.operatorStack.activeTopLevel("register");
-    if (pendingRegister !== undefined) {
-      this.operatorStack.popTopLevel("register");
-      this.handlePendingRegisterKey(key);
-      return "handled";
-    }
-
-    if (this.operatorStack.activeTopLevel("command") !== undefined) {
-      this.handlePendingCommandKey(key);
-      return "handled";
-    }
-
-    const pendingSearch = this.operatorStack.activeTopLevel("search");
-    if (pendingSearch !== undefined) {
-      if (!isSearchInputKey(key)) return null;
-      return this.handlePendingSearchKey(key, pendingSearch);
-    }
-
-    if (this.operatorStack.activeFind() !== undefined) {
-      this.recordRepeatKey(key);
-      this.handlePendingFindKey(key);
-      return "handled";
-    }
-
-    const pendingMark = this.operatorStack.activeTopLevel("mark");
-    if (this.modeState.kind === "normal" && pendingMark !== undefined) {
-      this.operatorStack.popTopLevel("mark");
-      this.modelState.marks.createMark(this.editor, key);
-      return "handled";
-    }
-
-    const pendingJump = this.operatorStack.activeTopLevel("jump");
-    if (this.modeState.kind === "normal" && pendingJump !== undefined) {
-      this.operatorStack.popTopLevel("jump");
-      const motion = this.modelState.marks.jumpMotion(this.editor, key, { line: pendingJump.line });
-      if (motion !== undefined) this.applyMotion(motion, 1);
-      return "handled";
-    }
-
-    return undefined;
-  }
-
   private handlePendingRegisterKey(key: string): void {
     const registerName = parseRegisterName(key);
     if (registerName !== undefined) {
@@ -844,7 +850,7 @@ export class Vim {
     else if (this.isVisualMode()) this.visualMode.clearPending();
   }
 
-  private handlePendingSearchKey(key: string, pendingSearch: Extract<TopLevelPendingOperator, { type: "search" }>): KeyResult | null {
+  private handlePendingSearchKey(key: string, pendingSearch: Extract<TopLevelPendingOperator, { type: "search" }>): KeyDispatchResult {
     this.recordRepeatKey(key);
     const originMode = this.searchOriginMode ?? "normal";
     const motion = this.globalState.search.handleKey(pendingSearch, key, this.globalState.registers, this.editor);
@@ -875,39 +881,29 @@ export class Vim {
     this.editor.applyEdits(edits, selectionsAfter);
   }
 
-  private handlePendingMacroKey(key: string): KeyResult | undefined {
-    const pendingRecordRegister = this.operatorStack.activeTopLevel("recordRegister");
-    if (this.modeState.kind === "normal" && pendingRecordRegister !== undefined) {
-      this.operatorStack.popTopLevel("recordRegister");
-      this.globalState.macro.startRecording(key);
-      return "handled";
-    }
+  // Macro control keys resolve after waiting input (so `f q`, `m q`, and
+  // register/search input win while recording) but before macro key recording
+  // (so the `q` that stops a recording is not recorded into it).
+  private handleMacroControlKey(key: string): KeyResult | undefined {
+    if (this.modeState.kind !== "normal") return undefined;
 
-    const pendingReplayRegister = this.operatorStack.activeTopLevel("replayRegister");
-    if (this.modeState.kind === "normal" && pendingReplayRegister !== undefined) {
-      this.operatorStack.popTopLevel("replayRegister");
-      this.recordMacroKey(key);
-      this.globalState.macro.replayRegisterKey(key, pendingReplayRegister.count, key => this.onKey(key));
-      return "handled";
-    }
-
-    if (this.modeState.kind === "normal" && this.globalState.macro.isRecording() && key === "q") {
+    if (this.globalState.macro.isRecording() && key === "q") {
       this.globalState.macro.stopRecording();
       return "handled";
     }
 
-    if (this.modeState.kind === "normal" && key === "q") {
+    if (key === "q") {
       this.operatorStack.push({ type: "recordRegister" });
       return "handled";
     }
 
-    if (this.modeState.kind === "normal" && key === "@") {
+    if (key === "@") {
       this.recordMacroKey(key);
       this.operatorStack.push({ type: "replayRegister", count: this.normalMode.takeCountForMotion(1) });
       return "handled";
     }
 
-    if (this.modeState.kind === "normal" && key === "Q") {
+    if (key === "Q") {
       this.recordMacroKey(key);
       this.globalState.macro.replayLast(this.normalMode.takeCountForMotion(1), key => this.onKey(key));
       return "handled";

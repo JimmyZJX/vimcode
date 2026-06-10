@@ -10,7 +10,7 @@
 import type { PendingSearch } from "./normal/search.js";
 import type { ConvertTarget } from "./normal/convert.js";
 import type { IndentDirection } from "./normal/indent.js";
-import type { Operator, TextRange, VimSelection } from "./state.js";
+import type { Operator, TextRange, VimMode, VimSelection } from "./state.js";
 
 export type PendingEditOperator =
   | { type: "change"; count: number }
@@ -147,7 +147,26 @@ export function isEditOperatorContext(operator: OperatorContext): operator is Op
   return operator === "delete" || operator === "change" || operator === "yank";
 }
 
+// Zed: `vim_mode == waiting` plus the per-operator contexts; one classification
+// of "what input is the operator stack waiting for". The variant order in
+// [VimOperatorStack.waitingInput] is the single source of truth for
+// waiting-input precedence.
 export type WaitingInput =
+  // Self-escape-handling waiting inputs: these consume the escape key
+  // themselves instead of letting the central escape handling cancel them.
+  | { type: "insertDigraph" }
+  | { type: "literal" }
+  | { type: "insertRegister" }
+  // Other top-level waiting inputs (mode-gated where Vim requires it).
+  | { type: "recordRegister" }
+  | { type: "replayRegister" }
+  | { type: "register" }
+  | { type: "command" }
+  | { type: "search" }
+  | { type: "find" }
+  | { type: "mark" }
+  | { type: "jump" }
+  // Normal/visual-mode operator inputs.
   | { type: "normalDigraph" }
   | { type: "normalReplace" }
   | { type: "normalSurround" }
@@ -157,6 +176,17 @@ export type WaitingInput =
   | { type: "normalSurroundPrefix" }
   | { type: "visualSurround" }
   | { type: "visualTextObject" };
+
+export function isSelfEscapingWaitingInput(waiting: WaitingInput): boolean {
+  switch (waiting.type) {
+    case "insertDigraph":
+    case "literal":
+    case "insertRegister":
+      return true;
+    default:
+      return false;
+  }
+}
 
 export class VimOperatorStack {
   private readonly stack: VimOperator[] = [];
@@ -199,7 +229,19 @@ export class VimOperatorStack {
     return "other";
   }
 
-  waitingInput(mode: "normal" | "visual" | "visualLine" | "visualBlock", key: string): WaitingInput | undefined {
+  waitingInput(mode: VimMode["kind"], key: string): WaitingInput | undefined {
+    if (this.activeTopLevel("insertDigraph") !== undefined) return { type: "insertDigraph" };
+    if (this.activeTopLevel("literal") !== undefined) return { type: "literal" };
+    if (this.activeTopLevel("insertRegister") !== undefined) return { type: "insertRegister" };
+    if (mode === "normal" && this.activeTopLevel("recordRegister") !== undefined) return { type: "recordRegister" };
+    if (mode === "normal" && this.activeTopLevel("replayRegister") !== undefined) return { type: "replayRegister" };
+    if (this.activeTopLevel("register") !== undefined) return { type: "register" };
+    if (this.activeTopLevel("command") !== undefined) return { type: "command" };
+    if (this.activeTopLevel("search") !== undefined) return { type: "search" };
+    if (this.activeFind() !== undefined) return { type: "find" };
+    if (mode === "normal" && this.activeTopLevel("mark") !== undefined) return { type: "mark" };
+    if (mode === "normal" && this.activeTopLevel("jump") !== undefined) return { type: "jump" };
+
     switch (mode) {
       case "normal":
         if (this.activeDigraph() !== undefined) return { type: "normalDigraph" };
@@ -215,6 +257,8 @@ export class VimOperatorStack {
       case "visualBlock":
         if (this.activeVisualOperator("visualAddSurrounds") !== undefined) return { type: "visualSurround" };
         if (this.activeObject() !== undefined) return { type: "visualTextObject" };
+        return undefined;
+      default:
         return undefined;
     }
   }
