@@ -8,7 +8,7 @@
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
 import { VimConfiguration } from "./config.js";
-import type { VisualCommand } from "./keymap.js";
+import type { VisualCommand, VisualModeKind } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
@@ -17,7 +17,6 @@ import { textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { IndentDirection, indentRanges, visualIndentRanges } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
-import { incrementNumbers } from "./normal/increment.js";
 import { cursorAfterDeletingRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
@@ -206,32 +205,31 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
+  toggleMode(mode: VisualModeKind): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled({ exitVisual: true });
+    switch (mode) {
+      case "visual":
+        return this.toggleCharwise(state);
+      case "visualLine":
+        return this.toggleLinewise(state);
+      case "visualBlock":
+        return this.toggleBlockwise(state);
+    }
+  }
+
   handleCommand(command: VisualCommand): VisualKeyResult {
     const state = this.state;
     if (state === undefined) return handled({ exitVisual: true });
     switch (command.type) {
-      case "toggleCharwise":
-        return this.toggleCharwise(state);
-      case "toggleLinewise":
-        return this.toggleLinewise(state);
-      case "toggleBlockwise":
-        return this.toggleBlockwise(state);
       case "insertAtSelection":
         return command.side === "start"
           ? this.insertBeforeOrAtBlockStart(state) ?? handled()
           : this.insertAfterOrAtBlockEnd(state) ?? handled();
       case "startSurround":
         return this.startSurround(state);
-      case "join":
-        this.join(state, { insertWhitespace: command.insertWhitespace });
-        return handled({ exitVisual: true, nextMode: "normal" });
       case "indent":
         return this.indentKey(state, command.key);
-      case "incrementStep":
-        incrementNumbers(this.editor, (command.direction === "increment" ? 1 : -1) * this.takeCount(1));
-        this.state = undefined;
-        this.editor.setCursorStyle("block");
-        return handled({ exitVisual: true, nextMode: "normal" });
       case "convert":
         this.convert(state, convertTargetForKey(command.key));
         return handled({ exitVisual: true, nextMode: "normal" });
@@ -730,9 +728,6 @@ export class VisualMode {
   }
 
 
-  hasPendingNonCount(): boolean {
-    return this.operatorStack.length > 0;
-  }
   systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
     if (key !== "p" && key !== "P") return undefined;
     const registerName = this.registerSelection.get();
@@ -954,6 +949,17 @@ function flipBlockOtherEnd(state: BlockwiseVisualState): BlockwiseVisualState {
     head: { row: state.head.row, column: state.anchor.column },
     goal: { type: "modelColumn", column: state.anchor.column },
   };
+}
+
+export function visualKindForMode(mode: VisualModeKind): VisualState["kind"] {
+  switch (mode) {
+    case "visual":
+      return "charwise";
+    case "visualLine":
+      return "linewise";
+    case "visualBlock":
+      return "blockwise";
+  }
 }
 
 function modeForState(state: VisualState): RestoredVisualMode {

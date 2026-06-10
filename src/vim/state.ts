@@ -63,6 +63,10 @@ export type CursorStyle = "block" | "line" | "underline";
 
 export type KeyResult = "handled" | "not-handled";
 
+export function isVisualModeKind(kind: VimMode["kind"]): kind is "visual" | "visualLine" | "visualBlock" {
+  return kind === "visual" || kind === "visualLine" || kind === "visualBlock";
+}
+
 export function position(row: number, column: number): Position {
   return { row, column };
 }

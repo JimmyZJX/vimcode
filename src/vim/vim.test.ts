@@ -1120,6 +1120,33 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("deletes inner single-quote and backtick objects", () => {
+    // Regression: a pending text object owns the quote/backtick key; it must
+    // not be stolen by the `'`/`` ` `` jump bindings (`d'a` still jumps).
+    const editor = new InMemoryVimEditor("say 'hello world' now");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["f", "h", "d", "i", "'"]);
+    expect(editor.getText()).toBe("say '' now");
+    expect(vim.status.pending).toBe(false);
+
+    const backtickEditor = new InMemoryVimEditor("say `hello` now");
+    const backtickVim = new Vim(backtickEditor);
+    runKeys(backtickVim, ["f", "h", "d", "a", "`"]);
+    expect(backtickEditor.getText()).toBe("say now");
+  });
+
+  it("deletes to a mark with a jump motion", () => {
+    const editor = new InMemoryVimEditor("one\ntwo\nthree");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["j", "m", "a", "k", "d", "'", "a"]);
+    // The jump binding still wins over the quote object when an edit operator
+    // is pending without an object selector. (Full linewise `d'` semantics are
+    // a separate known gap; this locks in the current motion behavior.)
+    expect(editor.getText()).toBe("two\nthree");
+  });
+
   it("applies counts before an operator", () => {
     const editor = new InMemoryVimEditor("one two three four");
     const vim = new Vim(editor);

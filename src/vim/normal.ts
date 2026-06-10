@@ -21,7 +21,6 @@ import { RegisterName, Registers, isSystemClipboardRegister } from "./registers.
 import { replaceCharacters } from "./replace.js";
 import { ConvertTarget, convertRanges, toggleCaseCharacters } from "./normal/convert.js";
 import { IndentDirection, currentLineRanges, indentRanges } from "./normal/indent.js";
-import { incrementNumbers } from "./normal/increment.js";
 import { joinLines } from "./normal/join.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
 import { KeyResult, Operator, TextRange, VimSelection, charwiseSelection, selectionHead } from "./state.js";
@@ -71,7 +70,7 @@ export class NormalMode {
     private readonly operatorStack: VimOperatorStack
   ) {}
 
-  private normalChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}) {
+  chordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}) {
     return {
       key,
       includeCount,
@@ -102,16 +101,9 @@ export class NormalMode {
     return undefined;
   }
 
-  hasPendingNonCount(): boolean {
-    return this.operatorStack.length > 0;
-  }
-
-  canResolveMotionCentrally(): boolean {
-    return this.operatorStack.activeEditOperator() !== undefined && this.operatorStack.activeObject() === undefined;
-  }
-
-  canResolveEditOperatorCentrally(): boolean {
-    return this.operatorStack.activeObject() === undefined;
+  joinLines({ insertWhitespace }: { insertWhitespace: boolean }): NormalKeyResult {
+    this.joinFromSelections({ insertWhitespace });
+    return handled();
   }
 
   handleEditOperatorKey(operator: Operator, key: string): NormalKeyResult {
@@ -119,7 +111,7 @@ export class NormalMode {
       return handled({ enterInsert: this.handleLineOperator(operator) });
     }
     // Zed: `vim::Vim::push_operator`.
-    this.operatorStack.pushEditOperator(operator, this.takeCount(1), this.normalChordKey(key, { includeCount: true }));
+    this.operatorStack.pushEditOperator(operator, this.takeCount(1), this.chordKey(key, { includeCount: true }));
     return handled();
   }
 
@@ -203,12 +195,6 @@ export class NormalMode {
         return this.deleteLeft();
       case "deleteRight":
         return this.deleteRight();
-      case "join":
-        this.joinFromSelections({ insertWhitespace: command.insertWhitespace });
-        return handled();
-      case "incrementStep":
-        incrementNumbers(this.editor, (command.direction === "increment" ? 1 : -1) * this.takeCount(1));
-        return handled();
       case "toggleCase":
         return this.toggleCase();
       case "paste":
@@ -309,7 +295,7 @@ export class NormalMode {
   }
 
   private startReplace(): NormalKeyResult {
-    this.operatorStack.pushReplace(this.takeCount(1), this.normalChordKey("r", { includeCount: true }));
+    this.operatorStack.pushReplace(this.takeCount(1), this.chordKey("r", { includeCount: true }));
     return handled();
   }
 
@@ -439,7 +425,7 @@ export class NormalMode {
     if (pending === undefined) return;
 
     if (key === "i" || key === "a") {
-      this.operatorStack.pushObject(key === "a", this.normalChordKey(key));
+      this.operatorStack.pushObject(key === "a", this.chordKey(key));
       return;
     }
 
@@ -483,7 +469,7 @@ export class NormalMode {
     const pending = this.operatorStack.popReplace();
     if (pending === undefined || key.length === 0) return;
     if (key === "ctrl-k") {
-      this.operatorStack.pushDigraph(pending.count, this.normalChordKey("ctrl-k"));
+      this.operatorStack.pushDigraph(pending.count, this.chordKey("ctrl-k"));
       return;
     }
     replaceCharacters(this.editor, keyForInput(key), pending.count);
@@ -573,7 +559,7 @@ export class NormalMode {
     if (pending === undefined) return;
 
     if (key === "i" || key === "a") {
-      this.operatorStack.pushObject(key === "a", this.normalChordKey(key));
+      this.operatorStack.pushObject(key === "a", this.chordKey(key));
       return;
     }
 

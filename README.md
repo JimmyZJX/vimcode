@@ -303,6 +303,30 @@ Near-term:
    - `replace.ts`, `command.ts`, `search.ts`/`normal/search.ts`, `normal/repeat.ts`, `normal/mark.ts`, etc. as those features are migrated.
    - additional `normal/*` modules as normal-mode behavior expands.
 2. Replace the remaining temporary hard-coded key grammar with a declarative keymap inspired by `assets/keymaps/vim.json`; keep the key-to-motion mapping centralized in `motion.ts`.
+   Progress so far:
+   - `VimKeymapContext` now mirrors Zed's key context: `{ mode, operator }` where
+     `operator` is `VimOperatorStack.operatorContext()` (Zed `vim_operator`:
+     `none`/`delete`/`change`/`yank`/`object`/`other`), replacing five overlapping
+     booleans. This fixed a real disambiguation bug: `di'`/`da\`` no longer lose the
+     quote key to the `'`/`` ` `` jump bindings.
+   - `J`, `ctrl-a`, `ctrl-x` are single shared bindings (with a `cumulative` flag
+     distinguishing `g ctrl-a`); the `join`/`incrementStep` `NormalCommand`/
+     `VisualCommand` duplicates are gone, and `v`/`V`/`ctrl-v` resolve to one
+     `toggleVisual` action in both normal and visual mode.
+   - `] }`, `] )`, `[ {`, `[ (`, `] space`, `[ space` are plain finite chords; the
+     `pushUnmatched` waiting-operator type and its plumbing are deleted.
+   Remaining (the big step): migrate the single-key switches
+   (`resolveMotionModeAction`, `normalCommandForKey`, `visualCommandForKey`,
+   `motionForKey` dispatch) into the finite binding table with per-binding context
+   predicates over `VimKeymapContext`, dissolving the `motionMode`/`beforeRepeat`/
+   `normalFallback` phases into binding conditions. Caution: today several bindings
+   are implicitly gated by dispatch *order* (waiting-input interception runs between
+   the early and late phases — e.g. `r 3` works because pending replace sees the key
+   before count resolution). Each migrated binding's condition must encode that
+   ordering explicitly (typically by excluding `operator == other`), so migrate and
+   test in small batches. A follow-up after that: unify `handlePendingKey` and
+   `handleWaitingOperatorKey`/`waitingInput` into one stack-driven waiting-input
+   dispatcher.
 3. Expand the editor capability interface into grouped capabilities:
    - document/model reads
    - selections

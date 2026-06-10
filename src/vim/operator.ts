@@ -70,7 +70,6 @@ export type PendingLiteralOperator =
 export type PendingInsertRegisterOperator = { type: "insertRegister" };
 export type PendingMarkOperator = { type: "mark" };
 export type PendingJumpOperator = { type: "jump"; line: boolean };
-export type PendingUnmatchedOperator = { type: "unmatchedForward" | "unmatchedBackward"; count: number };
 export type PendingRegisterOperator = { type: "register" };
 export type PendingRecordRegisterOperator = { type: "recordRegister" };
 export type PendingReplayRegisterOperator = { type: "replayRegister"; count: number };
@@ -84,7 +83,6 @@ export type TopLevelPendingOperator =
   | PendingInsertRegisterOperator
   | PendingMarkOperator
   | PendingJumpOperator
-  | PendingUnmatchedOperator
   | PendingRegisterOperator
   | PendingRecordRegisterOperator
   | PendingReplayRegisterOperator
@@ -139,6 +137,16 @@ type NormalChordKey = {
   hasSelectedRegister: boolean;
 };
 
+// Zed: the `vim_operator` key-context value computed in
+// `vim::Vim::extend_key_context`. Summarizes what the operator stack is
+// currently waiting for, so keymap conditions can read like Zed context
+// expressions instead of combining overlapping booleans.
+export type OperatorContext = "none" | Operator | "object" | "other";
+
+export function isEditOperatorContext(operator: OperatorContext): operator is Operator {
+  return operator === "delete" || operator === "change" || operator === "yank";
+}
+
 export type WaitingInput =
   | { type: "normalDigraph" }
   | { type: "normalReplace" }
@@ -178,6 +186,17 @@ export class VimOperatorStack {
   replaceTop(operator: VimOperator): void {
     if (this.stack.length === 0) this.push(operator);
     else this.stack[this.stack.length - 1] = operator;
+  }
+
+  // Zed: `vim::Vim::extend_key_context` exposing `vim_operator`.
+  // "object" wins over the edit operator because the object selector is on top
+  // of the stack and owns the next key (e.g. the quote in `di'`).
+  operatorContext(): OperatorContext {
+    if (this.length === 0) return "none";
+    if (this.activeObject() !== undefined) return "object";
+    const editOperator = this.activeEditOperator();
+    if (editOperator !== undefined) return editOperatorForPending(editOperator);
+    return "other";
   }
 
   waitingInput(mode: "normal" | "visual" | "visualLine" | "visualBlock", key: string): WaitingInput | undefined {
@@ -256,18 +275,6 @@ export class VimOperatorStack {
 
   popFind(): PendingFindOperator | undefined {
     const item = this.activeFind();
-    if (item === undefined) return undefined;
-    this.pop();
-    return item;
-  }
-
-  activeUnmatched(): PendingUnmatchedOperator | undefined {
-    const item = this.top();
-    return item?.type === "unmatchedForward" || item?.type === "unmatchedBackward" ? item : undefined;
-  }
-
-  popUnmatched(): PendingUnmatchedOperator | undefined {
-    const item = this.activeUnmatched();
     if (item === undefined) return undefined;
     this.pop();
     return item;
@@ -453,8 +460,6 @@ export function isTopLevelPendingOperator(operator: VimOperator | undefined): op
     case "insertRegister":
     case "mark":
     case "jump":
-    case "unmatchedForward":
-    case "unmatchedBackward":
     case "register":
     case "recordRegister":
     case "replayRegister":
@@ -499,10 +504,6 @@ export function pendingOperatorStatus(operator: TopLevelPendingOperator): string
       return "m";
     case "jump":
       return operator.line ? "'" : "`";
-    case "unmatchedForward":
-      return "]";
-    case "unmatchedBackward":
-      return "[";
     case "register":
       return "\"";
     case "recordRegister":

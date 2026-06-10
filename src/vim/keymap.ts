@@ -10,22 +10,15 @@ import type { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget } fr
 import { Motion, motionForKey } from "./motion.js";
 import type { ConvertTarget } from "./normal/convert.js";
 import type { IndentDirection } from "./normal/indent.js";
-import type { Operator, VimMode } from "./state.js";
+import { isEditOperatorContext, type OperatorContext } from "./operator.js";
+import { isVisualModeKind, type Operator, type VimMode } from "./state.js";
 
-export type VisualModeTarget =
-  | { mode: "visual"; kind: "charwise" }
-  | { mode: "visualLine"; kind: "linewise" }
-  | { mode: "visualBlock"; kind: "blockwise" };
+export type VisualModeKind = "visual" | "visualLine" | "visualBlock";
 
 export type VisualCommand =
-  | { type: "toggleCharwise" }
-  | { type: "toggleLinewise" }
-  | { type: "toggleBlockwise" }
   | { type: "insertAtSelection"; side: "start" | "end" }
   | { type: "startSurround" }
-  | { type: "join"; insertWhitespace: boolean }
   | { type: "indent"; key: ">" | "<" | "=" }
-  | { type: "incrementStep"; direction: "increment" | "decrement" }
   | { type: "convert"; key: "u" | "U" | "~" }
   | { type: "startTextObject"; around: boolean }
   | { type: "otherEnd"; rowAware: boolean }
@@ -50,8 +43,6 @@ export type NormalCommand =
   | { type: "deleteToEndOfLine" }
   | { type: "deleteLeft" }
   | { type: "deleteRight" }
-  | { type: "join"; insertWhitespace: boolean }
-  | { type: "incrementStep"; direction: "increment" | "decrement" }
   | { type: "toggleCase" }
   | { type: "paste"; before: boolean }
   | { type: "moveLineFirstNonWhitespace"; direction: "up" | "down" }
@@ -63,11 +54,11 @@ export type NormalCommand =
 export type VimAction =
   | { type: "pushMark" }
   | { type: "pushJump"; line: boolean }
-  | { type: "pushUnmatched"; direction: "forward" | "backward" }
+  | { type: "insertEmptyLines"; side: "above" | "below" }
   | { type: "repeatLastChange" }
   | { type: "cancelRepeat" }
   | { type: "startCommand" }
-  | { type: "enterVisual"; target: VisualModeTarget }
+  | { type: "toggleVisual"; mode: VisualModeKind }
   | { type: "enterReplace" }
   | { type: "changeList"; direction: "older" | "newer" }
   | { type: "insertAtPrevious" }
@@ -76,7 +67,7 @@ export type VimAction =
   | { type: "searchSelection"; reversed: boolean }
   | { type: "pushConvert"; target: ConvertTarget }
   | { type: "join"; insertWhitespace: boolean }
-  | { type: "incrementStep"; direction: "increment" | "decrement" }
+  | { type: "incrementStep"; direction: "increment" | "decrement"; cumulative: boolean }
   | { type: "multiCursor"; command: string }
   | { type: "native"; command: string }
   | { type: "hostCommand"; command: HostCommand }
@@ -100,17 +91,24 @@ export type VimAction =
 
 export type VimKeymapPhase = "motionMode" | "beforeRepeat" | "normalFallback";
 
+// Zed: the key context from `vim::Vim::extend_key_context` (`vim_mode`,
+// `vim_operator`). Binding conditions are written against this vocabulary
+// instead of pre-combined booleans.
 export type VimKeymapContext = {
   mode: VimMode["kind"];
-  normalModeIsPending: boolean;
-  normalModeHasPendingOperator: boolean;
-  normalModeHasPendingNonCount: boolean;
-  normalModeHasOnlySelectedRegisterPending: boolean;
-  normalModeCanResolveEditOperator: boolean;
-  visualModeHasPendingNonCount: boolean;
+  /** Operator-stack summary: "none" when empty, the edit operator awaiting a
+      motion/object, "object" when a text-object selector owns the next key,
+      "other" for any other pending operator input. */
+  operator: OperatorContext;
+  hasSelectedRegister: boolean;
   countText: string;
   repeatIsReplaying: boolean;
 };
+
+/** Nothing is pending at all: no operator input and no selected register. */
+function nothingPending(context: VimKeymapContext): boolean {
+  return context.operator === "none" && !context.hasSelectedRegister;
+}
 
 export type FiniteKeymapScope = "shared" | "normal";
 
@@ -139,8 +137,11 @@ const finiteBindings = bindingMap([
   sharedBinding("g ,", { type: "changeList", direction: "newer" }),
   sharedBinding("g n", { type: "searchSelection", reversed: false }),
   sharedBinding("g N", { type: "searchSelection", reversed: true }),
-  sharedBinding("g ctrl-a", incrementStep("increment")),
-  sharedBinding("g ctrl-x", incrementStep("decrement")),
+  sharedBinding("J", join({ insertWhitespace: true })),
+  sharedBinding("ctrl-a", incrementStep("increment", { cumulative: false })),
+  sharedBinding("ctrl-x", incrementStep("decrement", { cumulative: false })),
+  sharedBinding("g ctrl-a", incrementStep("increment", { cumulative: true })),
+  sharedBinding("g ctrl-x", incrementStep("decrement", { cumulative: true })),
   sharedBinding("ctrl-n", multiCursor("editor.action.addSelectionToNextFindMatch")),
   sharedBinding("g l", multiCursor("editor.action.addSelectionToNextFindMatch")),
   sharedBinding("g L", multiCursor("editor.action.addSelectionToPreviousFindMatch")),
@@ -164,6 +165,12 @@ const finiteBindings = bindingMap([
   sharedBinding("g [", native("editor.action.marker.prev")),
   sharedBinding("g x", native("editor.action.openLink")),
 
+  normalBinding("] }", move({ type: "unmatchedForward", char: "}" })),
+  normalBinding("] )", move({ type: "unmatchedForward", char: ")" })),
+  normalBinding("[ {", move({ type: "unmatchedBackward", char: "{" })),
+  normalBinding("[ (", move({ type: "unmatchedBackward", char: "(" })),
+  normalBinding("] space", { type: "insertEmptyLines", side: "below" }),
+  normalBinding("[ space", { type: "insertEmptyLines", side: "above" }),
   normalBinding("ctrl-o", hostCommand("navigateBack")),
   normalBinding("ctrl-i", hostCommand("navigateForward")),
   normalBinding("u", hostCommand("undo")),
@@ -208,8 +215,8 @@ function join({ insertWhitespace }: { insertWhitespace: boolean }): VimAction {
   return { type: "join", insertWhitespace };
 }
 
-function incrementStep(direction: "increment" | "decrement"): VimAction {
-  return { type: "incrementStep", direction };
+function incrementStep(direction: "increment" | "decrement", { cumulative }: { cumulative: boolean }): VimAction {
+  return { type: "incrementStep", direction, cumulative };
 }
 
 function multiCursor(command: string): VimAction {
@@ -366,19 +373,19 @@ function motionActionForKey(key: string): VimAction | undefined {
 function resolveBeforeRepeatAction(key: string, context: VimKeymapContext): VimAction | undefined {
   if (context.mode !== "normal") return undefined;
 
-  if (!context.normalModeIsPending && key === "m") return { type: "pushMark" };
+  const idle = context.operator === "none" && context.countText.length === 0;
 
-  if ((!context.normalModeIsPending || context.normalModeHasPendingOperator) && (key === "'" || key === "`")) {
+  if (idle && key === "m") return { type: "pushMark" };
+
+  // Jumps are plain motions when idle and motion targets for a pending edit
+  // operator (`d'a`). A pending text object owns the quote/backtick key
+  // instead (`di'`, `da\``).
+  if ((idle || isEditOperatorContext(context.operator)) && (key === "'" || key === "`")) {
     return { type: "pushJump", line: key === "'" };
   }
 
-  if (!context.normalModeHasPendingNonCount) {
-    if (key === "]") return { type: "pushUnmatched", direction: "forward" };
-    if (key === "[") return { type: "pushUnmatched", direction: "backward" };
-  }
-
   if (key === "." && !context.repeatIsReplaying) {
-    return !context.normalModeHasPendingNonCount || context.normalModeHasOnlySelectedRegisterPending
+    return context.operator === "none"
       ? { type: "repeatLastChange" }
       : { type: "cancelRepeat" };
   }
@@ -418,28 +425,16 @@ function isCountKey(key: string, countText: string): boolean {
 
 function visualCommandForKey(key: string): VisualCommand | undefined {
   switch (key) {
-    case "v":
-      return { type: "toggleCharwise" };
-    case "V":
-      return { type: "toggleLinewise" };
-    case "ctrl-v":
-      return { type: "toggleBlockwise" };
     case "I":
       return { type: "insertAtSelection", side: "start" };
     case "A":
       return { type: "insertAtSelection", side: "end" };
     case "S":
       return { type: "startSurround" };
-    case "J":
-      return { type: "join", insertWhitespace: true };
     case ">":
     case "<":
     case "=":
       return { type: "indent", key };
-    case "ctrl-a":
-      return { type: "incrementStep", direction: "increment" };
-    case "ctrl-x":
-      return { type: "incrementStep", direction: "decrement" };
     case "u":
     case "U":
     case "~":
@@ -500,12 +495,6 @@ function normalCommandForKey(key: string): NormalCommand | undefined {
       return { type: "deleteToEndOfLine" };
     case "X":
       return { type: "deleteLeft" };
-    case "J":
-      return { type: "join", insertWhitespace: true };
-    case "ctrl-a":
-      return { type: "incrementStep", direction: "increment" };
-    case "ctrl-x":
-      return { type: "incrementStep", direction: "decrement" };
     case "x":
     case "delete":
       return { type: "deleteRight" };
@@ -538,57 +527,49 @@ function normalCommandIsAllowed(command: NormalCommand, context: VimKeymapContex
     case "goToLineOrEnd":
     case "moveToNextLineStart":
     case "moveWrappingLeft":
-      return !context.normalModeHasPendingNonCount
-        || context.normalModeCanResolveEditOperator
-        || context.normalModeHasOnlySelectedRegisterPending;
+      // Motion-like commands also serve as operator targets (`dG`, `d%`).
+      return context.operator !== "object";
     default:
-      return !context.normalModeHasPendingNonCount
-        || context.normalModeHasOnlySelectedRegisterPending;
+      return context.operator === "none";
   }
 }
 
 function resolveNormalFallbackAction(key: string, context: VimKeymapContext): VimAction | undefined {
-  if (context.mode === "visual" || context.mode === "visualLine" || context.mode === "visualBlock") {
-    if (context.visualModeHasPendingNonCount) return undefined;
+  if (isVisualModeKind(context.mode)) {
+    if (context.operator !== "none") return undefined;
     if (isCountKey(key, context.countText)) return { type: "pushCount", key };
     if (key === "0") return { type: "motion", motion: { type: "startOfLine" } };
     if (key === "G") return { type: "motion", motion: { type: "endOfDocument" } };
     if (key === "\"") return { type: "pushRegister" };
+    const visualMode = visualModeForKey(key);
+    if (visualMode !== undefined) return { type: "toggleVisual", mode: visualMode };
     const command = visualCommandForKey(key);
     return command === undefined ? undefined : { type: "visualCommand", command };
   }
 
   if (context.mode !== "normal") return undefined;
 
-  if (isCountKey(key, context.countText)
-    && (!context.normalModeHasPendingNonCount
-      || context.normalModeCanResolveEditOperator
-      || context.normalModeHasOnlySelectedRegisterPending)) {
+  if (isCountKey(key, context.countText) && context.operator !== "object") {
     return { type: "pushCount", key };
   }
 
   if (key === "0") return { type: "motion", motion: { type: "startOfLine" } };
 
-  if (!context.normalModeHasPendingNonCount && key === ":") return { type: "startCommand" };
-  if (!context.normalModeHasPendingNonCount && key === "\"") return { type: "pushRegister" };
+  if (nothingPending(context) && key === ":") return { type: "startCommand" };
+  if (nothingPending(context) && key === "\"") return { type: "pushRegister" };
 
   const operator = editOperatorForKey(key);
   if (operator !== undefined
-    && context.normalModeCanResolveEditOperator
-    && (!context.normalModeHasPendingNonCount
-      || context.normalModeHasPendingOperator
-      || context.normalModeHasOnlySelectedRegisterPending)) {
+    && (context.operator === "none" || isEditOperatorContext(context.operator))) {
     return { type: "pushEditOperator", operator, key };
   }
 
-  if (context.normalModeHasPendingOperator
-    && context.normalModeCanResolveEditOperator
-    && (key === "i" || key === "a")) {
+  if (isEditOperatorContext(context.operator) && (key === "i" || key === "a")) {
     return { type: "pushObject", around: key === "a", key };
   }
 
   const indentDirection = indentDirectionForKey(key);
-  if (indentDirection !== undefined && !context.normalModeHasPendingNonCount) {
+  if (indentDirection !== undefined && nothingPending(context)) {
     return { type: "pushIndent", direction: indentDirection, key };
   }
 
@@ -597,15 +578,20 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
     return { type: "normalCommand", command };
   }
 
+  const visualMode = visualModeForKey(key);
+  if (visualMode !== undefined) return { type: "toggleVisual", mode: visualMode };
+
+  return key === "R" ? { type: "enterReplace" } : undefined;
+}
+
+function visualModeForKey(key: string): VisualModeKind | undefined {
   switch (key) {
     case "v":
-      return { type: "enterVisual", target: { mode: "visual", kind: "charwise" } };
+      return "visual";
     case "V":
-      return { type: "enterVisual", target: { mode: "visualLine", kind: "linewise" } };
+      return "visualLine";
     case "ctrl-v":
-      return { type: "enterVisual", target: { mode: "visualBlock", kind: "blockwise" } };
-    case "R":
-      return { type: "enterReplace" };
+      return "visualBlock";
     default:
       return undefined;
   }

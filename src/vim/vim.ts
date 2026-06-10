@@ -12,11 +12,11 @@ import { lookupDigraph } from "./digraph.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
-import { resolveVimAction, VimAction, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
+import { resolveVimAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
-import { VimOperatorStack, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
+import { VimOperatorStack, isEditOperatorContext, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
 import type {
   PendingFindOperator,
   PendingLiteralOperator,
@@ -30,8 +30,8 @@ import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
-import { KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, rangeOfSelection, selectionHead } from "./state.js";
-import { VisualMode } from "./visual.js";
+import { KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
+import { VisualMode, visualKindForMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
 
@@ -520,7 +520,7 @@ export class Vim {
 
   private handleWaitingOperatorKey(key: string): KeyResult | undefined {
     const mode = this.modeState.kind;
-    if (!(mode === "normal" || mode === "visual" || mode === "visualLine" || mode === "visualBlock")) return undefined;
+    if (!(mode === "normal" || isVisualModeKind(mode))) return undefined;
     const waitingInput = this.operatorStack.waitingInput(mode, key);
     switch (waitingInput?.type) {
       case undefined:
@@ -584,27 +584,19 @@ export class Vim {
     return this.selectedRegister === undefined ? chord : `${chord}\"${this.selectedRegister}`;
   }
 
-  private normalChordKey(key: string, { includeCount = false }: { includeCount?: boolean } = {}) {
-    return {
-      key,
-      includeCount,
-      countText: this.countBuffer,
-      hasSelectedRegister: this.selectedRegister !== undefined,
-    };
+  private resolveKeymapAction(key: string, phase: VimKeymapPhase): VimAction | undefined {
+    return resolveVimAction(key, phase, this.keymapContext());
   }
 
-  private resolveKeymapAction(key: string, phase: VimKeymapPhase): VimAction | undefined {
-    return resolveVimAction(key, phase, {
+  // Zed: `vim::Vim::extend_key_context`.
+  private keymapContext(): VimKeymapContext {
+    return {
       mode: this.modeState.kind,
-      normalModeIsPending: this.normalMode.isPending(),
-      normalModeHasPendingOperator: this.normalMode.pendingOperatorName() !== undefined,
-      normalModeHasPendingNonCount: this.normalMode.hasPendingNonCount() || this.selectedRegister !== undefined,
-      normalModeHasOnlySelectedRegisterPending: this.selectedRegister !== undefined && !this.normalMode.hasPendingNonCount(),
-      normalModeCanResolveEditOperator: this.normalMode.canResolveEditOperatorCentrally(),
-      visualModeHasPendingNonCount: this.visualMode.hasPendingNonCount(),
+      operator: this.operatorStack.operatorContext(),
+      hasSelectedRegister: this.selectedRegister !== undefined,
       countText: this.countBuffer,
       repeatIsReplaying: this.globalState.repeat.isReplaying(),
-    });
+    };
   }
 
   private dispatchVimAction(action: VimAction): KeyResult | undefined {
@@ -615,11 +607,8 @@ export class Vim {
       case "pushJump":
         this.operatorStack.push({ type: "jump", line: action.line });
         return "handled";
-      case "pushUnmatched":
-        this.operatorStack.push({
-          type: action.direction === "forward" ? "unmatchedForward" : "unmatchedBackward",
-          count: this.takeCountForMotion(1),
-        });
+      case "insertEmptyLines":
+        this.insertEmptyLines(action.side, this.takeCountForMotion(1));
         return "handled";
       case "repeatLastChange":
         this.globalState.repeat.replay(this.normalMode.takeCountForRepeat(), {
@@ -635,8 +624,11 @@ export class Vim {
         this.operatorStack.push({ type: "command", input: "" });
         this.setMode("command");
         return "handled";
-      case "enterVisual":
-        this.enterVisualMode(action.target.kind, action.target.mode);
+      case "toggleVisual":
+        if (this.isVisualMode()) {
+          return this.applyVisualResult(this.visualMode.toggleMode(action.mode), this.modeState.kind);
+        }
+        this.enterVisualMode(action.mode);
         return "handled";
       case "enterReplace":
         this.enterReplaceMode({ count: this.normalMode.takeCountForMotion(1), separator: "" });
@@ -672,10 +664,10 @@ export class Vim {
       case "pushEditOperator":
         return this.applyNormalResult(this.normalMode.handleEditOperatorKey(action.operator, action.key));
       case "pushObject":
-        this.operatorStack.pushObject(action.around, this.normalChordKey(action.key));
+        this.operatorStack.pushObject(action.around, this.normalMode.chordKey(action.key));
         return "handled";
       case "pushIndent":
-        this.operatorStack.pushIndent(action.direction, this.takeCountForMotion(1), this.normalChordKey(action.key, { includeCount: true }));
+        this.operatorStack.pushIndent(action.direction, this.takeCountForMotion(1), this.normalMode.chordKey(action.key, { includeCount: true }));
         return "handled";
       case "normalCommand":
         return this.applyNormalResult(this.normalMode.handleCommand(action.command));
@@ -718,7 +710,7 @@ export class Vim {
       case "pushConvert":
         if (this.modeState.kind === "normal") {
           const key = keyForConvertTarget(action.target);
-          this.operatorStack.pushConvert(action.target, this.takeCountForMotion(1), this.normalChordKey(`g${key}`, { includeCount: true }));
+          this.operatorStack.pushConvert(action.target, this.takeCountForMotion(1), this.normalMode.chordKey(`g${key}`, { includeCount: true }));
         } else if (this.isVisualMode()) {
           this.visualMode.convertSelections(action.target);
           this.setMode("normal");
@@ -726,7 +718,7 @@ export class Vim {
         return "handled";
       case "join":
         if (this.modeState.kind === "normal") {
-          return this.applyNormalResult(this.normalMode.handleCommand({ type: "join", insertWhitespace: action.insertWhitespace }));
+          return this.applyNormalResult(this.normalMode.joinLines({ insertWhitespace: action.insertWhitespace }));
         } else if (this.isVisualMode()) {
           this.visualMode.joinSelections({ insertWhitespace: action.insertWhitespace });
           this.setMode("normal");
@@ -735,7 +727,7 @@ export class Vim {
       case "incrementStep": {
         const count = this.takeCountForMotion(1);
         const delta = (action.direction === "increment" ? 1 : -1) * count;
-        incrementNumbers(this.editor, delta, delta);
+        incrementNumbers(this.editor, delta, action.cumulative ? delta : 0);
         if (this.isVisualMode()) {
           this.visualMode.clearState();
           this.editor.setCursorStyle("block");
@@ -839,21 +831,6 @@ export class Vim {
       return "handled";
     }
 
-    const pendingUnmatched = this.operatorStack.activeUnmatched();
-    if (this.modeState.kind === "normal" && pendingUnmatched !== undefined) {
-      this.operatorStack.popUnmatched();
-      if (key === "space") {
-        this.insertEmptyLines(pendingUnmatched.type === "unmatchedBackward" ? "above" : "below", pendingUnmatched.count);
-        return "handled";
-      }
-      this.applyMotion(
-        pendingUnmatched.type === "unmatchedForward"
-          ? { type: "unmatchedForward", char: key }
-          : { type: "unmatchedBackward", char: key },
-        pendingUnmatched.count);
-      return "handled";
-    }
-
     return undefined;
   }
 
@@ -874,12 +851,12 @@ export class Vim {
     if (key === "enter") this.operatorStack.popTopLevel("search");
     if (motion !== undefined) {
       this.searchOriginMode = undefined;
-      this.setMode(originMode === "visual" || originMode === "visualLine" || originMode === "visualBlock" ? originMode : "normal");
+      this.setMode(isVisualModeKind(originMode) ? originMode : "normal");
       this.applyMotion(motion, 1);
       this.editor.clearSearchHighlights();
     } else if (key === "enter") {
       this.searchOriginMode = undefined;
-      this.setMode(originMode === "visual" || originMode === "visualLine" || originMode === "visualBlock" ? originMode : "normal");
+      this.setMode(isVisualModeKind(originMode) ? originMode : "normal");
     }
     return "handled";
   }
@@ -1018,8 +995,8 @@ export class Vim {
     return result.keyResult;
   }
 
-  private enterVisualMode(kind: Parameters<VisualMode["enter"]>[0], mode: Extract<VisualResultMode, "visual" | "visualLine" | "visualBlock">): void {
-    this.visualMode.enter(kind);
+  private enterVisualMode(mode: Extract<VisualResultMode, "visual" | "visualLine" | "visualBlock">): void {
+    this.visualMode.enter(visualKindForMode(mode));
     this.setMode(mode);
   }
 
@@ -1119,10 +1096,7 @@ export class Vim {
 
   private shouldResolveRemap(): boolean {
     if (this.remapResolver.isPending()) return true;
-    return this.operatorStack.activeFind() === undefined
-      && this.operatorStack.activeUnmatched() === undefined
-      && !this.keymapResolver.isPending()
-      && this.operatorStack.length === 0;
+    return !this.keymapResolver.isPending() && this.operatorStack.length === 0;
   }
 
   private currentRemapMode() {
@@ -1171,22 +1145,37 @@ export class Vim {
 
   private shouldResolveMotionModeAction(): boolean {
     if (!this.isMotionMode() || this.modeIsExpectingRegisterName()) return false;
+    const operator = this.operatorStack.operatorContext();
     if (this.modeState.kind === "normal") {
-      return !this.normalMode.hasPendingNonCount()
-        || this.normalMode.canResolveMotionCentrally();
+      // Motions are available when idle or as edit-operator targets; other
+      // pending operators (convert/indent/objects) consume motion keys through
+      // the waiting-input path instead.
+      return operator === "none" || isEditOperatorContext(operator);
     }
-    return this.isVisualMode() && !this.visualMode.hasPendingNonCount();
+    return this.isVisualMode() && operator === "none";
   }
 
   private shouldResolveSharedAction(key: string): boolean {
     if (!this.isMotionMode() || this.modeIsExpectingRegisterName()) return false;
-    if (this.modeState.kind !== "normal") return !this.visualMode.hasPendingNonCount();
-    if (this.normalMode.pendingOperatorName() !== undefined) return key === "g";
-    return !this.normalMode.hasPendingNonCount();
+    const operator = this.operatorStack.operatorContext();
+    if (this.modeState.kind !== "normal") return operator === "none";
+    switch (operator) {
+      case "none":
+        // A selected register is irrelevant for motions, matching Vim.
+        return true;
+      case "delete":
+      case "change":
+      case "yank":
+        // Shared `g`-prefixed motions can be operator targets (`d g g`).
+        return key === "g";
+      case "object":
+      case "other":
+        return false;
+    }
   }
 
   private shouldResolveNormalChord(): boolean {
-    return this.modeState.kind === "normal" && !this.normalMode.hasPendingNonCount();
+    return this.modeState.kind === "normal" && this.operatorStack.operatorContext() === "none";
   }
 
   private applySearchUnderCursor({ backwards }: { backwards: boolean }): void {
@@ -1491,7 +1480,7 @@ export class Vim {
   }
 
   private isVisualMode(): boolean {
-    return this.modeState.kind === "visual" || this.modeState.kind === "visualLine" || this.modeState.kind === "visualBlock";
+    return isVisualModeKind(this.modeState.kind);
   }
 
   private isEscape(key: string): boolean {
