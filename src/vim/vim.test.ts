@@ -264,9 +264,11 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
     ]);
-    vim.syncFromUndoRedoState({ render: false });
+    vim.syncFromUndoRedoState();
 
     expect(vim.modeName).toBe("vim:visual");
+    // The external selections are already canonical-equivalent, so adoption
+    // leaves the editor state untouched (preserving native gesture state).
     expect(editor.getSelections()).toEqual([
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
@@ -281,7 +283,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
 
     expect(vim.modeName).toBe("vim:visual");
     runKeys(vim, ["<escape>"]);
@@ -342,7 +344,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["d"]);
 
     expect(vim.modeName).toBe("vim:normal");
@@ -362,7 +364,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["c", "X", "<escape>"]);
 
     expect(vim.modeName).toBe("vim:normal");
@@ -378,7 +380,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["l", "d"]);
 
     expect(vim.modeName).toBe("vim:normal");
@@ -394,7 +396,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 2 } },
       { type: "charwise", anchor: { row: 1, column: 5 }, head: { row: 1, column: 6 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["i", "w", "d"]);
 
     expect(vim.modeName).toBe("vim:normal");
@@ -1324,7 +1326,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 3 }, head: { row: 0, column: 5 } },
       { type: "charwise", anchor: { row: 1, column: 3 }, head: { row: 1, column: 5 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["y"]);
 
     editor.setSelections([
@@ -1372,7 +1374,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["y"]);
 
     expect(vim.readRegister(undefined)).toBe("one\nred");
@@ -1381,7 +1383,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 2, column: 0 }, head: { row: 2, column: 1 } },
       { type: "charwise", anchor: { row: 3, column: 0 }, head: { row: 3, column: 1 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["p"]);
 
     expect(editor.getText()).toBe("one two\nred blue\none\nred");
@@ -1396,7 +1398,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 1 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 1 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     await runKeysAsync(vim, ["\"", "+", "p"], clipboard);
 
     expect(editor.getText()).toBe("one\nred");
@@ -1414,7 +1416,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 1 } },
       { type: "charwise", anchor: { row: 2, column: 0 }, head: { row: 2, column: 1 } },
     ]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     await runKeysAsync(vim, ["p"], clipboard);
 
     expect(editor.getText()).toBe("seed\none\nred");
@@ -1915,10 +1917,127 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const externalSelection = { type: "charwise" as const, anchor: { row: 0, column: 1 }, head: { row: 0, column: 4 } };
 
     editor.setSelections([externalSelection]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
 
     expect(vim.modeName).toBe("vim:visual");
     expect(editor.getSelections()).toEqual([externalSelection]);
+  });
+
+  it("does not rewrite a backward external selection when adopting it", () => {
+    // Like Neovim, anchor and active are not swapped unless the selection is
+    // actually extended; adoption must not disturb native drag anchors.
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+    const backwardSelection = { type: "charwise" as const, anchor: { row: 0, column: 4 }, head: { row: 0, column: 1 } };
+
+    editor.setSelections([backwardSelection]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([backwardSelection]);
+  });
+
+  it("does not rewrite a full-line external selection ending at the next line start", () => {
+    // A triple-click line selection ends at column 0 of the next line. That
+    // boundary encoding raises to the same Vim geometry as ending at the end of
+    // the line, so adoption must keep the native shape (and the native line-drag
+    // anchor) untouched.
+    const editor = new InMemoryVimEditor("abc\nxy");
+    const vim = new Vim(editor);
+    const lineSelection = { type: "charwise" as const, anchor: { row: 0, column: 0 }, head: { row: 1, column: 0 } };
+
+    editor.setSelections([lineSelection]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([lineSelection]);
+  });
+
+  it("rewrites external selections whose canonicalization changes the Vim meaning", () => {
+    // A backward selection anchored just past an empty line cannot be
+    // represented exactly; adoption normalizes it to the canonical equivalent.
+    const editor = new InMemoryVimEditor("abc\n\nxy");
+    const vim = new Vim(editor);
+
+    editor.setSelections([{ type: "charwise", anchor: { row: 2, column: 0 }, head: { row: 0, column: 0 } }]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 0, column: 0 }, cursor: { row: 0, column: 0 }, goal: undefined },
+    ]);
+  });
+
+  it("places the normal cursor at the clicked cell after a drag-shrunk visual selection", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor);
+
+    // Mouse drag from 'b' over 'c'...
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 3 } }]);
+    vim.syncFromEditorState();
+    expect(vim.modeName).toBe("vim:visual");
+
+    // ...then back so only 'b' stays selected. Adoption keeps the canonical
+    // native shape untouched.
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 2 } }]);
+    vim.syncFromEditorState();
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 2 } },
+    ]);
+
+    // A click on 'a' (cell-floored mouse position) collapses to a normal cursor
+    // exactly on the clicked cell, with no stale visual state surviving.
+    editor.setSelections([charwiseSelection({ row: 0, column: 0 })]);
+    vim.syncFromEditorState();
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([charwiseSelection({ row: 0, column: 0 })]);
+  });
+
+  it("collapses a single one-character external selection onto the selected character", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 2 } }]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([charwiseSelection({ row: 0, column: 1 })]);
+  });
+
+  it("collapses a backward one-character external selection onto the selected character", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 2 }, head: { row: 0, column: 1 } }]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getSelections()).toEqual([charwiseSelection({ row: 0, column: 1 })]);
+  });
+
+  it("keeps one-character selections visual when already in visual mode", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v"]);
+    editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 2 } }]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:visual");
+  });
+
+  it("keeps multicursor one-character external selections visual", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor);
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 2 } },
+      { type: "charwise", anchor: { row: 1, column: 1 }, head: { row: 1, column: 2 } },
+    ]);
+    vim.syncFromEditorState();
+
+    expect(vim.modeName).toBe("vim:visual");
   });
 
   it("clears pending operators when external sync adopts visual mode", () => {
@@ -1929,7 +2048,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.modeName).toBe("vim:normal+");
 
     editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 4 } }]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
 
     expect(vim.modeName).toBe("vim:visual");
     runKeys(vim, ["w"]);
@@ -1941,14 +2060,14 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
 
     editor.setSelections([{ type: "charwise", anchor: { row: 0, column: 4 }, head: { row: 0, column: 1 } }]);
-    vim.syncFromEditorState({ render: false });
+    vim.syncFromEditorState();
     runKeys(vim, ["S", "b"]);
 
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.getText()).toBe("a(bcd)ef");
   });
 
-  it("can render an externally-adopted visual selection when Vim takes over", () => {
+  it("keeps an externally-adopted visual selection shape and applies Vim motions from it", () => {
     const editor = new InMemoryVimEditor("abcdef");
     const vim = new Vim(editor);
 
@@ -1956,12 +2075,20 @@ describe("Zed-inspired Vim core smoke tests", () => {
     vim.syncFromEditorState();
 
     expect(vim.modeName).toBe("vim:visual");
+    // Adoption leaves the canonical-equivalent native shape untouched; the
+    // adopted Vim state still drives subsequent motions from the cursor cell.
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 1 }, head: { row: 0, column: 4 } },
+    ]);
+
+    runKeys(vim, ["l"]);
     expect(editor.getSelections()).toEqual([
       {
         type: "charwise",
         anchor: { row: 0, column: 1 },
-        head: { row: 0, column: 4 },
-        cursor: { row: 0, column: 3 },
+        head: { row: 0, column: 5 },
+        cursor: { row: 0, column: 4 },
+        goal: undefined,
       },
     ]);
   });

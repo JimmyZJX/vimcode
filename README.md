@@ -42,9 +42,14 @@ Done in this branch:
   - `src/vim/test/neovim_fixtures.ts` reads/writes `src/vim/test_data/*.json` fixtures using `Put` / `Key` / `ReadRegister` / `Get` entries inspired by Zed's `NeovimData`.
   - `src/vim/test/neovim_backed_test_context.ts` compares local editor state with Neovim/fixtures.
   - `src/vim/neovim.test.ts` discovers every fixture in `src/vim/test_data`; enabled files become Jest tests and files headed by `// DISABLED: <reason>` become skipped tests.
+- Added `src/vim/selection_geometry.ts` as the single owner of the boundary<->character-cell
+  conversion (raise/lower/canonicalize/render cursor) with round-trip property tests, a
+  canonical write-back invariant in `Vim.syncFromEditorState`, always-explicit render-cursor
+  cells from the adapter, and a rewritten cell-flooring mouse hit-testing patch. See
+  "Mouse and selection-sync invariants" below.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 378 enabled tests.
+  - `npm test -- --runInBand` passes with 423 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -221,6 +226,7 @@ Current alignment:
 | `src/vim/object.ts`    | `object.rs`                                     | Text objects.                                                                                                                          |
 | `src/vim/insert.ts`    | `insert.rs` plus insert-related normal commands | Insert-mode behavior and insert command helpers.                                                                                       |
 | `src/vim/registers.ts` | `state::Register` / `VimGlobals.registers`      | Local register model until state grows closer to Zed.                                                                                  |
+| `src/vim/selection_geometry.ts` | `visual.rs` selection expansion | Single owner of the boundary<->character-cell conversion between native exclusive selections and inclusive Vim geometry (raise/lower/canonicalize/render cursor). Zed has no such layer because its editor shares Vim's selection model. |
 | `src/vim/test/*`       | `test/*`                                        | Neovim-backed harness and fixture machinery.                                                                                           |
 | `src/vim/test_data/*`  | `test_data/*`                                   | Fixture-driven compatibility backlog.                                                                                                  |
 
@@ -447,6 +453,40 @@ The production adapter should own all VSCode-specific behavior:
 - update cursor style on mode changes and restore the user's prior cursor style when disabled/disposed;
 - avoid intercepting IME composition and avoid stealing keys when focus is in editor widgets such as find/suggest/rename unless explicitly desired.
 
+Mouse and selection-sync invariants
+
+Cursor alignment bugs (clicks landing one character off, stale block cursors after
+mouse interaction with visual mode) repeatedly came from having multiple translation
+points between VSCode's boundary-based selections and Vim's character-cell model.
+The design now enforces three invariants; new mouse/selection work should preserve
+them rather than adding case-specific guards:
+
+1. One mouse rounding point. In Vim block-cursor mode (`.vim-character-mode-enabled`),
+   hit testing floors the mouse position to the start of the character cell under the
+   pointer (`MouseTargetFactory.createMouseTargetFromHitTestPosition` in
+   `vim-mouse-hit-testing.patch`). Every native consumer — plain clicks, drags,
+   drag-and-drop drop targets, word/line select seeds, multicursor clicks — shares the
+   floored position, so VSCode's own gesture logic stays untouched. The only other
+   mouse-specific rule is one direction-aware cell-extension hook in
+   `CursorMoveCommands.moveTo` so charwise drags include both the anchor cell and the
+   pointed-at cell, mirroring the native word/line range-anchor model.
+2. Canonical write-back, but only when it changes meaning. After every external sync,
+   `Vim.syncFromEditorState` compares the adopted selections against their canonical
+   form. Selections whose canonicalization changes the raised Vim geometry are
+   rewritten through `editor.setSelections`; canonical-equivalent shapes (including
+   boundary re-encodings such as a full-line selection ending at the next line start,
+   and un-extended backward selections, which Neovim also never swaps) are left
+   untouched, because calling `setSelections` mid-gesture destroys native cursor
+   state such as the word/line range anchor of a double/triple-click drag.
+   Conversions go through `src/vim/selection_geometry.ts`, the single owner of the
+   boundary<->cell convention, with round-trip property tests. Vim-sourced selection
+   events are ignored by the controller, so the write-back cannot loop.
+3. One render-cursor writer. The adapter always attaches explicit cursor cells
+   (`vim.cursorPositions` source channel) when lowering selections, which also forces a
+   view cursor refresh even when the model state is unchanged. The view-side heuristic
+   in `vim-cursor-rendering.patch` remains only as fallback for selection changes that
+   do not go through `setSelections` (e.g. `executeEdits` cursor states).
+
 Key interception recommendation
 
 Start with an editor contribution that listens to `editor.onKeyDown`. When the modal state says the key is handleable, call into the Vim controller, then `preventDefault()` and `stopPropagation()` on the keyboard event. This is the smallest patch surface and should prevent the workbench keybinding service from seeing handled keys if the editor event fires during target/bubble propagation.
@@ -492,6 +532,13 @@ areas in a real editor buffer:
   - With Vim in normal mode, select text with the mouse: Vim status should switch to visual mode and selection should get Vim visual rendering/cursor behavior.
   - With Vim in visual mode, click to a zero-width cursor or undo/redo to a zero-width selection: Vim status should switch back to normal mode.
   - External multicursor/selection changes should be translated as plain charwise Vim selections when they do not match Vim's cached semantic state.
+- Mouse character-cell behavior (normal/visual modes)
+  - Clicking anywhere on a character (including its right half) parks the normal cursor on that character.
+  - Dragging from one character to another selects both end cells inclusively; dragging back shrinks the selection cell by cell, and reversing direction across the anchor keeps the anchor cell selected.
+  - Tiny in-cell drags do not enter visual mode.
+  - Regression: select one character via drag (e.g. drag b -> c -> b in `abc`), then click the right half of a previous character; the cursor must land exactly on the clicked character with no stale block cursor (previously it could show on the old selection end).
+  - Clicking on an existing selection (drag-and-drop deferral path) and releasing without movement parks the cursor on the clicked cell.
+  - Double-click still selects the word under the pointer; double-click drag extends word-wise in both directions and dragging backwards keeps the double-clicked word selected; triple-click selects lines and triple-click drag keeps the clicked line selected.
 
 Known caveats still intentionally not fully covered:
 

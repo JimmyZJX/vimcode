@@ -30,8 +30,23 @@ export type CursorReconciliation = {
 
 export function reconcileCursorState(
   vscodeState: EditorCursorState,
-  _vimState: VimCursorState
+  vimState: VimCursorState
 ): CursorReconciliation {
+  // Minor mouse movement in normal mode produces a single one-character native
+  // selection (the patched hit testing selects the character cell under the
+  // pointer). Treat it as cursor placement on that character, not visual mode.
+  const minorSelection = minorSingleCharacterSelection(vscodeState.selections, vimState.mode);
+  if (minorSelection !== undefined) {
+    return {
+      modeKind: "normal",
+      selections: [collapseToSelectedCharacterCursor(minorSelection)],
+      selectionCount: vscodeState.selections.length,
+      visualSelectionFound: false,
+      adoptedVisualSelection: false,
+      reason: "collapsed single-character selection in normal mode",
+    };
+  }
+
   const visualSelectionFound = hasNonEmptyCharwiseSelection(vscodeState.selections);
   if (visualSelectionFound) {
     return {
@@ -58,6 +73,28 @@ export function hasNonEmptyCharwiseSelection(selections: readonly VimSelection[]
   return selections.some(selection =>
     selection.type === "charwise"
     && comparePositions(selection.anchor, selection.head) !== 0);
+}
+
+function minorSingleCharacterSelection(
+  selections: readonly VimSelection[],
+  mode: VimMode
+): Extract<VimSelection, { type: "charwise" }> | undefined {
+  if (mode.kind !== "normal" || selections.length !== 1) return undefined;
+  const selection = selections[0];
+  if (selection?.type !== "charwise") return undefined;
+  const range = rangeOfSelection(selection);
+  const isSingleCharacter = range.start.row === range.end.row
+    && range.end.column - range.start.column === 1;
+  return isSingleCharacter ? selection : undefined;
+}
+
+// The single selected character is [range.start, range.end); parking the cursor
+// on that character means using the range start, regardless of selection direction.
+function collapseToSelectedCharacterCursor(
+  selection: Extract<VimSelection, { type: "charwise" }>
+): VimSelection {
+  const collapsed = charwiseSelection(rangeOfSelection(selection).start);
+  return selection.goal === undefined ? collapsed : { ...collapsed, goal: selection.goal };
 }
 
 export function hasMultipleCursorsOrSelection(selections: readonly VimSelection[]): boolean {

@@ -13,6 +13,7 @@ import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
+import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
 import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
 
 type ExplicitSelectionEditor = ICodeEditor & {
@@ -606,9 +607,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 					selection.head.row + 1,
 					selection.head.column + 1
 				);
+				// Always pass an explicit render-cursor cell: the patched view renders
+				// the block cursor only from this channel (or its native fallback), and
+				// an explicit cell also forces a cursor view event even when the model
+				// state is unchanged, so the rendered cursor can never go stale after a
+				// Vim-side write-back.
 				return {
 					selections: [vscodeSelection],
-					cursorPositions: selection.cursor === undefined ? [] : [toVSCodePosition(selection.cursor)],
+					cursorPositions: [toVSCodePosition(charwiseRenderCursor(this, selection))],
 				};
 			}
 			case 'linewise': {
@@ -709,22 +715,7 @@ function extendCharwiseSelection(
 	goal: VimSelectionGoal
 ): VimSelection {
 	const anchor = inclusiveVisualAnchor(editor, selection);
-	if (comparePositions(anchor, target) <= 0) {
-		return {
-			...selection,
-			anchor,
-			head: exclusiveVisualHead(editor, target),
-			cursor: target,
-			goal,
-		};
-	}
-	return {
-		...selection,
-		anchor: exclusiveVisualHead(editor, anchor),
-		head: target,
-		cursor: target,
-		goal,
-	};
+	return lowerCharwiseGeometry(editor, { anchor, head: target, goal });
 }
 
 function inclusiveVisualAnchor(
@@ -733,26 +724,8 @@ function inclusiveVisualAnchor(
 ): VimPosition {
 	const head = selection.cursor ?? selection.head;
 	return comparePositions(head, selection.anchor) < 0
-		? previousVisualPosition(editor, selection.anchor)
+		? previousCharacterCell(editor, selection.anchor)
 		: selection.anchor;
-}
-
-function previousVisualPosition(editor: VSCodeVimEditor, position: VimPosition): VimPosition {
-	if (position.column > 0) {
-		return { row: position.row, column: position.column - 1 };
-	}
-	if (position.row > 0) {
-		return { row: position.row - 1, column: Math.max(0, editor.lineLength(position.row - 1) - 1) };
-	}
-	return position;
-}
-
-function exclusiveVisualHead(editor: VSCodeVimEditor, head: VimPosition): VimPosition {
-	const lineLength = editor.lineLength(head.row);
-	if (lineLength === 0) {
-		return head;
-	}
-	return { row: head.row, column: Math.min(head.column + 1, lineLength) };
 }
 
 type ViewModelLike = NonNullable<ReturnType<ICodeEditor['_getViewModel']>>;

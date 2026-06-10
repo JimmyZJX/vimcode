@@ -74,14 +74,14 @@ export function editorFromMarkedText(markedText: string): { editor: InMemoryVimE
   const editor = new InMemoryVimEditor(parsed.text);
   editor.setSelections(selectionsFromParsedMarkedText(parsed));
   const vim = new Vim(editor);
-  if (parsed.mode === "visual") vim.syncFromEditorState({ render: false });
+  if (parsed.mode === "visual") vim.syncFromEditorState();
   return { editor, vim };
 }
 
 export function resetEditorFromMarkedText(editor: InMemoryVimEditor, vim: Vim, markedText: string): void {
   const parsed = parseMarkedText(markedText);
   editor.resetForTest(parsed.text, selectionsFromParsedMarkedText(parsed));
-  vim.syncFromEditorState({ render: false });
+  vim.syncFromEditorState();
 }
 
 function selectionsFromParsedMarkedText(parsed: ParsedMarkedText): readonly VimSelection[] {

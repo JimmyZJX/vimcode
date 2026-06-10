@@ -378,7 +378,7 @@ export class VimController extends Disposable {
 		this.handleExternalEditorStateChanged('model');
 	}
 
-	private handleExternalEditorStateChanged(source?: string, { render = false }: { render?: boolean } = {}): void {
+	private handleExternalEditorStateChanged(source?: string): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		if (!this.hasModel()) {
 			this.pendingUndoRedoContentSync = false;
@@ -387,7 +387,7 @@ export class VimController extends Disposable {
 			return;
 		}
 		this.vimEditor.invalidateCachedSelections();
-		const result = this.vim.syncFromEditorState({ render });
+		const result = this.vim.syncFromEditorState();
 		this.logVisualSyncDecision(source ?? 'external', result);
 		this.syncEditorState();
 	}
@@ -405,7 +405,7 @@ export class VimController extends Disposable {
 		}
 		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
 		this.vimEditor.invalidateCachedSelections();
-		const result = this.vim.syncFromUndoRedoState({ render: false });
+		const result = this.vim.syncFromUndoRedoState();
 		this.logVisualSyncDecision(`undoRedo:${reason}`, result);
 		this.logUndo(`syncFromUndoRedoState end reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
 		this.syncEditorState();

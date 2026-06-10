@@ -22,6 +22,7 @@ import { cursorAfterDeletingRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
 import { VimOperatorStack } from "./operator.js";
+import { canonicalVimSelection, canonicalizationChangesMeaning, characterCellEnd, lowerCharwiseGeometry, raiseCharwiseSelection } from "./selection_geometry.js";
 import { addSurrounds } from "./surrounds.js";
 import {
   KeyResult,
@@ -161,8 +162,20 @@ export class VisualMode {
     }
   }
 
-  adoptSelection(selection: VimSelection, { render }: { render: boolean }): boolean {
-    return this.adoptCharwiseSelection(selection, { render, allowEmpty: false });
+  adoptSelection(selection: VimSelection): boolean {
+    if (!this.adoptCharwiseSelection(selection, { allowEmpty: false })) return false;
+    // Canonical write-back invariant: after adopting external selection state,
+    // re-lower it through the shared cell geometry so native selections and the
+    // adopted Vim state agree. The write-back only happens when canonicalization
+    // changes a selection's Vim meaning: rewriting equivalent shapes would
+    // destroy in-progress native gesture state (e.g. the word-range anchor of a
+    // double-click drag), and for equivalent shapes the rendered cursor already
+    // matches the Vim cursor cell.
+    const current = this.editor.getSelections();
+    if (current.some(selection => canonicalizationChangesMeaning(this.editor, selection))) {
+      this.editor.setSelections(current.map(selection => canonicalVimSelection(this.editor, selection)));
+    }
+    return true;
   }
 
   clearState(): void {
@@ -637,7 +650,7 @@ export class VisualMode {
     if (selection === undefined) return;
     switch (selection.type) {
       case "charwise":
-        this.adoptCharwiseSelection(selection, { render: false, allowEmpty: true });
+        this.adoptCharwiseSelection(selection, { allowEmpty: true });
         return;
       case "linewise":
         this.state = {
@@ -662,7 +675,7 @@ export class VisualMode {
 
   private adoptCharwiseSelection(
     selection: VimSelection,
-    { render, allowEmpty }: { render: boolean; allowEmpty: boolean }
+    { allowEmpty }: { allowEmpty: boolean }
   ): boolean {
     if (selection.type !== "charwise") return false;
     if (!allowEmpty && comparePositions(selection.anchor, selection.head) === 0) return false;
@@ -671,7 +684,6 @@ export class VisualMode {
     this.countState.clear();
     this.state = externalSelectionToCharwiseState(this.editor, selection);
     this.editor.setCursorStyle("line");
-    if (render && this.editor.getSelections().length <= 1) this.syncEditorSelection();
     return true;
   }
 
@@ -762,43 +774,7 @@ function convertTargetForKey(key: string): ConvertTarget {
 }
 
 function externalSelectionToCharwiseState(editor: VimEditorCapabilities, selection: Extract<VimSelection, { type: "charwise" }>): CharwiseVisualState {
-  if (selection.cursor !== undefined) {
-    if (comparePositions(selection.cursor, selection.anchor) < 0) {
-      return {
-        kind: "charwise",
-        anchor: previousVisualPosition(editor, selection.anchor),
-        head: selection.cursor,
-        goal: selection.goal,
-      };
-    }
-    return {
-      kind: "charwise",
-      anchor: selection.anchor,
-      head: selection.cursor,
-      goal: selection.goal,
-    };
-  }
-
-  if (comparePositions(selection.anchor, selection.head) <= 0) {
-    return {
-      kind: "charwise",
-      anchor: selection.anchor,
-      head: previousVisualPosition(editor, selection.head),
-      goal: selection.goal,
-    };
-  }
-  return {
-    kind: "charwise",
-    anchor: previousVisualPosition(editor, selection.anchor),
-    head: selection.head,
-    goal: selection.goal,
-  };
-}
-
-function previousVisualPosition(editor: VimEditorCapabilities, position: Position): Position {
-  if (position.column > 0) return { row: position.row, column: position.column - 1 };
-  if (position.row > 0) return { row: position.row - 1, column: Math.max(0, editor.lineLength(position.row - 1) - 1) };
-  return position;
+  return { kind: "charwise", ...raiseCharwiseSelection(editor, selection) };
 }
 
 function initialCharwiseHead(_editor: VimEditorCapabilities, head: Position): Position {
@@ -1024,49 +1000,28 @@ function visualStateToEditorSelection(editor: VimEditorCapabilities, state: Visu
 }
 
 function charwiseStateToEditorSelection(editor: VimEditorCapabilities, state: CharwiseVisualState): VimSelection {
-  if (isForwardCharwiseVisualState(state)) {
-    return {
-      type: "charwise",
-      anchor: state.anchor,
-      head: exclusiveVisualHead(editor, state.head),
-      cursor: state.cursor ?? state.head,
-      goal: state.goal,
-    };
-  }
-
-  return {
-    type: "charwise",
-    anchor: exclusiveVisualHead(editor, state.anchor),
-    head: state.head,
-    cursor: state.head,
-    goal: state.goal,
-  };
+  const lowered = lowerCharwiseGeometry(editor, state);
+  return isForwardCharwiseVisualState(state) && state.cursor !== undefined
+    ? { ...lowered, cursor: state.cursor }
+    : lowered;
 }
 
 function charwiseVisualRange(editor: VimEditorCapabilities, state: CharwiseVisualState): TextRange {
   if (isForwardCharwiseVisualState(state)) {
     return {
       start: state.anchor,
-      end: exclusiveVisualHead(editor, state.head),
+      end: characterCellEnd(editor, state.head),
     };
   }
 
   return {
     start: state.head,
-    end: exclusiveVisualHead(editor, state.anchor),
+    end: characterCellEnd(editor, state.anchor),
   };
 }
 
 function isForwardCharwiseVisualState(state: CharwiseVisualState): boolean {
   return comparePositions(state.anchor, state.head) <= 0;
-}
-
-function exclusiveVisualHead(editor: VimEditorCapabilities, head: Position): Position {
-  const lineLength = editor.lineLength(head.row);
-  if (lineLength === 0) return head;
-  if (head.column < lineLength) return { row: head.row, column: head.column + 1 };
-  if (head.row + 1 < editor.lineCount()) return { row: head.row + 1, column: 0 };
-  return head;
 }
 
 function charwiseStateForRange(editor: VimEditorCapabilities, range: TextRange): CharwiseVisualState {

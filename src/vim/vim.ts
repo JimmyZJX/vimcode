@@ -272,7 +272,12 @@ export class Vim {
       || this.normalMode.isPending();
   }
 
-  syncFromEditorState({ render = true }: { render?: boolean } = {}): EditorSyncResult {
+  // External-state synchronization always ends in a canonical write-back: the
+  // adopted Vim state is re-lowered through editor.setSelections so the native
+  // selections, adapter cache, and rendered cursor cell agree with Vim after
+  // every external event. Vim-sourced selection events are ignored by the
+  // controller, so the write-back cannot feed back into this path.
+  syncFromEditorState(): EditorSyncResult {
     const modeBeforeSync = this.modeState.kind;
     const selections = this.editor.getSelections();
     const reconciliation = reconcileCursorState(
@@ -283,7 +288,7 @@ export class Vim {
     if (reconciliation.modeKind === "visual") {
       const visualSelection = reconciliation.selections.find(selection => selection.type === "charwise");
       const adopted = visualSelection !== undefined
-        && this.visualMode.adoptSelection(visualSelection, { render });
+        && this.visualMode.adoptSelection(visualSelection);
       if (adopted) {
         this.clearPendingForExternalModeChange();
         this.insertOrigin = undefined;
@@ -296,7 +301,6 @@ export class Vim {
       this.visualMode.clearState();
     }
     this.insertOrigin = undefined;
-    if (render) this.editor.setCursorStyle("block");
     const normalSelections = collapseSelectionsToNormalCursors(reconciliation.selections)
       .map(selection => {
         const normalSelection = charwiseSelection(normalCursorPosition(this.editor, selectionHead(selection)));
@@ -304,6 +308,7 @@ export class Vim {
       });
     this.editor.setSelections(normalSelections);
     if (modeBeforeSync !== "search" && modeBeforeSync !== "command") {
+      this.editor.setCursorStyle("block");
       this.setMode("normal");
     }
     return {
@@ -315,8 +320,8 @@ export class Vim {
     };
   }
 
-  syncFromUndoRedoState({ render = true }: { render?: boolean } = {}): EditorSyncResult {
-    return this.syncFromEditorState({ render });
+  syncFromUndoRedoState(): EditorSyncResult {
+    return this.syncFromEditorState();
   }
 
   private clearPendingForModelSwitch(): void {
@@ -749,23 +754,23 @@ export class Vim {
       case "native":
         this.globalState.repeat.cancelCurrent();
         this.editor.executeNativeCommand(action.command);
-        this.syncFromEditorState({ render: false });
+        this.syncFromEditorState();
         return "handled";
       case "hostCommand":
         this.editor.executeHostCommand(action.command);
-        this.syncFromEditorState({ render: false });
+        this.syncFromEditorState();
         return "handled";
       case "scrollLines":
         this.editor.scrollByLines(action.direction, this.takeCountForMotion(1));
-        this.syncFromEditorState({ render: false });
+        this.syncFromEditorState();
         return "handled";
       case "revealCurrentLine":
         this.editor.revealCurrentLine(action.target);
-        this.syncFromEditorState({ render: false });
+        this.syncFromEditorState();
         return "handled";
       case "fold":
         this.editor.executeFoldCommand(action.command);
-        this.syncFromEditorState({ render: false });
+        this.syncFromEditorState();
         return "handled";
     }
   }
@@ -1458,7 +1463,7 @@ export class Vim {
         ? { type: "charwise", anchor: range.end, head: range.start }
         : { type: "charwise", anchor: range.start, head: range.end }]);
     }
-    if (this.visualMode.adoptSelection(this.editor.getSelections()[0], { render: true })) {
+    if (this.visualMode.adoptSelection(this.editor.getSelections()[0])) {
       this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
     }
   }
