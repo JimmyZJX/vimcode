@@ -6,7 +6,8 @@
 //   clipboard string; linewise, register, visual, and multicursor fidelity are incomplete.
 
 import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
-import { Motion, lineRange, linewiseCursorAfterDelete, motionRange } from "../motion.js";
+import { lineRange, linewiseCursorAfterDelete } from "../motion.js";
+import type { CharwiseTarget, OperatorTarget, RowRange } from "../operator_target.js";
 import { RegisterName, Registers } from "../registers.js";
 import {
   TextEdit,
@@ -16,34 +17,29 @@ import {
   selectionHead,
 } from "../state.js";
 
-export type LinewiseOperationRange = { startRow: number; endRow: number; column: number; cursorRow?: number };
-
-// Zed: `normal::delete::Vim::delete_motion`.
-export function deleteMotion(
+// Zed: `normal::delete::Vim::delete_motion` / `delete_object`; one application
+// for every delete target source (motion, line, object, visual).
+export function applyDelete(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  motion: Motion,
-  count: number
+  target: OperatorTarget
 ): void {
-  if (motion.type === "up" || motion.type === "down") {
-    const ranges = editor.getSelections().map(selection => {
-      const head = selectionHead(selection);
-      const targetRow = Math.max(0, Math.min(head.row + (motion.type === "up" ? -count : count), editor.lineCount() - 1));
-      return targetRow === head.row ? undefined : { startRow: Math.min(head.row, targetRow), endRow: Math.max(head.row, targetRow), column: head.column };
-    }).filter(range => range !== undefined);
-    deleteLineRange(editor, registers, registerName, ranges);
-    return;
+  switch (target.kind) {
+    case "charwise":
+      deleteTargets(editor, registers, registerName, target.targets);
+      return;
+    case "linewise":
+      deleteLineRange(editor, registers, registerName, target.rows);
+      return;
   }
-
-  deleteRange(editor, registers, registerName, (head) => motionRange(editor, head, motion, count));
 }
 
-export function deleteRange(
+export function deleteTargets(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  rangeForHead: (head: ReturnType<typeof selectionHead>) => TextEdit["range"],
+  targets: readonly CharwiseTarget[],
   cursorForRange: (editor: VimEditorCapabilities, range: TextEdit["range"], head: ReturnType<typeof selectionHead>) => ReturnType<typeof selectionHead> = cursorAfterDeletingRange,
   options: ApplyEditsOptions = {}
 ): void {
@@ -51,16 +47,14 @@ export function deleteRange(
   const selectionsAfter: VimSelection[] = [];
   const copied: string[] = [];
 
-  for (const selection of editor.getSelections()) {
-    const head = selectionHead(selection);
-    const range = rangeForHead(head);
+  for (const { range, head, cursor } of targets) {
     if (range.start.row === range.end.row && range.start.column === range.end.column) {
       selectionsAfter.push(charwiseSelection(head));
       continue;
     }
     copied.push(rangeText(editor, range));
     edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(cursorForRange(editor, range, head)));
+    selectionsAfter.push(charwiseSelection(cursor ?? cursorForRange(editor, range, head)));
   }
 
   if (copied.length > 0) {
@@ -95,7 +89,7 @@ export function deleteLineRange(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  ranges: readonly LinewiseOperationRange[]
+  ranges: readonly RowRange[]
 ): void {
   if (ranges.length === 0) return;
 
@@ -107,38 +101,8 @@ export function deleteLineRange(
     const range = lineRange(editor, rangeInfo.startRow, rangeInfo.endRow - rangeInfo.startRow + 1);
     copied.push(linewiseContent(editor, rangeInfo.startRow, rangeInfo.endRow - rangeInfo.startRow + 1));
     edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, rangeInfo.cursorRow ?? rangeInfo.startRow, rangeInfo.column, rangeInfo.endRow - rangeInfo.startRow + 1)));
-  }
-
-  if (copied.length > 0) {
-    registers.writeDelete(
-      registerName,
-      copied.join(""),
-      "linewise",
-      copied.map(text => ({ text, kind: "linewise" }))
-    );
-  }
-  editor.applyEdits(edits, selectionsAfter);
-}
-
-// Zed: `Motion::CurrentLine` flowing into `normal::delete::Vim::delete_motion`.
-export function deleteLines(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  count: number
-): void {
-  const edits: TextEdit[] = [];
-  const selectionsAfter: VimSelection[] = [];
-  const copied: string[] = [];
-
-  for (const selection of editor.getSelections()) {
-    const head = selectionHead(selection);
-    const row = head.row;
-    const range = lineRange(editor, row, count);
-    copied.push(linewiseContent(editor, row, count));
-    edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(linewiseCursorAfterDelete(editor, row, head.column, count)));
+    selectionsAfter.push(charwiseSelection(
+      rangeInfo.cursor ?? linewiseCursorAfterDelete(editor, rangeInfo.startRow, rangeInfo.column, rangeInfo.endRow - rangeInfo.startRow + 1)));
   }
 
   if (copied.length > 0) {
@@ -169,17 +133,17 @@ export function deleteCharactersBefore(
   count: number,
   options: ApplyEditsOptions = {}
 ): void {
-  deleteRange(
+  deleteTargets(
     editor,
     registers,
     registerName,
-    (head) => {
-      if (head.column === 0) return { start: head, end: head };
-      return {
-        start: { row: head.row, column: Math.max(0, head.column - count) },
-        end: head,
-      };
-    },
+    editor.getSelections().map(selection => {
+      const head = selectionHead(selection);
+      const range = head.column === 0
+        ? { start: head, end: head }
+        : { start: { row: head.row, column: Math.max(0, head.column - count) }, end: head };
+      return { head, range };
+    }),
     (_editor, range, head) => ({ row: head.row, column: range.start.column }),
     options
   );

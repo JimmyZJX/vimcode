@@ -6,53 +6,36 @@
 //   switch to insert mode; Zed has richer recording, indentation, and selection fixups.
 
 import { VimEditorCapabilities, keepUndoTransactionOpen } from "../editor.js";
-import { Motion, changeMotionRange } from "../motion.js";
+import type { OperatorTarget, RowRange } from "../operator_target.js";
 import { RegisterName, Registers } from "../registers.js";
-import { TextRange, selectionHead } from "../state.js";
-import { LinewiseOperationRange, deleteRange } from "./delete.js";
+import { deleteTargets } from "./delete.js";
 
-// Zed: `normal::change::Vim::change_motion`.
-export function changeMotion(
+// Zed: `normal::change::Vim::change_motion` / `change_object`; one application
+// for every change target source (motion, line, object, visual). Returns
+// whether the editor should enter insert mode.
+export function applyChange(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  motion: Motion,
-  count: number
+  target: OperatorTarget
 ): boolean {
-  if (motion.type === "up" || motion.type === "down") {
-    const ranges = editor.getSelections().map(selection => {
-      const head = selectionHead(selection);
-      const targetRow = Math.max(0, Math.min(head.row + (motion.type === "up" ? -count : count), editor.lineCount() - 1));
-      return targetRow === head.row ? undefined : { startRow: Math.min(head.row, targetRow), endRow: Math.max(head.row, targetRow), column: head.column };
-    }).filter(range => range !== undefined);
-    return changeLineRange(editor, registers, registerName, ranges);
+  switch (target.kind) {
+    case "charwise":
+      // Vim: change deletes the range and leaves the cursor at its start,
+      // entering insert there (`:h c`). Cancelled targets (`cap` on a trailing
+      // blank line) keep the cursor and suppress insert-mode entry.
+      deleteTargets(editor, registers, registerName, target.targets, (_editor, range) => range.start, keepUndoTransactionOpen());
+      return target.targets.some(({ cancelled }) => cancelled !== true);
+    case "linewise":
+      return changeLineRange(editor, registers, registerName, target.rows);
   }
-
-  changeRange(editor, registers, registerName, (head) => changeMotionRange(editor, head, motion, count));
-  return true;
-}
-
-export function changeRange(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  rangeForHead: (head: ReturnType<typeof selectionHead>) => TextRange
-): void {
-  deleteRange(
-    editor,
-    registers,
-    registerName,
-    rangeForHead,
-    (_editor, range) => range.start,
-    keepUndoTransactionOpen()
-  );
 }
 
 export function changeLineRange(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  ranges: readonly LinewiseOperationRange[]
+  ranges: readonly RowRange[]
 ): boolean {
   if (ranges.length === 0) return false;
 
@@ -75,8 +58,7 @@ export function changeLineRange(
       ? ""
       : endRow + 1 < editor.lineCount() ? `${indent}\n` : indent;
     edits.push({ range, text: replacement });
-    const cursorRow = rangeInfo.cursorRow ?? startRow;
-    selectionsAfter.push({ type: "charwise" as const, anchor: { row: cursorRow, column: indent.length }, head: { row: cursorRow, column: indent.length } });
+    selectionsAfter.push({ type: "charwise" as const, anchor: { row: startRow, column: indent.length }, head: { row: startRow, column: indent.length } });
   }
 
   if (copied.length > 0) {
@@ -89,24 +71,6 @@ export function changeLineRange(
   }
   editor.applyEdits(edits, selectionsAfter, keepUndoTransactionOpen());
   return true;
-}
-
-// Zed: `Motion::CurrentLine` flowing into `normal::change::Vim::change_motion`.
-export function changeLines(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  count: number
-): void {
-  const ranges = editor.getSelections().map(selection => {
-    const head = selectionHead(selection);
-    return {
-      startRow: head.row,
-      endRow: Math.min(head.row + count - 1, editor.lineCount() - 1),
-      column: head.column,
-    };
-  });
-  changeLineRange(editor, registers, registerName, ranges);
 }
 
 function indentation(line: string): string {

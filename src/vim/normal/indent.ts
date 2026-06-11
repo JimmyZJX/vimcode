@@ -6,9 +6,36 @@
 //   preserving existing indentation; language-aware indentation belongs in the host.
 
 import { VimEditorCapabilities } from "../editor.js";
+import type { OperatorTarget } from "../operator_target.js";
 import { TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from "../state.js";
 
 export type IndentDirection = "in" | "out" | "auto";
+
+// Zed: `indent::Vim::indent_motion` / `indent_object`; one application for
+// every indent target source (motion, object, line, visual). The cursor rule
+// lives in [indentRanges]: heads keep their position, shifted by the indent
+// delta on affected rows (Zed: `restore_selection_cursors`).
+export function applyIndent(
+  editor: VimEditorCapabilities,
+  direction: IndentDirection,
+  target: OperatorTarget
+): void {
+  switch (target.kind) {
+    case "charwise":
+      indentRanges(editor, target.targets.map(({ range }) => range), direction);
+      return;
+    case "linewise":
+      indentRanges(
+        editor,
+        target.rows.map(({ startRow, endRow }) => ({
+          start: { row: startRow, column: 0 },
+          end: { row: endRow, column: editor.lineLength(endRow) },
+        })),
+        direction
+      );
+      return;
+  }
+}
 
 export function indentRanges(
   editor: VimEditorCapabilities,
@@ -45,14 +72,6 @@ export function indentRanges(
   } else {
     editor.applyEdits(edits, selectionsAfter);
   }
-}
-
-export function currentLineRanges(editor: VimEditorCapabilities, count: number): readonly TextRange[] {
-  return editor.getSelections().map(selection => {
-    const row = selectionHead(selection).row;
-    const endRow = Math.min(editor.lineCount() - 1, row + count - 1);
-    return { start: { row, column: 0 }, end: { row: endRow, column: editor.lineLength(endRow) } };
-  });
 }
 
 export function visualIndentRanges(editor: VimEditorCapabilities, selections: readonly VimSelection[]): readonly TextRange[] {

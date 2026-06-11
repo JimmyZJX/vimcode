@@ -10,7 +10,7 @@ import type { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget } fr
 import { Motion, motionForKey } from "./motion.js";
 import type { ConvertTarget } from "./normal/convert.js";
 import type { IndentDirection } from "./normal/indent.js";
-import { isEditOperatorContext, type OperatorContext } from "./operator.js";
+import { isRangeOperatorContext, type OperatorContext } from "./operator.js";
 import { isVisualModeKind, type Operator, type VimMode } from "./state.js";
 
 export type VisualModeKind = "visual" | "visualLine" | "visualBlock";
@@ -82,6 +82,7 @@ export type VimAction =
   | { type: "startSearch"; backwards: boolean }
   | { type: "searchUnderCursor"; backwards: boolean }
   | { type: "motion"; motion: Motion }
+  | { type: "lineOperation" }
   | { type: "pushEditOperator"; operator: Operator; key: string }
   | { type: "pushObject"; around: boolean; key: string }
   | { type: "pushIndent"; direction: IndentDirection; key: string }
@@ -97,10 +98,16 @@ export type VimKeymapPhase = "motionMode" | "normalFallback";
 // instead of pre-combined booleans.
 export type VimKeymapContext = {
   mode: VimMode["kind"];
-  /** Operator-stack summary: "none" when empty, the edit operator awaiting a
-      motion/object, "object" when a text-object selector owns the next key,
-      "other" for any other pending operator input. */
+  /** Operator-stack summary: "none" when empty, the range operator awaiting a
+      motion/object ("delete"/"change"/"yank"/"convert"/"indent"), "object"
+      when a text-object selector owns the next key, "other" for any other
+      pending operator input. */
   operator: OperatorContext;
+  /** The pending range operator's final key (`d`, `u` for `gu`, `>`, ...).
+      Repeating it is the one doubling rule: `dd`/`yy`/`guu`/`>>` all resolve
+      to a whole-line operation (Zed: `vim::CurrentLine` bindings under the
+      per-operator `vim_operator` contexts). */
+  operatorPendingKey: string | undefined;
   hasSelectedRegister: boolean;
   countText: string;
   repeatIsReplaying: boolean;
@@ -134,6 +141,7 @@ const finiteBindings = bindingMap([
   sharedBinding("g u", pushConvert("lower")),
   sharedBinding("g U", pushConvert("upper")),
   sharedBinding("g ~", pushConvert("toggle")),
+  sharedBinding("g ?", pushConvert("rot13")),
   sharedBinding("g J", join({ insertWhitespace: false })),
   sharedBinding("g ;", { type: "changeList", direction: "older" }),
   sharedBinding("g ,", { type: "changeList", direction: "newer" }),
@@ -325,6 +333,13 @@ export function resolveVimAction(
   phase: VimKeymapPhase,
   context: VimKeymapContext
 ): VimAction | undefined {
+  // The one doubling rule: `dd`/`cc`/`yy`/`guu`/`gUU`/`g~~`/`g??`/`>>`/`<<`/
+  // `==`/`yss`. Checked ahead of every phase because a doubling key can shadow
+  // a motion-mode key (`?` would otherwise start a backward search); Zed gives
+  // the per-operator `vim_operator` contexts the same precedence.
+  if (context.operatorPendingKey !== undefined && key === context.operatorPendingKey) {
+    return { type: "lineOperation" };
+  }
   switch (phase) {
     case "motionMode":
       return resolveMotionModeAction(key);
@@ -530,10 +545,10 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
 
   if (idle && key === "m") return { type: "pushMark" };
 
-  // Jumps are plain motions when idle and motion targets for a pending edit
+  // Jumps are plain motions when idle and motion targets for a pending range
   // operator (`d'a`). A pending text object owns the quote/backtick key
   // instead (`di'`, `da\``).
-  if ((idle || isEditOperatorContext(context.operator)) && (key === "'" || key === "`")) {
+  if ((idle || isRangeOperatorContext(context.operator)) && (key === "'" || key === "`")) {
     return { type: "pushJump", line: key === "'" };
   }
 
@@ -553,12 +568,11 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
   if (nothingPending(context) && key === "\"") return { type: "pushRegister" };
 
   const operator = editOperatorForKey(key);
-  if (operator !== undefined
-    && (context.operator === "none" || isEditOperatorContext(context.operator))) {
+  if (operator !== undefined && context.operator === "none") {
     return { type: "pushEditOperator", operator, key };
   }
 
-  if (isEditOperatorContext(context.operator) && (key === "i" || key === "a")) {
+  if (isRangeOperatorContext(context.operator) && (key === "i" || key === "a")) {
     return { type: "pushObject", around: key === "a", key };
   }
 
@@ -574,7 +588,7 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
 
   // Vim `o_v`/`o_V`: with a pending operator, `v`/`V` force the motion
   // charwise/linewise instead of entering visual mode.
-  if (isEditOperatorContext(context.operator)) {
+  if (isRangeOperatorContext(context.operator)) {
     if (key === "v") return { type: "forceMotion", force: "charwise" };
     if (key === "V") return { type: "forceMotion", force: "linewise" };
     return undefined;

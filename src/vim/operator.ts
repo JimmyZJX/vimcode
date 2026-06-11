@@ -10,6 +10,7 @@
 import type { PendingSearch } from "./normal/search.js";
 import type { ConvertTarget } from "./normal/convert.js";
 import type { IndentDirection } from "./normal/indent.js";
+import type { RangeOperator } from "./operator_target.js";
 import type { Operator, TextRange, VimMode, VimSelection } from "./state.js";
 
 /** Vim `o_v`/`o_V`: `v`/`V` between an operator and its motion force the
@@ -24,18 +25,21 @@ export type PendingEditOperator =
 export type PendingObjectOperator = { type: "object"; around: boolean };
 
 export type PendingConvertOperator =
-  | { type: "lowercase"; count: number }
-  | { type: "uppercase"; count: number }
-  | { type: "oppositeCase"; count: number };
+  | { type: "lowercase"; count: number; forcedMotion?: ForcedMotion }
+  | { type: "uppercase"; count: number; forcedMotion?: ForcedMotion }
+  | { type: "oppositeCase"; count: number; forcedMotion?: ForcedMotion }
+  | { type: "rot13"; count: number; forcedMotion?: ForcedMotion };
 
 export type PendingIndentOperator =
-  | { type: "indent"; count: number }
-  | { type: "outdent"; count: number }
-  | { type: "autoIndent"; count: number };
+  | { type: "indent"; count: number; forcedMotion?: ForcedMotion }
+  | { type: "outdent"; count: number; forcedMotion?: ForcedMotion }
+  | { type: "autoIndent"; count: number; forcedMotion?: ForcedMotion };
 
-export type PendingSurroundTarget =
-  | { type: "object"; around: boolean }
-  | { type: "ranges"; ranges: readonly TextRange[]; linewise: boolean };
+// Zed: `state::Operator` — every operator that consumes a motion, object,
+// line doubling, or `G`-style row target resolves through one pending shape.
+export type PendingRangeOperator = PendingEditOperator | PendingConvertOperator | PendingIndentOperator;
+
+export type PendingSurroundTarget = { ranges: readonly TextRange[]; linewise: boolean };
 
 export type PendingSurroundOperator =
   | { type: "addSurrounds"; count: number; target?: PendingSurroundTarget }
@@ -95,8 +99,9 @@ export type TopLevelPendingOperator =
 export type VimOperator = TopLevelPendingOperator | NormalPendingOperator | VisualPendingOperator;
 
 const editOperatorTypes = new Set<PendingEditOperator["type"]>(["change", "delete", "yank"]);
-const convertOperatorTypes = new Set<PendingConvertOperator["type"]>(["lowercase", "uppercase", "oppositeCase"]);
+const convertOperatorTypes = new Set<PendingConvertOperator["type"]>(["lowercase", "uppercase", "oppositeCase", "rot13"]);
 const indentOperatorTypes = new Set<PendingIndentOperator["type"]>(["indent", "outdent", "autoIndent"]);
+const rangeOperatorTypes = new Set<PendingRangeOperator["type"]>([...editOperatorTypes, ...convertOperatorTypes, ...indentOperatorTypes]);
 const surroundOperatorTypes = new Set<PendingSurroundOperator["type"]>(["addSurrounds", "deleteSurrounds", "changeSurrounds"]);
 const replaceOperatorTypes = new Set<PendingReplaceOperator["type"]>(["replace"]);
 const digraphOperatorTypes = new Set<PendingDigraphOperator["type"]>(["digraph"]);
@@ -120,6 +125,7 @@ function isNormalPendingOperator(operator: VimOperator | undefined): operator is
     case "lowercase":
     case "uppercase":
     case "oppositeCase":
+    case "rot13":
     case "indent":
     case "outdent":
     case "autoIndent":
@@ -145,10 +151,17 @@ type NormalChordKey = {
 // `vim::Vim::extend_key_context`. Summarizes what the operator stack is
 // currently waiting for, so keymap conditions can read like Zed context
 // expressions instead of combining overlapping booleans.
-export type OperatorContext = "none" | Operator | "object" | "other";
+export type OperatorContext = "none" | Operator | "convert" | "indent" | "surround" | "object" | "other";
 
 export function isEditOperatorContext(operator: OperatorContext): operator is Operator {
   return operator === "delete" || operator === "change" || operator === "yank";
+}
+
+/** A range-consuming operator (d/c/y/gu/gU/g~/>/</=/ys) is awaiting its
+    motion/object/line target. Zed: `vim_operator` matching any of the
+    range-operator contexts. */
+export function isRangeOperatorContext(operator: OperatorContext): boolean {
+  return isEditOperatorContext(operator) || operator === "convert" || operator === "indent" || operator === "surround";
 }
 
 // Zed: `vim_mode == waiting` plus the per-operator contexts; one classification
@@ -174,8 +187,6 @@ export type WaitingInput =
   | { type: "normalDigraph" }
   | { type: "normalReplace" }
   | { type: "normalSurround" }
-  | { type: "normalConvert" }
-  | { type: "normalIndent" }
   | { type: "normalTextObject" }
   | { type: "normalSurroundPrefix" }
   | { type: "visualSurround" }
@@ -223,14 +234,63 @@ export class VimOperatorStack {
   }
 
   // Zed: `vim::Vim::extend_key_context` exposing `vim_operator`.
-  // "object" wins over the edit operator because the object selector is on top
+  // "object" wins over the range operator because the object selector is on top
   // of the stack and owns the next key (e.g. the quote in `di'`).
   operatorContext(): OperatorContext {
     if (this.length === 0) return "none";
     if (this.activeObject() !== undefined) return "object";
-    const editOperator = this.activeEditOperator();
-    if (editOperator !== undefined) return editOperatorForPending(editOperator);
-    return "other";
+    if (this.surroundAwaitingRange() !== undefined) return "surround";
+    const pending = this.activeRangeOperator();
+    if (pending === undefined) return "other";
+    switch (pending.type) {
+      case "change":
+      case "delete":
+      case "yank":
+        return pending.type;
+      case "lowercase":
+      case "uppercase":
+      case "oppositeCase":
+      case "rot13":
+        return "convert";
+      case "indent":
+      case "outdent":
+      case "autoIndent":
+        return "indent";
+    }
+  }
+
+  // Zed: the per-operator `vim_operator` contexts that bind `vim::CurrentLine`
+  // ("u" under `vim_operator == gu`, ">" under `vim_operator == gt`, ...).
+  // Doubling is one rule: repeating the pending operator's final key targets
+  // whole lines.
+  operatorPendingKey(): string | undefined {
+    if (this.activeObject() !== undefined) return undefined;
+    // vim-surround `yss`: doubling the `s` of a pending `ys` targets the line.
+    if (this.surroundAwaitingRange() !== undefined) return "s";
+    const pending = this.activeRangeOperator();
+    if (pending === undefined) return undefined;
+    switch (pending.type) {
+      case "change":
+        return "c";
+      case "delete":
+        return "d";
+      case "yank":
+        return "y";
+      case "lowercase":
+        return "u";
+      case "uppercase":
+        return "U";
+      case "oppositeCase":
+        return "~";
+      case "rot13":
+        return "?";
+      case "indent":
+        return ">";
+      case "outdent":
+        return "<";
+      case "autoIndent":
+        return "=";
+    }
   }
 
   waitingInput(mode: VimMode["kind"], key: string): WaitingInput | undefined {
@@ -250,9 +310,12 @@ export class VimOperatorStack {
       case "normal":
         if (this.activeDigraph() !== undefined) return { type: "normalDigraph" };
         if (this.activeReplace() !== undefined) return { type: "normalReplace" };
-        if (this.activeSurround() !== undefined) return { type: "normalSurround" };
-        if (this.activeConvert() !== undefined && this.activeObject() === undefined) return { type: "normalConvert" };
-        if (this.activeIndent() !== undefined && this.activeObject() === undefined) return { type: "normalIndent" };
+        // Surrounds are only waiting input while they consume pair characters
+        // (`ds(`, `cs('`, the closing char of `ysiw)`); a `ys` awaiting its
+        // range resolves motions/objects/counts through the keymap instead.
+        if (this.activeSurround() !== undefined && this.surroundAwaitingRange() === undefined && this.activeObject() === undefined) {
+          return { type: "normalSurround" };
+        }
         if (this.activeObject() !== undefined) return { type: "normalTextObject" };
         if (this.activeEditOperator() !== undefined && key === "s") return { type: "normalSurroundPrefix" };
         return undefined;
@@ -352,12 +415,14 @@ export class VimOperatorStack {
     return this.activeNormalOperatorOfTypes(convertOperatorTypes);
   }
 
-  activeIndent(): PendingIndentOperator | undefined {
-    return this.activeNormalOperatorOfTypes(indentOperatorTypes);
-  }
-
   activeSurround(): PendingSurroundOperator | undefined {
     return this.activeNormalOperatorOfTypes(surroundOperatorTypes);
+  }
+
+  /** A pending `ys` that has not captured its range yet. */
+  surroundAwaitingRange(): Extract<PendingSurroundOperator, { type: "addSurrounds" }> | undefined {
+    const pending = this.activeSurround();
+    return pending?.type === "addSurrounds" && pending.target === undefined ? pending : undefined;
   }
 
   activeReplace(): PendingReplaceOperator | undefined {
@@ -372,23 +437,23 @@ export class VimOperatorStack {
     return this.active("object");
   }
 
+  activeRangeOperator(): PendingRangeOperator | undefined {
+    return this.activeNormalOperatorOfTypes(rangeOperatorTypes);
+  }
+
+  popRangeOperator(): PendingRangeOperator | undefined {
+    return this.popNormalOperatorOfTypes(rangeOperatorTypes);
+  }
+
   popEditOperator(): PendingEditOperator | undefined {
     return this.popNormalOperatorOfTypes(editOperatorTypes);
   }
 
   forceMotion(force: ForcedMotion): void {
-    const pending = this.activeEditOperator();
+    const pending = this.activeRangeOperator();
     if (pending === undefined) return;
-    this.replaceActiveOfTypes(editOperatorTypes, { ...pending, forcedMotion: force });
+    this.replaceActiveOfTypes(rangeOperatorTypes, { ...pending, forcedMotion: force });
     this.pushChordKey(force === "charwise" ? "v" : "V");
-  }
-
-  popConvert(): PendingConvertOperator | undefined {
-    return this.popNormalOperatorOfTypes(convertOperatorTypes);
-  }
-
-  popIndent(): PendingIndentOperator | undefined {
-    return this.popNormalOperatorOfTypes(indentOperatorTypes);
   }
 
   popSurround(): PendingSurroundOperator | undefined {
@@ -528,6 +593,7 @@ export function isTopLevelPendingOperator(operator: VimOperator | undefined): op
     case "lowercase":
     case "uppercase":
     case "oppositeCase":
+    case "rot13":
     case "indent":
     case "outdent":
     case "autoIndent":
@@ -581,14 +647,29 @@ export function pendingEditOperator(operator: Operator, count: number): PendingE
   }
 }
 
-export function editOperatorForPending(operator: PendingEditOperator): Operator {
-  switch (operator.type) {
+// Zed: the `state::Operator` value dispatched by `normal_motion` /
+// `normal_object`; pending stack entries lower to the one `RangeOperator`
+// vocabulary consumed by `applyOperatorToTarget`.
+export function rangeOperatorForPending(pending: PendingRangeOperator): RangeOperator {
+  switch (pending.type) {
     case "change":
-      return "change";
     case "delete":
-      return "delete";
     case "yank":
-      return "yank";
+      return { type: pending.type };
+    case "lowercase":
+      return { type: "convert", target: "lower" };
+    case "uppercase":
+      return { type: "convert", target: "upper" };
+    case "oppositeCase":
+      return { type: "convert", target: "toggle" };
+    case "rot13":
+      return { type: "convert", target: "rot13" };
+    case "indent":
+      return { type: "indent", direction: "in" };
+    case "outdent":
+      return { type: "indent", direction: "out" };
+    case "autoIndent":
+      return { type: "indent", direction: "auto" };
   }
 }
 
@@ -600,6 +681,8 @@ export function pendingConvertOperator(target: ConvertTarget, count: number): Pe
       return { type: "uppercase", count };
     case "toggle":
       return { type: "oppositeCase", count };
+    case "rot13":
+      return { type: "rot13", count };
   }
 }
 
@@ -611,6 +694,8 @@ export function convertTargetForPending(operator: PendingConvertOperator): Conve
       return "upper";
     case "oppositeCase":
       return "toggle";
+    case "rot13":
+      return "rot13";
   }
 }
 
@@ -625,13 +710,4 @@ export function pendingIndentOperator(direction: IndentDirection, count: number)
   }
 }
 
-export function indentDirectionForPending(operator: PendingIndentOperator): IndentDirection {
-  switch (operator.type) {
-    case "indent":
-      return "in";
-    case "outdent":
-      return "out";
-    case "autoIndent":
-      return "auto";
-  }
-}
+

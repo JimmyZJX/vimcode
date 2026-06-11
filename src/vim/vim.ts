@@ -16,7 +16,8 @@ import { resolveVimAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeyma
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
-import { VimOperatorStack, WaitingInput, isEditOperatorContext, isSelfEscapingWaitingInput, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
+import { VimOperatorStack, WaitingInput, convertTargetForPending, isRangeOperatorContext, isSelfEscapingWaitingInput, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
+import type { RangeOperator } from "./operator_target.js";
 import type {
   PendingFindOperator,
   PendingLiteralOperator,
@@ -30,7 +31,7 @@ import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
-import { KeyDispatchResult, KeyResult, Operator, Position, TextEdit, TextRange, VimMode, charwiseSelection, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
+import { KeyDispatchResult, KeyResult, Position, TextEdit, TextRange, VimMode, charwiseSelection, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode, visualKindForMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
@@ -38,7 +39,7 @@ import { VimGlobalState, VimModelState } from "./vim_state.js";
 export type VimStatus = {
   mode: VimMode["kind"];
   pending: boolean;
-  operator: Operator | undefined;
+  operator: RangeOperator["type"] | undefined;
   chord: string;
   text: string;
   remapPending: boolean;
@@ -602,12 +603,6 @@ export class Vim {
       case "normalSurround":
         this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingSurroundKey(key));
-      case "normalConvert":
-        this.recordWaitingOperatorKey(key);
-        return this.applyNormalResult(this.normalMode.handlePendingConvertKey(key));
-      case "normalIndent":
-        this.recordWaitingOperatorKey(key);
-        return this.applyNormalResult(this.normalMode.handlePendingIndentKey(key));
       case "normalTextObject":
         this.recordWaitingOperatorKey(key);
         return this.applyNormalResult(this.normalMode.handlePendingTextObjectKey(key));
@@ -666,6 +661,7 @@ export class Vim {
     return {
       mode: this.modeState.kind,
       operator: this.operatorStack.operatorContext(),
+      operatorPendingKey: this.modeState.kind === "normal" ? this.operatorStack.operatorPendingKey() : undefined,
       hasSelectedRegister: this.selectedRegister !== undefined,
       countText: this.countBuffer,
       repeatIsReplaying: this.globalState.repeat.isReplaying(),
@@ -737,6 +733,8 @@ export class Vim {
         }
         this.applyMotion(action.motion, this.takeCountForMotion(1));
         return "handled";
+      case "lineOperation":
+        return this.applyNormalResult(this.normalMode.handleLineOperation());
       case "pushEditOperator":
         return this.applyNormalResult(this.normalMode.handleEditOperatorKey(action.operator, action.key));
       case "pushObject":
@@ -785,6 +783,18 @@ export class Vim {
         return "handled";
       case "pushConvert":
         if (this.modeState.kind === "normal") {
+          // Vim `gugu` (and `gUgU`/`g~g~`): repeating the convert operator is
+          // the line-doubling rule, like `guu`.
+          const pendingConvert = this.operatorStack.activeConvert();
+          if (pendingConvert !== undefined && convertTargetForPending(pendingConvert) === action.target) {
+            return this.applyNormalResult(this.normalMode.handleLineOperation());
+          }
+          // Vim: starting a new operator while another is pending aborts both
+          // (`dgu`, `gugU`).
+          if (this.operatorStack.length > 0) {
+            this.normalMode.clearPending();
+            return "handled";
+          }
           const key = keyForConvertTarget(action.target);
           this.operatorStack.pushConvert(action.target, this.takeCountForMotion(1), this.normalMode.chordKey(`g${key}`, { includeCount: true }));
         } else if (this.isVisualMode()) {
@@ -1146,10 +1156,10 @@ export class Vim {
     if (!this.isMotionMode() || this.modeIsExpectingRegisterName()) return false;
     const operator = this.operatorStack.operatorContext();
     if (this.modeState.kind === "normal") {
-      // Motions are available when idle or as edit-operator targets; other
-      // pending operators (convert/indent/objects) consume motion keys through
-      // the waiting-input path instead.
-      return operator === "none" || isEditOperatorContext(operator);
+      // Motions are available when idle or as range-operator targets; other
+      // pending operators (objects, surrounds, replace) consume motion keys
+      // through the waiting-input path instead.
+      return operator === "none" || isRangeOperatorContext(operator);
     }
     return this.isVisualMode() && operator === "none";
   }
@@ -1165,7 +1175,12 @@ export class Vim {
       case "delete":
       case "change":
       case "yank":
-        // Shared `g`-prefixed motions can be operator targets (`d g g`).
+      case "convert":
+      case "indent":
+      case "surround":
+        // Shared `g`-prefixed motions can be operator targets (`d g g`,
+        // `g u g g`), and `g u`-style chords are how convert doubles
+        // (`g u g u`).
         return key === "g";
       case "object":
       case "other":
@@ -1560,7 +1575,7 @@ function commandArgs(command: { args?: unknown | unknown[] }): readonly unknown[
   return Array.isArray(command.args) ? command.args : [command.args];
 }
 
-function keyForConvertTarget(target: ConvertTarget): "u" | "U" | "~" {
+function keyForConvertTarget(target: ConvertTarget): "u" | "U" | "~" | "?" {
   switch (target) {
     case "lower":
       return "u";
@@ -1568,6 +1583,8 @@ function keyForConvertTarget(target: ConvertTarget): "u" | "U" | "~" {
       return "U";
     case "toggle":
       return "~";
+    case "rot13":
+      return "?";
   }
 }
 

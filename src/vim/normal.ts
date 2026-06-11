@@ -10,29 +10,23 @@ import type { NormalCommand } from "./keymap.js";
 import { lookupDigraph } from "./digraph.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen } from "./editor.js";
 import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
-import { Motion, applyMotion as applyMotionToPosition, applyMotionWithGoal, firstNonWhitespaceColumn, hostViewLineSelectionsForMotion, lineRange, motionRange, motionForKey } from "./motion.js";
+import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
-import { changeLineRange, changeLines, changeMotion } from "./normal/change.js";
-import { deleteCharacters, deleteCharactersBefore, deleteLineRange, deleteLines, deleteMotion } from "./normal/delete.js";
-import { applyTextObjectOperator } from "./normal/object.js";
+import { deleteCharacters, deleteCharactersBefore } from "./normal/delete.js";
 import { paste } from "./normal/paste.js";
-import { yankLineRanges, yankLines, yankMotion } from "./normal/yank.js";
+import { OperatorTarget, RangeOperator, applyOperatorToTarget, lineOperatorTarget, operatorTarget, rowOperatorTarget, textObjectOperatorTarget } from "./operator_target.js";
 import { RegisterName, Registers, isSystemClipboardRegister } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
-import { ConvertTarget, convertRanges, toggleCaseCharacters } from "./normal/convert.js";
-import { IndentDirection, currentLineRanges, indentRanges } from "./normal/indent.js";
+import { toggleCaseCharacters } from "./normal/convert.js";
 import { joinLines } from "./normal/join.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
-import { KeyResult, Operator, TextRange, VimSelection, charwiseSelection, selectionHead } from "./state.js";
+import { KeyResult, Operator, TextRange, charwiseSelection, selectionHead } from "./state.js";
 import {
   ForcedMotion,
   VimOperatorStack,
-  PendingConvertOperator,
-  PendingIndentOperator,
   PendingSurroundOperator,
-  convertTargetForPending,
-  editOperatorForPending,
-  indentDirectionForPending,
+  PendingSurroundTarget,
+  rangeOperatorForPending,
 } from "./operator.js";
 
 type CountState = {
@@ -88,9 +82,9 @@ export class NormalMode {
     return this.operatorStack.length > 0 || this.countState.get().length > 0;
   }
 
-  pendingOperatorName(): Operator | undefined {
-    const operator = this.operatorStack.activeEditOperator();
-    return operator === undefined ? undefined : editOperatorForPending(operator);
+  pendingOperatorName(): RangeOperator["type"] | undefined {
+    const pending = this.operatorStack.activeRangeOperator();
+    return pending === undefined ? undefined : rangeOperatorForPending(pending).type;
   }
 
   systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
@@ -108,12 +102,33 @@ export class NormalMode {
   }
 
   handleEditOperatorKey(operator: Operator, key: string): NormalKeyResult {
-    if (this.operatorStack.activeEditOperator()?.type === operator) {
-      return handled({ enterInsert: this.handleLineOperator(operator) });
-    }
-    // Zed: `vim::Vim::push_operator`.
+    // Zed: `vim::Vim::push_operator`. Doubling (`dd`) resolves through the
+    // keymap's one line-operation rule before this action can fire.
     this.operatorStack.pushEditOperator(operator, this.takeCount(1), this.chordKey(key, { includeCount: true }));
     return handled();
+  }
+
+  // Zed: `vim::CurrentLine` — the one whole-line target for every doubled
+  // range operator (`dd`/`cc`/`yy`/`guu`/`gugu`/`>>`/`yss`/...).
+  handleLineOperation(): NormalKeyResult {
+    const postCount = this.takeCount(1);
+
+    // vim-surround `yss`: the line target is the trimmed current line.
+    const pendingSurround = this.operatorStack.surroundAwaitingRange();
+    if (pendingSurround !== undefined) {
+      this.operatorStack.pushChordKey("s");
+      const ranges = this.editor.getSelections().map(selection =>
+        trimmedLineRange(this.editor, selectionHead(selection).row, pendingSurround.count * postCount));
+      this.replaceActiveSurround({ ...pendingSurround, target: { ranges, linewise: false } });
+      return handled();
+    }
+
+    const pending = this.operatorStack.popRangeOperator();
+    if (pending === undefined) return handled();
+    const registerName = this.takeSelectedRegister();
+    const target = lineOperatorTarget(this.editor, pending.count * postCount);
+    const outcome = applyOperatorToTarget(this.editor, this.registers, registerName, rangeOperatorForPending(pending), target);
+    return handled({ enterInsert: outcome.enterInsert });
   }
 
   handlePendingDigraphKey(key: string): NormalKeyResult {
@@ -147,16 +162,6 @@ export class NormalMode {
         this.operatorStack.popEditOperator();
         return handled();
     }
-  }
-
-  handlePendingConvertKey(key: string): NormalKeyResult {
-    this.handleConvertKey(key);
-    return handled();
-  }
-
-  handlePendingIndentKey(key: string): NormalKeyResult {
-    this.handleIndentKey(key);
-    return handled();
   }
 
   handlePendingTextObjectKey(key: string): NormalKeyResult {
@@ -213,7 +218,7 @@ export class NormalMode {
       case "goToLineOrEnd": {
         const maybeLine = this.takeCount(undefined);
         const targetRow = maybeLine === undefined ? this.editor.lineCount() - 1 : maybeLine - 1;
-        if (this.operatorStack.activeEditOperator() !== undefined) {
+        if (this.operatorStack.activeRangeOperator() !== undefined) {
           return handled({ enterInsert: this.applyLinewiseOperatorToRow(targetRow) });
         }
         this.moveToLine(targetRow);
@@ -308,17 +313,18 @@ export class NormalMode {
   }
 
   private substituteLines(): NormalKeyResult {
-    this.handleLineOperator("change");
-    return handled({ enterInsert: true });
+    // Vim `S`: synonym for `cc`.
+    const target = lineOperatorTarget(this.editor, this.takeCount(1));
+    const outcome = applyOperatorToTarget(this.editor, this.registers, this.takeSelectedRegister(), { type: "change" }, target);
+    return handled({ enterInsert: outcome.enterInsert });
   }
 
   private changeToEndOfLine(): NormalKeyResult {
-    changeMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
-    return handled({ enterInsert: true });
+    return handled({ enterInsert: this.applyOperatorToMotion({ type: "change" }, { type: "endOfLine" }, this.takeCount(1)) });
   }
 
   private deleteToEndOfLine(): NormalKeyResult {
-    deleteMotion(this.editor, this.registers, this.takeSelectedRegister(), { type: "endOfLine" }, this.takeCount(1));
+    this.applyOperatorToMotion({ type: "delete" }, { type: "endOfLine" }, this.takeCount(1));
     return handled();
   }
 
@@ -351,15 +357,16 @@ export class NormalMode {
   // Zed: `motion::Vim::motion`, which combines counts, forced-motion state,
   // active operators, and mode-specific motion handling.
   applyMotion(motion: Motion, count: number): boolean {
-    const pendingSurround = this.operatorStack.activeSurround();
-    if (pendingSurround?.type === "addSurrounds" && pendingSurround.target === undefined) {
-      const ranges = this.editor.getSelections().map(selection =>
-        motionRange(this.editor, selectionHead(selection), motion, pendingSurround.count * count));
-      this.replaceActiveSurround({ ...pendingSurround, target: { type: "ranges", ranges, linewise: false } });
+    // Zed: `surrounds::Vim::add_surrounds` with `SurroundsType::Motion` — the
+    // motion captures the surround range, then `ys` awaits the pair character.
+    const pendingSurround = this.operatorStack.surroundAwaitingRange();
+    if (pendingSurround !== undefined) {
+      const target = operatorTarget(this.editor, motion, pendingSurround.count * count);
+      this.replaceActiveSurround({ ...pendingSurround, target: surroundRangesForTarget(this.editor, target) });
       return false;
     }
 
-    const pending = this.operatorStack.popEditOperator();
+    const pending = this.operatorStack.popRangeOperator();
 
     if (pending === undefined) {
       const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
@@ -368,7 +375,7 @@ export class NormalMode {
       this.registerSelection.clear();
       return false;
     } else {
-      return this.applyOperatorToMotion(editOperatorForPending(pending), motion, pending.count * count, pending.forcedMotion);
+      return this.applyOperatorToMotion(rangeOperatorForPending(pending), motion, pending.count * count, pending.forcedMotion);
     }
   }
 
@@ -419,42 +426,6 @@ export class NormalMode {
         return charwiseSelection(firstNonWhitespace(this.editor.line(targetRow), targetRow));
       })
     );
-  }
-
-  private handleIndentKey(key: string): void {
-    const pending = this.operatorStack.activeIndent();
-    if (pending === undefined) return;
-
-    if (key === "i" || key === "a") {
-      this.operatorStack.pushObject(key === "a", this.chordKey(key));
-      return;
-    }
-
-    this.operatorStack.popIndent();
-    const direction = indentDirectionForPending(pending);
-    if (key === keyForIndentDirection(direction)) {
-      indentRanges(this.editor, currentLineRanges(this.editor, pending.count * this.takeCount(1)), direction);
-      return;
-    }
-
-    const motion = motionForKey(key);
-    if (motion === undefined) {
-      this.clearPending();
-      return;
-    }
-    const count = pending.count * this.takeCount(1);
-    const ranges = this.editor.getSelections().map(selection => motionRange(this.editor, selectionHead(selection), motion, count));
-    indentRanges(this.editor, ranges, direction);
-  }
-
-  private applyIndentTextObject(pending: PendingIndentOperator, object: TextObject, around: boolean): void {
-    const objectCount = this.takeCount(1);
-    const ranges = this.editor.getSelections().map(selection =>
-      textObjectRange(this.editor, selectionHead(selection), object, {
-        around,
-        count: pending.count * objectCount,
-      }));
-    indentRanges(this.editor, ranges, indentDirectionForPending(pending));
   }
 
   private joinFromSelections({ insertWhitespace }: { insertWhitespace: boolean }): void {
@@ -512,253 +483,61 @@ export class NormalMode {
   }
 
   private handleAddSurroundsKey(pending: Extract<PendingSurroundOperator, { type: "addSurrounds" }>, key: string): boolean {
-    if (pending.target?.type === "ranges") {
+    // Range capture happens through the keymap (motions, objects, counts,
+    // `yss` doubling); this waiting input only consumes the pair character.
+    if (pending.target !== undefined) {
       this.operatorStack.popSurround();
       addSurrounds(this.editor, pending.target.ranges, key, { linewise: pending.target.linewise });
-      return false;
-    }
-
-    const target = pending.target;
-    if (target?.type === "object") {
-      const object = textObjectForKey(key);
-      if (object === undefined) {
-        this.clearPending();
-        return false;
-      }
-      const ranges = this.editor.getSelections().map(selection =>
-        textObjectRange(this.editor, selectionHead(selection), object, { around: target.around }));
-      this.replaceActiveSurround({ ...pending, target: { type: "ranges", ranges, linewise: false } });
-      return false;
-    }
-
-    if (key === "i" || key === "a") {
-      this.operatorStack.pushChordKey(key);
-      this.replaceActiveSurround({ ...pending, target: { type: "object", around: key === "a" } });
-      return false;
-    }
-    if (key === "s") {
-      this.operatorStack.pushChordKey(key);
-      const ranges = this.editor.getSelections().map(selection =>
-        trimmedLineRange(this.editor, selectionHead(selection).row, pending.count));
-      this.replaceActiveSurround({ ...pending, target: { type: "ranges", ranges, linewise: false } });
-      return false;
-    }
-    const motion = motionForKey(key);
-    if (motion !== undefined) {
-      this.operatorStack.pushChordKey(key);
-      const ranges = this.editor.getSelections().map(selection =>
-        motionRange(this.editor, selectionHead(selection), motion, pending.count));
-      this.replaceActiveSurround({ ...pending, target: { type: "ranges", ranges, linewise: false } });
       return false;
     }
     this.clearPending();
     return false;
   }
 
-  private handleConvertKey(key: string): void {
-    const pending = this.operatorStack.activeConvert();
-    if (pending === undefined) return;
-
-    if (key === "i" || key === "a") {
-      this.operatorStack.pushObject(key === "a", this.chordKey(key));
-      return;
-    }
-
-    this.operatorStack.popConvert();
-    const target = convertTargetForPending(pending);
-    if (key === keyForConvertTarget(target)) {
-      this.convertCurrentLines(target, pending.count * this.takeCount(1));
-      return;
-    }
-
-    const motion = motionForKey(key);
-    if (motion === undefined) {
-      this.clearPending();
-      return;
-    }
-
-    const count = pending.count * this.takeCount(1);
-    const ranges = this.editor.getSelections().map(selection => motionRange(this.editor, selectionHead(selection), motion, count));
-    const cursors = this.editor.getSelections().map(selection => selectionHead(selection));
-    convertRanges(this.editor, ranges, target, (_range, index) => cursors[index] ?? _range.start);
-  }
-
-  private applyConvertTextObject(pending: PendingConvertOperator, object: TextObject, around: boolean): void {
-    const objectCount = this.takeCount(1);
-    const ranges = this.editor.getSelections().map(selection =>
-      textObjectRange(this.editor, selectionHead(selection), object, {
-        around,
-        count: pending.count * objectCount,
-      }));
-    convertRanges(this.editor, ranges, convertTargetForPending(pending));
-  }
-
-  private convertCurrentLines(target: ConvertTarget, count: number): void {
-    const ranges = this.editor.getSelections().map(selection => {
-      const row = selectionHead(selection).row;
-      return lineRange(this.editor, row, count);
-    });
-    convertRanges(this.editor, ranges, target);
-  }
-
   private handleTextObject(object: TextObject, around: boolean): boolean {
     const pendingTextObject = this.operatorStack.popObject();
     if (pendingTextObject === undefined) return false;
 
-    const pendingOperator = this.operatorStack.popEditOperator();
-    if (pendingOperator !== undefined) {
-      const objectCount = this.takeCount(1);
-      const count = pendingOperator.count * objectCount;
-      const registerName = this.takeSelectedRegister();
-      return applyTextObjectOperator(this.editor, this.registers, registerName, editOperatorForPending(pendingOperator), object, { around, count });
-    }
-
-    const pendingConvert = this.operatorStack.popConvert();
-    if (pendingConvert !== undefined) {
-      this.applyConvertTextObject(pendingConvert, object, around);
+    // vim-surround `ysiw(`: the object captures the surround range.
+    const pendingSurround = this.operatorStack.surroundAwaitingRange();
+    if (pendingSurround !== undefined) {
+      const count = pendingSurround.count * this.takeCount(1);
+      const ranges = this.editor.getSelections().map(selection =>
+        textObjectRange(this.editor, selectionHead(selection), object, { around, count }));
+      this.replaceActiveSurround({ ...pendingSurround, target: { ranges, linewise: false } });
       return false;
     }
 
-    const pendingIndent = this.operatorStack.popIndent();
-    if (pendingIndent !== undefined) {
-      this.applyIndentTextObject(pendingIndent, object, around);
-      return false;
-    }
+    const pending = this.operatorStack.popRangeOperator();
+    if (pending === undefined) return false;
 
-    return false;
-  }
-
-  // Zed: `normal::Vim::normal_motion` dispatches active operators to
-  // `normal::change::Vim::change_motion`, `normal::delete::Vim::delete_motion`,
-  // or `normal::yank::Vim::yank_motion`.
-  private applyOperatorToMotion(operator: Operator, motion: Motion, count: number, forcedMotion?: ForcedMotion): boolean {
+    const operator = rangeOperatorForPending(pending);
+    const count = pending.count * this.takeCount(1);
     const registerName = this.takeSelectedRegister();
-    const sourceSelections = this.editor.getSelections();
-    // Vim `o_V`: a forced-linewise motion operates on whole lines from the
-    // cursor row through the motion target row.
-    if (forcedMotion === "linewise") {
-      const targetSelections = sourceSelections.map(selection =>
-        charwiseSelection(applyMotionToPosition(this.editor, selectionHead(selection), motion, count)));
-      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections, { includeSameRow: true });
-    }
-    // Vim `o_v`: wrapping the motion bypasses the linewise specializations
-    // below and routes through the forced-charwise range in [motionRange].
-    if (forcedMotion === "charwise") {
-      // Vim `exclusive-linewise` rule 2: a forced-charwise vertical motion
-      // whose range would end in column one, starting at or before the first
-      // non-blank, becomes a linewise operation on the rows above the target
-      // (condition checked on the primary selection).
-      if (motion.type === "up" || motion.type === "down") {
-        const head = selectionHead(sourceSelections[0]);
-        const target = applyMotionToPosition(this.editor, head, motion, count);
-        if (target.row > head.row
-          && Math.min(head.column, this.editor.lineLength(target.row)) === 0
-          && head.column <= firstNonWhitespaceColumn(this.editor.line(head.row))) {
-          const verticalMotion = motion;
-          const targetSelections = sourceSelections.map(selection => {
-            const targetPosition = applyMotionToPosition(this.editor, selectionHead(selection), verticalMotion, count);
-            return charwiseSelection({ row: Math.max(0, targetPosition.row - 1), column: targetPosition.column });
-          });
-          return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections, { includeSameRow: true });
-        }
-      }
-      motion = { type: "forcedCharwise", motion };
-    }
-    const hostSelections = hostViewLineSelectionsForMotion(this.editor, motion, count, { displayLine: false, extend: false });
-    if (hostSelections !== undefined) {
-      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, hostSelections);
-    }
-    if (motion.type === "startOfDocument") {
-      const targetSelections = sourceSelections.map(selection => charwiseSelection({ row: Math.min(count - 1, this.editor.lineCount() - 1), column: selectionHead(selection).column }));
-      return this.applyOperatorToLinewiseSelections(operator, registerName, sourceSelections, targetSelections, { includeSameRow: true });
-    }
-    switch (operator) {
-      case "change":
-        return changeMotion(this.editor, this.registers, registerName, motion, count);
-      case "delete":
-        deleteMotion(this.editor, this.registers, registerName, motion, count);
-        return false;
-      case "yank":
-        yankMotion(this.editor, this.registers, registerName, motion, count);
-        return false;
-    }
+    const target = textObjectOperatorTarget(this.editor, object, {
+      around,
+      count,
+      forDelete: operator.type === "delete",
+      forChange: operator.type === "change",
+    });
+    return applyOperatorToTarget(this.editor, this.registers, registerName, operator, target).enterInsert;
   }
 
-  private applyOperatorToLinewiseSelections(
-    operator: Operator,
-    registerName: RegisterName | undefined,
-    sourceSelections: readonly VimSelection[],
-    targetSelections: readonly VimSelection[],
-    { includeSameRow = false }: { includeSameRow?: boolean } = {}
-  ): boolean {
-    const rows = sourceSelections.flatMap((selection, index) => {
-      const head = selectionHead(selection);
-      const target = selectionHead(targetSelections[index] ?? selection);
-      if (!includeSameRow && head.row === target.row) return [];
-      return [{
-        startRow: Math.min(head.row, target.row),
-        endRow: Math.max(head.row, target.row),
-        column: head.column,
-      }];
-    });
-    if (rows.length === 0) return false;
-
-    switch (operator) {
-      case "change":
-        return changeLineRange(this.editor, this.registers, registerName, rows);
-      case "delete":
-        deleteLineRange(this.editor, this.registers, registerName, rows);
-        return false;
-      case "yank":
-        yankLineRanges(this.editor, this.registers, registerName, rows);
-        return false;
-    }
+  // Zed: `normal::Vim::normal_motion`; the motion produces an `OperatorTarget`
+  // and one dispatch applies the active operator to it.
+  private applyOperatorToMotion(operator: RangeOperator, motion: Motion, count: number, forcedMotion?: ForcedMotion): boolean {
+    const registerName = this.takeSelectedRegister();
+    const target = operatorTarget(this.editor, motion, count, { forcedMotion, forChange: operator.type === "change" });
+    return applyOperatorToTarget(this.editor, this.registers, registerName, operator, target).enterInsert;
   }
 
   private applyLinewiseOperatorToRow(targetRow: number): boolean {
-    const pending = this.operatorStack.popEditOperator();
+    const pending = this.operatorStack.popRangeOperator();
     if (pending === undefined) return false;
 
     const registerName = this.takeSelectedRegister();
-    const rows = this.editor.getSelections().map(selection => {
-      const head = selectionHead(selection);
-      return {
-        startRow: Math.min(head.row, Math.max(0, Math.min(targetRow, this.editor.lineCount() - 1))),
-        endRow: Math.max(head.row, Math.max(0, Math.min(targetRow, this.editor.lineCount() - 1))),
-        column: head.column,
-      };
-    });
-
-    switch (pending.type) {
-      case "change":
-        return changeLineRange(this.editor, this.registers, registerName, rows);
-      case "delete":
-        deleteLineRange(this.editor, this.registers, registerName, rows);
-        return false;
-      case "yank":
-        return false;
-    }
-  }
-
-  // Zed: `dd`/`cc`/`yy` are represented as operator + `motion::Motion::CurrentLine`.
-  private handleLineOperator(operator: Operator): boolean {
-    const postCount = this.takeCount(1);
-    const pending = this.operatorStack.popEditOperator();
-    const pendingCount = pending?.count ?? 1;
-    const count = pendingCount * postCount;
-
-    const registerName = this.takeSelectedRegister();
-    switch (operator) {
-      case "change":
-        changeLines(this.editor, this.registers, registerName, count);
-        return true;
-      case "delete":
-        deleteLines(this.editor, this.registers, registerName, count);
-        return false;
-      case "yank":
-        yankLines(this.editor, this.registers, registerName, count);
-        return false;
-    }
+    const target = rowOperatorTarget(this.editor, targetRow);
+    return applyOperatorToTarget(this.editor, this.registers, registerName, rangeOperatorForPending(pending), target).enterInsert;
   }
 
   // Zed: `vim::Vim::take_count`; count digit accumulation is handled by
@@ -782,6 +561,24 @@ export class NormalMode {
   }
 }
 
+// Lower an `OperatorTarget` to the surround capture shape: charwise targets
+// wrap in place, linewise targets wrap whole lines with the pair on its own
+// lines (vim-surround `yS`-style placement).
+function surroundRangesForTarget(editor: VimEditorCapabilities, target: OperatorTarget): PendingSurroundTarget {
+  switch (target.kind) {
+    case "charwise":
+      return { ranges: target.targets.map(({ range }) => range), linewise: false };
+    case "linewise":
+      return {
+        ranges: target.rows.map(({ startRow, endRow }) => ({
+          start: { row: startRow, column: 0 },
+          end: { row: endRow, column: editor.lineLength(endRow) },
+        })),
+        linewise: true,
+      };
+  }
+}
+
 function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: number): TextRange {
   const range = lineRange(editor, row, count);
   if (range.start.row !== range.end.row) return range;
@@ -794,26 +591,4 @@ function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: num
 
 function keyForInput(key: string): string {
   return key === "space" ? " " : key;
-}
-
-function keyForIndentDirection(direction: IndentDirection): string {
-  switch (direction) {
-    case "in":
-      return ">";
-    case "out":
-      return "<";
-    case "auto":
-      return "=";
-  }
-}
-
-function keyForConvertTarget(target: ConvertTarget): string {
-  switch (target) {
-    case "lower":
-      return "u";
-    case "upper":
-      return "U";
-    case "toggle":
-      return "~";
-  }
 }

@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: g? itself is implemented (see test_change_rot13_*); this fixture starts from pre-existing visual selections in Put state, which the harness does not support yet.
 {"Put":{"state":"a😀C«dÉ1*fˇ»\n"}}
 {"Key":"g"}
 {"Key":"?"}

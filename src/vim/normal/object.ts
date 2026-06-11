@@ -2,102 +2,18 @@
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - sources: crates/vim/src/normal.rs normal_object plus normal/delete.rs object
 //   post-processing
-// - translated concepts: applying normal-mode operators to text objects
+// - translated concepts: paragraph-object fixups consumed by
+//   `textObjectOperatorTarget`; the operator dispatch itself lives in
+//   operator_target.ts.
 // - intentional differences: the editor model is synchronous and range-based; paragraph
 //   post-processing is a local approximation of Zed's selection expansion/fixup path.
 
-import { VimEditorCapabilities, rangeText } from "../editor.js";
-import { TextObject, textObjectRange } from "../object.js";
-import { RegisterName, Registers } from "../registers.js";
-import { Operator, Position, TextRange, charwiseSelection, selectionHead } from "../state.js";
-import { changeRange } from "./change.js";
-import { deleteRange } from "./delete.js";
-import { yankRange } from "./yank.js";
+import { VimEditorCapabilities } from "../editor.js";
+import { Position, TextRange } from "../state.js";
 
-export function applyTextObjectOperator(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  operator: Operator,
-  object: TextObject,
-  { around, count }: { around: boolean; count: number }
-): boolean {
-  if (object.type === "paragraph") {
-    return applyParagraphObjectOperator(editor, registers, registerName, operator, { around, count });
-  }
-
-  switch (operator) {
-    case "change":
-      changeRange(editor, registers, registerName, (head) => textObjectRange(editor, head, object, { around, count }));
-      return true;
-    case "delete":
-      deleteRange(editor, registers, registerName, (head) => textObjectRange(editor, head, object, { around, count }));
-      return false;
-    case "yank":
-      yankRange(editor, registers, registerName, (head) => textObjectRange(editor, head, object, { around, count }));
-      return false;
-  }
-}
-
-function applyParagraphObjectOperator(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  operator: Operator,
-  { around, count }: { around: boolean; count: number }
-): boolean {
-  const paragraphRange = (head: Position) => textObjectRange(editor, head, { type: "paragraph" }, { around, count });
-  switch (operator) {
-    case "change":
-      return changeParagraphRange(editor, registers, registerName, paragraphRange, { around });
-    case "delete":
-      deleteRange(
-        editor,
-        registers,
-        registerName,
-        (head) => paragraphDeleteRange(editor, paragraphRange(head), { around }),
-        paragraphCursorAfterDelete({ around })
-      );
-      return false;
-    case "yank":
-      yankRange(editor, registers, registerName, paragraphRange);
-      return false;
-  }
-}
-
-function changeParagraphRange(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  rangeForHead: (head: Position) => TextRange,
-  { around }: { around: boolean }
-): boolean {
-  const edits = [];
-  const copied: string[] = [];
-  const selectionsAfter = [];
-  for (const selection of editor.getSelections()) {
-    const head = selectionHead(selection);
-    const range = rangeForHead(head);
-    if (paragraphObjectCancelled(editor, head, range, { around })) {
-      selectionsAfter.push(charwiseSelection(head));
-      continue;
-    }
-    edits.push({ range, text: "" });
-    copied.push(rangeText(editor, range));
-    selectionsAfter.push(charwiseSelection(range.start));
-  }
-  if (copied.length === 0) return false;
-  registers.writeDelete(
-    registerName,
-    copied.join("\n"),
-    "characterwise",
-    copied.map(text => ({ text, kind: "characterwise" }))
-  );
-  editor.applyEdits(edits, selectionsAfter);
-  return true;
-}
-
-function paragraphObjectCancelled(
+// Zed: `normal_object`'s paragraph special case — `cap` on a trailing blank
+// run at end of file cancels instead of editing.
+export function paragraphObjectCancelled(
   editor: VimEditorCapabilities,
   head: Position,
   range: TextRange,
@@ -110,8 +26,9 @@ function paragraphObjectCancelled(
     && endOfParagraph(editor, head.row) === editor.lineCount() - 1;
 }
 
-function paragraphDeleteRange(_editor: VimEditorCapabilities, range: TextRange, { around }: { around: boolean }): TextRange {
-  const editor = _editor;
+// Zed: `normal/delete.rs` object post-processing — deleting a paragraph also
+// consumes the surrounding newlines so no blank shell is left behind.
+export function paragraphDeleteRange(editor: VimEditorCapabilities, range: TextRange, { around }: { around: boolean }): TextRange {
   const text = editor.getText();
   const originalStart = offsetOfPosition(editor, range.start);
   const originalEnd = offsetOfPosition(editor, range.end);
@@ -132,6 +49,15 @@ function paragraphDeleteRange(_editor: VimEditorCapabilities, range: TextRange, 
   return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
 }
 
+// Cursor rule for paragraph deletes: the cursor lands at the range start,
+// except that a start clamped to a line end snaps to column zero.
+export function paragraphCursorAfterDelete(editor: VimEditorCapabilities, range: TextRange): Position {
+  if (range.start.column > 0 && range.start.column === editor.lineLength(range.start.row)) {
+    return { row: range.start.row, column: 0 };
+  }
+  return range.start;
+}
+
 function endOfParagraph(editor: VimEditorCapabilities, row: number): number {
   const currentIsBlank = editor.line(row).trim().length === 0;
   for (let current = row + 1; current < editor.lineCount(); current++) {
@@ -146,15 +72,6 @@ function containsOnlyNewlines(text: string, start: number, end: number): boolean
     if (text[index] !== "\n") return false;
   }
   return true;
-}
-
-function paragraphCursorAfterDelete(_options: { around: boolean }) {
-  return (editor: VimEditorCapabilities, range: TextRange, _head: Position) => {
-    if (range.start.column > 0 && range.start.column === editor.lineLength(range.start.row)) {
-      return { row: range.start.row, column: 0 };
-    }
-    return range.start;
-  };
 }
 
 function offsetOfPosition(editor: VimEditorCapabilities, position: Position): number {

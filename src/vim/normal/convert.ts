@@ -6,9 +6,36 @@
 //   normal-mode conversion; motion/object/visual conversions remain future work.
 
 import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
+import type { OperatorTarget } from "../operator_target.js";
 import { TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from "../state.js";
 
-export type ConvertTarget = "lower" | "upper" | "toggle";
+export type ConvertTarget = "lower" | "upper" | "toggle" | "rot13";
+
+// Zed: `normal::convert::Vim::convert_motion` / `convert_object`; one
+// application for every convert target source (motion, object, line, visual).
+export function applyConvert(
+  editor: VimEditorCapabilities,
+  target: ConvertTarget,
+  operatorTarget: OperatorTarget
+): void {
+  switch (operatorTarget.kind) {
+    case "charwise":
+      // Vim `:h gu`: the cursor is left at the start of the operated text.
+      convertRanges(editor, operatorTarget.targets.map(({ range }) => range), target);
+      return;
+    case "linewise": {
+      const ranges = operatorTarget.rows.map(({ startRow, endRow }) => ({
+        start: { row: startRow, column: 0 },
+        end: { row: endRow, column: editor.lineLength(endRow) },
+      }));
+      // Vim: linewise conversion keeps the cursor column on the first
+      // operated row (clamped), like other linewise operations.
+      convertRanges(editor, ranges, target, (range, index) =>
+        normalCursorPosition(editor, { row: range.start.row, column: operatorTarget.rows[index].column }));
+      return;
+    }
+  }
+}
 
 // Zed: `normal::convert::Vim::convert_motion` with `ConvertTarget::OppositeCase`.
 export function toggleCaseCharacters(editor: VimEditorCapabilities, count: number): void {
@@ -61,7 +88,22 @@ function convertText(text: string, target: ConvertTarget): string {
       return text.toLocaleUpperCase();
     case "toggle":
       return toggleCase(text);
+    case "rot13":
+      return rot13(text);
   }
+}
+
+// Vim `g?`: ROT13 encoding over ASCII letters only.
+function rot13(text: string): string {
+  return [...text].map(char => {
+    if (char >= "a" && char <= "z") {
+      return String.fromCharCode(((char.charCodeAt(0) - 97 + 13) % 26) + 97);
+    }
+    if (char >= "A" && char <= "Z") {
+      return String.fromCharCode(((char.charCodeAt(0) - 65 + 13) % 26) + 65);
+    }
+    return char;
+  }).join("");
 }
 
 function toggleCase(text: string): string {

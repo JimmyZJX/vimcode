@@ -10,17 +10,17 @@
 import { VimConfiguration } from "./config.js";
 import type { VisualCommand, VisualModeKind } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
-import { ApplyEditsOptions, VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
+import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, matchingPositionFromLine, Motion } from "./motion.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
-import { IndentDirection, indentRanges, visualIndentRanges } from "./normal/indent.js";
+import { IndentDirection } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
-import { cursorAfterDeletingRange } from "./normal/delete.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
 import { VimOperatorStack } from "./operator.js";
+import { OperatorTarget, applyOperatorToTarget } from "./operator_target.js";
 import { canonicalVimSelection, canonicalizationChangesMeaning, characterCellEnd, lowerCharwiseGeometry, raiseCharwiseSelection } from "./selection_geometry.js";
 import { addSurrounds } from "./surrounds.js";
 import {
@@ -356,7 +356,15 @@ export class VisualMode {
 
   private yankKey(state: VisualState): VisualKeyResult {
     this.yank(state, this.takeSelectedRegister());
-    this.finishNormalAtVisualStarts(state);
+    if (state.kind === "blockwise") {
+      this.finishNormalAtVisualStarts(state);
+    } else {
+      // [applyYank] already placed the cursor (Vim `v_y`: the start of the
+      // yanked text); only the visual state needs cleaning up.
+      if (this.state !== undefined) this.rememberState(this.state);
+      this.clearState();
+      this.editor.setCursorStyle("block");
+    }
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
@@ -452,21 +460,18 @@ export class VisualMode {
     return handled({ nextMode: "visual" });
   }
 
+  // Zed: `visual::visual_operate`-style commands lower the visual state to an
+  // `OperatorTarget` and apply through the same dispatch as normal mode
+  // (blockwise stays on bespoke helpers until the blockwise target variant
+  // exists).
   private yank(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        {
-          const copied = currentCharwiseVisualRanges(this.editor, state).map(range => rangeText(this.editor, range));
-          this.registers.writeYank(
-            registerName,
-            copied.join("\n"),
-            "characterwise",
-            copied.map(text => ({ text, kind: "characterwise" }))
-          );
-        }
+        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "yank" }, visualCharwiseTarget(this.editor, state));
         break;
       case "linewise":
-        this.registers.writeYank(registerName, linewiseText(this.editor, state), "linewise");
+        // Vim `v_y`: the cursor moves to the start of the yanked lines.
+        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "yank" }, visualLinewiseTarget(state, { column: 0 }));
         break;
       case "blockwise":
         this.registers.writeYank(registerName, blockwiseText(this.editor, state), "blockwise");
@@ -524,13 +529,20 @@ export class VisualMode {
   private delete(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        deleteCharwiseVisualRanges(this.editor, this.registers, registerName, state, {
-          cursorForRange: cursorAfterDeletingRange,
-        });
+        this.editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(this.editor, state));
+        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualCharwiseTarget(this.editor, state));
         break;
-      case "linewise":
-        deleteLinewise(this.editor, this.registers, registerName, state);
+      case "linewise": {
+        const { startLine, endLine } = lineBounds(state);
+        beginVisualUndoTransaction(this.editor, state);
+        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualLinewiseTarget(state, {
+          column: state.headColumn,
+          // Vim `v_d` linewise: the cursor column clamps against the line
+          // that follows the deleted range, not the first deleted line.
+          cursor: linewiseCursorAfterDelete(this.editor, startLine, state.headColumn, endLine - startLine + 1),
+        }));
         break;
+      }
       case "blockwise":
         deleteBlockwise(this.editor, this.registers, registerName, state, { collapse: true });
         break;
@@ -540,13 +552,12 @@ export class VisualMode {
   private change(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise":
-        deleteCharwiseVisualRanges(this.editor, this.registers, registerName, state, {
-          cursorForRange: (_editor, range) => range.start,
-          options: openVisualChangeEditOptions(),
-        });
+        this.editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(this.editor, state));
+        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "change" }, visualCharwiseTarget(this.editor, state));
         break;
       case "linewise":
-        changeLinewise(this.editor, this.registers, registerName, state);
+        beginVisualUndoTransaction(this.editor, state);
+        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "change" }, visualLinewiseTarget(state, { column: state.headColumn }));
         break;
       case "blockwise":
         enterBlockInsert(this.editor, this.registers, registerName, state, { deleteSelection: true, side: "start" });
@@ -574,7 +585,17 @@ export class VisualMode {
 
   private convert(state: VisualState, target: ConvertTarget): void {
     this.rememberState(state);
-    convertRanges(this.editor, visualConvertRanges(this.editor, state), target);
+    switch (state.kind) {
+      case "charwise":
+        applyOperatorToTarget(this.editor, this.registers, undefined, { type: "convert", target }, visualCharwiseTarget(this.editor, state));
+        break;
+      case "linewise":
+        applyOperatorToTarget(this.editor, this.registers, undefined, { type: "convert", target }, visualLinewiseTarget(state, { column: 0 }));
+        break;
+      case "blockwise":
+        convertRanges(this.editor, visualConvertRanges(this.editor, state), target);
+        break;
+    }
     this.state = undefined;
     this.editor.setCursorStyle("block");
   }
@@ -582,7 +603,12 @@ export class VisualMode {
   private indent(state: VisualState, direction: IndentDirection): void {
     this.rememberState(state);
     const cursor = visualIndentCursor(this.editor, state, direction);
-    indentRanges(this.editor, visualIndentRanges(this.editor, [visualStateToEditorSelection(this.editor, state)]), direction);
+    const { startRow, endRow } = visualLineBounds(this.editor, state);
+    applyOperatorToTarget(this.editor, this.registers, undefined, { type: "indent", direction }, {
+      kind: "linewise",
+      rows: [{ startRow, endRow, column: cursor.column }],
+    });
+    // Vim `v_>`: the cursor lands on the visual start, shifted with the text.
     this.editor.setSelections([charwiseSelection(cursor)]);
     this.state = undefined;
     this.editor.setCursorStyle("block");
@@ -1117,6 +1143,23 @@ function visualSurroundRanges(editor: VimEditorCapabilities, state: VisualState)
   return visualConvertRanges(editor, state);
 }
 
+// Zed: the visual fold-in — visual state lowers to an `OperatorTarget` so
+// normal and visual mode apply operators through the same `apply*` modules.
+function visualCharwiseTarget(editor: VimEditorCapabilities, state: CharwiseVisualState): OperatorTarget {
+  return {
+    kind: "charwise",
+    targets: currentCharwiseVisualRanges(editor, state).map(range => ({ range, head: range.start })),
+  };
+}
+
+function visualLinewiseTarget(
+  state: LinewiseVisualState,
+  { column, cursor }: { column: number; cursor?: Position }
+): OperatorTarget {
+  const { startLine, endLine } = lineBounds(state);
+  return { kind: "linewise", rows: [{ startRow: startLine, endRow: endLine, column, cursor }] };
+}
+
 function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
   switch (state.kind) {
     case "charwise":
@@ -1244,38 +1287,6 @@ function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: Visual
 
 function openVisualChangeEditOptions() {
   return keepUndoTransactionOpen();
-}
-
-function deleteLinewise(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  state: LinewiseVisualState
-): void {
-  const { startLine } = lineBounds(state);
-  const deletedLineCount = Math.abs(state.headLine - state.anchorLine) + 1;
-  registers.writeDelete(registerName, linewiseText(editor, state), "linewise");
-  beginVisualUndoTransaction(editor, state);
-  editor.applyEdits(
-    [{ range: linewiseEditRange(editor, state), text: "" }],
-    [charwiseSelection(linewiseCursorAfterDelete(editor, startLine, state.headColumn, deletedLineCount))]
-  );
-}
-
-function changeLinewise(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  state: LinewiseVisualState
-): void {
-  const { startLine } = lineBounds(state);
-  registers.writeDelete(registerName, linewiseText(editor, state), "linewise");
-  beginVisualUndoTransaction(editor, state);
-  editor.applyEdits(
-    [{ range: linewiseEditRange(editor, state), text: "\n" }],
-    [charwiseSelection({ row: startLine, column: 0 })],
-    openVisualChangeEditOptions()
-  );
 }
 
 function linewiseCursorAfterDelete(
@@ -1488,42 +1499,6 @@ function visualCurrentUndoSelections(
   state: VisualState
 ): readonly VimSelection[] {
   return state.kind === "charwise" ? currentCharwiseVisualUndoSelections(editor, state) : visualUndoSelections(state);
-}
-
-function deleteCharwiseVisualRanges(
-  editor: VimEditorCapabilities,
-  registers: Registers,
-  registerName: RegisterName | undefined,
-  state: CharwiseVisualState,
-  {
-    cursorForRange,
-    options = {},
-  }: {
-    cursorForRange: (editor: VimEditorCapabilities, range: TextRange) => Position;
-    options?: ApplyEditsOptions;
-  }
-): void {
-  const ranges = currentCharwiseVisualRanges(editor, state);
-  const edits: TextEdit[] = [];
-  const selectionsAfter: VimSelection[] = [];
-  const copied: string[] = [];
-
-  for (const range of ranges) {
-    copied.push(rangeText(editor, range));
-    edits.push({ range, text: "" });
-    selectionsAfter.push(charwiseSelection(cursorForRange(editor, range)));
-  }
-
-  if (copied.length > 0) {
-    registers.writeDelete(
-      registerName,
-      copied.join("\n"),
-      "characterwise",
-      copied.map(text => ({ text, kind: "characterwise" }))
-    );
-  }
-  editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(editor, state));
-  editor.applyEdits(edits, selectionsAfter, options);
 }
 
 function deleteBlockwise(

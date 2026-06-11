@@ -35,7 +35,7 @@ Done in this branch:
   - Every newly copied Zed fixture is headed by `// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.`
   - The fixture directory is now the compatibility backlog: remove or refine the disabled header as each feature is triaged and implemented.
   - Enabled passing Zed normal/motion fixtures currently include `test_h`, `test_l`, `test_j`, `test_k`, `test_w`, `test_o`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_delete_next_word_end`, `test_delete_b`, `test_change_w`, `test_change_e`, `test_change_b`, `test_change_j`, `test_change_k`, `test_end_of_word`, `test_x`, `test_enter`, `test_backspace`, `test_backspace_non_ascii_bol`, `test_next_line_start`, `test_plus_minus`, `test_end_of_line_downward`, `test_delete_left`, `test_delete_to_end_of_line`, `test_insert_end_of_line`, `test_insert_first_non_whitespace`, `test_insert_line_above`, `test_h_through_unicode`, `test_find_multibyte`, and linewise yank/paste fixtures.
-  - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_backwards_n`, `test_d_search`, `test_gn`, `test_cgn_repeat`, `test_dgn_repeat`, `test_search_skipping`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, paragraph/sentence motion fixtures such as `test_start_end_of_paragraph`, `test_delete_paragraph_motion`, `test_sentence_forwards`, and `test_sentence_backwards`, `test_enter_visual_mode`, `test_gv`, `test_v2ap`, `test_word_object_with_count`, `test_delete_paragraph_object`, `test_change_paragraph_object`, `test_visual_paragraph_object`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, `test_shift_y`, `test_visual_shift_d`, `test_visual_mode_insert_before_after`, `test_visual_star_hash`, `test_visual_match_eol`, visual-line fixtures, insert-mode literal `ctrl-v` fixtures, the first visual-block movement/paste/insert/search/wrapping/mode-geometry fixtures, focused surround add/delete/change fixtures, escaped quote object fixtures, and repeated-change fixtures such as `test_repeated_ce`, `test_repeated_cl`, `test_repeated_cj`, and `test_repeated_word`, plus the forced-motion fixtures (`test_forced_motion_delete_to_{start,middle,end}_of_line`, `test_forced_motion_yank`) covering Vim `o_v`/`o_V` forced motions, `gM`, and the `exclusive-linewise` special cases.
+  - Enabled first text-object/search/find/visual/surround fixtures include `changes_inner_word_text_object`, `searches_forward_and_repeats_the_match`, `test_backwards_n`, `test_d_search`, `test_gn`, `test_cgn_repeat`, `test_dgn_repeat`, `test_search_skipping`, `test_f_and_t`, `test_capital_f_and_capital_t`, `test_comma_semicolon`, `test_delete_to_adjacent_character`, paragraph/sentence motion fixtures such as `test_start_end_of_paragraph`, `test_delete_paragraph_motion`, `test_sentence_forwards`, and `test_sentence_backwards`, `test_enter_visual_mode`, `test_gv`, `test_v2ap`, `test_word_object_with_count`, `test_delete_paragraph_object`, `test_change_paragraph_object`, `test_visual_paragraph_object`, visual word delete fixtures, `test_visual_yank`, `test_visual_change`, `test_visual_word_object`, `test_paste_visual`, `test_shift_y`, `test_visual_shift_d`, `test_visual_mode_insert_before_after`, `test_visual_star_hash`, `test_visual_match_eol`, visual-line fixtures, insert-mode literal `ctrl-v` fixtures, the first visual-block movement/paste/insert/search/wrapping/mode-geometry fixtures, focused surround add/delete/change fixtures, escaped quote object fixtures, and repeated-change fixtures such as `test_repeated_ce`, `test_repeated_cl`, `test_repeated_cj`, and `test_repeated_word`, plus the forced-motion fixtures (`test_forced_motion_delete_to_{start,middle,end}_of_line`, `test_forced_motion_yank`) covering Vim `o_v`/`o_V` forced motions, `gM`, and the `exclusive-linewise` special cases, and the `g?` rot13 fixtures (`test_change_rot13_motion`, `test_change_rot13_object`).
 - Added an initial Neovim-backed Jest harness with Zed-style JSON-line fixtures:
   - `src/vim/test/marked_text.ts` parses/encodes Zed-style `ˇ` cursor-marked text plus the charwise, linewise, and rectangular visual marker shapes used by the enabled fixtures.
   - `src/vim/test/neovim_connection.ts` runs short-lived `nvim --headless` comparisons when recording or when a fixture is missing.
@@ -49,7 +49,7 @@ Done in this branch:
   "Mouse and selection-sync invariants" below.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 433 enabled tests.
+  - `npm test -- --runInBand` passes with 460 enabled tests.
 
 Implemented first-slice behavior:
 
@@ -334,6 +334,27 @@ Near-term:
      replaces the `KeyResult | null | undefined` sentinel soup; `"native"` means
      Vim explicitly declines the key for the host editor's default handling, and
      `undefined` (resolver-internal only) means "not mine, try the next resolver".
+   - The operator pipeline redesign ([doc/operator-redesign.md](doc/operator-redesign.md))
+     is implemented. `src/vim/operator_target.ts` owns target production
+     (`operatorTarget`/`lineOperatorTarget`/`rowOperatorTarget`/
+     `textObjectOperatorTarget`, visual lowering in `visual.ts`) and the one
+     operator dispatch (`applyOperatorToTarget`); `normal/{delete,change,yank,
+     convert,indent}.ts` each expose one `apply*` total over target kinds.
+     Convert (`gu`/`gU`/`g~`/`g?`) and indent (`>`/`<`/`=`) are first-class range
+     operators resolving counts/motions/objects/jumps/forced motions through the
+     central grammar; `ys` captures its range through the keymap too, and only
+     true char-consumers remain waiting input. Doubling is one rule
+     (`operatorPendingKey` + `lineOperation`, checked ahead of every keymap phase
+     so `g??` beats backward search): `dd`/`cc`/`yy`/`guu`/`gugu`/`>>`/`yss`.
+     Visual charwise/linewise d/y/c/convert/indent dispatch through the same
+     `apply*` modules (blockwise stays bespoke until a blockwise target variant
+     exists). Behavior fixed along the way (regression tests in
+     `src/vim/operator_target.test.ts`, nvim-verified): `yG`/`y3G` were a silent
+     no-op stub, `gu3w`-style counts and `gufX`/`guG`/`gu'a` targets did not
+     resolve, `gub` left the cursor in place instead of the range start,
+     `ys3w` counts were swallowed, visual-line `c` lost indentation (now matches
+     `cc` and nvim-with-autoindent), and `g?` rot13 landed as a binding plus
+     vocabulary with zero dispatch changes (`test_change_rot13_*` enabled).
    Remaining for the big step: migrate the single-key switches
    (`resolveMotionModeAction`, `normalCommandForKey`, `visualCommandForKey`,
    `motionForKey` dispatch) into the finite binding table with per-binding context
