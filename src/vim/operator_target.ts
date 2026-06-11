@@ -188,6 +188,14 @@ export function operatorTarget(
         }),
       };
     }
+    // `H`/`M`/`L`: linewise between the cursor row and the window line,
+    // including the same-row case (`dM` on the middle line deletes one line).
+    if (motion.type === "windowLine") {
+      return {
+        kind: "linewise",
+        rows: heads.map(head => rowRange(head, applyMotion(editor, head, motion, count))),
+      };
+    }
     // `gg`: linewise between the cursor row and the (counted) target line,
     // including the same-row case.
     return {

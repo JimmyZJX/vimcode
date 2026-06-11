@@ -1855,6 +1855,30 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 1, column: 2 });
   });
 
+  // Verified against Neovim: with the whole 9-line document visible, `M` is
+  // row 4, `dM` from row 6 deletes rows 4..6, and the same-row case deletes
+  // one line.
+  it("deletes linewise to the window line with dH/dM/dL", () => {
+    const text = Array.from({ length: 9 }, (_, i) => `line${i}`).join("\n");
+    const run = (keys: readonly string[]) => {
+      const editor = new InMemoryVimEditor(text);
+      const vim = new Vim(editor);
+      runKeys(vim, keys);
+      return editor;
+    };
+
+    const afterMiddleDelete = run(["6", "j", "d", "M"]);
+    expect(afterMiddleDelete.getText()).toBe("line0\nline1\nline2\nline3\nline7\nline8");
+    expect(head(afterMiddleDelete)).toEqual({ row: 4, column: 0 });
+
+    expect(run(["4", "j", "d", "M"]).getText())
+      .toBe("line0\nline1\nline2\nline3\nline5\nline6\nline7\nline8");
+    expect(run(["6", "j", "d", "H"]).getText()).toBe("line7\nline8");
+    expect(run(["j", "d", "L"]).getText()).toBe("line0");
+    expect(run(["j", "2", "d", "H"]).getText())
+      .toBe("line0\nline2\nline3\nline4\nline5\nline6\nline7\nline8");
+  });
+
   it("extends visual-line mode with ctrl-d", () => {
     const editor = new InMemoryVimEditor("one\ntwo\nthree\nfour\nfive\nsix");
     const vim = new Vim(editor);
