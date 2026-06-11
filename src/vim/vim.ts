@@ -1133,13 +1133,13 @@ export class Vim {
 
   private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
     if (typeof command === "string") {
-      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range) });
+      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions });
       else this.editor.executeNativeCommand(command, [], { preserveVisualSelection: this.isVisualMode() });
       return;
     }
 
     if (command.command.startsWith(":")) {
-      executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range) });
+      executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions });
     } else {
       this.editor.executeNativeCommand(command.command, commandArgs(command), { preserveVisualSelection: this.isVisualMode() });
     }
@@ -1358,6 +1358,7 @@ export class Vim {
       this.setMode("normal");
       executeCommand(this.editor, command, {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
+        exOptions: this.globalState.exOptions,
       });
       return;
     }
@@ -1542,7 +1543,11 @@ function insertTextForKey(key: string): string | undefined {
   if (key === "space") return " ";
   if (key === "enter") return "\n";
   if (key === "\n") return "\n";
-  return key.length === 1 ? key : undefined;
+  if (key.length === 1) return key;
+  // A single astral character (e.g. an emoji from a remap replacement) is one
+  // key even though it spans two UTF-16 units.
+  if (key.length === 2 && key.charCodeAt(0) >= 0xd800 && key.charCodeAt(0) <= 0xdbff) return key;
+  return undefined;
 }
 
 function isPrefixOrEqual(prefix: readonly string[], full: readonly string[]): boolean {

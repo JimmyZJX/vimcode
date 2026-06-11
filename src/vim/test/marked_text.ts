@@ -69,11 +69,14 @@ export function encodeMarkedText({ text, row, column, anchorRow, anchorColumn, m
   return insertMarker(text, { row, column }, cursorMarker);
 }
 
-export function editorFromMarkedText(markedText: string): { editor: InMemoryVimEditor; vim: Vim } {
+export function editorFromMarkedText(
+  markedText: string,
+  configuration: ConstructorParameters<typeof Vim>[1] = {}
+): { editor: InMemoryVimEditor; vim: Vim } {
   const parsed = parseMarkedText(markedText);
   const editor = new InMemoryVimEditor(parsed.text);
   editor.setSelections(selectionsFromParsedMarkedText(parsed));
-  const vim = new Vim(editor);
+  const vim = new Vim(editor, configuration);
   if (parsed.mode === "visual") vim.syncFromEditorState();
   return { editor, vim };
 }
@@ -86,11 +89,23 @@ export function resetEditorFromMarkedText(editor: InMemoryVimEditor, vim: Vim, m
 
 function selectionsFromParsedMarkedText(parsed: ParsedMarkedText): readonly VimSelection[] {
   if (parsed.mode === "visual") {
+    // `«…ˇ»` marks the cursor on the selection's last character (inclusive).
+    // Editor-level charwise selections are boundary-based with an explicit
+    // cursor cell, so the head is one cell past the cursor.
+    const cursor = { row: parsed.row, column: parsed.column };
+    const lines = parsed.text.split("\n");
+    const lineLength = (lines[cursor.row] ?? "").length;
+    const head = cursor.column < lineLength
+      ? { row: cursor.row, column: cursor.column + 1 }
+      : cursor.row + 1 < lines.length
+        ? { row: cursor.row + 1, column: 0 }
+        : cursor;
     return [
       {
         type: "charwise",
         anchor: { row: parsed.anchorRow!, column: parsed.anchorColumn! },
-        head: { row: parsed.row, column: parsed.column },
+        head,
+        cursor,
       },
     ];
   }

@@ -21,6 +21,9 @@ export class VimGlobalState {
   readonly repeat = new RepeatState();
   readonly macro = new MacroState();
   lastFind: FindMotion | undefined;
+  /** Ex options toggled with `:set`; only options that change core command
+      semantics live here (`:h gdefault`). */
+  readonly exOptions = { gdefault: false };
 }
 
 export class VimModelState {

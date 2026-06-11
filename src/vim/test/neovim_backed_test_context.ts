@@ -6,9 +6,11 @@
 // - intentional differences: this is a synchronous Jest helper and fixtures are the
 //   source of truth for which tests exist.
 
+import { RemapTimeoutKey } from "../config.js";
 import { parseRegisterName } from "../registers.js";
 import { Vim, runKeys } from "../vim.js";
 import { InMemoryVimEditor } from "../editor.js";
+import { fixtureConfigurations } from "./fixture_configurations.js";
 import { editorFromMarkedText, markedTextFromEditor, resetEditorFromMarkedText } from "./marked_text.js";
 import { EnabledNeovimFixture } from "./neovim_fixtures.js";
 
@@ -32,14 +34,23 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
     if ("Put" in entry) {
       currentScenario = [`Put ${entry.Put.state}`];
       if (editor === undefined || vim === undefined) {
-        ({ editor, vim } = editorFromMarkedText(entry.Put.state));
+        // Some Zed fixtures configure key remappings in the test body rather
+        // than the fixture file; mirror that setup here.
+        ({ editor, vim } = editorFromMarkedText(entry.Put.state, fixtureConfigurations[fixture.testCaseId] ?? {}));
       } else {
         resetEditorFromMarkedText(editor, vim, entry.Put.state);
       }
     } else if ("Key" in entry) {
       currentScenario.push(`Key ${entry.Key}`);
-      const currentVim = requireVim(vim, fixture.testCaseId);
-      runKeys(currentVim, [keyForLocalVim(entry.Key)]);
+      // A few Zed fixtures contain empty key entries (recording artifacts);
+      // Neovim treats them as no-ops.
+      if (entry.Key.length === 0) continue;
+      // Some fixtures type setup commands (`:set gdefault`) before the first
+      // Put; run them against an empty scratch buffer.
+      if (vim === undefined) {
+        ({ editor, vim } = editorFromMarkedText("ˇ", fixtureConfigurations[fixture.testCaseId] ?? {}));
+      }
+      runKeys(vim, [keyForLocalVim(entry.Key)]);
     } else if ("SetOption" in entry) {
       // Zed fixtures may contain Neovim UI options (e.g. wrap/columns) that do
       // not affect the model-buffer semantics supported by this harness yet.
@@ -59,6 +70,9 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
     } else {
       const currentEditor = requireEditor(editor, fixture.testCaseId);
       const currentVim = requireVim(vim, fixture.testCaseId);
+      // Zed advances the clock past the remap timeout before asserting;
+      // resolve any ambiguous pending remap the same way (`pin` vs `pine`).
+      if (currentVim.status.remapPending) runKeys(currentVim, [RemapTimeoutKey]);
       const actual = { mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor, currentVim.mode.kind) };
       const expected = { mode: entry.Get.mode, markedText: entry.Get.state };
       try {

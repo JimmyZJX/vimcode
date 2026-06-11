@@ -44,8 +44,14 @@ export function toggleCaseCharacters(editor: VimEditorCapabilities, count: numbe
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
-    const lineLength = editor.lineLength(head.row);
-    const endColumn = Math.min(head.column + count, lineLength);
+    const line = editor.line(head.row);
+    // Vim: the count is in characters; astral characters span two UTF-16
+    // columns (`4~` over `C😀é1` toggles all four characters).
+    let endColumn = head.column;
+    for (let index = 0; index < count && endColumn < line.length; index++) {
+      const code = line.charCodeAt(endColumn);
+      endColumn += code >= 0xd800 && code <= 0xdbff ? 2 : 1;
+    }
     if (head.column >= endColumn) {
       selectionsAfter.push(charwiseSelection(head));
       continue;
@@ -58,7 +64,7 @@ export function toggleCaseCharacters(editor: VimEditorCapabilities, count: numbe
     });
     selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, {
       row: head.row,
-      column: head.column + count,
+      column: endColumn,
     })));
   }
 

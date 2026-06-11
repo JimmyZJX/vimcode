@@ -1,4 +1,3 @@
-// DISABLED: fixture starts from pre-existing visual selections, which the current fixture harness does not restore as Vim visual mode.
 {"Put":{"state":"A😀c«DÉ1*fˇ»\n"}}
 {"Key":"u"}
 {"Get":{"state":"A😀cˇdé1*f\n","mode":"Normal"}}

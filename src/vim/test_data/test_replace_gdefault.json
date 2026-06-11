@@ -1,4 +1,3 @@
-// DISABLED: fixture sets &gdefault via an entry before Put; harness lacks option-setting entries.
 {"Key":":"}
 {"Key":"s"}
 {"Key":"e"}

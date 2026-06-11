@@ -12,6 +12,7 @@ import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.j
 
 export type CommandOptions = {
   runNormalKeys?: (keys: readonly string[], range: LineRange | undefined) => void;
+  exOptions?: { gdefault: boolean };
 };
 
 type VimCommandAbbreviation = readonly [required: string, optional: string];
@@ -86,6 +87,14 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
 
   if (dispatchSimpleCommand({ editor, range }, trimmedRest)) return;
 
+  const setOption = parseSetCommand(trimmedRest);
+  if (setOption !== undefined) {
+    if (options.exOptions !== undefined && (setOption.name === "gdefault" || setOption.name === "gd")) {
+      options.exOptions.gdefault = setOption.value;
+    }
+    return;
+  }
+
   if (trimmedRest.startsWith("g") || trimmedRest.startsWith("v")) {
     matchingLines(editor, range ?? wholeBufferRange(editor), trimmedRest);
     return;
@@ -97,8 +106,15 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
   }
 
   if (trimmedRest.startsWith("s")) {
-    substitute(editor, range ?? currentLineRange(editor, 1), trimmedRest);
+    substitute(editor, range ?? currentLineRange(editor, 1), trimmedRest, options.exOptions?.gdefault ?? false);
   }
+}
+
+// Vim `:h :set`: the tiny subset of boolean options the core understands.
+function parseSetCommand(command: string): { name: string; value: boolean } | undefined {
+  const match = /^se(?:t)?\s+(no)?([a-z]+)$/.exec(command);
+  if (match === null) return undefined;
+  return { name: match[2], value: match[1] === undefined };
 }
 
 export type LineRange = { startRow: number; endRowInclusive: number };
@@ -305,15 +321,20 @@ function prependToLines(editor: VimEditorCapabilities, range: LineRange, text: s
   editor.applyEdits(edits, [charwiseSelection({ row: range.startRow, column: Math.max(0, text.length - 1) })]);
 }
 
-function substitute(editor: VimEditorCapabilities, range: LineRange, command: string): void {
+function substitute(editor: VimEditorCapabilities, range: LineRange, command: string, gdefault: boolean): void {
   const parsed = parseSubstitute(command);
   if (parsed === undefined) return;
   if (parsed.flags.includes("n")) return;
 
+  // Vim `:h gdefault` / `:h :s_g`: every `g` flag toggles whole-line
+  // replacement; `gdefault` flips the starting state.
+  const gParity = [...parsed.flags].filter(flag => flag === "g").length % 2 === 1;
+  const global = gdefault ? !gParity : gParity;
+
   const edits: TextEdit[] = [];
   for (let row = range.startRow; row <= range.endRowInclusive; row++) {
     const line = editor.line(row);
-    const replaced = substituteLine(line, parsed.pattern, parsed.replacement, parsed.flags.includes("g"));
+    const replaced = substituteLine(line, parsed.pattern, parsed.replacement, global);
     if (replaced !== line) {
       edits.push({ range: { start: { row, column: 0 }, end: { row, column: editor.lineLength(row) } }, text: replaced });
     }

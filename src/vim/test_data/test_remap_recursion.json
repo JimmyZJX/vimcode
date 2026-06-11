@@ -1,4 +1,3 @@
-// DISABLED: recursive normal-mode remap fixture (d->y style); needs fixture-declared remaps in the harness.
 {"Exec":{"command":"noremap x \"_x"}}
 {"Exec":{"command":"map y 2x"}}
 {"Put":{"state":"ˇhello"}}

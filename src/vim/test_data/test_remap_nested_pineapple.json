@@ -1,4 +1,3 @@
-// DISABLED: insert-mode remap fixture (nested pin/pine/pineapple); needs fixture-declared remaps in the harness.
 {"Exec":{"command":"imap pin 📌"}}
 {"Exec":{"command":"imap pine 🌲"}}
 {"Exec":{"command":"imap pineapple 🍍"}}
