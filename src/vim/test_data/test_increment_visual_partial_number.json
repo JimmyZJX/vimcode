@@ -1,4 +1,3 @@
-// DISABLED: full fixture depends on visual-block selection geometry beyond current blockwise lowering.
 {"Put":{"state":"ˇ123"}}
 {"Key":"v"}
 {"Key":"l"}

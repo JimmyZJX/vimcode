@@ -1,4 +1,3 @@
-// DISABLED: normal-mode `ctrl-w` override (Zed maps it to delete in test config); we treat ctrl-w as native window key.
 {"Exec":{"command":"map <c-w> D"}}
 {"Put":{"state":"ˇhi"}}
 {"Key":"ctrl-w"}

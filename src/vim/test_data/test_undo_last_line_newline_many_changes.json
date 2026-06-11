@@ -1,4 +1,4 @@
-// DISABLED: VSCode-native undo/redo behavior; requires VSCode integration testing rather than core fixture replay.
+// DISABLED: `U` (undo-line) not implemented; needs Zed-style change-list anchors plus undo/redo replay against the host undo stack (Zed `normal.rs` UndoLastLine).
 {"Put":{"state":"ˇfn a() { }\nfn a() { }\nfn a() { }\n"}}
 {"Key":"x"}
 {"Key":"shift-g"}

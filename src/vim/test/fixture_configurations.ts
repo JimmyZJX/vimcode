@@ -37,4 +37,14 @@ export const fixtureConfigurations: Record<string, Partial<VimConfiguration>> = 
     normalModeKeyBindingsNonRecursive: [{ before: ["x"], after: ["\"", "_", "x"] }],
     normalModeKeyBindings: [{ before: ["y"], after: ["2", "x"] }],
   },
+  // Zed test_comma_w: `map ,w j` — `,` is both a find-repeat key and a remap
+  // prefix; an unmatched continuation must fall back to the built-in `,`.
+  test_comma_w: {
+    normalModeKeyBindings: [{ before: [",", "w"], after: ["j"] }],
+  },
+  // Zed test_ctrl_w_override: `map <c-w> D` (the fixture's Exec entry) — a
+  // user remap takes priority over the native window-command key.
+  test_ctrl_w_override: {
+    normalModeKeyBindings: [{ before: ["<C-w>"], after: ["D"] }],
+  },
 };

@@ -1,4 +1,4 @@
-// DISABLED: VSCode-native viewport/display movement; requires VSCode integration testing rather than core fixture replay.
+// DISABLED: soft-wrap display-line movement (`wrap`/`columns=N`); the in-memory host has no display map.
 {"SetOption":{"value":"wrap"}}
 {"SetOption":{"value":"columns=12"}}
 {"Put":{"state":"tˇwelve char twelve char\ntwelve char\n"}}

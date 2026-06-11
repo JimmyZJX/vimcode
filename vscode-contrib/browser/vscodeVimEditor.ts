@@ -380,6 +380,21 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return this.moveByViewLines(direction, pageLineCount * count, { displayLine: true, extend });
 	}
 
+	visibleRowRange(): { top: number; bottom: number } | undefined {
+		// Vim `H`/`M`/`L` target the visible window. Convert the completely
+		// visible view range back to model rows so soft wraps and folds use the
+		// same coordinates as native cursor movement.
+		const viewModel = this.editor._getViewModel();
+		const visibleRange = viewModel?.getCompletelyVisibleViewRange();
+		if (viewModel === null || visibleRange === undefined) {
+			return undefined;
+		}
+		const converter = viewModel.coordinatesConverter;
+		const top = converter.convertViewPositionToModelPosition(new VSCodePosition(visibleRange.startLineNumber, 1));
+		const bottom = converter.convertViewPositionToModelPosition(new VSCodePosition(visibleRange.endLineNumber, 1));
+		return { top: top.lineNumber - 1, bottom: bottom.lineNumber - 1 };
+	}
+
 	scrollByLines(direction: HostDirection, count: number): void {
 		this.viewportControlledByCommand = true;
 		this.editor.trigger('vim', 'editorScroll', {

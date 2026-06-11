@@ -30,7 +30,7 @@ export type VimSelectionGoal =
 // mode state instead of this exact union.
 export type VimSelection =
   | { type: "charwise"; anchor: Position; head: Position; cursor?: Position; goal?: VimSelectionGoal }
-  | { type: "linewise"; anchorLine: number; headLine: number; cursor?: Position; goal?: VimSelectionGoal }
+  | { type: "linewise"; anchorLine: number; anchorColumn?: number; headLine: number; cursor?: Position; goal?: VimSelectionGoal }
   | { type: "blockwise"; anchor: Position; head: Position; cursor?: Position; goal?: VimSelectionGoal };
 
 export type VimDialect = "vim" | "helix";

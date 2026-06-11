@@ -1,1 +1,141 @@
-// DISABLED: fixture has no Put/Get entries; harness cannot replay it.
+// Recorded against local Neovim (nvim --headless --clean) for the SENTENCE_EXAMPLES cursor positions used by test_change_sentence_object; Zed never recorded this fixture.
+{"Put": {"state": "ˇThe quick brown? Fox Jumps! Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown?ˇ» Fox Jumps! Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick ˇbrown? Fox Jumps! Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown?ˇ» Fox Jumps! Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick brownˇ? Fox Jumps! Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown?ˇ» Fox Jumps! Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick brown?ˇ Fox Jumps! Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown?« ˇ»Fox Jumps! Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick brown? ˇFox Jumps! Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown? «Fox Jumps!ˇ» Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick brown? Fox Jˇumps! Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown? «Fox Jumps!ˇ» Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick brown? Fox Jumpsˇ! Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown? «Fox Jumps!ˇ» Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick brown? Fox Jumps!ˇ Over the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown? Fox Jumps!« ˇ»Over the lazy.", "mode": "Visual"}}
+{"Put": {"state": "The quick brown? Fox Jumps! Ovˇer the lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown? Fox Jumps! «Over the lazy.ˇ»", "mode": "Visual"}}
+{"Put": {"state": "The quick brown? Fox Jumps! Over theˇ lazy."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown? Fox Jumps! «Over the lazy.ˇ»", "mode": "Visual"}}
+{"Put": {"state": "The quick brown? Fox Jumps! Over the lazyˇ."}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown? Fox Jumps! «Over the lazy.ˇ»", "mode": "Visual"}}
+{"Put": {"state": "ˇThe quick brown\nfox jumps over\nthe lazy dog. The quick \nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown\nfox jumps over\nthe lazy dog.ˇ» The quick \nbrown fox jumps over\n", "mode": "Visual"}}
+{"Put": {"state": "The quick ˇbrown\nfox jumps over\nthe lazy dog. The quick \nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown\nfox jumps over\nthe lazy dog.ˇ» The quick \nbrown fox jumps over\n", "mode": "Visual"}}
+{"Put": {"state": "The quick brownˇ\nfox jumps over\nthe lazy dog. The quick \nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown\nfox jumps over\nthe lazy dog.ˇ» The quick \nbrown fox jumps over\n", "mode": "Visual"}}
+{"Put": {"state": "The quick brown\nfox jumps over\nthe lazy doˇg. The quick \nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown\nfox jumps over\nthe lazy dog.ˇ» The quick \nbrown fox jumps over\n", "mode": "Visual"}}
+{"Put": {"state": "The quick brown\nfox jumps over\nthe lazy dogˇ. The quick \nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown\nfox jumps over\nthe lazy dog.ˇ» The quick \nbrown fox jumps over\n", "mode": "Visual"}}
+{"Put": {"state": "The quick brown\nfox jumps over\nthe lazy dog.ˇ The quick \nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown\nfox jumps over\nthe lazy dog.« ˇ»The quick \nbrown fox jumps over\n", "mode": "Visual"}}
+{"Put": {"state": "The quick brown\nfox jumps over\nthe lazy dog. ˇThe quick \nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown\nfox jumps over\nthe lazy dog. «The quick \nbrown fox jumps overˇ»\n", "mode": "Visual"}}
+{"Put": {"state": "The quick brown\nfox jumps over\nthe lazy dog. The quick ˇ\nbrown fox jumps over\n"}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown\nfox jumps over\nthe lazy dog. «The quick \nbrown fox jumps overˇ»\n", "mode": "Visual"}}
+{"Put": {"state": "ˇThe quick brown.)]'\" Brown fox jumps. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown.)]'\"ˇ» Brown fox jumps. ", "mode": "Visual"}}
+{"Put": {"state": "The ˇquick brown.)]'\" Brown fox jumps. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown.)]'\"ˇ» Brown fox jumps. ", "mode": "Visual"}}
+{"Put": {"state": "The quick brownˇ.)]'\" Brown fox jumps. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown.)]'\"ˇ» Brown fox jumps. ", "mode": "Visual"}}
+{"Put": {"state": "The quick brown.)ˇ]'\" Brown fox jumps. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown.)]'\"ˇ» Brown fox jumps. ", "mode": "Visual"}}
+{"Put": {"state": "The quick brown.)]ˇ'\" Brown fox jumps. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown.)]'\"ˇ» Brown fox jumps. ", "mode": "Visual"}}
+{"Put": {"state": "The quick brown.)]'ˇ\" Brown fox jumps. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "«The quick brown.)]'\"ˇ» Brown fox jumps. ", "mode": "Visual"}}
+{"Put": {"state": "The quick brown.)]'\" Brown ˇfox jumps. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown.)]'\" «Brown fox jumps.ˇ» ", "mode": "Visual"}}
+{"Put": {"state": "The quick brown.)]'\" Brown fox jumpsˇ. "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown.)]'\" «Brown fox jumps.ˇ» ", "mode": "Visual"}}
+{"Put": {"state": "The quick brown.)]'\" Brown fox jumps.ˇ "}}
+{"Key": "v"}
+{"Key": "i"}
+{"Key": "s"}
+{"Get": {"state": "The quick brown.)]'\" Brown fox jumps.« ˇ»", "mode": "Visual"}}

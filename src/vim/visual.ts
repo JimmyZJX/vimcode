@@ -12,7 +12,7 @@ import type { VisualCommand, VisualModeKind } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
-import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, matchingPositionFromLine, Motion } from "./motion.js";
+import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, linewiseCursorAfterDelete, matchingPositionFromLine, Motion } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { IndentDirection } from "./normal/indent.js";
@@ -59,6 +59,10 @@ type CharwiseVisualState = {
 type LinewiseVisualState = {
   kind: "linewise";
   anchorLine: number;
+  // Vim keeps the raw column of the visual anchor even though linewise
+  // selections cover whole lines; it shows through `gv`, `o`, and the
+  // marked-state encoding of recorded Neovim fixtures.
+  anchorColumn: number;
   headLine: number;
   headColumn: number;
   cursor?: Position;
@@ -151,7 +155,7 @@ export class VisualMode {
         }));
         break;
       case "linewise":
-        this.state = { kind, anchorLine: head.row, headLine: head.row, headColumn: head.column };
+        this.state = { kind, anchorLine: head.row, anchorColumn: head.column, headLine: head.row, headColumn: head.column };
         this.syncEditorSelection();
         break;
       case "blockwise":
@@ -463,7 +467,7 @@ export class VisualMode {
 
     if (object.type === "paragraph") {
       const range = textObjectRange(this.editor, visualObjectPosition(this.editor, state), object, { around, count });
-      this.state = paragraphLinewiseStateForRange(this.editor, range);
+      this.state = paragraphLinewiseStateForRange(state, range);
       this.syncEditorSelection();
       return handled({ nextMode: "visualLine" });
     }
@@ -657,6 +661,9 @@ export class VisualMode {
 
   private convert(state: VisualState, target: ConvertTarget): void {
     this.rememberState(state);
+    // Vim: a visual operator moves the cursor to the selection start before
+    // changing text, so that is where `u` later restores it.
+    beginVisualUndoTransaction(this.editor, state);
     switch (state.kind) {
       case "charwise":
         applyOperatorToTarget(this.editor, this.registers, undefined, { type: "convert", target }, visualCharwiseTarget(this.editor, state));
@@ -752,6 +759,7 @@ export class VisualMode {
         this.state = {
           kind: "linewise",
           anchorLine: selection.anchorLine,
+          anchorColumn: selection.anchorColumn ?? 0,
           headLine: selection.headLine,
           headColumn: selection.cursor?.column ?? 0,
           cursor: selection.cursor,
@@ -1004,9 +1012,14 @@ function stateToLinewise(state: VisualState): LinewiseVisualState {
     case "linewise":
       return state;
     case "charwise":
-      return { kind: "linewise", anchorLine: state.anchor.row, headLine: state.head.row, headColumn: state.head.column };
     case "blockwise":
-      return { kind: "linewise", anchorLine: state.anchor.row, headLine: state.head.row, headColumn: state.head.column };
+      return {
+        kind: "linewise",
+        anchorLine: state.anchor.row,
+        anchorColumn: state.anchor.column,
+        headLine: state.head.row,
+        headColumn: state.head.column,
+      };
   }
 }
 
@@ -1030,7 +1043,14 @@ function otherEndState(state: VisualState, { rowAware }: { rowAware: boolean }):
     case "charwise":
       return { ...state, anchor: state.head, head: state.anchor, goal: { type: "modelColumn", column: state.anchor.column } };
     case "linewise":
-      return { ...state, anchorLine: state.headLine, headLine: state.anchorLine };
+      return {
+        ...state,
+        anchorLine: state.headLine,
+        anchorColumn: state.headColumn,
+        headLine: state.anchorLine,
+        headColumn: state.anchorColumn,
+        cursor: undefined,
+      };
     case "blockwise":
       return rowAware ? flipBlockOtherEndRowAware(state) : flipBlockOtherEnd(state);
   }
@@ -1094,6 +1114,7 @@ function visualStateToEditorSelection(editor: VimEditorCapabilities, state: Visu
       return {
         type: "linewise",
         anchorLine: state.anchorLine,
+        anchorColumn: state.anchorColumn,
         headLine: state.headLine,
         cursor: linewiseCursor(editor, state),
         goal: state.goal,
@@ -1146,18 +1167,30 @@ function charwiseStateForRange(editor: VimEditorCapabilities, range: TextRange):
   };
 }
 
-function paragraphLinewiseStateForRange(editor: VimEditorCapabilities, range: TextRange): LinewiseVisualState {
-  const endLineLength = editor.lineLength(range.end.row);
-  const headColumn = range.start.row === range.end.row || endLineLength === 0 ? 0 : 1;
+// Vim: a linewise paragraph object moves the cursor to column zero of the
+// object's last line. The raw visual anchor keeps its position; it only moves
+// (to column zero of the object's first line) when the object starts above it.
+function paragraphLinewiseStateForRange(state: VisualState, range: TextRange): LinewiseVisualState {
+  const anchor = rawVisualAnchor(state);
+  const anchorColumn = range.start.row < anchor.row ? 0 : anchor.column;
   return {
     kind: "linewise",
     anchorLine: range.start.row,
+    anchorColumn,
     headLine: range.end.row,
-    headColumn,
-    cursor: endLineLength === 0 && range.end.row + 1 < editor.lineCount()
-      ? { row: range.end.row + 1, column: 0 }
-      : undefined,
+    headColumn: 0,
+    cursor: { row: range.end.row, column: 0 },
   };
+}
+
+function rawVisualAnchor(state: VisualState): Position {
+  switch (state.kind) {
+    case "charwise":
+    case "blockwise":
+      return state.anchor;
+    case "linewise":
+      return { row: state.anchorLine, column: state.anchorColumn };
+  }
 }
 
 function inclusiveHeadForRangeEnd(editor: VimEditorCapabilities, range: TextRange): Position {
@@ -1369,23 +1402,6 @@ function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: Visual
 
 function openVisualChangeEditOptions() {
   return keepUndoTransactionOpen();
-}
-
-function linewiseCursorAfterDelete(
-  editor: VimEditorCapabilities,
-  startLine: number,
-  column: number,
-  deletedLineCount: number
-): Position {
-  const lineCountBeforeDelete = editor.lineCount();
-  const deletingThroughLastLine = startLine + deletedLineCount >= lineCountBeforeDelete;
-  const rowAfterDelete = deletingThroughLastLine && startLine > 0
-    ? startLine - 1
-    : Math.min(startLine, Math.max(0, lineCountBeforeDelete - deletedLineCount));
-  const targetLineLengthBeforeDelete = deletingThroughLastLine
-    ? editor.lineLength(rowAfterDelete)
-    : editor.lineLength(Math.min(startLine + deletedLineCount, lineCountBeforeDelete - 1));
-  return { row: rowAfterDelete, column: Math.min(column, Math.max(0, targetLineLengthBeforeDelete - 1)) };
 }
 
 function pasteOverCharwise(

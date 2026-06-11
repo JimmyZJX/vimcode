@@ -1,4 +1,3 @@
-// DISABLED: visual-block extend across `ctrl-d`: in-memory page size approximation selects one row too many.
 {"SetOption":{"value":"scrolloff=3"}}
 {"SetOption":{"value":"lines=7"}}
 {"Put":{"state":"ˇ01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n"}}

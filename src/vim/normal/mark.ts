@@ -27,6 +27,10 @@ export class MarkState {
     this.marks.set(">", previousPosition(editor, range.end));
   }
 
+  position(key: string): Position | undefined {
+    return this.marks.get(key);
+  }
+
   jumpMotion(editor: VimEditorCapabilities, key: string, { line }: { line: boolean }): Motion | undefined {
     const target = this.markForJump(key);
     if (target === undefined) return undefined;

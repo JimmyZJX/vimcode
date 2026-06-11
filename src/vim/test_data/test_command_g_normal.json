@@ -1,4 +1,3 @@
-// DISABLED: `:%g/pat/norm Abar` needs :g + :normal composition; current :normal slice only supports I.
 {"Put":{"state":"ˇfoo\n\nfoo\n"}}
 {"Key":":"}
 {"Key":"%"}

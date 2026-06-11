@@ -1,4 +1,3 @@
-// DISABLED: `d]}` from inside nested parens: unmatched-brace lookup must skip balanced pairs the cursor is inside.
 {"Put":{"state":"fn o(wow: i32) {\n  othˇ(wow)\n  oth(wow)\n}\n"}}
 {"Key":"d"}
 {"Key":"]"}

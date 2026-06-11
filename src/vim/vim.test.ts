@@ -1863,7 +1863,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.modeName).toBe("vim:visualLine");
     expect(editor.getSelections()).toEqual([
-      { type: "linewise", anchorLine: 0, headLine: 3, cursor: { row: 3, column: 0 }, goal: { type: "modelColumn", column: 0 } },
+      { type: "linewise", anchorLine: 0, anchorColumn: 0, headLine: 3, cursor: { row: 3, column: 0 }, goal: { type: "modelColumn", column: 0 } },
     ]);
   });
 
@@ -1887,6 +1887,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getSelections()[0]).toEqual({
       type: "linewise",
       anchorLine: 0,
+      anchorColumn: 1,
       headLine: 1,
       cursor: { row: 1, column: 0 },
       goal: { type: "modelColumn", column: 1 },
@@ -1897,6 +1898,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getSelections()[0]).toEqual({
       type: "linewise",
       anchorLine: 0,
+      anchorColumn: 1,
       headLine: 2,
       cursor: { row: 2, column: 1 },
       goal: { type: "modelColumn", column: 1 },

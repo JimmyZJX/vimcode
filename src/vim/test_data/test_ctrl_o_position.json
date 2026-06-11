@@ -1,4 +1,4 @@
-// DISABLED: VSCode-native viewport/display movement; requires VSCode integration testing rather than core fixture replay.
+// DISABLED: `ctrl-o`/`ctrl-i` jump list; model-level jump list not implemented (host navigation is used).
 {"Put":{"state":"helˇlo world."}}
 {"Key":"i"}
 {"Key":"ctrl-o"}

@@ -1,4 +1,3 @@
-// DISABLED: full :normal fixture needs richer normal command replay, undo, visual ranges, and C/s semantics.
 {"Put":{"state":"The quick\nbrown« fox\njumpsˇ» over\nthe lazy dog\n"}}
 {"Key":":"}
 {"Key":"n"}

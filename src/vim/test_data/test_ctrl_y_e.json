@@ -1,4 +1,3 @@
-// DISABLED: `ctrl-e`/`ctrl-y` scroll fixture asserts cursor pushed by viewport edge; in-memory host has no viewport.
 {"SetOption":{"value":"scrolloff=3"}}
 {"SetOption":{"value":"lines=12"}}
 {"Put":{"state":"ˇaa\nbb\ncc\ndd\nee\nff\ngg\nhh\nii\njj\nkk\nll\nmm\nnn\noo\npp\nqq\nrr\nss\ntt\nuu\nvv\nww\nxx\nyy\nzz"}}

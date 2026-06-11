@@ -1,4 +1,3 @@
-// DISABLED: full r fixture includes newline replacement edge cases beyond current replace slice.
 {"Put":{"state":"ˇhello\n"}}
 {"Key":"r"}
 {"Key":"-"}

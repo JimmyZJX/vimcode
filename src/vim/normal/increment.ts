@@ -19,14 +19,16 @@ export function incrementNumbers(editor: VimEditorCapabilities, delta: number, s
 
   for (const selection of editor.getSelections()) {
     const selectionRange = rangeOfSelection(selection);
-    const selectionIsEmpty = rangeIsEmpty(selectionRange);
+    const selectionIsEmpty = selection.type !== "blockwise" && rangeIsEmpty(selectionRange);
     if (!selectionIsEmpty && selectionsAfter.length === 0) {
-      selectionsAfter.push(charwiseSelection(selectionRange.start));
+      selectionsAfter.push(charwiseSelection(
+        selection.type === "blockwise"
+          ? { row: selectionRange.start.row, column: Math.min(selection.anchor.column, selection.head.column) }
+          : selectionRange.start
+      ));
     }
 
-    for (let row = selectionRange.start.row; row <= selectionRange.end.row; row++) {
-      const startColumn = row === selectionRange.start.row ? selectionRange.start.column : 0;
-      const endColumn = row === selectionRange.end.row ? selectionRange.end.column : editor.lineLength(row);
+    for (const { row, startColumn, endColumn } of rowSpansOfSelection(editor, selection)) {
       const target = findTarget(editor.line(row), startColumn, endColumn, { needRange: !selectionIsEmpty });
       if (target === undefined) continue;
 
@@ -51,6 +53,41 @@ export function incrementNumbers(editor: VimEditorCapabilities, delta: number, s
   } else {
     editor.applyEdits(edits, selectionsAfter.length === 0 ? editor.getSelections() : selectionsAfter);
   }
+}
+
+type RowSpan = { row: number; startColumn: number; endColumn: number };
+
+// Per-row line spans covered by a selection. Blockwise selections cover the
+// rectangle between anchor and head columns on every row (Zed lowers visual
+// block mode to one editor selection per row; here the rectangle is lowered
+// at the point of use).
+function rowSpansOfSelection(editor: VimEditorCapabilities, selection: VimSelection): RowSpan[] {
+  if (selection.type === "blockwise") {
+    const startRow = Math.min(selection.anchor.row, selection.head.row);
+    const endRow = Math.max(selection.anchor.row, selection.head.row);
+    const startColumn = Math.min(selection.anchor.column, selection.head.column);
+    const endColumn = Math.max(selection.anchor.column, selection.head.column);
+    const spans: RowSpan[] = [];
+    for (let row = startRow; row <= endRow; row++) {
+      spans.push({
+        row,
+        startColumn,
+        endColumn: selection.goal?.type === "endOfLine" ? editor.lineLength(row) : endColumn + 1,
+      });
+    }
+    return spans;
+  }
+
+  const selectionRange = rangeOfSelection(selection);
+  const spans: RowSpan[] = [];
+  for (let row = selectionRange.start.row; row <= selectionRange.end.row; row++) {
+    spans.push({
+      row,
+      startColumn: row === selectionRange.start.row ? selectionRange.start.column : 0,
+      endColumn: row === selectionRange.end.row ? selectionRange.end.column : editor.lineLength(row),
+    });
+  }
+  return spans;
 }
 
 type Target = {

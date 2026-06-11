@@ -75,6 +75,9 @@ export interface VimEditorCapabilities {
   moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
   moveByPages(direction: HostDirection, count: number, options: { halfPage: boolean; extend: boolean }): readonly VimSelection[] | undefined;
   scrollByLines(direction: HostDirection, count: number): void;
+  /** Model rows currently visible in the host viewport (both inclusive), or
+      undefined when the host has no viewport. Used by `H`/`M`/`L`. */
+  visibleRowRange(): { top: number; bottom: number } | undefined;
 
   // Zed: `normal::search` integrates with `BufferSearchBar` so search motions,
   // highlights, and find-widget state share one source of truth. Locally, the
@@ -139,6 +142,9 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private pendingUndoSelectionsBefore: VimSelection[] | undefined;
   public cursorStyle: CursorStyle = "block";
   public insertPendingText: string | undefined;
+  private viewportLines: number | undefined;
+  private viewportScrolloff = 0;
+  private viewportTopRow = 0;
   public readonly nativeCommands: { command: string; args: readonly unknown[] }[] = [];
 
   constructor(text = "") {
@@ -154,6 +160,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.redoStack = [];
     this.pendingUndoSnapshot = undefined;
     this.pendingUndoSelectionsBefore = undefined;
+    this.viewportTopRow = 0;
     this.setSelections(selections);
   }
 
@@ -228,6 +235,33 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
         selectionsAfter: cloneSelections(this.selections),
       };
     }
+    this.revealPrimaryCursorInTestViewport();
+  }
+
+  // Editors auto-scroll to keep the cursor visible; mirror that for the
+  // test-only viewport so page motions observe the topline a real Neovim
+  // window would have after ordinary motions (`gg`, `4j`, ...).
+  private revealPrimaryCursorInTestViewport(): void {
+    const height = this.viewportHeight();
+    const selection = this.selections[0];
+    if (height === undefined || selection === undefined) return;
+    const row = (selection.type === "linewise"
+      ? selection.cursor ?? { row: selection.headLine, column: 0 }
+      : selection.cursor ?? selectionHead(selection)).row;
+    const lastRow = this.lineCount() - 1;
+    const scrolloff = this.viewportScrolloff;
+    let top = this.viewportTopRow;
+    if (2 * scrolloff >= height) {
+      top = row - Math.floor((height - 1) / 2);
+    } else {
+      // The margins relax at the document edges: no padding above row zero or
+      // below the last line.
+      const maxTop = row - Math.min(scrolloff, row);
+      const minTop = row - height + 1 + Math.min(scrolloff, lastRow - row);
+      if (top > maxTop) top = maxTop;
+      else if (top < minTop) top = minTop;
+    }
+    this.viewportTopRow = Math.max(0, Math.min(top, lastRow));
   }
 
   setCursorStyle(style: CursorStyle): void {
@@ -328,11 +362,94 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): readonly VimSelection[] {
-    const pageSize = Math.max(1, Math.floor(this.lineCount() / (halfPage ? 2 : 1)));
-    return this.modelRowSelections(direction, count * pageSize, { extend });
+    const height = this.viewportHeight();
+    if (height === undefined) {
+      const pageSize = Math.max(1, Math.floor(this.lineCount() / (halfPage ? 2 : 1)));
+      return this.modelRowSelections(direction, count * pageSize, { extend });
+    }
+    const lastRow = this.lineCount() - 1;
+    // Page scrolls keep the window full: the topline stops once the last line
+    // reaches the bottom of the window (unlike `ctrl-e`, which can scroll the
+    // last line up to the top).
+    const maxTop = Math.max(0, this.lineCount() - height);
+    if (halfPage) {
+      // Vim: `ctrl-d`/`ctrl-u` scroll by 'scroll' (half the window height); the
+      // cursor moves with the viewport and is then pushed inside the
+      // 'scrolloff' margins.
+      const delta = count * Math.max(1, Math.floor(height / 2));
+      const signedDelta = direction === "up" ? -delta : delta;
+      this.viewportTopRow = Math.max(0, Math.min(this.viewportTopRow + signedDelta, maxTop));
+      return this.modelRowSelections(direction, delta, { extend }, row => this.rowInsideScrolloffMargins(row));
+    }
+    // Vim `onepage()`: `ctrl-f`/`ctrl-b` scroll by a window (keeping two lines
+    // of overlap) and land the cursor on the new window's first/last line,
+    // pushed inside the 'scrolloff' margins.
+    const delta = count * Math.max(1, height - 2);
+    const signedDelta = direction === "up" ? -delta : delta;
+    this.viewportTopRow = Math.max(0, Math.min(this.viewportTopRow + signedDelta, maxTop));
+    const target = direction === "down"
+      ? this.viewportTopRow
+      : Math.min(this.viewportTopRow + height - 1, lastRow);
+    const row = this.rowInsideScrolloffMargins(target);
+    return this.modelRowSelections(direction, 0, { extend }, () => row);
   }
 
-  scrollByLines(_direction: HostDirection, _count: number): void {}
+  scrollByLines(direction: HostDirection, count: number): void {
+    const height = this.viewportHeight();
+    if (height === undefined) return;
+    // Vim: `ctrl-e`/`ctrl-y` scroll the viewport; the cursor stays put until
+    // the 'scrolloff' margins push it.
+    const lastRow = this.lineCount() - 1;
+    const signedDelta = direction === "up" ? -count : count;
+    this.viewportTopRow = Math.max(0, Math.min(this.viewportTopRow + signedDelta, lastRow));
+    this.setSelections(
+      this.modelRowSelections(direction, 0, { extend: false }, row => this.rowInsideScrolloffMargins(row))
+    );
+  }
+
+  visibleRowRange(): { top: number; bottom: number } {
+    const lastRow = this.lineCount() - 1;
+    const height = this.viewportHeight();
+    // Without a configured viewport the whole document is "visible".
+    if (height === undefined) return { top: 0, bottom: lastRow };
+    return {
+      top: this.viewportTopRow,
+      bottom: Math.min(this.viewportTopRow + height - 1, lastRow),
+    };
+  }
+
+  // Test-only viewport model so fixtures recorded with Neovim UI options
+  // (`lines=N`, `scrolloff=N`) can replay page motions faithfully.
+  configureViewportForTest({ lines, scrolloff }: { lines?: number; scrolloff?: number }): void {
+    if (lines !== undefined) this.viewportLines = lines;
+    if (scrolloff !== undefined) this.viewportScrolloff = scrolloff;
+  }
+
+  private viewportHeight(): number | undefined {
+    // Neovim: 'lines' counts the whole screen; the text window loses one row
+    // each to the statusline and the command line.
+    return this.viewportLines === undefined ? undefined : Math.max(1, this.viewportLines - 2);
+  }
+
+  private rowInsideScrolloffMargins(row: number): number {
+    const height = this.viewportHeight();
+    if (height === undefined) return row;
+    const lastRow = this.lineCount() - 1;
+    const top = this.viewportTopRow;
+    const bottom = Math.min(top + height - 1, lastRow);
+    const scrolloff = this.viewportScrolloff;
+    // Vim: when the margins cannot both be satisfied the cursor is centered in
+    // the window; the margins never push the cursor past the document edges.
+    if (2 * scrolloff >= height) {
+      const center = top + Math.floor((height - 1) / 2);
+      const minRow = top === 0 ? 0 : center;
+      const maxRow = bottom >= lastRow ? lastRow : center;
+      return Math.max(minRow, Math.min(row, maxRow));
+    }
+    const minRow = top === 0 ? top : Math.min(top + scrolloff, bottom);
+    const maxRow = bottom >= lastRow ? bottom : Math.max(bottom - scrolloff, top);
+    return Math.max(minRow, Math.min(row, maxRow));
+  }
 
   beginSearchPreview(): void {}
 
@@ -352,7 +469,11 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     if (snapshot === undefined) return;
     this.lines = snapshot.textBefore.split("\n");
     if (snapshot.textBefore !== snapshot.textAfter) this.contentVersion++;
-    this.setSelections(snapshot.selectionsBefore);
+    // Vim restores the cursor saved when the change began, clamped to a
+    // normal-mode cell of the restored text (an undone append from the end of
+    // a line lands on its last character).
+    this.setSelections(snapshot.selectionsBefore.map(selection =>
+      charwiseSelection(normalCursorPosition(this, selectionHead(selection)))));
     this.redoStack.push(snapshot);
   }
 
@@ -362,16 +483,27 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     if (snapshot === undefined) return;
     this.lines = snapshot.textAfter.split("\n");
     if (snapshot.textBefore !== snapshot.textAfter) this.contentVersion++;
-    this.setSelections(snapshot.selectionsAfter);
+    // Vim `u_redo`: the cursor is put at the start of the redone change, not
+    // where the cursor sat when the change finished.
+    const changeStart = firstDifferencePosition(snapshot.textBefore, snapshot.textAfter);
+    this.setSelections(changeStart !== undefined
+      ? [charwiseSelection(normalCursorPosition(this, changeStart))]
+      : snapshot.selectionsAfter.map(selection =>
+        charwiseSelection(normalCursorPosition(this, selectionHead(selection)))));
     this.undoStack.push(snapshot);
   }
 
-  private modelRowSelections(direction: HostDirection, count: number, { extend }: { extend: boolean }): readonly VimSelection[] {
+  private modelRowSelections(
+    direction: HostDirection,
+    count: number,
+    { extend }: { extend: boolean },
+    clampRow: (row: number) => number = row => row
+  ): readonly VimSelection[] {
     return this.selections.map(selection => {
       const head = selection.cursor ?? selectionHead(selection);
       const goal = selection.goal ?? modelGoalForHead(head, { extend: extend && selection.type === "charwise" && selection.cursor !== undefined });
       const rowDelta = direction === "up" ? -count : count;
-      const row = Math.max(0, Math.min(head.row + rowDelta, this.lineCount() - 1));
+      const row = clampRow(Math.max(0, Math.min(head.row + rowDelta, this.lineCount() - 1)));
       const next = normalCursorPosition(this, { row, column: modelColumnForGoal(this, row, goal) });
       if (extend) {
         switch (selection.type) {
@@ -414,6 +546,19 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       ...replacementLines
     );
   }
+}
+
+// Position (in [after]) of the first character where the two texts differ, or
+// undefined when the texts are equal.
+function firstDifferencePosition(before: string, after: string): Position | undefined {
+  if (before === after) return undefined;
+  const limit = Math.min(before.length, after.length);
+  let offset = 0;
+  while (offset < limit && before[offset] === after[offset]) offset++;
+  const prefix = after.slice(0, offset);
+  const row = prefix.split("\n").length - 1;
+  const column = offset - (row === 0 ? 0 : prefix.lastIndexOf("\n") + 1);
+  return { row, column };
 }
 
 function cloneSelections(selections: readonly VimSelection[]): VimSelection[] {

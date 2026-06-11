@@ -180,32 +180,32 @@ function encodeVisualMarkedText(text: string, anchor: Position, head: Position, 
   ]);
 }
 
+// Mirrors Zed `test::neovim_connection::NeovimConnection::state` for
+// VisualLine mode: the markers show the raw anchor/cursor cells (with the
+// later endpoint extended by one cell), not the whole selected lines.
 function encodeVisualLineSelectionMarkedText(text: string, selection: Extract<VimSelection, { type: "linewise" }>): string {
-  const cursor = selection.cursor ?? { row: selection.headLine, column: 0 };
   const lines = text.split("\n");
-  const selectedLine = lines[selection.headLine] ?? "";
-  if (selection.anchorLine !== selection.headLine) {
-    const start = { row: Math.min(selection.anchorLine, selection.headLine), column: 0 };
-    const end = cursor;
-    return insertMarkers(text, [
-      { position: start, marker: visualStartMarker },
-      { position: cursor, marker: cursorMarker },
-      { position: end, marker: visualEndMarker },
-    ]);
-  }
-  if (selectedLine.length === 0) {
-    if (selection.headLine + 1 >= lines.length) {
-      return insertMarker(text, { row: selection.headLine, column: 0 }, cursorMarker);
-    }
-    const start = { row: selection.headLine, column: 0 };
-    const end = { row: selection.headLine + 1, column: 0 };
-    return insertMarkers(text, [
-      { position: start, marker: visualStartMarker },
-      { position: end, marker: cursorMarker },
-      { position: end, marker: visualEndMarker },
-    ]);
-  }
-  return encodeVisualLineMarkedText(text, cursor);
+  const cursor = selection.cursor ?? { row: selection.headLine, column: 0 };
+  const anchor = {
+    row: selection.anchorLine,
+    column: selection.anchorColumn ?? (selection.anchorLine === cursor.row ? cursor.column : 0),
+  };
+  const reversed = comparePositions(anchor, cursor) > 0;
+  const start = reversed ? cursor : anchor;
+  const end = linewiseCellEnd(lines, reversed ? anchor : cursor);
+  if (comparePositions(start, end) === 0) return insertMarker(text, start, cursorMarker);
+  return insertMarkers(text, [
+    { position: start, marker: visualStartMarker },
+    { position: reversed ? start : end, marker: cursorMarker },
+    { position: end, marker: visualEndMarker },
+  ]);
+}
+
+function linewiseCellEnd(lines: readonly string[], position: Position): Position {
+  const lineLength = lines[position.row]?.length ?? 0;
+  if (position.column < lineLength) return { row: position.row, column: position.column + 1 };
+  if (position.row + 1 < lines.length) return { row: position.row + 1, column: 0 };
+  return position;
 }
 
 function encodeVisualLineMarkedText(text: string, cursor: Position): string {

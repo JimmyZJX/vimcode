@@ -161,35 +161,116 @@ function isBlankLine(editor: VimEditorCapabilities, row: number): boolean {
   return editor.line(row).trim().length === 0;
 }
 
+// Zed: `object::sentence`.
 function sentenceRange(
   editor: VimEditorCapabilities,
   head: Position,
   { around }: { around: boolean }
 ): TextRange {
   const text = editor.getText();
-  const offset = offsetOfPosition(editor, head);
-  let start = 0;
-  for (let index = Math.max(0, offset - 1); index >= 0; index--) {
-    if (/[.!?]/.test(text[index])) {
-      start = index + 1;
-      while (start < text.length && /\s/.test(text[start])) start++;
+  const relativeOffset = offsetOfPosition(editor, head);
+  let start: number | undefined;
+  let previousEnd = relativeOffset;
+
+  // Search backwards for the previous sentence end or current sentence start.
+  // Include the character under the cursor.
+  for (
+    let offset = relativeOffset < text.length ? relativeOffset : relativeOffset - 1;
+    offset >= 0;
+    offset--
+  ) {
+    if (isSentenceEnd(text, offset)) break;
+    if (isPossibleSentenceStart(text[offset])) start = offset;
+    previousEnd = offset;
+  }
+
+  // Search forward for the end of the current sentence or, if we are between
+  // sentences, the start of the next one.
+  let end = relativeOffset;
+  for (let offset = relativeOffset; offset < text.length; offset++) {
+    const char = text[offset];
+    if (start === undefined && isPossibleSentenceStart(char)) {
+      if (around) {
+        start = offset;
+        continue;
+      }
+      end = offset;
       break;
+    }
+
+    if (char !== "\n") end = offset + 1;
+    if (isSentenceEnd(text, end)) break;
+  }
+
+  let range = { start: start ?? previousEnd, end };
+  // Intentional difference from Zed (which passes stop_at_newline=false and
+  // exempted the affected cases): Vim's `as` only takes whitespace on the
+  // sentence's own line, falling back to the leading whitespace when the
+  // sentence ends the line (`:h sentence`); the recorded Neovim fixtures
+  // require stopping at newlines.
+  if (around) range = expandOffsetsToIncludeWhitespace(text, range, { stopAtNewline: true });
+
+  return { start: positionOfOffset(editor, range.start), end: positionOfOffset(editor, range.end) };
+}
+
+// Zed: `object::is_possible_sentence_start`.
+function isPossibleSentenceStart(character: string): boolean {
+  return !/\s/.test(character) && character !== ".";
+}
+
+const SENTENCE_END_PUNCTUATION = [".", "!", "?"];
+const SENTENCE_END_FILLERS = [")", "]", "\"", "'"];
+const SENTENCE_END_WHITESPACE = [" ", "\t", "\n"];
+
+// Zed: `object::is_sentence_end`.
+function isSentenceEnd(text: string, offset: number): boolean {
+  const next = text[offset];
+  if (next !== undefined) {
+    // We are at a double newline. This position is a sentence end.
+    if (next === "\n" && text[offset + 1] === "\n") return true;
+    // The next text is not a valid whitespace. This is not a sentence end.
+    if (!SENTENCE_END_WHITESPACE.includes(next)) return false;
+  }
+
+  for (let index = offset - 1; index >= 0; index--) {
+    const char = text[index];
+    if (SENTENCE_END_PUNCTUATION.includes(char)) return true;
+    if (!SENTENCE_END_FILLERS.includes(char)) return false;
+  }
+
+  return false;
+}
+
+// Zed: `object::expand_to_include_whitespace`. Expands the range to include
+// whitespace at the end first, falling back to the start if there was none.
+function expandOffsetsToIncludeWhitespace(
+  text: string,
+  range: { start: number; end: number },
+  { stopAtNewline }: { stopAtNewline: boolean }
+): { start: number; end: number } {
+  let { start, end } = range;
+  let whitespaceIncluded = false;
+
+  for (let offset = end; offset < text.length; offset++) {
+    const char = text[offset];
+    if (char === "\n" && stopAtNewline) break;
+    if (!/\s/.test(char)) break;
+    if (char !== "\n" || !stopAtNewline) {
+      end = offset + 1;
+      whitespaceIncluded = true;
     }
   }
 
-  let end = text.length;
-  for (let index = offset; index < text.length; index++) {
-    if (/[.!?]/.test(text[index])) {
-      end = index + 1;
-      break;
+  if (!whitespaceIncluded) {
+    for (let offset = start - 1; offset >= 0; offset--) {
+      const char = text[offset];
+      if (char === "\n" && stopAtNewline) break;
+      if (!/\s/.test(char)) break;
+      start = offset;
     }
   }
 
-  if (around) {
-    while (end < text.length && /\s/.test(text[end])) end++;
-  }
-
-  return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
+  return { start, end };
 }
 
 function surroundRange(

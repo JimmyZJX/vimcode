@@ -175,10 +175,12 @@ const finiteBindings = bindingMap([
   sharedBinding("g [", native("editor.action.marker.prev")),
   sharedBinding("g x", native("editor.action.openLink")),
 
-  normalBinding("] }", move({ type: "unmatchedForward", char: "}" })),
-  normalBinding("] )", move({ type: "unmatchedForward", char: ")" })),
-  normalBinding("[ {", move({ type: "unmatchedBackward", char: "{" })),
-  normalBinding("[ (", move({ type: "unmatchedBackward", char: "(" })),
+  // Unmatched-bracket motions are operator targets (`d]}`) and extend visual
+  // selections, so they live in the shared scope.
+  sharedBinding("] }", move({ type: "unmatchedForward", char: "}" })),
+  sharedBinding("] )", move({ type: "unmatchedForward", char: ")" })),
+  sharedBinding("[ {", move({ type: "unmatchedBackward", char: "{" })),
+  sharedBinding("[ (", move({ type: "unmatchedBackward", char: "(" })),
   normalBinding("] space", { type: "insertEmptyLines", side: "below" }),
   normalBinding("[ space", { type: "insertEmptyLines", side: "above" }),
   normalBinding("ctrl-o", hostCommand("navigateBack")),
@@ -276,7 +278,10 @@ const prefixesByScope: ReadonlyMap<FiniteKeymapScope, ReadonlySet<string>> = (()
 
 export class VimKeymapResolver {
   private pendingKeys: string[] = [];
-  private pendingScope: FiniteKeymapScope | undefined;
+  // A prefix can live in several scopes at once (`[` starts both the shared
+  // `[ {` motion and the normal-only `[ space`); all of them stay candidates
+  // until a full chord resolves.
+  private pendingScopes: FiniteKeymapScope[] = [];
 
   isPending(): boolean {
     return this.pendingKeys.length > 0;
@@ -288,15 +293,15 @@ export class VimKeymapResolver {
 
   clearPending(): void {
     this.pendingKeys = [];
-    this.pendingScope = undefined;
+    this.pendingScopes = [];
   }
 
   handleKey(
     key: string,
     { allowShared, allowNormal }: { allowShared: boolean; allowNormal: boolean }
   ): FiniteKeymapResolution {
-    const scopes = this.pendingScope !== undefined
-      ? [this.pendingScope]
+    const scopes = this.pendingScopes.length > 0
+      ? this.pendingScopes
       : allowedScopes({ allowShared, allowNormal });
     if (scopes.length === 0) return { kind: "noMatch" };
 
@@ -308,16 +313,16 @@ export class VimKeymapResolver {
       return { kind: "action", action: binding.action, scope: binding.scope };
     }
 
-    const prefixScope = scopes.find(scope => prefixesByScope.get(scope)?.has(chord));
-    if (prefixScope !== undefined) {
+    const prefixScopes = scopes.filter(scope => prefixesByScope.get(scope)?.has(chord));
+    if (prefixScopes.length > 0) {
       this.pendingKeys = keys;
-      this.pendingScope = prefixScope;
-      return { kind: "pending", chord, scope: prefixScope };
+      this.pendingScopes = prefixScopes;
+      return { kind: "pending", chord, scope: prefixScopes[0] };
     }
 
-    const pendingScope = this.pendingScope;
+    const cancelledScope = this.pendingScopes[0];
     this.clearPending();
-    return pendingScope !== undefined ? { kind: "cancelled", scope: pendingScope } : { kind: "noMatch" };
+    return cancelledScope !== undefined ? { kind: "cancelled", scope: cancelledScope } : { kind: "noMatch" };
   }
 }
 
@@ -533,6 +538,9 @@ function resolveNormalFallbackAction(key: string, context: VimKeymapContext): Vi
     if (key === "0") return { type: "motion", motion: { type: "startOfLine" } };
     if (key === "G") return { type: "motion", motion: { type: "endOfDocument" } };
     if (key === "\"") return { type: "pushRegister" };
+    // Vim: `:` from visual mode opens the command line with the `'<,'>`
+    // range prefilled.
+    if (key === ":") return { type: "startCommand" };
     const visualMode = visualModeForKey(key);
     if (visualMode !== undefined) return { type: "toggleVisual", mode: visualMode };
     const command = visualCommandForKey(key);

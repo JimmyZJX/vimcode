@@ -1,4 +1,3 @@
-// DISABLED: `vip` must select the whole paragraph charwise; current visual object slice collapses to one cell under soft wrap.
 {"SetOption":{"value":"wrap"}}
 {"SetOption":{"value":"columns=20"}}
 {"Put":{"state":"ˇFirst paragraph with very long text that will wrap when soft wrap is enabled and line length is limited making it span multiple display lines.\n\nSecond paragraph that is also quite long and will definitely wrap under soft wrap conditions and should be handled correctly.\n\nThird paragraph with additional long text content that will also wrap when line length is constrained by the wrapping settings.\n"}}

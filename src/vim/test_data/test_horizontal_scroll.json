@@ -1,4 +1,4 @@
-// DISABLED: VSCode-native viewport/display movement; requires VSCode integration testing rather than core fixture replay.
+// DISABLED: horizontal viewport scrolling (`nowrap` + sidescroll); the in-memory host viewport is vertical only.
 {"SetOption":{"value":"scrolloff=3"}}
 {"SetOption":{"value":"lines=22"}}
 {"SetOption":{"value":"wrap"}}

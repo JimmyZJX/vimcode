@@ -1,4 +1,4 @@
-// DISABLED: VSCode-native viewport/display movement; requires VSCode integration testing rather than core fixture replay.
+// DISABLED: `ctrl-o`/`ctrl-i` jump list; model-level jump list not implemented (host navigation is used).
 {"SetOption":{"value":"scrolloff=3"}}
 {"SetOption":{"value":"lines=22"}}
 {"Put":{"state":"ˇaa\nbb\ncc\ndd\nee\nff\ngg\nhh\nii\njj\nkk\nll\nmm\nnn\noo\npp\nqq\nrr\nss\ntt\nuu\nvv\nww\nxx\nyy\nzz\n{{\n||\n}}\n~~\n\n\n\n\n\n\n

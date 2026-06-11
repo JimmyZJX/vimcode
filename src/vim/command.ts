@@ -13,6 +13,8 @@ import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.j
 export type CommandOptions = {
   runNormalKeys?: (keys: readonly string[], range: LineRange | undefined) => void;
   exOptions?: { gdefault: boolean };
+  /** Resolves `'x` mark addresses (`:'<,'>s/...`) to a row. */
+  markLine?: (name: string) => number | undefined;
 };
 
 type VimCommandAbbreviation = readonly [required: string, optional: string];
@@ -78,7 +80,7 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
     return;
   }
 
-  const { range, rest } = parseRange(editor, command);
+  const { range, rest } = parseRange(editor, command, options);
   const trimmedRest = rest.trim();
   if (trimmedRest.length === 0) {
     if (range !== undefined) moveToLine(editor, range.endRowInclusive);
@@ -96,7 +98,7 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
   }
 
   if (trimmedRest.startsWith("g") || trimmedRest.startsWith("v")) {
-    matchingLines(editor, range ?? wholeBufferRange(editor), trimmedRest);
+    matchingLines(editor, range ?? wholeBufferRange(editor), trimmedRest, options);
     return;
   }
 
@@ -159,18 +161,18 @@ function parseGotoLine(command: string): number | undefined {
   return /^\d+$/.test(command) ? Number(command) : undefined;
 }
 
-function parseRange(editor: VimEditorCapabilities, command: string): { range: LineRange | undefined; rest: string } {
+function parseRange(editor: VimEditorCapabilities, command: string, options: CommandOptions): { range: LineRange | undefined; rest: string } {
   if (command.startsWith("%") && command.length > 1 && command[1] !== "+" && command[1] !== "-" && command[1] !== "," && command[1] !== ";") {
     return { range: wholeBufferRange(editor), rest: command.slice(1) };
   }
 
-  const first = parseAddress(editor, command, 0);
+  const first = parseAddress(editor, command, 0, options);
   if (first === undefined) return { range: undefined, rest: command };
 
   let nextIndex = first.nextIndex;
   let endRow = first.row;
   if (command[nextIndex] === "," || command[nextIndex] === ";") {
-    const second = parseAddress(editor, command, nextIndex + 1);
+    const second = parseAddress(editor, command, nextIndex + 1, options);
     if (second !== undefined) {
       endRow = second.row;
       nextIndex = second.nextIndex;
@@ -183,7 +185,7 @@ function parseRange(editor: VimEditorCapabilities, command: string): { range: Li
   };
 }
 
-function parseAddress(editor: VimEditorCapabilities, command: string, startIndex: number): { row: number; nextIndex: number } | undefined {
+function parseAddress(editor: VimEditorCapabilities, command: string, startIndex: number, options: CommandOptions): { row: number; nextIndex: number } | undefined {
   let index = startIndex;
   let row: number;
   if (command[index] === "%") {
@@ -192,6 +194,12 @@ function parseAddress(editor: VimEditorCapabilities, command: string, startIndex
   } else if (command[index] === ".") {
     row = selectionHead(editor.getSelections()[0]).row;
     index++;
+  } else if (command[index] === "'" && command[index + 1] !== undefined) {
+    // Vim `:h :range`: `'x` addresses the line holding mark x (`:'<,'>`).
+    const markRow = options.markLine?.(command[index + 1]);
+    if (markRow === undefined) return undefined;
+    row = markRow;
+    index += 2;
   } else {
     const match = /^\d+/.exec(command.slice(index));
     if (match !== null) {
@@ -267,7 +275,7 @@ function sortRange(editor: VimEditorCapabilities, range: LineRange): void {
   );
 }
 
-function matchingLines(editor: VimEditorCapabilities, range: LineRange, command: string): void {
+function matchingLines(editor: VimEditorCapabilities, range: LineRange, command: string, options: CommandOptions): void {
   const parsed = parseMatchingLines(command);
   if (parsed === undefined) return;
   const rows: number[] = [];
@@ -277,6 +285,11 @@ function matchingLines(editor: VimEditorCapabilities, range: LineRange, command:
   }
   if (parsed.command === "d" || parsed.command === "delete") {
     deleteMatchingRows(editor, rows);
+    return;
+  }
+  // Vim `:g/pat/normal {keys}`: run the normal command on every matched line.
+  if (/^norm(?:al)?!?(\s|$)/.test(parsed.command)) {
+    runNormalKeysOnRows(editor, rows, normalCommandKeysText(parsed.command), options);
   }
 }
 
@@ -304,21 +317,60 @@ function deleteMatchingRows(editor: VimEditorCapabilities, rows: readonly number
 }
 
 function normalCommand(editor: VimEditorCapabilities, range: LineRange | undefined, command: string, options: CommandOptions): void {
-  const keysText = command.replace(/^norm(?:al)?!?\s*/, "");
   const targetRange = range ?? currentLineRange(editor, 1);
-  if (keysText.startsWith("I")) {
-    prependToLines(editor, targetRange, keysText.slice(1));
-    return;
-  }
-  options.runNormalKeys?.(keysText.split("").map(key => key === " " ? "space" : key), targetRange);
+  const rows: number[] = [];
+  for (let row = targetRange.startRow; row <= targetRange.endRowInclusive; row++) rows.push(row);
+  runNormalKeysOnRows(editor, rows, normalCommandKeysText(command), options);
 }
 
-function prependToLines(editor: VimEditorCapabilities, range: LineRange, text: string): void {
-  const edits: TextEdit[] = [];
-  for (let row = range.startRow; row <= range.endRowInclusive; row++) {
-    edits.push({ range: { start: { row, column: 0 }, end: { row, column: 0 } }, text });
+function normalCommandKeysText(command: string): string {
+  return command.replace(/^norm(?:al)?!?\s?/, "");
+}
+
+// Vim `:h :normal`: replay the keys with the cursor at the start of each
+// line. `I`/`A` prefixes batch into one edit so the whole ranged command is a
+// single undo step (`:g/pat/norm Abar` then `u` restores every line).
+function runNormalKeysOnRows(editor: VimEditorCapabilities, rows: readonly number[], keysText: string, options: CommandOptions): void {
+  if (rows.length === 0 || keysText.length === 0) return;
+  if (keysText.startsWith("I")) {
+    prependToRows(editor, rows, keysText.slice(1));
+    return;
   }
-  editor.applyEdits(edits, [charwiseSelection({ row: range.startRow, column: Math.max(0, text.length - 1) })]);
+  if (keysText.startsWith("A")) {
+    appendToRows(editor, rows, keysText.slice(1));
+    return;
+  }
+  const keys = keysText.split("").map(key => key === " " ? "space" : key);
+  for (const row of rows) {
+    options.runNormalKeys?.(keys, { startRow: row, endRowInclusive: row });
+  }
+}
+
+function prependToRows(editor: VimEditorCapabilities, rows: readonly number[], text: string): void {
+  if (text.length === 0) return;
+  // The first insertion point becomes the undo-state cursor (Vim restores it
+  // when the batched command is undone).
+  editor.setSelections([charwiseSelection({ row: rows[0], column: 0 })]);
+  const edits: TextEdit[] = rows.map(row => ({
+    range: { start: { row, column: 0 }, end: { row, column: 0 } },
+    text,
+  }));
+  editor.applyEdits(edits, [charwiseSelection({ row: rows[0], column: Math.max(0, text.length - 1) })]);
+}
+
+function appendToRows(editor: VimEditorCapabilities, rows: readonly number[], text: string): void {
+  if (text.length === 0) return;
+  // The first insertion point becomes the undo-state cursor (Vim restores it
+  // when the batched command is undone, clamped to the line's last cell).
+  editor.setSelections([charwiseSelection({ row: rows[0], column: editor.lineLength(rows[0]) })]);
+  const edits: TextEdit[] = rows.map(row => {
+    const column = editor.lineLength(row);
+    return { range: { start: { row, column }, end: { row, column } }, text };
+  });
+  const lastRow = rows[rows.length - 1];
+  // Vim: the cursor ends on the last appended character of the last line.
+  const cursor = { row: lastRow, column: editor.lineLength(lastRow) + text.length - 1 };
+  editor.applyEdits(edits, [charwiseSelection(cursor)]);
 }
 
 function substitute(editor: VimEditorCapabilities, range: LineRange, command: string, gdefault: boolean): void {
@@ -394,6 +446,14 @@ function expandReplacement(replacement: string, match: string): string {
 function rangeToFullLines(editor: VimEditorCapabilities, range: LineRange): TextRange {
   if (range.endRowInclusive + 1 < editor.lineCount()) {
     return { start: { row: range.startRow, column: 0 }, end: { row: range.endRowInclusive + 1, column: 0 } };
+  }
+  // Deleting through the last line consumes the preceding newline, so an
+  // empty trailing line does not survive as a leftover (`:v/a/d`).
+  if (range.startRow > 0) {
+    return {
+      start: { row: range.startRow - 1, column: editor.lineLength(range.startRow - 1) },
+      end: { row: range.endRowInclusive, column: editor.lineLength(range.endRowInclusive) },
+    };
   }
   return {
     start: { row: range.startRow, column: 0 },

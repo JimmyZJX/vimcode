@@ -30,7 +30,7 @@ import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./re
 import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
-import { replaceModeText } from "./replace.js";
+import { ReplacedText, replaceModeText } from "./replace.js";
 import { KeyDispatchResult, KeyResult, Position, TextEdit, TextRange, VimMode, charwiseSelection, comparePositions, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode, visualKindForMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
@@ -76,6 +76,8 @@ export class Vim {
   private searchOriginMode: VimMode["kind"] | undefined;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
+  // Zed: `Vim::replacements` — what replace mode overwrote, for backspace.
+  private replaceModeReplacements: ReplacedText[] = [];
   private insertRepeatSeparator = "";
   private insertOrigin: VimMode["kind"] | undefined;
   // Vim `i_CTRL-O` (Zed: `Vim::temp_mode`): one normal-mode command from
@@ -94,6 +96,7 @@ export class Vim {
   ]);
   private readonly replaceKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
     ["ctrl-k", () => this.startReplaceDigraph()],
+    ["backspace", () => this.undoReplace()],
   ]);
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
@@ -512,7 +515,7 @@ export class Vim {
       if (handler !== undefined) return handler();
       const text = insertTextForKey(key);
       if (text !== undefined) {
-        replaceModeText(this.editor, text, 1, this.insertEditOptions());
+        this.replaceModeReplacements.push(...replaceModeText(this.editor, text, 1, this.insertEditOptions()));
         this.insertRepeatText += text;
         return "handled";
       }
@@ -706,10 +709,20 @@ export class Vim {
       case "cancelRepeat":
         this.globalState.repeat.cancelCurrent();
         return undefined;
-      case "startCommand":
-        this.operatorStack.push({ type: "command", input: "" });
+      case "startCommand": {
+        let input = "";
+        if (this.isVisualMode()) {
+          // Vim: `:` from visual mode sets the `'<`/`'>` marks and prefills
+          // the command line with the visual range.
+          const selection = this.editor.getSelections()[0];
+          if (selection !== undefined) this.modelState.marks.setVisualSelectionMarks(this.editor, selection);
+          this.visualMode.exit();
+          input = "'<,'>";
+        }
+        this.operatorStack.push({ type: "command", input });
         this.setMode("command");
         return "handled";
+      }
       case "forceMotion":
         this.operatorStack.forceMotion(action.force);
         return "handled";
@@ -830,7 +843,16 @@ export class Vim {
       case "incrementStep": {
         const count = this.takeCountForMotion(1);
         const delta = (action.direction === "increment" ? 1 : -1) * count;
+        // Vim: a visual operator moves the cursor to the selection start
+        // before changing text, so that is where `u` later restores it.
+        if (this.isVisualMode()) {
+          const selection = this.editor.getSelections()[0];
+          if (selection !== undefined) {
+            this.editor.beginUndoTransaction([charwiseSelection(rangeOfSelection(selection).start)]);
+          }
+        }
         incrementNumbers(this.editor, delta, action.cumulative ? delta : 0);
+        this.editor.finishUndoTransaction();
         if (this.isVisualMode()) {
           this.visualMode.clearState();
           this.editor.setCursorStyle("block");
@@ -1059,7 +1081,41 @@ export class Vim {
     this.setMode("insert");
   }
 
+  // Zed: `replace::Vim::undo_replace` — backspace in replace mode restores
+  // what was overwritten in this session, or just moves left otherwise.
+  private undoReplace(): KeyResult {
+    const selection = this.editor.getSelections()[0];
+    if (selection === undefined) return "handled";
+    const end = selectionHead(selection);
+    const start = end.column > 0
+      ? { row: end.row, column: end.column - 1 }
+      : end.row > 0
+        ? { row: end.row - 1, column: this.editor.lineLength(end.row - 1) }
+        : end;
+    let original: string | undefined;
+    for (let index = this.replaceModeReplacements.length - 1; index >= 0; index--) {
+      const replacement = this.replaceModeReplacements[index];
+      if (comparePositions(replacement.start, start) <= 0 && comparePositions(replacement.end, end) >= 0) {
+        original = replacement.original;
+        this.replaceModeReplacements.splice(index, 1);
+        break;
+      }
+    }
+    if (original !== undefined) {
+      this.editor.applyEdits(
+        [{ range: { start, end }, text: original }],
+        [charwiseSelection(start)],
+        this.insertEditOptions()
+      );
+    } else {
+      this.editor.setSelections([charwiseSelection(start)]);
+    }
+    this.insertRepeatText = this.insertRepeatText.slice(0, -1);
+    return "handled";
+  }
+
   private enterReplaceMode({ count, separator }: { count: number; separator: string }): void {
+    this.replaceModeReplacements = [];
     this.startInsertOrReplaceSession({ count, separator });
     this.editor.setCursorStyle("block");
     this.setMode("replace");
@@ -1174,13 +1230,13 @@ export class Vim {
 
   private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
     if (typeof command === "string") {
-      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions });
+      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions, markLine: name => this.modelState.marks.position(name)?.row });
       else this.editor.executeNativeCommand(command, [], { preserveVisualSelection: this.isVisualMode() });
       return;
     }
 
     if (command.command.startsWith(":")) {
-      executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions });
+      executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions, markLine: name => this.modelState.marks.position(name)?.row });
     } else {
       this.editor.executeNativeCommand(command.command, commandArgs(command), { preserveVisualSelection: this.isVisualMode() });
     }
@@ -1222,9 +1278,9 @@ export class Vim {
       case "indent":
       case "surround":
         // Shared `g`-prefixed motions can be operator targets (`d g g`,
-        // `g u g g`), and `g u`-style chords are how convert doubles
-        // (`g u g u`).
-        return key === "g";
+        // `g u g g`), `g u`-style chords are how convert doubles
+        // (`g u g u`), and the unmatched-bracket chords are motions (`d ] }`).
+        return key === "g" || key === "]" || key === "[";
       case "object":
       case "other":
         return false;
@@ -1301,7 +1357,7 @@ export class Vim {
         this.insertRepeatText += text;
         return;
       case "replace":
-        replaceModeText(this.editor, text, 1, this.insertEditOptions());
+        this.replaceModeReplacements.push(...replaceModeText(this.editor, text, 1, this.insertEditOptions()));
         this.insertRepeatText += text;
         return;
       case "find":
@@ -1400,6 +1456,7 @@ export class Vim {
       executeCommand(this.editor, command, {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
         exOptions: this.globalState.exOptions,
+        markLine: name => this.modelState.marks.position(name)?.row,
       });
       return;
     }

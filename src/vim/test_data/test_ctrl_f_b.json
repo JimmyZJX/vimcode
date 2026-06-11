@@ -1,4 +1,3 @@
-// DISABLED: VSCode-native viewport/display movement; requires VSCode integration testing rather than core fixture replay.
 {"SetOption":{"value":"scrolloff=3"}}
 {"SetOption":{"value":"lines=12"}}
 {"SetOption":{"value":"scrolloff=0"}}

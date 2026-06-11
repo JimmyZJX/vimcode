@@ -84,6 +84,7 @@ function isLinewiseMotion(motion: Motion): boolean {
     case "up":
     case "down":
     case "startOfDocument":
+    case "windowLine":
       return true;
     default:
       return false;
@@ -142,6 +143,26 @@ export function operatorTarget(
     // Vim `o_v`: wrapping the motion bypasses the linewise specializations
     // below and routes through the forced-charwise range in [motionRange].
     motion = { type: "forcedCharwise", motion };
+  }
+
+  // Vim `exclusive-linewise` rule 2: an exclusive motion ending in column
+  // one, starting at or before the first non-blank, becomes a linewise
+  // operation on the rows above the target (condition checked on the primary
+  // selection). `d]}` from the indentation deletes whole lines.
+  if (motion.type === "unmatchedForward") {
+    const head = heads[0];
+    const target = applyMotion(editor, head, motion, count);
+    if (target.row > head.row
+      && target.column === 0
+      && head.column <= firstNonWhitespaceColumn(editor.line(head.row))) {
+      return {
+        kind: "linewise",
+        rows: heads.map(selectionHead => {
+          const targetPosition = applyMotion(editor, selectionHead, motion, count);
+          return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column });
+        }),
+      };
+    }
   }
 
   if (isLinewiseMotion(motion)) {

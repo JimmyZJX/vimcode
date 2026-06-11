@@ -66,6 +66,7 @@ export type Motion =
   | { type: "endOfParagraph" }
   | { type: "startOfParagraph" }
   | { type: "goToPercentage"; percent: number }
+  | { type: "windowLine"; target: "top" | "middle" | "bottom" }
   | { type: "forcedCharwise"; motion: Motion }
   | { type: "jump"; position: Position; line: boolean }
   | { type: "searchMatch"; range: TextRange }
@@ -124,6 +125,12 @@ export function motionForKey(key: string): Motion | undefined {
       return { type: "previousWordStart", bigWord: true };
     case "%":
       return { type: "matching" };
+    case "H":
+      return { type: "windowLine", target: "top" };
+    case "M":
+      return { type: "windowLine", target: "middle" };
+    case "L":
+      return { type: "windowLine", target: "bottom" };
     case ")":
       return { type: "nextSentence" };
     case "(":
@@ -378,6 +385,15 @@ export function applyMotionOnce(
       return previousWordEnd(editor, clipped, motion.bigWord);
     case "matching":
       return matching(editor, clipped);
+    case "windowLine": {
+      const visible = editor.visibleRowRange() ?? { top: 0, bottom: editor.lineCount() - 1 };
+      const row = motion.target === "top"
+        ? visible.top
+        : motion.target === "bottom"
+          ? visible.bottom
+          : Math.floor((visible.top + visible.bottom) / 2);
+      return normalCursorPosition(editor, { row, column: clipped.column });
+    }
     case "unmatchedForward":
       return unmatched(editor, clipped, motion.char, "forward");
     case "unmatchedBackward":
@@ -501,6 +517,27 @@ export function applyMotionWithGoal(
   }
   if (motion.type === "forcedCharwise") {
     return applyMotionWithGoal(editor, start, motion.motion, count, goal, { allowEndOfLine });
+  }
+  if (motion.type === "windowLine") {
+    // Vim `H`/`M`/`L`: move to the window's top/middle/bottom line, keeping
+    // the column ('startofline' is off in Neovim). A count on `H`/`L` offsets
+    // into the window. ('scrolloff' margins are not applied here yet.)
+    const visible = editor.visibleRowRange() ?? { top: 0, bottom: editor.lineCount() - 1 };
+    const row = (() => {
+      switch (motion.target) {
+        case "top":
+          return Math.min(visible.top + count - 1, visible.bottom);
+        case "middle":
+          return Math.floor((visible.top + visible.bottom) / 2);
+        case "bottom":
+          return Math.max(visible.bottom - (count - 1), visible.top);
+      }
+    })();
+    const nextGoal = goal ?? { type: "modelColumn" as const, column: start.column };
+    return {
+      position: { row, column: modelColumnForGoal(editor, row, nextGoal, { allowEndOfLine }) },
+      goal: nextGoal,
+    };
   }
   if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "goToPercentage" || motion.type === "jump" || motion.type === "searchMatch") {
     if (motion.type === "nextSentence") return { position: sentenceForward(editor, start, count) };
@@ -635,7 +672,16 @@ export function motionRange(
     }
     return orderedRange(start, nextPosition(editor, end) ?? end);
   }
-  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "goToPercentage" || motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+  if (motion.type === "unmatchedForward") {
+    // Vim `exclusive-linewise` rule 1: an exclusive motion ending in column
+    // one ends at the end of the previous line instead (`d]}` does not join
+    // the unmatched brace's line).
+    if (end.column === 0 && end.row > start.row) {
+      return orderedRange(start, { row: end.row - 1, column: editor.lineLength(end.row - 1) });
+    }
+    return orderedRange(start, end);
+  }
+  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "goToPercentage" || motion.type === "matching" || motion.type === "unmatchedBackward" || motion.type === "jump") {
     return orderedRange(start, end);
   }
   if (motion.type === "searchMatch") {
@@ -1088,7 +1134,12 @@ export function linewiseCursorAfterDelete(
   const rowAfterDelete = deletingThroughLastLine && row > 0
     ? row - 1
     : Math.min(row, Math.max(0, lineCountBeforeDelete - deletedLineCount));
-  return normalCursorPosition(editor, { row: rowAfterDelete, column });
+  // Vim: the cursor column clamps against the line the cursor LANDS on after
+  // the delete (the line following the deleted range), not the deleted line.
+  const targetLineLengthBeforeDelete = deletingThroughLastLine
+    ? editor.lineLength(rowAfterDelete)
+    : editor.lineLength(Math.min(row + deletedLineCount, lineCountBeforeDelete - 1));
+  return { row: rowAfterDelete, column: Math.min(column, Math.max(0, targetLineLengthBeforeDelete - 1)) };
 }
 
 export function isForwardRange(range: TextRange): boolean {
