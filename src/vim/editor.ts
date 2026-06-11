@@ -49,6 +49,12 @@ export interface VimEditorCapabilities {
   line(row: number): string;
   lineLength(row: number): number;
   getText(range?: TextRange): string;
+  /** A cheap content stamp: equal values guarantee the document text is
+      unchanged (the converse need not hold). Per-key hot paths use this
+      instead of materializing and comparing the whole document text, which is
+      O(document) per keypress on large files. VSCode backs this with
+      `ITextModel.getAlternativeVersionId`. */
+  documentVersion(): number;
 
   getSelections(): readonly VimSelection[];
   setSelections(selections: readonly VimSelection[]): void;
@@ -125,6 +131,7 @@ type UndoSnapshot = {
 
 export class InMemoryVimEditor implements VimEditorCapabilities {
   private lines: string[];
+  private contentVersion = 0;
   private selections: VimSelection[];
   private undoStack: UndoSnapshot[] = [];
   private redoStack: UndoSnapshot[] = [];
@@ -141,6 +148,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   resetForTest(text: string, selections: readonly VimSelection[]): void {
     this.lines = text.split("\n");
+    this.contentVersion++;
     this.selections = [charwiseSelection(position(0, 0))];
     this.undoStack = [];
     this.redoStack = [];
@@ -176,6 +184,10 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     }
     parts.push(this.line(ordered.end.row).slice(0, ordered.end.column));
     return parts.join("\n");
+  }
+
+  documentVersion(): number {
+    return this.contentVersion;
   }
 
   getSelections(): readonly VimSelection[] {
@@ -339,6 +351,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     const snapshot = this.undoStack.pop();
     if (snapshot === undefined) return;
     this.lines = snapshot.textBefore.split("\n");
+    if (snapshot.textBefore !== snapshot.textAfter) this.contentVersion++;
     this.setSelections(snapshot.selectionsBefore);
     this.redoStack.push(snapshot);
   }
@@ -348,6 +361,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     const snapshot = this.redoStack.pop();
     if (snapshot === undefined) return;
     this.lines = snapshot.textAfter.split("\n");
+    if (snapshot.textBefore !== snapshot.textAfter) this.contentVersion++;
     this.setSelections(snapshot.selectionsAfter);
     this.undoStack.push(snapshot);
   }
@@ -390,6 +404,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   private replace(range: TextRange, text: string): void {
     const ordered = orderedRange(clipPosition(this, range.start), clipPosition(this, range.end));
+    if (this.getText(ordered) !== text) this.contentVersion++;
     const before = this.line(ordered.start.row).slice(0, ordered.start.column);
     const after = this.line(ordered.end.row).slice(ordered.end.column);
     const replacementLines = (before + text + after).split("\n");

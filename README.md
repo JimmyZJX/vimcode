@@ -47,6 +47,11 @@ Done in this branch:
   canonical write-back invariant in `Vim.syncFromEditorState`, always-explicit render-cursor
   cells from the adapter, and a rewritten cell-flooring mouse hit-testing patch. See
   "Mouse and selection-sync invariants" below.
+- Per-key dispatch is O(viewport), not O(document): `Vim.dispatchKey` tracks buffer
+  changes through the `documentVersion()` capability (VSCode:
+  `ITextModel.getAlternativeVersionId`, O(1); in-memory: a content-change counter)
+  instead of snapshotting and comparing the whole document text around every key,
+  which made every keypress O(file size) on large files.
 - Current validation:
   - `npm run build -- --noEmit` passes.
   - `npm test -- --runInBand` passes with 460 enabled tests.

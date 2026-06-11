@@ -73,6 +73,13 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return model.getValueInRange(toRange(range));
 	}
 
+	documentVersion(): number {
+		// O(1), unlike materializing the document text. The alternative version
+		// id returns to its previous value on undo, so equal values guarantee
+		// unchanged content.
+		return this.model().getAlternativeVersionId();
+	}
+
 	getSelections(): readonly VimSelection[] {
 		const selections = this.editor.getSelections() ?? [];
 		// VSCode-specific adapter behavior, not a Zed concept: Zed owns the editor

@@ -3,6 +3,7 @@ import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
 import { Vim, VimModelState, runKeys } from "./vim.js";
 import type { VimSystemClipboard } from "./registers.js";
+import type { SearchDirection, SearchOptions } from "./search.js";
 import { TextRange, charwiseSelection, selectionHead } from "./state.js";
 
 function head(editor: InMemoryVimEditor) {
@@ -45,6 +46,12 @@ class SearchTrackingEditor extends InMemoryVimEditor {
   searchPreviewStartCount = 0;
   searchPreviewEndOptions: { restoreViewport?: boolean }[] = [];
   revealedRanges: TextRange[] = [];
+  searchUpdates: { query: string; reveal: boolean | undefined }[] = [];
+
+  override updateSearch(query: string, direction: SearchDirection, options: SearchOptions = {}): void {
+    this.searchUpdates.push({ query, reveal: options.reveal });
+    super.updateSearch(query, direction, options);
+  }
 
   override clearSearchHighlights(): void {
     this.clearSearchHighlightsCount++;
@@ -1652,6 +1659,33 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(editor.searchPreviewStartCount).toBe(1);
     expect(editor.searchPreviewEndOptions).toEqual([{ restoreViewport: false }]);
+  });
+
+  it("seeds the last search on empty input without moving the viewport", () => {
+    const editor = new SearchTrackingEditor("one two\nthree\ntwo");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/", "t", "w", "o", "enter"]);
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+    editor.revealedRanges = [];
+    editor.searchUpdates = [];
+
+    // `/` with nothing typed: the last query's matches are highlighted, but
+    // the viewport and cursor stay put.
+    runKeys(vim, ["/"]);
+    expect(editor.revealedRanges).toEqual([]);
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+    expect(editor.searchUpdates).toEqual([{ query: "two", reveal: false }]);
+
+    // Typing resumes incremental reveal; deleting back to empty stops it again.
+    runKeys(vim, ["t"]);
+    expect(editor.revealedRanges.length).toBe(1);
+    runKeys(vim, ["backspace"]);
+    expect(editor.revealedRanges.length).toBe(1);
+    expect(editor.searchUpdates[editor.searchUpdates.length - 1]).toEqual({ query: "two", reveal: false });
+
+    runKeys(vim, ["<escape>"]);
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
   });
 
   it("keeps the original cursor and restores search preview viewport after escaping pending search", () => {

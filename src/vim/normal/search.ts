@@ -122,14 +122,17 @@ export class SearchState {
 
   private updatePendingSearchUi(pending: PendingSearch, editor: VimEditorCapabilities): void {
     const pendingQuery = pending.input.value();
-    const query =
-      pendingQuery.length === 0 ? this.last?.query ?? "" : pendingQuery;
-    const options =
-      pendingQuery.length === 0
-        ? this.last?.options ?? searchOptionsForQuery(query)
-        : searchOptionsForQuery(query);
+    const typed = pendingQuery.length > 0;
+    const query = typed ? pendingQuery : this.last?.query ?? "";
+    const options = typed
+      ? searchOptionsForQuery(query)
+      : this.last?.options ?? searchOptionsForQuery(query);
     const direction = pending.backwards ? "backward" : "forward";
-    editor.updateSearch(query, direction, { ...options, reveal: true });
+    editor.updateSearch(query, direction, { ...options, reveal: typed });
+    // Vim `incsearch`: the viewport follows the next match only while the
+    // user is typing a query. An empty input merely seeds the last search so
+    // its matches stay highlighted; the viewport must not move.
+    if (!typed) return;
     const match = editor.findSearchMatch(
       query,
       selectionHead(editor.getSelections()[0]),

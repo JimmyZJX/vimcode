@@ -387,7 +387,9 @@ export class Vim {
   }
 
   private dispatchKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyDispatchResult {
-    const textBefore = this.editor.getText();
+    // Cheap content stamp, not the document text: snapshotting/comparing the
+    // whole document here made every keypress O(file size) on large files.
+    const versionBefore = this.editor.documentVersion();
     const modeBefore = this.modeState.kind;
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
@@ -442,7 +444,7 @@ export class Vim {
 
       return this.dispatchModeFallbackKey(key);
     } finally {
-      if (this.editor.getText() !== textBefore) {
+      if (this.editor.documentVersion() !== versionBefore) {
         this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
       }
     }
