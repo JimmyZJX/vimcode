@@ -247,6 +247,9 @@ export class VisualMode {
         return this.deleteKey(state);
       case "change":
         return this.changeKey(state);
+      case "changeLines":
+        // Vim `v_R`: the change always operates on whole lines.
+        return this.changeKey(state.kind === "linewise" ? state : stateToLinewise(state));
       case "paste":
         return this.pasteKey(state);
       case "percentOrMatching":
@@ -299,7 +302,15 @@ export class VisualMode {
       enterBlockInsert(this.editor, this.registers, undefined, state, { deleteSelection: false, side });
       this.state = undefined;
       this.editor.setCursorStyle("line");
-      return handled({ exitVisual: true, enterInsert: true });
+      return handled({
+        exitVisual: true,
+        enterInsert: true,
+        // Vim: `.` repeats a block insert over the same number of rows below
+        // the cursor.
+        pendingRepeatChange: {
+          selection: { type: "visualBlock", rows: Math.abs(state.head.row - state.anchor.row), side },
+        },
+      });
     }
 
     if (this.visualMultilineInsert && (state.kind === "charwise" || state.kind === "linewise")) {

@@ -31,7 +31,7 @@ import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { replaceModeText } from "./replace.js";
-import { KeyDispatchResult, KeyResult, Position, TextEdit, TextRange, VimMode, charwiseSelection, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
+import { KeyDispatchResult, KeyResult, Position, TextEdit, TextRange, VimMode, charwiseSelection, comparePositions, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
 import { VisualMode, visualKindForMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
@@ -78,6 +78,9 @@ export class Vim {
   private insertRepeatText = "";
   private insertRepeatSeparator = "";
   private insertOrigin: VimMode["kind"] | undefined;
+  // Vim `i_CTRL-O` (Zed: `Vim::temp_mode`): one normal-mode command from
+  // insert mode, then back to insert.
+  private temporaryNormal = false;
   private pendingVisualRepeatChange: { selection: RecordedSelection } | undefined;
   private readonly insertKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
     ["ctrl-k", () => this.startInsertDigraph()],
@@ -87,6 +90,7 @@ export class Vim {
     ["ctrl-u", () => this.deleteInsertLineStart()],
     ["ctrl-y", () => this.insertCharacterFromAdjacentLine("above")],
     ["ctrl-e", () => this.insertCharacterFromAdjacentLine("below")],
+    ["ctrl-o", () => this.enterTemporaryNormalMode()],
   ]);
   private readonly replaceKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
     ["ctrl-k", () => this.startReplaceDigraph()],
@@ -391,6 +395,7 @@ export class Vim {
     // whole document here made every keypress O(file size) on large files.
     const versionBefore = this.editor.documentVersion();
     const modeBefore = this.modeState.kind;
+    const temporaryNormalBefore = this.temporaryNormal;
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
 
@@ -446,6 +451,16 @@ export class Vim {
     } finally {
       if (this.editor.documentVersion() !== versionBefore) {
         this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
+      }
+      // Vim `i_CTRL-O`: once the one normal-mode command completes, return to
+      // insert. Visual mode extends the excursion (Zed keeps `temp_mode`
+      // through visual); entering another mode (`ctrl-o cw`) ends it.
+      if (temporaryNormalBefore && this.temporaryNormal) {
+        if (this.modeState.kind === "normal" && !this.isPending()) {
+          this.returnFromTemporaryNormal();
+        } else if (this.modeState.kind !== "normal" && !this.isVisualMode()) {
+          this.temporaryNormal = false;
+        }
       }
     }
   }
@@ -1011,6 +1026,32 @@ export class Vim {
     this.setMode(mode);
   }
 
+  // Vim `i_CTRL-O`: leave insert for exactly one normal-mode command. Unlike
+  // escape, the cursor does not shift left; it stays on the cell at the
+  // insert position (clamped from an end-of-line boundary).
+  private enterTemporaryNormalMode(): KeyResult {
+    this.finishInsertOrReplaceSession("insert");
+    enterNormalMode(this.editor, { moveLeft: false });
+    this.insertOrigin = undefined;
+    this.setMode("normal");
+    this.editor.finishUndoTransaction(this.editor.getSelections());
+    this.temporaryNormal = true;
+    return "handled";
+  }
+
+  private returnFromTemporaryNormal(): void {
+    this.temporaryNormal = false;
+    // Vim `i_CTRL-O $`: an end-of-line motion returns to insert at the line
+    // end boundary, not on the last character.
+    const selection = this.editor.getSelections()[0];
+    if (selection !== undefined && selection.type === "charwise" && selection.goal?.type === "endOfLine") {
+      const head = selectionHead(selection);
+      this.editor.setSelections([charwiseSelection({ row: head.row, column: this.editor.lineLength(head.row) })]);
+    }
+    this.editor.setCursorStyle("line");
+    this.enterInsertMode({ origin: "normal" });
+  }
+
   private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode["kind"]; count?: number; separator?: string }): void {
     this.modelState.marks.setBuiltinMark(".", selectionHead(this.editor.getSelections()[0]));
     this.insertOrigin = origin;
@@ -1399,6 +1440,10 @@ export class Vim {
         return;
       }
       case "change": {
+        if (selection.type === "visualBlock") {
+          this.replayBlockInsert(selection, action.insertedText);
+          return;
+        }
         const range = this.rangeForRecordedSelection(selection);
         if (range === undefined) return;
         this.editor.applyEdits([{ range, text: action.insertedText }], [charwiseSelection(range.start)]);
@@ -1407,22 +1452,41 @@ export class Vim {
     }
   }
 
+  // Vim: repeating a visual-block insert applies the inserted text at the
+  // cursor column on the same number of rows, skipping lines that end before
+  // the block's left edge (like the original block insert).
+  private replayBlockInsert(selection: Extract<RecordedSelection, { type: "visualBlock" }>, insertedText: string): void {
+    if (insertedText.length === 0) return;
+    const start = selectionHead(this.editor.getSelections()[0]);
+    const endRow = Math.min(start.row + selection.rows, this.editor.lineCount() - 1);
+    const edits: TextEdit[] = [];
+    for (let row = start.row; row <= endRow; row++) {
+      if (this.editor.lineLength(row) < start.column) continue;
+      const position = { row, column: start.column };
+      edits.push({ range: { start: position, end: position }, text: insertedText });
+    }
+    if (edits.length === 0) return;
+    const cursor = { row: start.row, column: start.column + insertedText.length - 1 };
+    this.editor.applyEdits(edits, [charwiseSelection(normalCursorPosition(this.editor, cursor))]);
+  }
+
   private rangeForRecordedSelection(selection: RecordedSelection): TextRange | undefined {
     const start = selectionHead(this.editor.getSelections()[0]);
     switch (selection.type) {
       case "none":
         return undefined;
       case "charwise":
-        return {
-          start,
-          end: selection.rowDelta === 0
-            ? this.charwiseRepeatEnd(start, selection.columnDelta)
-            : this.charwiseMultilineRepeatEnd(start, selection),
-        };
+        if (selection.rowDelta === 0) {
+          return { start, end: this.charwiseRepeatEnd(start, selection.columnDelta) };
+        }
+        return this.charwiseMultilineRepeatRange(start, selection);
       case "visualLine": {
         const endRow = Math.min(this.editor.lineCount() - 1, start.row + selection.rows);
         return { start: { row: start.row, column: 0 }, end: { row: endRow, column: this.editor.lineLength(endRow) } };
       }
+      case "visualBlock":
+        // Block-shaped repeats are replayed by [replayBlockInsert].
+        return undefined;
     }
   }
 
@@ -1437,14 +1501,23 @@ export class Vim {
     return { row: start.row, column: lineLength };
   }
 
-  private charwiseMultilineRepeatEnd(start: ReturnType<typeof selectionHead>, selection: Extract<RecordedSelection, { type: "charwise" }>): ReturnType<typeof selectionHead> {
+  private charwiseMultilineRepeatRange(start: ReturnType<typeof selectionHead>, selection: Extract<RecordedSelection, { type: "charwise" }>): TextRange {
     const targetRow = Math.min(start.row + selection.rowDelta, this.editor.lineCount() - 1);
     if (targetRow === start.row) {
-      return { row: start.row, column: Math.min(start.column + 1, this.editor.lineLength(start.row)) };
+      // Vim: a multi-row charwise repeat clamped to the last line keeps the
+      // recorded end column on that line, selecting backward from the cursor
+      // when the recorded end falls before it.
+      const lineLength = this.editor.lineLength(targetRow);
+      const endCell = {
+        row: targetRow,
+        column: Math.min(Math.max(0, selection.endColumn - 1), Math.max(0, lineLength - 1)),
+      };
+      const [first, last] = comparePositions(endCell, start) < 0 ? [endCell, start] : [start, endCell];
+      return { start: first, end: { row: last.row, column: Math.min(last.column + 1, lineLength) } };
     }
     return {
-      row: targetRow,
-      column: Math.min(selection.endColumn, this.editor.lineLength(targetRow)),
+      start,
+      end: { row: targetRow, column: Math.min(selection.endColumn, this.editor.lineLength(targetRow)) },
     };
   }
 

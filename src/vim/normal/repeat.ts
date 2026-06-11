@@ -12,7 +12,8 @@ import { IndentDirection } from "./indent.js";
 export type RecordedSelection =
   | { type: "none" }
   | { type: "charwise"; rowDelta: number; columnDelta: number; endColumn: number }
-  | { type: "visualLine"; rows: number };
+  | { type: "visualLine"; rows: number }
+  | { type: "visualBlock"; rows: number; side: "start" | "end" };
 
 export type VisualRepeatAction =
   | { type: "indent"; direction: IndentDirection }

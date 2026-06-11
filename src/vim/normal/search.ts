@@ -95,10 +95,9 @@ export class SearchState {
     if (key === "enter") {
       const pendingQuery = pending.input.value();
       const query = pendingQuery.length > 0 ? pendingQuery : this.last?.query;
-      const backwards =
-        pendingQuery.length > 0
-          ? pending.backwards
-          : this.last?.backwards ?? pending.backwards;
+      // Vim: an empty query repeats the last pattern in the direction of THIS
+      // prompt (`?<CR>` searches backward even after a forward search).
+      const backwards = pending.backwards;
       const options =
         pendingQuery.length > 0
           ? searchOptionsForQuery(query ?? "")

@@ -1,4 +1,3 @@
-// DISABLED: full visual search fixture includes repeated empty forward/backward search edge cases beyond current centralized search slice.
 {"Put":{"state":"ˇa.c. abcd a.c. abcd"}}
 {"Key":"v"}
 {"Key":"/"}

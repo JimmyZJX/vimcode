@@ -1,4 +1,3 @@
-// DISABLED: insert-mode `ctrl-o` (temporary normal mode) not implemented.
 {"Put":{"state":"lorem ˇipsum"}}
 {"Key":"i"}
 {"Get":{"state":"lorem ˇipsum","mode":"Insert"}}

@@ -27,6 +27,7 @@ export type VisualCommand =
   | { type: "deleteToLineEnd" }
   | { type: "delete" }
   | { type: "change" }
+  | { type: "changeLines" }
   | { type: "paste" }
   | { type: "percentOrMatching" };
 
@@ -450,6 +451,9 @@ function visualCommandForKey(key: string): VisualCommand | undefined {
     case "c":
     case "s":
       return { type: "change" };
+    case "R":
+      // Vim `v_R` (and `v_S`): change the highlighted lines.
+      return { type: "changeLines" };
     case "p":
     case "P":
       return { type: "paste" };

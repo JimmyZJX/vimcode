@@ -1,4 +1,3 @@
-// DISABLED: full visual repeat fixture needs more precise recorded visual-selection geometry at line boundaries and visual-block repeat coverage.
 {"Put":{"state":"ˇthe quick brown\nfox jumps over\nthe lazy dog"}}
 {"Key":"v"}
 {"Key":"i"}

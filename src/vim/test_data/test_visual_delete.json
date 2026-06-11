@@ -1,4 +1,3 @@
-// DISABLED: full Zed visual delete fixture includes multiline/backward/paste cases not implemented in the first charwise visual slice.
 {"Put":{"state":"The quick ˇbrown"}}
 {"Key":"v"}
 {"Key":"w"}
