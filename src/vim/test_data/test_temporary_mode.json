@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: insert-mode `ctrl-o` (temporary normal mode) not implemented.
 {"Put":{"state":"lorem ˇipsum"}}
 {"Key":"i"}
 {"Get":{"state":"lorem ˇipsum","mode":"Insert"}}

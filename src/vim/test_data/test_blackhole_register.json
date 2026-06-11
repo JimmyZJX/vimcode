@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `"_daw` then `p`: black-hole delete must not disturb the unnamed register's prior content/whitespace shape.
 {"Put":{"state":"ˇhello world"}}
 {"Key":"d"}
 {"Key":"i"}

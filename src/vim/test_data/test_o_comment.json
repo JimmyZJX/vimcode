@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `o` continuing // comments needs language-aware comment continuation (host capability).
 {"SetOption":{"value":"filetype=rust"}}
 {"Put":{"state":"// helloˇ\n"}}
 {"Key":"o"}

@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `diw` on a blank line between blank lines: Neovim consumes the line; local word object returns an empty range.
 {"Put":{"state":"The quick ˇbrown   \nfox jumps over\nthe lazy dog  \n\n\n\nThe-quick brown \n  \n  \n  fox-jumps over\nthe lazy dog \n\n"}}
 {"Key":"d"}
 {"Key":"i"}

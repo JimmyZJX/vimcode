@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `c backspace` (change + backspace motion) is not wired as an operator target yet.
 {"Put":{"state":"Teˇst"}}
 {"Key":"c"}
 {"Key":"backspace"}

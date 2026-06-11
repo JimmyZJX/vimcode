@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: absurd counts must clamp instead of overflowing (Zed caps pending counts).
 {"Put":{"state":"1\nˇ2\n3"}}
 {"Key":"9"}
 {"Key":"9"}

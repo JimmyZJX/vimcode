@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: insert-mode `jk -> escape` remap fixture; needs fixture-declared remaps in the harness plus insert-mode remap replay.
 {"Exec":{"command":"imap jk <esc>"}}
 {"Put":{"state":"ˇhello"}}
 {"Key":"i"}

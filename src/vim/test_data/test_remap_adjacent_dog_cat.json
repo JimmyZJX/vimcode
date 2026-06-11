@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: insert-mode remap fixture (dog -> emoji); needs fixture-declared remaps in the harness.
 {"Exec":{"command":"imap dog 🐶"}}
 {"Exec":{"command":"imap cat 🐱"}}
 {"Put":{"state":"ˇ"}}

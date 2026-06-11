@@ -16,8 +16,15 @@ import { EditorContributionInstantiation, registerEditorContribution } from '../
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { VimController } from './vimController.js';
 
+// List/tree widgets evaluate keybinding when-clauses against their own
+// context scope, which chains to the workbench root — never to any editor's
+// scope. `vim.active` is editor-scoped (VimController is an editor
+// contribution and binds its keys to the editor-scoped IContextKeyService),
+// so it is invisible from a focused list and rules gated on it never match.
+// Configuration-backed `config.*` keys live at the root context and are
+// visible in every scope.
 const VimActiveListFocusContext = ContextKeyExpr.and(
-	ContextKeyExpr.has('vim.active'),
+	ContextKeyExpr.has('config.vim.enabled'),
 	ContextKeyExpr.has('listFocus'),
 	ContextKeyExpr.not('inputFocus')
 );

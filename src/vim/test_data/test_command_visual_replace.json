@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `:'<,'>s/./k/` visual-range substitute: range prefill from visual mode is not implemented.
 {"Put":{"state":"ˇ1\n2\n3\n4\n4\n3\n2\n1"}}
 {"Key":"v"}
 {"Key":"2"}

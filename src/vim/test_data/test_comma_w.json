@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `;`/`,` find repeat is line-local; Neovim continues `f`/`t` repeats across lines.
 {"Exec":{"command":"map ,w j"}}
 {"Put":{"state":"ˇhello hello\nhello hello"}}
 {"Key":"f"}

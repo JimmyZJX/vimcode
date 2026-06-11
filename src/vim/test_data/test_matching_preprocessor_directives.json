@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `%` on #if/#else/#endif needs language-aware matching beyond the text bracket slice.
 {"Put":{"state":"#ˇif\n\n#else\n\n#endif\n"}}
 {"Key":"%"}
 {"Get":{"state":"#if\n\nˇ#else\n\n#endif\n","mode":"Normal"}}

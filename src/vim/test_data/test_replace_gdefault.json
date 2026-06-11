@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: fixture sets &gdefault via an entry before Put; harness lacks option-setting entries.
 {"Key":":"}
 {"Key":"s"}
 {"Key":"e"}

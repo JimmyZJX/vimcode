@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `ctrl-o`/`ctrl-i` jump list for paragraph motions; model-level jump list not implemented (host navigation is used).
 {"Put":{"state":"ˇfn a() { }\n\n\n\n\n\nfn b() { }\n\n\n\n\n\nfn b() { }"}}
 {"Key":"3"}
 {"Key":"}"}

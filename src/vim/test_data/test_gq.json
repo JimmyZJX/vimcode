@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `gq` (rewrap) operator not implemented; candidate RangeOperator once a wrap-width capability exists.
 {"SetOption":{"value":"textwidth=5"}}
 {"Put":{"state":"ˇth th th th th th\n"}}
 {"Key":"g"}

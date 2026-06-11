@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `%` on /* */ comments needs language-aware matching beyond the text bracket slice.
 {"Put":{"state":"ˇ/*\n  this is a comment\n*/"}}
 {"Key":"%"}
 {"Get":{"state":"/*\n  this is a comment\nˇ*/","mode":"Normal"}}

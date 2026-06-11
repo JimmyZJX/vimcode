@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `%` on HTML tags needs language-aware matching beyond the text bracket slice.
 {"Exec":{"command":"set filetype=html"}}
 {"Put":{"state":"<div class='teˇst' id='main'>\n</div>\n"}}
 {"Key":"%"}

@@ -1,4 +1,4 @@
-// DISABLED: imported from Zed fixture backlog; not triaged for current implementation yet.
+// DISABLED: `cgn` with no remaining match must fail without editing; current gn slice still edits at the cursor.
 {"Put":{"state":"aaˇ aa aa aa aa"}}
 {"Key":"/"}
 {"Key":"b"}
