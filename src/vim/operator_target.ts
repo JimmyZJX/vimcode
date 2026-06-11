@@ -23,9 +23,9 @@ import { applyChange } from "./normal/change.js";
 import { ConvertTarget, applyConvert } from "./normal/convert.js";
 import { applyDelete } from "./normal/delete.js";
 import { IndentDirection, applyIndent } from "./normal/indent.js";
-import { paragraphCursorAfterDelete, paragraphDeleteRange, paragraphObjectCancelled } from "./normal/object.js";
+import { paragraphObjectCancelled } from "./normal/object.js";
 import { applyYank } from "./normal/yank.js";
-import { TextObject, textObjectRange } from "./object.js";
+import { TextObject, blankLineAroundWordRows, surroundObjectFound, textObjectRange } from "./object.js";
 import type { ForcedMotion } from "./operator.js";
 import { RegisterName, Registers } from "./registers.js";
 import { Position, TextRange, selectionHead } from "./state.js";
@@ -177,13 +177,33 @@ export function operatorTarget(
 
   return {
     kind: "charwise",
-    targets: heads.map(head => ({
-      head,
+    targets: heads.map(head => {
       // Vim: `cw` on a word acts like `ce` (`:h cw`); the adjustment lives
       // behind [forChange] (Zed: change's expanded word range).
-      range: forChange ? changeMotionRange(editor, head, motion, count) : motionRange(editor, head, motion, count),
-    })),
+      const range = forChange ? changeMotionRange(editor, head, motion, count) : motionRange(editor, head, motion, count);
+      // Vim: a backward word motion that cannot move at all fails the
+      // operator outright — `cb` at the start of the buffer must not enter
+      // insert. A motion that moves but selects nothing (`cb` onto an empty
+      // line under the `exclusive-linewise` rule) still changes.
+      const cancelled = motionFailureCancels(motion) && (() => {
+        const target = applyMotion(editor, head, motion, count);
+        return target.row === head.row && target.column === head.column;
+      })()
+        ? true
+        : undefined;
+      return { head, range, cancelled };
+    }),
   };
+}
+
+function motionFailureCancels(motion: Motion): boolean {
+  switch (motion.type) {
+    case "previousWordStart":
+    case "previousWordEnd":
+      return true;
+    default:
+      return false;
+  }
 }
 
 // Zed: `normal::Vim::normal_object` expanding the selection through
@@ -193,23 +213,62 @@ export function operatorTarget(
 export function textObjectOperatorTarget(
   editor: VimEditorCapabilities,
   object: TextObject,
-  { around, count, forDelete = false, forChange = false }: { around: boolean; count: number; forDelete?: boolean; forChange?: boolean }
+  { around, count, forChange = false }: { around: boolean; count: number; forChange?: boolean }
 ): OperatorTarget {
-  return {
-    kind: "charwise",
-    targets: editor.getSelections().map(selection => {
+  const selections = editor.getSelections();
+
+  // Vim: paragraph text objects operate linewise after an operator (`:h ap`),
+  // so `dap`/`yap`/`cip` produce linewise registers and whole-line edits.
+  // A single blank line is a valid one-row paragraph; only `ap` on a trailing
+  // blank run at end of file fails (cancelled: no edit, change does not enter
+  // insert).
+  if (object.type === "paragraph") {
+    const rows: RowRange[] = [];
+    const charwise: CharwiseTarget[] = [];
+    for (const selection of selections) {
       const head = selectionHead(selection);
       const range = textObjectRange(editor, head, object, { around, count });
-      if (object.type === "paragraph") {
-        if (forChange && paragraphObjectCancelled(editor, head, range, { around })) {
-          return { head, range: { start: head, end: head }, cancelled: true };
-        }
-        if (forDelete) {
-          const expanded = paragraphDeleteRange(editor, range, { around });
-          return { head, range: expanded, cursor: paragraphCursorAfterDelete(editor, expanded) };
-        }
+      if (paragraphObjectCancelled(editor, head, range, { around })) {
+        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined });
+        continue;
       }
-      return { head, range };
+      rows.push({ startRow: range.start.row, endRow: range.end.row, column: head.column });
+    }
+    if (rows.length === 0) return { kind: "charwise", targets: charwise };
+    return { kind: "linewise", rows };
+  }
+
+  // Vim: `aw` on an empty line is linewise when it cannot reach a word (the
+  // blank lines themselves are the object); see [blankLineAroundWordRows].
+  if (object.type === "word" && around) {
+    const rows: RowRange[] = [];
+    const charwise: CharwiseTarget[] = [];
+    for (const selection of selections) {
+      const head = selectionHead(selection);
+      const blankRows = count === 1 ? blankLineAroundWordRows(editor, head) : undefined;
+      if (blankRows === "cancelled") {
+        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined });
+        continue;
+      }
+      if (blankRows !== undefined) {
+        rows.push({ ...blankRows, column: head.column });
+        continue;
+      }
+      charwise.push({ head, range: textObjectRange(editor, head, object, { around, count }) });
+    }
+    if (rows.length > 0) return { kind: "linewise", rows };
+    return { kind: "charwise", targets: charwise };
+  }
+
+  return {
+    kind: "charwise",
+    targets: selections.map(selection => {
+      const head = selectionHead(selection);
+      const range = textObjectRange(editor, head, object, { around, count });
+      // Vim: a surround object with no pair at the cursor fails the operator
+      // (`ci"` with no quotes ahead must not enter insert).
+      const cancelled = object.type === "surround" && !surroundObjectFound(editor, head, object) ? true : undefined;
+      return { head, range, cancelled };
     }),
   };
 }

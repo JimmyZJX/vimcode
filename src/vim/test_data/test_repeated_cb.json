@@ -1,4 +1,3 @@
-// DISABLED: `cb` whose motion cannot move (start of buffer) must fail without entering insert (motion-failure detection in operatorTarget).
 {"Put":{"state":"ˇThe quick brown\n\nfox jumps-over\nthe lazy dog\n"}}
 {"Key":"c"}
 {"Key":"1"}

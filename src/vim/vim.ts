@@ -1450,7 +1450,16 @@ export class Vim {
   private applySearchSelection({ reversed, count }: { reversed: boolean; count: number }): void {
     const includeStart = this.modeState.kind === "normal";
     const range = this.globalState.search.matchRangeForSelection(this.editor, { reversed, count, includeStart });
-    if (range === undefined) return;
+    if (range === undefined) {
+      // Vim: `cgn` with no match aborts the pending operator without editing,
+      // and `.`-replaying an aborted `cgn` swallows the rest of the recording
+      // (the recorded insert text must not run as normal-mode keys).
+      if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
+        this.normalMode.clearPending();
+        this.globalState.repeat.abortCurrentReplay();
+      }
+      return;
+    }
     if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
       const enterInsert = this.normalMode.applyMotion({ type: "searchMatch", range }, 1);
       if (enterInsert) this.modeState = { dialect: this.modeState.dialect, kind: "insert" };

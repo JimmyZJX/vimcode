@@ -1,4 +1,3 @@
-// DISABLED: `dip` on a whitespace-only line: Neovim deletes the blank run linewise and lands on the next line's first non-blank.
 {"Put":{"state":"a\n       ˇ•\naaaaaaaaaaaaa\n"}}
 {"Key":"d"}
 {"Key":"i"}

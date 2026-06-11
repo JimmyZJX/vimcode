@@ -49,7 +49,9 @@ export function deleteTargets(
 
   for (const { range, head, cursor } of targets) {
     if (range.start.row === range.end.row && range.start.column === range.end.column) {
-      selectionsAfter.push(charwiseSelection(head));
+      // Vim: an empty target deletes nothing but still moves the cursor to
+      // its start (`di(` on an empty pair parks the cursor inside it).
+      selectionsAfter.push(charwiseSelection(cursor ?? range.start));
       continue;
     }
     copied.push(rangeText(editor, range));

@@ -80,7 +80,13 @@ function wordRange(
   if (text.length === 0) return { start: head, end: head };
 
   const headOffset = Math.min(offsetOfPosition(editor, head), Math.max(0, text.length - 1));
+  if (around && isWhitespace(text[headOffset])) {
+    return aroundWordFromWhitespace(editor, text, headOffset, bigWord, count);
+  }
   if (!around && count === 1 && isWhitespace(text[headOffset])) {
+    // Vim: an empty line is a word of its own (`:h iw`); `iw` on one selects
+    // nothing, so `diw`/`ciw` leave the line in place.
+    if (text[headOffset] === "\n") return { start: head, end: head };
     return whitespaceRange(editor, text, headOffset);
   }
   const firstUnit = wordUnitAtOrAfter(text, headOffset, bigWord);
@@ -195,9 +201,28 @@ function surroundRange(
   return surroundingMarkers(editor, head, around, object.open, object.close) ?? { start: head, end: head };
 }
 
-// Zed: `object::surrounding_markers`. This is the local model-buffer version
-// for same-line objects. It first tries an opening marker at/behind the cursor,
-// then falls back to the next opening marker on the line.
+/** Whether a surround object has an actual pair at the cursor. An object that
+    exists but is empty (`ci(` on `()`) still edits; a missing pair fails the
+    operator (`ci"` with no quotes ahead stays in normal mode). */
+export function surroundObjectFound(
+  editor: VimEditorCapabilities,
+  head: Position,
+  object: Extract<TextObject, { type: "surround" }>
+): boolean {
+  return surroundingMarkers(editor, head, false, object.open, object.close) !== undefined;
+}
+
+/** Bracket pairs are multiline objects; quote-like pairs (identical markers)
+    are line-local, matching Zed `Object::is_multiline`. */
+function surroundSearchesAcrossLines(openMarker: string, closeMarker: string): boolean {
+  return openMarker !== closeMarker;
+}
+
+// Zed: `object::surrounding_markers`. Finds the marker pair enclosing the
+// cursor: an opening marker at/behind the cursor first, then the next opening
+// marker on the line. Bracket pairs search across lines; quote pairs stay on
+// the cursor line and (Vim `:h aquote`) take trailing — else leading — white
+// space for `around`.
 function surroundingMarkers(
   editor: VimEditorCapabilities,
   head: Position,
@@ -206,6 +231,7 @@ function surroundingMarkers(
   closeMarker: string
 ): TextRange | undefined {
   const text = editor.getText();
+  const searchAcrossLines = surroundSearchesAcrossLines(openMarker, closeMarker);
   const point = offsetOfPosition(editor, head);
   const lineStart = offsetOfPosition(editor, { row: head.row, column: 0 });
   const lineEnd = lineStart + editor.lineLength(head.row);
@@ -227,8 +253,8 @@ function surroundingMarkers(
 
   if (opening === undefined) {
     let matchedCloses = 0;
-    const backwardStart = openMarker === closeMarker ? point - 1 : point;
-    for (let index = Math.min(backwardStart, lineEnd - 1); index >= lineStart; index--) {
+    for (let index = point - 1; index >= 0; index--) {
+      if (text[index] === "\n" && !searchAcrossLines) break;
       if (isEscapedInText(text, index)) continue;
       if (text[index] === openMarker) {
         if (matchedCloses === 0) {
@@ -261,7 +287,8 @@ function surroundingMarkers(
   let matchedOpens = 0;
   let closing: number | undefined;
   let previous = text[opening] ?? "\0";
-  for (let index = opening + 1; index < lineEnd; index++) {
+  for (let index = opening + 1; index < text.length; index++) {
+    if (text[index] === "\n" && !searchAcrossLines) break;
     if (previous !== "\\") {
       if (text[index] === closeMarker) {
         if (matchedOpens === 0) {
@@ -281,7 +308,7 @@ function surroundingMarkers(
   let start = around ? opening : opening + 1;
   let end = around ? closing + 1 : closing;
 
-  if (around) {
+  if (around && !searchAcrossLines) {
     let foundTrailingWhitespace = false;
     while (end < lineEnd && /\s/.test(text[end]) && text[end] !== "\n") {
       foundTrailingWhitespace = true;
@@ -292,11 +319,87 @@ function surroundingMarkers(
     }
   }
 
+  // Zed: multiline inner brackets trim the surrounding blank space when the
+  // body has any non-white-space content (`vi{` selects the body lines, not
+  // the newline after `{` or the closing line's indentation).
+  if (!around && openMarker !== closeMarker) {
+    const innerStart = opening + 1;
+    const innerEnd = closing;
+    const spansRows = text.slice(innerStart, innerEnd).includes("\n");
+    if (spansRows && /\S/.test(text.slice(innerStart, innerEnd))) {
+      let first = innerStart;
+      while (first < innerEnd && /\s/.test(text[first])) first++;
+      let last = innerEnd;
+      while (last > first && /\s/.test(text[last - 1])) last--;
+      start = first;
+      end = last;
+    }
+  }
+
   return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
 }
 
 
 type WordUnit = { start: number; end: number };
+
+// Vim `aw` on an empty line is a whole-line operation when it cannot reach a
+// word (verified against Neovim):
+// - another empty line follows: the cursor's line and the next one are
+//   consumed as lines (cursor ends on the following content at column zero);
+// - the cursor is on the last line: the object fails (no edit);
+// - content follows: not line-based — the charwise newline+word range applies
+//   (see [aroundWordFromWhitespace]).
+export function blankLineAroundWordRows(
+  editor: VimEditorCapabilities,
+  head: Position
+): { startRow: number; endRow: number } | "cancelled" | undefined {
+  if (editor.lineLength(head.row) !== 0) return undefined;
+  if (head.row + 1 >= editor.lineCount()) return "cancelled";
+  if (editor.lineLength(head.row + 1) === 0) return { startRow: head.row, endRow: head.row + 1 };
+  return undefined;
+}
+
+// Zed: `object::around_next_word` — `aw` with the cursor on white space or an
+// empty line followed by content. Rules verified against Neovim:
+// - on an empty line followed by content, the newline, any leading white
+//   space, and the following word are consumed;
+// - on spaces/tabs, the range starts at the white-space run's beginning on the
+//   line and runs through the following word; if the run reaches a blank line
+//   instead of a word, it stops just after the current line's newline;
+// - [count] repeats the forward walk from the previous range's end.
+function aroundWordFromWhitespace(
+  editor: VimEditorCapabilities,
+  text: string,
+  headOffset: number,
+  bigWord: boolean,
+  count: number
+): TextRange {
+  let start = headOffset;
+  if (text[start] !== "\n") {
+    while (start > 0 && isWhitespace(text[start - 1]) && text[start - 1] !== "\n") start--;
+  }
+  let end = headOffset;
+  for (let index = 0; index < count; index++) {
+    const next = aroundWordWalk(text, end, bigWord);
+    if (next === end) break;
+    end = next;
+  }
+  return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, end) };
+}
+
+function aroundWordWalk(text: string, from: number, bigWord: boolean): number {
+  // An empty line followed by another empty line: take the two newlines.
+  if (text[from] === "\n" && text[from + 1] === "\n") return from + 2;
+  let offset = from;
+  while (offset < text.length && isWhitespace(text[offset])) {
+    // The white-space run reaches a blank line: stop after this newline.
+    if (text[offset] === "\n" && text[offset + 1] === "\n") return offset + 1;
+    offset++;
+  }
+  if (offset >= text.length) return offset;
+  const unit = wordUnitAt(text, offset, bigWord);
+  return unit === undefined ? offset : unit.end;
+}
 
 function whitespaceRange(editor: VimEditorCapabilities, text: string, offset: number): TextRange {
   let start = offset;

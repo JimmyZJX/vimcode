@@ -229,10 +229,6 @@ export class NormalMode {
         this.moveToNextLineStart();
         this.registerSelection.clear();
         return handled();
-      case "moveWrappingLeft":
-        this.moveSelections({ type: "wrappingLeft" }, this.takeCount(1));
-        this.registerSelection.clear();
-        return handled();
     }
   }
 
@@ -517,7 +513,6 @@ export class NormalMode {
     const target = textObjectOperatorTarget(this.editor, object, {
       around,
       count,
-      forDelete: operator.type === "delete",
       forChange: operator.type === "change",
     });
     return applyOperatorToTarget(this.editor, this.registers, registerName, operator, target).enterInsert;

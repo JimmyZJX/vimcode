@@ -1,4 +1,3 @@
-// DISABLED: repeated `a{` must expand an existing visual selection to the enclosing bracket range.
 {"Put":{"state":"{\n    {\n   ˇ }\n}\n{\n}\n"}}
 {"Key":"v"}
 {"Key":"l"}

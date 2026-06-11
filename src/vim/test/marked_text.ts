@@ -106,10 +106,17 @@ export function markedTextFromEditor(editor: InMemoryVimEditor, mode: VimMode["k
       if (selection.type === "charwise" && comparePositions(anchor, head) === 0) {
         return encodeMarkedText({ text: editor.getText(), row: head.row, column: head.column, mode: "normal" });
       }
+      // Paragraph-style selections park the exclusive head at the start of
+      // the row after the cursor; render those up to the cursor cell. A
+      // cursor that merely sits at column zero with its exclusive head on the
+      // same row (e.g. a bracket pair ending in column one) is a plain
+      // inclusive selection.
       const cursorIsLineStartAcrossLines = selection.type === "charwise"
         && selection.cursor !== undefined
         && selection.cursor.column === 0
-        && selection.cursor.row !== anchor.row;
+        && selection.cursor.row !== anchor.row
+        && head.row === selection.cursor.row + 1
+        && head.column === 0;
       const cursor = cursorIsLineStartAcrossLines ? selection.cursor! : head;
       const end = cursorIsLineStartAcrossLines ? cursor : head;
       return encodeVisualMarkedText(editor.getText(), anchor, end, cursor);

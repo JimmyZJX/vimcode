@@ -27,9 +27,17 @@ export class RepeatState {
   private current: string[] | undefined;
   private last: RepeatAction | undefined;
   private replaying = false;
+  private abortRequested = false;
 
   isReplaying(): boolean {
     return this.replaying;
+  }
+
+  /** Stop feeding the remaining recorded keys of an in-flight `.` replay.
+      Vim: when a replayed operator aborts (`cgn` with no match), the rest of
+      the recording — typically insert-mode text — must not run as keys. */
+  abortCurrentReplay(): void {
+    if (this.replaying) this.abortRequested = true;
   }
 
   maybeStart(key: string, { mode, pendingChord }: { mode: string; pendingChord: string }): void {
@@ -75,7 +83,10 @@ export class RepeatState {
           const countedKeys = count === undefined ? this.last.keys : keysWithCountOverride(this.last.keys, count);
           const registerKeys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
           const keys = advanceNumberedPasteRepeat(registerKeys);
-          for (const key of keys) runKey(key);
+          for (const key of keys) {
+            if (this.abortRequested) break;
+            runKey(key);
+          }
           if (count !== undefined || keys !== this.last.keys) this.last = { type: "keys", keys: [...keys] };
           break;
         }
@@ -85,6 +96,7 @@ export class RepeatState {
       }
     } finally {
       this.replaying = false;
+      this.abortRequested = false;
     }
   }
 }

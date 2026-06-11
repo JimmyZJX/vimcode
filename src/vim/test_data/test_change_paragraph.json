@@ -1,4 +1,3 @@
-// DISABLED: paragraph objects produce charwise registers; `cip` register needs linewise kind (trailing newline).
 {"Put":{"state":"first paragraph\nˇstill first\n\nsecond paragraph\nstill second\n\nthird paragraph\n"}}
 {"Key":"c"}
 {"Key":"a"}

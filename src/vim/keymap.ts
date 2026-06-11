@@ -48,8 +48,7 @@ export type NormalCommand =
   | { type: "moveLineFirstNonWhitespace"; direction: "up" | "down" }
   | { type: "percentOrMatching" }
   | { type: "goToLineOrEnd" }
-  | { type: "moveToNextLineStart" }
-  | { type: "moveWrappingLeft" };
+  | { type: "moveToNextLineStart" };
 
 export type VimAction =
   | { type: "pushMark" }
@@ -506,8 +505,6 @@ function normalCommandForKey(key: string): NormalCommand | undefined {
       return { type: "goToLineOrEnd" };
     case "enter":
       return { type: "moveToNextLineStart" };
-    case "backspace":
-      return { type: "moveWrappingLeft" };
     default:
       return undefined;
   }
@@ -518,7 +515,6 @@ function normalCommandIsAllowed(command: NormalCommand, context: VimKeymapContex
     case "percentOrMatching":
     case "goToLineOrEnd":
     case "moveToNextLineStart":
-    case "moveWrappingLeft":
       // Motion-like commands also serve as operator targets (`dG`, `d%`).
       return context.operator !== "object";
     default:

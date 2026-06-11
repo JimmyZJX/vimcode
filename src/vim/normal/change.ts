@@ -20,12 +20,19 @@ export function applyChange(
   target: OperatorTarget
 ): boolean {
   switch (target.kind) {
-    case "charwise":
+    case "charwise": {
       // Vim: change deletes the range and leaves the cursor at its start,
-      // entering insert there (`:h c`). Cancelled targets (`cap` on a trailing
-      // blank line) keep the cursor and suppress insert-mode entry.
-      deleteTargets(editor, registers, registerName, target.targets, (_editor, range) => range.start, keepUndoTransactionOpen());
+      // entering insert there (`:h c`) — including ranges a successful motion
+      // left empty (`cb` onto an empty line). Cancelled targets (`cap` on a
+      // trailing blank line, a failed motion) keep the cursor and suppress
+      // insert-mode entry.
+      const targets = target.targets.map(charwiseTarget =>
+        charwiseTarget.cancelled === true
+          ? charwiseTarget
+          : { ...charwiseTarget, cursor: charwiseTarget.cursor ?? charwiseTarget.range.start });
+      deleteTargets(editor, registers, registerName, targets, (_editor, range) => range.start, keepUndoTransactionOpen());
       return target.targets.some(({ cancelled }) => cancelled !== true);
+    }
     case "linewise":
       return changeLineRange(editor, registers, registerName, target.rows);
   }

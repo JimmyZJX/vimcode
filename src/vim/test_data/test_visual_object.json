@@ -1,4 +1,3 @@
-// DISABLED: `va]` in visual-block mode should turn charwise and not include trailing whitespace; object/visual interplay edge.
 {"Put":{"state":"hello (in [parˇens] o)"}}
 {"Key":"ctrl-v"}
 {"Key":"l"}

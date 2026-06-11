@@ -86,6 +86,8 @@ export function motionForKey(key: string): Motion | undefined {
       return { type: "right" };
     case "space":
       return { type: "wrappingRight" };
+    case "backspace":
+      return { type: "wrappingLeft" };
     case "ctrl-left":
       return { type: "previousWordStart", bigWord: false };
     case "ctrl-right":
@@ -588,6 +590,19 @@ export function motionRange(
       start: range.start,
       end: { row: range.end.row, column: Math.min(range.end.column + 1, endLineLength) },
     };
+  }
+  // Vim `c<BS>`/`d<BS>`: backspace is an exclusive motion to the previous
+  // character; at the start of a line it targets the previous line's end-of-
+  // line position (the newline), joining lines, rather than the clamped
+  // normal-mode cursor cell.
+  if (motion.type === "wrappingLeft") {
+    if (start.column > 0) {
+      return { start: { row: start.row, column: Math.max(0, start.column - count) }, end: start };
+    }
+    if (start.row > 0) {
+      return { start: { row: start.row - 1, column: editor.lineLength(start.row - 1) }, end: start };
+    }
+    return { start, end: start };
   }
   const end = applyMotion(editor, start, motion, count);
   if (motion.type === "right") {

@@ -13,7 +13,7 @@ import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, matchingPositionFromLine, Motion } from "./motion.js";
-import { textObjectForKey, textObjectRange } from "./object.js";
+import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
 import { IndentDirection } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
@@ -442,6 +442,7 @@ export class VisualMode {
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
+    const around = pendingTextObject.around;
     const count = this.takeCount(1);
     const states = state.kind === "charwise" ? currentCharwiseVisualStates(this.editor, state) : [state];
     if (states.some(state => object.type !== "paragraph" && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
@@ -449,15 +450,75 @@ export class VisualMode {
       return handled();
     }
 
-    const ranges = states.map(state =>
-      textObjectRange(this.editor, visualObjectPosition(this.editor, state), object, { around: pendingTextObject.around, count }));
     if (object.type === "paragraph") {
-      this.state = paragraphLinewiseStateForRange(this.editor, ranges[0]);
+      const range = textObjectRange(this.editor, visualObjectPosition(this.editor, state), object, { around, count });
+      this.state = paragraphLinewiseStateForRange(this.editor, range);
       this.syncEditorSelection();
       return handled({ nextMode: "visualLine" });
     }
-    this.setCharwiseStates(ranges.map(range => charwiseStateForRange(this.editor, range)));
+
+    // Zed: `visual::visual_object` — objects extend the live selection. Word,
+    // sentence, and quote objects keep visual block mode and move only the
+    // head; bracket objects always become a charwise selection of the pair.
+    if (state.kind === "blockwise" && !objectAlwaysExpandsBothWays(object)) {
+      const range = textObjectRange(this.editor, visualObjectPosition(this.editor, state), object, { around, count });
+      if (!rangeIsEmpty(range)) {
+        const reversed = comparePositions(state.head, state.anchor) < 0;
+        const singleCell = comparePositions(state.head, state.anchor) === 0;
+        if (singleCell) {
+          this.state = { ...state, anchor: range.start, head: inclusiveHeadForRangeEnd(this.editor, range), goal: undefined };
+        } else {
+          this.state = {
+            ...state,
+            head: reversed ? range.start : inclusiveHeadForRangeEnd(this.editor, range),
+            goal: undefined,
+          };
+        }
+        this.syncEditorSelection();
+      }
+      return handled();
+    }
+
+    const charwiseStates: CharwiseVisualState[] = state.kind === "charwise"
+      ? (states as CharwiseVisualState[])
+      : [{ kind: "charwise", anchor: visualObjectPosition(this.editor, state), head: visualObjectPosition(this.editor, state) }];
+    this.setCharwiseStates(charwiseStates.map(charwiseState => this.objectExpandedState(charwiseState, object, around, count)));
     return handled({ nextMode: "visual" });
+  }
+
+  // Zed: the per-selection logic of `visual::visual_object`.
+  private objectExpandedState(
+    state: CharwiseVisualState,
+    object: TextObject,
+    around: boolean,
+    count: number
+  ): CharwiseVisualState {
+    const position = visualObjectPosition(this.editor, state);
+    const range = textObjectRange(this.editor, position, object, { around, count });
+    if (rangeIsEmpty(range)) return state;
+
+    const reversed = comparePositions(state.head, state.anchor) < 0;
+    const singleCell = comparePositions(state.head, state.anchor) === 0;
+    if (objectAlwaysExpandsBothWays(object) || singleCell) {
+      const selectionStart = reversed ? state.head : state.anchor;
+      const selectionEnd = reversed ? state.anchor : state.head;
+      // Vim: pressing the same bracket object again expands the selection to
+      // the enclosing pair. Zed re-queries from the exclusive head — one past
+      // the inclusive end — which sits outside the already-selected pair.
+      if (objectAlwaysExpandsBothWays(object)
+        && comparePositions(range.start, selectionStart) === 0
+        && comparePositions(inclusiveHeadForRangeEnd(this.editor, range), selectionEnd) === 0) {
+        const requery = reversed
+          ? state.head
+          : { row: selectionEnd.row, column: Math.min(selectionEnd.column + 1, this.editor.lineLength(selectionEnd.row)) };
+        const expanded = textObjectRange(this.editor, requery, object, { around, count });
+        if (!rangeIsEmpty(expanded)) return charwiseStateForRange(this.editor, expanded);
+        return state;
+      }
+      return charwiseStateForRange(this.editor, range);
+    }
+    if (reversed) return { kind: "charwise", anchor: state.anchor, head: range.start };
+    return { kind: "charwise", anchor: state.anchor, head: inclusiveHeadForRangeEnd(this.editor, range) };
   }
 
   // Zed: `visual::visual_operate`-style commands lower the visual state to an
@@ -1054,6 +1115,16 @@ function charwiseVisualRange(editor: VimEditorCapabilities, state: CharwiseVisua
 
 function isForwardCharwiseVisualState(state: CharwiseVisualState): boolean {
   return comparePositions(state.anchor, state.head) <= 0;
+}
+
+// Zed: `Object::always_expands_both_ways` — bracket/quote pairs replace both
+// selection ends; word/sentence/paragraph objects only extend the head.
+function objectAlwaysExpandsBothWays(object: TextObject): boolean {
+  return object.type === "surround";
+}
+
+function rangeIsEmpty(range: TextRange): boolean {
+  return range.start.row === range.end.row && range.start.column === range.end.column;
 }
 
 function charwiseStateForRange(editor: VimEditorCapabilities, range: TextRange): CharwiseVisualState {
