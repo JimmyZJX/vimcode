@@ -106,13 +106,14 @@ Done in this branch:
   still falls through natively.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 521 enabled tests (28 skipped).
-  - The disabled-fixture backlog is fully triaged: every `// DISABLED:` header now
-    states the concrete blocker (feature gap, harness gap, host-integration, or
-    intentional divergence) instead of "not triaged yet". The largest remaining
-    buckets: jump list (`ctrl-o`/`ctrl-i`, 4), language-aware `%`/comments (6),
-    soft-wrap display map (3), `U` undo-line (3), folds (2), plus harness-shape
-    and intentional-divergence leftovers.
+  - `npm test -- --runInBand` passes with 522 enabled tests (28 skipped).
+  - The disabled-fixture backlog is fully triaged **and intentionally parked**: every
+    `// DISABLED:` header states the concrete blocker, and the remaining 28 fixtures
+    were reviewed and deliberately left disabled because they cover behavior that the
+    real VSCode host already provides natively (and is not worth duplicating in the
+    model-buffer harness), harness-shape gaps, or intentional divergences. See
+    "Disabled fixtures are a terminal, documented state" under Testing strategy for
+    the bucket-by-bucket rationale. Do not re-attempt these without a new decision.
 
 Implemented first-slice behavior:
 
@@ -440,25 +441,35 @@ Near-term:
 5. Add provenance comments to every newly translated type/function using Zed module/function names.
 6. Add tests for multi-selection behavior before implementing more operators, so new code does not regress into single-selection assumptions.
 
-Medium-term:
+Medium-term (all done):
 
-1. Implement text objects: `iw`, `aw`, quote/bracket objects, then object operators like `ciw`.
-2. Implement visual mode and visual-line mode.
-3. Implement visual-block representation and lowering to multi-selections.
-4. Implement surround: `ys`, `cs`, `ds`, plus visual surround.
-5. Implement basic search: `/`, `?`, `n`, `N`, then search-as-motion.
-6. Add Neovim-backed comparison harness or recorded fixture workflow based on Zed's test approach.
-7. Ingest Jimmy's VSCode patch experiment and document the production adapter boundary.
+1. ~~Text objects~~ — word/paragraph/sentence/quote/bracket objects and object operators.
+2. ~~Visual and visual-line mode~~.
+3. ~~Visual-block representation and lowering~~.
+4. ~~Surround~~ — `ys`, `cs`, `ds`, visual surround.
+5. ~~Basic search~~ — `/`, `?`, `n`, `N`, search-as-motion, `gn`/`cgn`.
+6. ~~Neovim-backed comparison harness~~ — fixture replay plus `VIMCODE_RECORD_NEOVIM=1`
+   regeneration; the Zed fixture import is complete (see Testing strategy).
+7. ~~VSCode patch integration~~ — `vscode-contrib/` plus `vscode-contrib/patches/`.
 
 Longer-term:
 
-1. Implement Helix as an alternate keymap/dialect over the same core primitives.
-2. Implement dot repeat and macro recording/replay.
-3. Implement marks, jumplist, changelist.
-4. Implement advanced registers.
-5. Implement display-line motions with soft wrap through the VSCode adapter.
-6. Implement folds-aware movement through the VSCode adapter.
-7. Implement language/tree-sitter-aware objects where VSCode internals make that feasible.
+1. Implement Helix as an alternate keymap/dialect over the same core primitives
+   (the `dialect` field and select-mode state exist; the keymap does not yet).
+2. ~~Dot repeat and macro recording/replay~~ — done.
+3. ~~Marks and changelist~~ — done. Jumplist is an intentional non-goal for now:
+   `ctrl-o`/`ctrl-i` use VSCode's native navigation history (see the disabled-fixture
+   rationale under Testing strategy).
+4. ~~Advanced registers~~ — named/numbered/black-hole/append/small-delete/system
+   clipboard registers are done.
+5. ~~Display-line motions with soft wrap through the VSCode adapter~~ — done
+   (`moveByViewLines`); the in-memory host intentionally has no display map.
+6. Folds-aware movement: fold commands are wired through `executeFoldCommand`; deeper
+   fold-aware motion fidelity is host-integration work (fixtures parked).
+7. Language/tree-sitter-aware objects and `%` matching: parked; host/language-service
+   territory (fixtures parked, see Testing strategy).
+8. VSCodeVim-compat config layer expansion and language-capability design as user
+   demand dictates.
 
 ## Testing strategy
 
@@ -468,11 +479,11 @@ Zed's approach
 
 Zed's `test::neovim_backed_test_context::NeovimBackedTestContext` keeps a Zed editor and a Neovim instance in sync. Tests call helpers such as `set_shared_state`, `simulate_shared_keystrokes`, `simulate`, `shared_state`, and `shared_clipboard`. The backing `test::neovim_connection::NeovimConnection` can either talk to live embedded Neovim or replay recorded JSON test data. State is represented as marked text, with `ˇ` for the cursor and visual markers for selections.
 
-Our first migration step is intentionally smaller: `src/vim/neovim.test.ts` discovers every JSON-line fixture in `src/vim/test_data/*.json`. Enabled files replay the recorded Neovim result; files whose first header is `// DISABLED: <reason>` become skipped Jest tests. Set `VIMCODE_RECORD_NEOVIM=1` while running the Neovim-backed tests to regenerate enabled fixtures from short-lived `nvim --headless` processes. The current helper supports single-cursor `ˇ` marked text, simple forward charwise visual markers (`«...ˇ...»`), and explicit `ReadRegister` fixture entries. This is enough to catch basic normal/insert/operator/register/visual drift before adding more features. Later steps should add backward visual selections, visual line/block markers, and multi-selection support.
+Our first migration step is intentionally smaller: `src/vim/neovim.test.ts` discovers every JSON-line fixture in `src/vim/test_data/*.json`. Enabled files replay the recorded Neovim result; files whose first header is `// DISABLED: <reason>` become skipped Jest tests. Set `VIMCODE_RECORD_NEOVIM=1` while running the Neovim-backed tests to regenerate enabled fixtures from short-lived `nvim --headless` processes. The marked-text helper supports single-cursor `ˇ` text, charwise visual markers (`«...ˇ...»`, including reversed rendering), linewise raw anchor/cursor-cell markers mirroring Zed's encoding, rectangular visual-block markers, and explicit `ReadRegister` fixture entries. Multi-selection fixtures and parsing backward visual selections from `Put` states remain unsupported (see the harness-shape bucket in the disabled-fixture rationale).
 
 Zed fixture migration policy
 
-Zed has hundreds of fixture files under `crates/vim/test_data/*.json`. Treat them as a compatibility backlog, not as irrelevant data. The long-term goal is to migrate them all into `src/vim/test_data/`, because the fixture directory should be the source of truth for compatibility work.
+Zed has hundreds of fixture files under `crates/vim/test_data/*.json`, and the migration is complete: they all live in `src/vim/test_data/`, which is the source of truth for compatibility work (the fixture filename is the Jest test id). The policy below remains for any future fixtures imported from a newer Zed reference commit or recorded fresh from Neovim.
 
 Do not bulk-enable imported fixtures. When importing a Zed fixture whose feature is not known to pass, prepend a fixture-file header:
 
@@ -499,13 +510,54 @@ Suggested import workflow:
 4. To enable a fixture, remove the disabled header, run/regenerate it with live Neovim if needed, and make the local implementation pass.
 5. Keep enabled fixture names stable. Like Zed, the fixture filename is the test id.
 
-Useful first batches to import:
+The Zed fixture import is complete: every Zed `crates/vim/test_data` fixture lives in
+`src/vim/test_data/`, 522 are enabled, and the 28 disabled files below are a terminal
+state, not a to-do list.
 
-- Basic normal/motion fixtures, some of which should be enabled quickly: `test_h`, `test_j`, `test_k`, `test_l`, `test_w`, `test_zero`, `test_gg`, `test_dd`, `test_delete_w`, `test_change_w`, `test_insert_*`, `test_o`.
-- Text object fixtures as disabled backlog: word, paragraph, sentence, quote/bracket objects.
-- Register fixtures as disabled/enabled according to current support: named registers can be enabled selectively; numbered, black-hole, system, append, and special registers should stay disabled until implemented.
-- Visual fixtures can now be enabled for simple forward charwise selections; keep backward, visual-line, and visual-block cases disabled until the marked-text parser and selection model support them.
-- Search, command, repeat, marks, folds, wrapped-lines, and Helix fixtures as disabled category backlogs.
+Disabled fixtures are a terminal, documented state
+
+The remaining 28 disabled fixtures were reviewed bucket-by-bucket and deliberately left
+disabled (decision: most cover behavior the patched VSCode host provides natively, and
+duplicating it in the model-buffer harness is not worth the work). Do not re-enable or
+re-implement these without revisiting the decision:
+
+- Jump list, 5 (`test_jump_list`, `test_ctrl_o_dot`, `test_ctrl_o_position`,
+  `test_ctrl_o_visual`, `test_scroll_jumps`): `ctrl-o`/`ctrl-i` map to VSCode's native
+  `navigateBack`/`navigateForward` history instead of a model-level Vim jumplist. This
+  is an intentional host-navigation choice; a Vim-faithful jumplist would be a product
+  decision first, an implementation second.
+- Language-aware matching, 7 (`test_matching_comments`,
+  `test_matching_preprocessor_directives`, `test_matching_tags`,
+  `test_matching_tag_with_quotes`, `test_percent_in_comment`,
+  `test_unmatched_forward_markdown`, `test_o_comment`): `%` on comments/preprocessor
+  directives/HTML tags/template delimiters and `o` comment continuation need language
+  awareness (Zed: tree-sitter). In VSCode this is host/language-service territory;
+  the core keeps the text-based bracket slice.
+- Soft-wrap display map, 4 (`test_wrapped_lines`, `test_wrapped_motions`,
+  `test_wrapped_delete_end_document`, `test_horizontal_scroll`): display-line movement
+  under `wrap`/`columns=N` and horizontal scrolling. The real host handles this through
+  `moveByViewLines`/the view model; the in-memory host intentionally has no display map.
+- `U` undo-line, 3 (`test_undo_last_line*`): needs Zed-style change-list anchors plus
+  undo/redo replay against the *host* undo stack; a core-only implementation would not
+  work against VSCode's native undo.
+- Folds, 2 (`test_folds`, `test_folds_panic`): VSCode-native folding; fold commands go
+  through `executeFoldCommand` to the host.
+- `gq` rewrap, 1 (`test_gq`): the rewrap operator is not implemented; parked as a
+  candidate `RangeOperator` if a wrap-width capability (`textwidth`/editor setting)
+  ever becomes worth adding.
+- Harness-shape gaps, 5 (`neovim_backed_test_context_works`, `test_neovim`,
+  `test_del_marks`, `test_digraph_insert_multicursor`,
+  `test_paragraph_object_with_landing_positions_not_at_beginning_of_line`): empty or
+  non-Put/Get fixture files (harness self-tests, `:delmarks` state assertions,
+  multicursor setup). If one becomes worth having, the `test_visual_sentence_object`
+  approach works: reconstruct the cases from Zed's old test source and record fresh
+  against local `nvim --headless`.
+- Intentional divergence, 1 (`test_substitute_line`): visual `S` belongs to
+  vim-surround (VSCodeVim compatibility), not Vim's substitute-lines.
+
+The right validation surface for the host-side buckets (jump list, folds, soft wrap,
+language-aware matching, `U`) is VSCode adapter integration testing, not core fixture
+replay.
 
 Test layers:
 
