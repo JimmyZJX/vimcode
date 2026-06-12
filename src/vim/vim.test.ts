@@ -109,6 +109,68 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.wouldHandleKeyForTest("ctrl-h")).toBe(false);
   });
 
+  // Drives the shrinking pending-cursor presentation: depth is the size of
+  // the pending input stack, not the number of typed characters — a count is
+  // one entry no matter how many digits, and `2d` folds the count into the
+  // pending operator.
+  it("reports the pending-stack depth", () => {
+    const editor = new InMemoryVimEditor("one two three\nfour");
+    const vim = new Vim(editor);
+
+    expect(vim.status.pendingDepth).toBe(0);
+    runKeys(vim, ["2"]);
+    expect(vim.status.pendingDepth).toBe(1);
+    runKeys(vim, ["1"]);
+    expect(vim.status.pendingDepth).toBe(1);
+    runKeys(vim, ["d"]);
+    expect(vim.status.pendingDepth).toBe(1);
+    runKeys(vim, ["3"]);
+    expect(vim.status.pendingDepth).toBe(2);
+    runKeys(vim, ["i"]);
+    expect(vim.status.pendingDepth).toBe(3);
+    runKeys(vim, ["<escape>"]);
+    expect(vim.status.pendingDepth).toBe(0);
+
+    runKeys(vim, ["d", "w"]);
+    expect(vim.status.pendingDepth).toBe(0);
+
+    runKeys(vim, ["g"]);
+    expect(vim.status.pendingDepth).toBe(1);
+    runKeys(vim, ["g"]);
+    expect(vim.status.pendingDepth).toBe(0);
+
+    // `"` awaiting the register name and the selected register afterwards are
+    // both one level; a pending operator stacks on top.
+    runKeys(vim, ["\""]);
+    expect(vim.status.pendingDepth).toBe(1);
+    runKeys(vim, ["a"]);
+    expect(vim.status.pendingDepth).toBe(1);
+    runKeys(vim, ["d"]);
+    expect(vim.status.pendingDepth).toBe(2);
+    runKeys(vim, ["<escape>"]);
+    expect(vim.status.pendingDepth).toBe(0);
+  });
+
+  // Insert mode delegates plain typing to the host editor; replace mode must
+  // own it (native typing inserts instead of overwriting) and must own
+  // backspace (which restores the overwritten text).
+  it("owns plain text keys in replace mode but not insert mode", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["i"]);
+    expect(vim.wouldHandleKeyForTest("x")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("backspace")).toBe(false);
+    runKeys(vim, ["<escape>", "R"]);
+    expect(vim.wouldHandleKeyForTest("x")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("space")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("enter")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("backspace")).toBe(true);
+
+    const plan = vim.handleKey("x");
+    expect(plan).not.toBeNull();
+  });
+
   it("keeps local marks in attached model state", () => {
     const editor = new InMemoryVimEditor("one\ntwo");
     const firstModel = new VimModelState();

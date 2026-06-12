@@ -38,6 +38,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private hiddenFindState: FindReplaceState | undefined;
 	private hiddenFindModel: FindModelBoundToEditorModel | undefined;
 	private viewportControlledByCommand = false;
+	private appliedCursorStyle: CursorStyle | undefined = undefined;
 	private skipNextPrimaryReveal = false;
 	private viewportRevealRequestId = 0;
 	private nativeCommandInProgress = false;
@@ -126,7 +127,24 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	setCursorStyle(style: CursorStyle): void {
-		this.editor.updateOptions({ cursorStyle: style === 'line' ? 'line' : style === 'block' ? 'block' : 'underline' });
+		// `updateOptions` is not free (it can recompute scroll state), so skip
+		// the call when the style is unchanged.
+		if (this.appliedCursorStyle === style) {
+			return;
+		}
+		this.appliedCursorStyle = style;
+		this.editor.updateOptions({
+			cursorStyle: style === 'line' ? 'line'
+				: style === 'block' ? 'block'
+					: style === 'half-block' ? 'half-block'
+						: 'underline',
+		});
+	}
+
+	/** The controller restores the user's native cursor options directly when
+	    Vim is disabled; forget the last applied style so re-enabling applies. */
+	clearAppliedCursorStyle(): void {
+		this.appliedCursorStyle = undefined;
 	}
 
 	setInsertPendingText(text: string | undefined): void {

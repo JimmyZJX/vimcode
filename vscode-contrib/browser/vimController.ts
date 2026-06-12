@@ -15,6 +15,7 @@ import { ResultKind } from '../../../../platform/keybinding/common/keybindingRes
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import type { ITextModel } from '../../../common/model.js';
@@ -74,6 +75,10 @@ export class VimController extends Disposable {
 	private readonly remapWhenExpressionCache = new Map<string, ContextKeyExpression | undefined>();
 	private pendingUndoRedoContentSync = false;
 	private readonly originalCursorStyle = this.editor.getRawOptions().cursorStyle;
+	private readonly originalCursorBlinking = this.editor.getRawOptions().cursorBlinking ?? 'blink';
+	private appliedCursorBlinking: 'vim-solid' | 'original' | undefined = undefined;
+	private appliedPendingCursorInset: string | undefined = undefined;
+	private restoringNativeCursor = false;
 	private readonly _onDidChangeStatus = this._register(new Emitter<VimStatus>());
 	readonly onDidChangeStatus: Event<VimStatus> = this._onDidChangeStatus.event;
 
@@ -117,6 +122,21 @@ export class VimController extends Disposable {
 			this.vim.setConfiguration(this.readVimCompatibilityConfiguration());
 			this.updateEnabledState();
 		}));
+		this._register(this.editor.onDidChangeConfiguration(event => {
+			// The workbench re-applies configuration-derived editor options (on
+			// first open and on settings changes), clobbering the Vim cursor
+			// appearance underneath the change-guards. Invalidate the guards and
+			// re-apply. Re-entrancy terminates: our own re-apply either changes
+			// nothing (no event) or settles on the Vim value (next pass no-ops).
+			if (!event.hasChanged(EditorOption.cursorStyle) && !event.hasChanged(EditorOption.cursorBlinking)) {
+				return;
+			}
+			this.vimEditor.clearAppliedCursorStyle();
+			this.appliedCursorBlinking = undefined;
+			if (this.enabled && !this.restoringNativeCursor) {
+				this.syncCursorAppearance(this.vim.status);
+			}
+		}));
 	}
 
 	getStatus(): VimStatus {
@@ -127,8 +147,25 @@ export class VimController extends Disposable {
 		this.clearRemapTimeout();
 		this.vimEditor.dispose();
 		this.syncDisabledStatus();
-		this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
+		this.restoreNativeCursorAppearance();
 		super.dispose();
+	}
+
+	private restoreNativeCursorAppearance(): void {
+		this.appliedCursorBlinking = undefined;
+		this.vimEditor.clearAppliedCursorStyle();
+		this.syncPendingCursorInset(undefined);
+		// `dispose` restores while `this.enabled` is still true; keep the
+		// option-change listener from re-applying the Vim cursor on top.
+		this.restoringNativeCursor = true;
+		try {
+			this.editor.updateOptions({
+				cursorStyle: this.originalCursorStyle,
+				cursorBlinking: this.originalCursorBlinking,
+			});
+		} finally {
+			this.restoringNativeCursor = false;
+		}
 	}
 
 	private isEnabled(): boolean {
@@ -144,7 +181,7 @@ export class VimController extends Disposable {
 			this.syncEditorState();
 		} else {
 			this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
-			this.editor.updateOptions({ cursorStyle: this.originalCursorStyle });
+			this.restoreNativeCursorAppearance();
 			this.syncDisabledStatus();
 		}
 	}
@@ -480,10 +517,61 @@ export class VimController extends Disposable {
 		this.vimPendingContext.set(status.pending);
 		this.vimOperatorContext.set(status.operator ?? '');
 		this.vimChordContext.set(status.chord);
-		this.vimEditor.setCursorStyle(status.mode === 'insert' ? 'line' : 'block');
+		this.syncCursorAppearance(status);
 		this.vimEditor.setInsertPendingText(status.insertPendingText);
 		this.updateRemapTimeout(status);
 		this._onDidChangeStatus.fire(status);
+	}
+
+	// Vim cursor language:
+	// - normal: block, native blinking (the editor is idle and ready);
+	// - normal waiting for more keys (pending operator, `f`/`r`/mark/register
+	//   chords, `g`/`z` prefixes, remaps, counts): solid half-height block
+	//   (gvim's operator-pending `o:hor50` guicursor shape, rendered natively
+	//   by the `vim-half-block-cursor.patch` instead of VSCodeVim's CSS
+	//   decoration hack);
+	// - visual modes: solid block (the rendered cursor cell sits inside a
+	//   selection; blinking there reads as flicker, and VSCodeVim's
+	//   decoration-based visual cursor is also non-blinking);
+	// - insert: bar with native blinking; replace: underline with native
+	//   blinking (gvim `r:hor20`, VSCodeVim uses underline too).
+	private syncCursorAppearance(status: VimStatus): void {
+		// `status.pending` is the same signal that puts a pending chord in the
+		// status bar; an active operator always implies it.
+		const operatorPending = status.mode === 'normal' && (status.pending || status.operator !== undefined);
+		const visual = status.mode === 'visual' || status.mode === 'visualLine' || status.mode === 'visualBlock';
+		this.vimEditor.setCursorStyle(
+			status.mode === 'insert' ? 'line'
+				: status.mode === 'replace' ? 'underline'
+					: operatorPending ? 'half-block'
+						: 'block');
+		const blinking = visual || operatorPending ? 'vim-solid' : 'original';
+		if (blinking !== this.appliedCursorBlinking) {
+			this.appliedCursorBlinking = blinking;
+			this.editor.updateOptions({
+				cursorBlinking: blinking === 'vim-solid' ? 'solid' : this.originalCursorBlinking,
+			});
+		}
+		// The pending cursor shrinks geometrically with the pending-stack
+		// depth: height (2/3)^n of the cell at depth n (`d` -> 2/3, `d3` ->
+		// 4/9, ...; `2` and `21` are the same depth), floored so it stays
+		// visible. The half-block render patch reads the clip inset from this
+		// custom property (defaulting to 50%).
+		this.syncPendingCursorInset(
+			operatorPending ? `${pendingCursorClipInsetPercent(status.pendingDepth)}%` : undefined);
+	}
+
+	private syncPendingCursorInset(inset: string | undefined): void {
+		if (inset === this.appliedPendingCursorInset) {
+			return;
+		}
+		this.appliedPendingCursorInset = inset;
+		const containerStyle = this.editor.getContainerDomNode().style;
+		if (inset === undefined) {
+			containerStyle.removeProperty('--vimcode-pending-cursor-inset');
+		} else {
+			containerStyle.setProperty('--vimcode-pending-cursor-inset', inset);
+		}
 	}
 
 	private updateRemapTimeout(status: VimStatus): void {
@@ -698,6 +786,13 @@ function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean): string | undef
 		default:
 			return undefined;
 	}
+}
+
+// Height (2/3)^n of the cell, expressed as the clip inset from the top,
+// floored at 1/8 of the cell so deep pending stacks keep a visible cursor.
+function pendingCursorClipInsetPercent(pendingDepth: number): number {
+	const height = Math.max(1 / 8, Math.pow(2 / 3, Math.max(1, pendingDepth)));
+	return Math.round((1 - height) * 1000) / 10;
 }
 
 function keyFromEvent(event: IKeyboardEvent): string | undefined {

@@ -59,7 +59,9 @@ export type TextEdit = {
   text: string;
 };
 
-export type CursorStyle = "block" | "line" | "underline";
+// "half-block" requires the `vim-half-block-cursor.patch` VSCode patch (Vim's
+// operator-pending `hor50` guicursor shape).
+export type CursorStyle = "block" | "line" | "underline" | "half-block";
 
 export type KeyResult = "handled" | "not-handled";
 

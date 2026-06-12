@@ -39,6 +39,11 @@ import { VimGlobalState, VimModelState } from "./vim_state.js";
 export type VimStatus = {
   mode: VimMode["kind"];
   pending: boolean;
+  /** Number of entries in the pending input stack (0 when nothing is
+      pending): a typed count is one entry regardless of digits, each pending
+      operator/object/chord level is one more. Drives the shrinking
+      pending-cursor presentation. */
+  pendingDepth: number;
   operator: RangeOperator["type"] | undefined;
   chord: string;
   text: string;
@@ -162,6 +167,7 @@ export class Vim {
     return {
       mode,
       pending: this.isPending(),
+      pendingDepth: this.pendingDepth(),
       operator: this.modeState.kind === "normal" ? this.normalMode.pendingOperatorName() : undefined,
       chord,
       text: chord.length > 0 ? `${mode.toUpperCase()} ${chord}` : mode.toUpperCase(),
@@ -252,6 +258,13 @@ export class Vim {
     }
 
     if (this.modeState.kind === "insert" || this.modeState.kind === "replace") {
+      // Insert mode delegates plain typing to the host, but replace mode
+      // cannot: native typing inserts, while Vim `R` overwrites and backspace
+      // restores what was overwritten. (Keys the host produces outside the
+      // keydown map — e.g. IME composition — still fall through natively.)
+      if (this.modeState.kind === "replace" && (insertTextForKey(key) !== undefined || key === "backspace")) {
+        return true;
+      }
       return this.shouldPrepareInsertOrReplaceKey(key, remapWhen);
     }
 
@@ -355,6 +368,18 @@ export class Vim {
 
   private isPending(): boolean {
     return this.operatorStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
+  }
+
+  // The pending-stack size behind [isPending]: each operator-stack entry is
+  // one level, and a typed count, a selected register, a pending key-chord,
+  // and a pending remap are one level each regardless of how many keystrokes
+  // produced them (`2` and `21` are the same depth).
+  private pendingDepth(): number {
+    return this.operatorStack.length
+      + (this.selectedRegister !== undefined ? 1 : 0)
+      + (this.countBuffer.length > 0 ? 1 : 0)
+      + (this.keymapResolver.isPending() ? 1 : 0)
+      + (this.remapResolver.isPending() ? 1 : 0);
   }
 
   private pendingChord(): string {

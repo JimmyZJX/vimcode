@@ -81,9 +81,32 @@ Done in this branch:
     undo split they cause (`test_undo`, `test_replace_mode_undo`, `test_undo_repeated_insert`,
     `test_paste` step with `u` + `P`).
   - `test_ctrl_w_override` runs via a fixture-declared `map <c-w> D` remap.
+- Vim cursor language (`VimController.syncCursorAppearance` owns all cursor styling;
+  core `setCursorStyle` calls are advisory and overridden at status sync):
+  - normal: block, native blinking; insert: bar, native blinking;
+  - visual modes: solid (non-blinking) block via `cursorBlinking: 'solid'`;
+  - normal waiting for more keys (`status.pending`: pending operators, `f`/`r`/mark/
+    register chords, `g`/`z` prefixes, remaps, counts): solid lower-portion block (gvim
+    `o:hor50`), rendered natively by `vscode-contrib/patches/vim-half-block-cursor.patch`:
+    a real `TextEditorCursorStyle.HalfBlock` whose full-cell block (background plus
+    inverted grapheme) is clipped with `clip-path` — no VSCodeVim-style CSS decoration
+    hack. The visible height shrinks geometrically with the pending-stack depth —
+    `(2/3)^n` of the cell at depth `n` (`VimStatus.pendingDepth`: each operator-stack
+    entry, typed count, selected register, key-chord, or pending remap is one level, so
+    `2` and `21` render alike and `2d` folds the count into the operator), floored at
+    1/8 — via the `--vimcode-pending-cursor-inset` custom property the controller sets
+    on the editor container (CSS default: 50%);
+  - replace: underline, native blinking (gvim `r:hor20`, matches VSCodeVim);
+  - the controller listens to the editor's `onDidChangeConfiguration` and re-applies
+    when the workbench's configuration pushes clobber cursor options (first open,
+    settings changes); originals are restored on disable/dispose.
+- Replace mode owns plain text keys (`Vim.ownsKey`): insert mode delegates typing to
+  the host, but native typing inserts instead of overwriting, so `R` must claim
+  printable keys and backspace (which restores overwritten text). IME composition
+  still falls through natively.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 519 enabled tests (28 skipped).
+  - `npm test -- --runInBand` passes with 521 enabled tests (28 skipped).
   - The disabled-fixture backlog is fully triaged: every `// DISABLED:` header now
     states the concrete blocker (feature gap, harness gap, host-integration, or
     intentional divergence) instead of "not triaged yet". The largest remaining
