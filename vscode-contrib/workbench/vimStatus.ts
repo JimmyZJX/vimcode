@@ -47,6 +47,10 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 	}
 
 	private updateEntry(controller: VimController): void {
+		if (!controller.isVimEnabled()) {
+			this.statusbarEntry.clear();
+			return;
+		}
 		const status = controller.getStatus();
 		const text = status.chord ? `VIM ${status.mode.toUpperCase()} ${status.chord}` : `VIM ${status.mode.toUpperCase()}`;
 		const entry = {

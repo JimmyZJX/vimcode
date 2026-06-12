@@ -143,6 +143,10 @@ export class VimController extends Disposable {
 		return this.vim.status;
 	}
 
+	isVimEnabled(): boolean {
+		return this.enabled;
+	}
+
 	override dispose(): void {
 		this.clearRemapTimeout();
 		this.vimEditor.dispose();
@@ -183,6 +187,10 @@ export class VimController extends Disposable {
 			this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 			this.restoreNativeCursorAppearance();
 			this.syncDisabledStatus();
+			// `syncDisabledStatus` only resets context keys; notify status
+			// listeners (the workbench status bar entry) about the transition
+			// so they can hide themselves.
+			this._onDidChangeStatus.fire(this.vim.status);
 		}
 	}
 

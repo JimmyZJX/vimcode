@@ -8,9 +8,18 @@ Usage: scripts/sync-vscode-contrib.sh [--from-scratch] /path/to/vscode
 Copies the vimcode core and VSCode contribution prototype into a VSCode/code-oss
 checkout. The target checkout is modified in-place.
 
+The end state of every patched VSCode file is computed out-of-tree (pristine
+HEAD content plus vimcode patches) and written back only when the content
+actually differs, so files never pass through a reverted intermediate state
+and a running VSCode watch sees at most one change per file.
+
 Options:
-  --from-scratch  First revert the VSCode files touched by vimcode patch files.
-                  This discards local edits to those files in the target checkout.
+  --from-scratch  Also overwrite patch targets whose current content is
+                  unrecognized (it matches neither the pristine checkout nor
+                  the expected patched state, e.g. after a vimcode patch was
+                  reworked), and restore files touched by older vimcode
+                  patches. This discards local edits to those files in the
+                  target checkout.
 
 This script intentionally does not run the VSCode build.
 USAGE
@@ -108,77 +117,31 @@ patch_targets_for() {
   ' "$patch_file"
 }
 
-remove_reject_files_for() {
-  local patch_file=$1
-  local patch_path
-
-  while IFS= read -r patch_path; do
-    [[ -n "$patch_path" ]] || continue
-    rm -f "$target_root/$patch_path.rej" "$target_root/$patch_path.orig"
-  done < <(patch_targets_for "$patch_file")
-}
-
-reset_patch_targets() {
-  local patch_file
-  local patch_name
-  local patch_path
-  local -a patch_targets=()
-
-  while IFS= read -r patch_path; do
-    [[ -n "$patch_path" ]] || continue
-    patch_targets+=("$patch_path")
-  done < <(
-    {
-      printf '%s\n' "${legacy_patch_targets[@]}"
-      for patch_file in "${patch_files[@]}"; do
-        patch_targets_for "$patch_file"
-      done
-    } | sort -u
-  )
-
-  if [[ ${#patch_targets[@]} -eq 0 ]]; then
-    echo "error: --from-scratch could not find any target files in $patch_dir/*.patch" >&2
-    exit 1
-  fi
-
-  echo "--from-scratch: reverting VSCode files touched by vimcode patches"
-  printf '  %s\n' "${patch_targets[@]}"
-  (cd "$target_root" && git checkout -- "${patch_targets[@]}")
-
+patch_targets=()
+while IFS= read -r patch_path; do
+  [[ -n "$patch_path" ]] || continue
+  patch_targets+=("$patch_path")
+done < <(
   for patch_file in "${patch_files[@]}"; do
-    patch_name=$(basename "$patch_file")
+    patch_targets_for "$patch_file"
+  done | sort -u
+)
 
-    case "$patch_name" in
-      editor-vim-contribution.patch|workbench-vim-status.patch)
-        continue
-        ;;
-    esac
-
-    if (cd "$target_root" && git apply --check "$patch_file" >/dev/null 2>&1); then
-      continue
-    fi
-
-    if (cd "$target_root" && git apply --reverse --check "$patch_file" >/dev/null 2>&1); then
-      (cd "$target_root" && git apply --reverse "$patch_file")
-      echo "--from-scratch: removed already-applied VSCode patch $patch_name"
-      continue
-    fi
-
-    echo "--from-scratch: normalizing partially-applied VSCode patch $patch_name"
-    (cd "$target_root" && git apply --reverse --reject "$patch_file" >/dev/null 2>&1) || true
-    remove_reject_files_for "$patch_file"
-
-    if ! (cd "$target_root" && git apply --check "$patch_file" >/dev/null 2>&1); then
-      echo "error: could not normalize VSCode patch $patch_name" >&2
-      echo "       Try checking out the target VSCode files manually, then re-run --from-scratch." >&2
-      exit 1
-    fi
-  done
-}
-
-if [[ "$from_scratch" == true ]]; then
-  reset_patch_targets
+if [[ ${#patch_targets[@]} -eq 0 ]]; then
+  echo "error: could not find any target files in $patch_dir/*.patch" >&2
+  exit 1
 fi
+
+# Pristine copies of every patch target are staged here, patches are applied to
+# the staged copies, and the result is written back only where it differs from
+# the checkout.
+staging_dir=$(mktemp -d -t vimcode-sync.XXXXXX)
+trap 'rm -rf "$staging_dir"' EXIT
+
+pristine_content_matches() {
+  local patch_path=$1
+  git -C "$target_root" diff --quiet HEAD -- "$patch_path"
+}
 
 target_vim_dir="$target_root/src/vs/editor/contrib/vim"
 target_workbench_vim_dir="$target_root/src/vs/workbench/contrib/vim/browser"
@@ -219,10 +182,9 @@ for root in roots:
 PY
 
 ensure_editor_import_patch() {
-  local editor_all="$target_root/src/vs/editor/editor.all.ts"
+  local editor_all=$1
   local import_line="import './contrib/vim/browser/vim.contribution.js';"
   if grep -Fqx "$import_line" "$editor_all"; then
-    echo "VSCode patch editor-vim-contribution.patch already applied"
     return
   fi
   python3 - "$editor_all" "$import_line" <<'PY'
@@ -238,14 +200,12 @@ else:
     text += "\n" + import_line + "\n"
 path.write_text(text)
 PY
-  echo "Applied VSCode patch editor-vim-contribution.patch"
 }
 
 ensure_workbench_import_patch() {
-  local workbench_common="$target_root/src/vs/workbench/workbench.common.main.ts"
+  local workbench_common=$1
   local import_line="import './contrib/vim/browser/vimStatus.js';"
   if grep -Fqx "$import_line" "$workbench_common"; then
-    echo "VSCode patch workbench-vim-status.patch already applied"
     return
   fi
   python3 - "$workbench_common" "$import_line" <<'PY'
@@ -263,38 +223,80 @@ else:
     text += "\n" + import_line + "\n"
 path.write_text(text)
 PY
-  echo "Applied VSCode patch workbench-vim-status.patch"
 }
 
-apply_patch() {
-  local patch_file=$1
-  local patch_name
-  patch_name=$(basename "$patch_file")
+# Stage the pristine (HEAD) content of every patch target.
+for patch_path in "${patch_targets[@]}"; do
+  mkdir -p "$staging_dir/$(dirname "$patch_path")"
+  if ! git -C "$target_root" show "HEAD:$patch_path" > "$staging_dir/$patch_path" 2>/dev/null; then
+    # File does not exist in HEAD; the patch is expected to create it.
+    rm -f "$staging_dir/$patch_path"
+  fi
+done
 
+# Compute the end state by applying every patch to the staged pristine copies.
+for patch_file in "${patch_files[@]}"; do
+  patch_name=$(basename "$patch_file")
   case "$patch_name" in
     editor-vim-contribution.patch)
-      ensure_editor_import_patch
-      return
+      ensure_editor_import_patch "$staging_dir/src/vs/editor/editor.all.ts"
       ;;
     workbench-vim-status.patch)
-      ensure_workbench_import_patch
-      return
+      ensure_workbench_import_patch "$staging_dir/src/vs/workbench/workbench.common.main.ts"
+      ;;
+    *)
+      if ! (cd "$staging_dir" && git apply "$patch_file"); then
+        echo "error: VSCode patch $patch_name does not apply to the pristine checkout" >&2
+        echo "       The patch likely needs rebasing onto this VSCode version." >&2
+        exit 1
+      fi
       ;;
   esac
+done
 
-  if (cd "$target_root" && git apply --check "$patch_file" >/dev/null 2>&1); then
-    (cd "$target_root" && git apply "$patch_file")
-    echo "Applied VSCode patch $patch_name"
-  elif (cd "$target_root" && git apply --reverse --check "$patch_file" >/dev/null 2>&1); then
-    echo "VSCode patch $patch_name already applied"
-  else
-    echo "error: could not apply VSCode patch $patch_name" >&2
-    echo "       Try applying it manually from $patch_file to inspect conflicts." >&2
+# Write back only the files whose content differs from the computed end state.
+for patch_path in "${patch_targets[@]}"; do
+  staged="$staging_dir/$patch_path"
+  current="$target_root/$patch_path"
+
+  if [[ ! -f "$staged" ]]; then
+    echo "error: staged end state for $patch_path is missing" >&2
     exit 1
   fi
-}
 
-for patch_file in "${patch_files[@]}"; do
-  apply_patch "$patch_file"
+  if [[ -f "$current" ]] && cmp -s "$staged" "$current"; then
+    continue
+  fi
+
+  if [[ "$from_scratch" != true && -f "$current" ]] && ! pristine_content_matches "$patch_path"; then
+    echo "error: $patch_path has local modifications that do not match the expected patched state" >&2
+    echo "       Re-run with --from-scratch to overwrite it with the computed end state." >&2
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$current")"
+  cp "$staged" "$current"
+  echo "Updated $patch_path"
 done
+
+if [[ "$from_scratch" == true ]]; then
+  # Restore files that older versions of vimcode patches touched, and clean up
+  # leftovers from older script versions that applied patches with --reject.
+  for patch_path in "${legacy_patch_targets[@]}"; do
+    case " ${patch_targets[*]} " in
+      *" $patch_path "*) continue ;;
+    esac
+    [[ -f "$target_root/$patch_path" ]] || continue
+    if pristine_content_matches "$patch_path"; then
+      continue
+    fi
+    git -C "$target_root" show "HEAD:$patch_path" > "$target_root/$patch_path"
+    echo "--from-scratch: restored legacy patch target $patch_path"
+  done
+
+  for patch_path in "${patch_targets[@]}" "${legacy_patch_targets[@]}"; do
+    rm -f "$target_root/$patch_path.rej" "$target_root/$patch_path.orig"
+  done
+fi
+
 echo "Synced vim contribution to $target_vim_dir and $target_workbench_vim_dir"
