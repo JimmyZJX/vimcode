@@ -1,9 +1,10 @@
 import { KeyChord, KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import * as nls from '../../../../nls.js';
+import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionManagementService, IGlobalExtensionEnablementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
@@ -12,7 +13,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
-import { EditorContributionInstantiation, registerEditorContribution } from '../../../browser/editorExtensions.js';
+import { EditorContributionInstantiation, ServicesAccessor, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { VimController } from './vimController.js';
 
@@ -154,7 +155,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		'vim.useSystemClipboard': {
 			type: 'boolean',
-			default: false,
+			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			description: nls.localize('vim.useSystemClipboard', "Use system clipboard for the unnamed register."),
 		},
@@ -212,6 +213,29 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'vim.operatorPendingModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindingsNonRecursive', "Non-recursive key remappings in Operator-pending mode.")),
 	},
 });
+
+// Same command id and title as VSCodeVim's `toggleVim` so muscle memory and
+// existing keybindings carry over.
+class ToggleVimAction extends Action2 {
+	static readonly ID = 'toggleVim';
+
+	constructor() {
+		super({
+			id: ToggleVimAction.ID,
+			title: nls.localize2('vim.toggleVim', "Toggle Vim Mode"),
+			category: nls.localize2('vim.category', "Vim"),
+			f1: true,
+		});
+	}
+
+	run(accessor: ServicesAccessor): Promise<void> {
+		const configurationService = accessor.get(IConfigurationService);
+		const enabled = configurationService.getValue<unknown>('vim.enabled') === true;
+		return configurationService.updateValue('vim.enabled', !enabled, ConfigurationTarget.USER);
+	}
+}
+
+registerAction2(ToggleVimAction);
 
 class VimContribution extends VimController implements IEditorContribution {
 	constructor(
