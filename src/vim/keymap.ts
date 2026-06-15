@@ -70,6 +70,7 @@ export type VimAction =
   | { type: "join"; insertWhitespace: boolean }
   | { type: "incrementStep"; direction: "increment" | "decrement"; cumulative: boolean }
   | { type: "multiCursor"; command: string }
+  | { type: "editorTab"; direction: "next" | "previous" }
   | { type: "native"; command: string }
   | { type: "hostCommand"; command: HostCommand }
   | { type: "scrollLines"; direction: HostDirection }
@@ -158,6 +159,10 @@ const finiteBindings = bindingMap([
   sharedBinding("g >", multiCursor("editor.action.moveSelectionToNextFindMatch")),
   sharedBinding("g <", multiCursor("editor.action.moveSelectionToPreviousFindMatch")),
   sharedBinding("g a", multiCursor("editor.action.selectHighlights")),
+  sharedBinding("g t", editorTab("next")),
+  sharedBinding("g T", editorTab("previous")),
+  sharedBinding("ctrl-pagedown", editorTab("next")),
+  sharedBinding("ctrl-pageup", editorTab("previous")),
   sharedBinding("ctrl-d", page({ direction: "down", halfPage: true })),
   sharedBinding("ctrl-u", page({ direction: "up", halfPage: true })),
   sharedBinding("ctrl-f", page({ direction: "down", halfPage: false })),
@@ -189,6 +194,35 @@ const finiteBindings = bindingMap([
   normalBinding("ctrl-r", hostCommand("redo")),
   normalBinding("ctrl-y", scrollLines("up")),
   normalBinding("ctrl-e", scrollLines("down")),
+  normalBinding("ctrl-w q", native("workbench.action.closeActiveEditor")),
+  normalBinding("ctrl-w ctrl-q", native("workbench.action.closeActiveEditor")),
+  normalBinding("ctrl-w c", native("workbench.action.closeActiveEditor")),
+  normalBinding("ctrl-w ctrl-c", native("workbench.action.closeActiveEditor")),
+  normalBinding("ctrl-w o", native("workbench.action.maximizeEditor")),
+  normalBinding("ctrl-w ctrl-o", native("workbench.action.maximizeEditor")),
+  sharedBinding("ctrl-w h", native("workbench.action.navigateLeft")),
+  sharedBinding("ctrl-w left", native("workbench.action.navigateLeft")),
+  sharedBinding("ctrl-w ctrl-h", native("workbench.action.navigateLeft")),
+  sharedBinding("ctrl-w l", native("workbench.action.navigateRight")),
+  sharedBinding("ctrl-w right", native("workbench.action.navigateRight")),
+  sharedBinding("ctrl-w ctrl-l", native("workbench.action.navigateRight")),
+  sharedBinding("ctrl-w j", native("workbench.action.navigateDown")),
+  sharedBinding("ctrl-w down", native("workbench.action.navigateDown")),
+  sharedBinding("ctrl-w ctrl-j", native("workbench.action.navigateDown")),
+  sharedBinding("ctrl-w k", native("workbench.action.navigateUp")),
+  sharedBinding("ctrl-w up", native("workbench.action.navigateUp")),
+  sharedBinding("ctrl-w ctrl-k", native("workbench.action.navigateUp")),
+  sharedBinding("ctrl-w w", native("workbench.action.navigateEditorGroups")),
+  sharedBinding("ctrl-w ctrl-w", native("workbench.action.navigateEditorGroups")),
+  sharedBinding("ctrl-w v", native("workbench.action.splitEditor")),
+  sharedBinding("ctrl-w ctrl-v", native("workbench.action.splitEditor")),
+  sharedBinding("ctrl-w s", native("workbench.action.splitEditorOrthogonal")),
+  sharedBinding("ctrl-w ctrl-s", native("workbench.action.splitEditorOrthogonal")),
+  sharedBinding("ctrl-w =", native("workbench.action.evenEditorWidths")),
+  sharedBinding("ctrl-w >", native("workbench.action.increaseViewWidth")),
+  sharedBinding("ctrl-w <", native("workbench.action.decreaseViewWidth")),
+  sharedBinding("ctrl-w +", native("workbench.action.increaseViewHeight")),
+  sharedBinding("ctrl-w -", native("workbench.action.decreaseViewHeight")),
   normalBinding("z z", revealCurrentLine("center")),
   normalBinding("z t", revealCurrentLine("top")),
   normalBinding("z b", revealCurrentLine("bottom")),
@@ -233,6 +267,10 @@ function incrementStep(direction: "increment" | "decrement", { cumulative }: { c
 
 function multiCursor(command: string): VimAction {
   return { type: "multiCursor", command };
+}
+
+function editorTab(direction: "next" | "previous"): VimAction {
+  return { type: "editorTab", direction };
 }
 
 function page({ direction, halfPage }: { direction: HostDirection; halfPage: boolean }): VimAction {

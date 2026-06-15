@@ -171,6 +171,16 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(plan).not.toBeNull();
   });
 
+  it("delegates unsupported insert-mode Ctrl keys to VSCode", () => {
+    const vim = new Vim(new InMemoryVimEditor("abcdef"));
+
+    runKeys(vim, ["i"]);
+
+    expect(vim.wouldHandleKeyForTest("ctrl-n")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-p")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-w")).toBe(true);
+  });
+
   it("keeps local marks in attached model state", () => {
     const editor = new InMemoryVimEditor("one\ntwo");
     const firstModel = new VimModelState();
@@ -249,6 +259,74 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { command: "editor.action.moveSelectionToNextFindMatch", args: [] },
       { command: "editor.action.moveSelectionToPreviousFindMatch", args: [] },
       { command: "editor.action.selectHighlights", args: [] },
+    ]);
+  });
+
+  it("delegates basic VSCodeVim ctrl-w window commands to VSCode actions", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [
+      "ctrl-w", "h",
+      "ctrl-w", "ctrl-l",
+      "ctrl-w", "j",
+      "ctrl-w", "up",
+      "ctrl-w", "w",
+      "ctrl-w", "ctrl-w",
+      "ctrl-w", "v",
+      "ctrl-w", "ctrl-s",
+      "ctrl-w", "=",
+      "ctrl-w", ">",
+      "ctrl-w", "<",
+      "ctrl-w", "+",
+      "ctrl-w", "-",
+      "ctrl-w", "q",
+      "ctrl-w", "ctrl-c",
+      "ctrl-w", "o",
+    ]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.navigateLeft", args: [] },
+      { command: "workbench.action.navigateRight", args: [] },
+      { command: "workbench.action.navigateDown", args: [] },
+      { command: "workbench.action.navigateUp", args: [] },
+      { command: "workbench.action.navigateEditorGroups", args: [] },
+      { command: "workbench.action.navigateEditorGroups", args: [] },
+      { command: "workbench.action.splitEditor", args: [] },
+      { command: "workbench.action.splitEditorOrthogonal", args: [] },
+      { command: "workbench.action.evenEditorWidths", args: [] },
+      { command: "workbench.action.increaseViewWidth", args: [] },
+      { command: "workbench.action.decreaseViewWidth", args: [] },
+      { command: "workbench.action.increaseViewHeight", args: [] },
+      { command: "workbench.action.decreaseViewHeight", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+      { command: "workbench.action.maximizeEditor", args: [] },
+    ]);
+  });
+
+  it("delegates VSCodeVim tab navigation keys to VSCode actions", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [
+      "g", "t",
+      "g", "T",
+      "ctrl-pagedown",
+      "ctrl-pageup",
+      "2", "g", "t",
+      "3", "g", "T",
+    ]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.nextEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.nextEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.openEditorAtIndex", args: [1] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
     ]);
   });
 
@@ -738,6 +816,33 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.nativeCommands).toEqual([
       { command: "workbench.action.files.save", args: [] },
       { command: "workbench.action.closeActiveEditor", args: [] },
+    ]);
+  });
+
+  it("supports basic VSCodeVim buffer and tab ex commands", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [
+      ":", "b", "n", "enter",
+      ":", "b", "N", "enter",
+      ":", "b", "p", "enter",
+      ":", "t", "a", "b", "n", "enter",
+      ":", "t", "a", "b", "N", "enter",
+      ":", "t", "a", "b", "p", "enter",
+      ":", "b", "d", "enter",
+      ":", "b", "d", "!", "enter",
+    ]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.nextEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.nextEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.previousEditorInGroup", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+      { command: "workbench.action.revertAndCloseActiveEditor", args: [] },
     ]);
   });
 

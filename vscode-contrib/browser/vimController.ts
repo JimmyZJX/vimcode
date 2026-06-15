@@ -266,8 +266,11 @@ export class VimController extends Disposable {
 		}
 		const key = keyFromEvent(event);
 		const remapWhen = (when: string | undefined) => this.evaluateRemapWhen(when, event.target);
-		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { remapWhen });
 		const vimRemapOwnsKey = key !== undefined && this.vim.hasActiveRemapStartingWithOrPending(key, remapWhen);
+		if (!vimRemapOwnsKey && key !== undefined && this.handleCompletionNavigationKey(event, key)) {
+			return;
+		}
+		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { remapWhen });
 		if (keyPlan === null || (!vimRemapOwnsKey && this.shouldLetNativeKeybindingHandle(event))) {
 			return;
 		}
@@ -275,6 +278,31 @@ export class VimController extends Disposable {
 		event.preventDefault();
 		event.stopPropagation();
 		void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan)).then(undefined, () => this.syncStatus());
+	}
+
+	private handleCompletionNavigationKey(event: IKeyboardEvent, key: string): boolean {
+		if (key !== 'ctrl-n' && key !== 'ctrl-p') {
+			return false;
+		}
+		if (this.vim.mode.kind !== 'insert' && this.vim.mode.kind !== 'replace') {
+			return false;
+		}
+
+		const context = this.contextKeyService.getContext(event.target);
+		let command: string | undefined;
+		if (context.getValue('suggestWidgetVisible') === true) {
+			command = key === 'ctrl-n' ? 'selectNextSuggestion' : 'selectPrevSuggestion';
+		} else if (context.getValue('parameterHintsVisible') === true) {
+			command = key === 'ctrl-n' ? 'showNextParameterHint' : 'showPrevParameterHint';
+		}
+		if (command === undefined) {
+			return false;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		void this.commandService.executeCommand(command);
+		return true;
 	}
 
 	private evaluateRemapWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
@@ -761,6 +789,10 @@ function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean): string | undef
 			return 'home';
 		case KeyCode.End:
 			return 'end';
+		case KeyCode.PageUp:
+			return 'pageup';
+		case KeyCode.PageDown:
+			return 'pagedown';
 		case KeyCode.Escape:
 			return '<escape>';
 		case KeyCode.Enter:
@@ -824,6 +856,10 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 				return 'ctrl-home';
 			case KeyCode.End:
 				return 'ctrl-end';
+			case KeyCode.PageUp:
+				return 'ctrl-pageup';
+			case KeyCode.PageDown:
+				return 'ctrl-pagedown';
 			case KeyCode.BracketLeft:
 				return 'ctrl-[';
 			default:

@@ -253,16 +253,9 @@ export class Vim {
     const pendingSearch = this.operatorStack.activeTopLevel("search");
     if (pendingSearch !== undefined) return isSearchInputKey(key);
 
-    if (this.operatorStack.length > 0 || this.remapResolver.isPending()) return true;
+    if (this.operatorStack.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending()) return true;
 
     if (this.isEscape(key)) return this.shouldHandleEscapeKey();
-
-    if (isCtrlKey(key)) {
-      const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
-      if (!isMapped) {
-        return this.configuration.useCtrlKeys && isBuiltInCtrlKey(key);
-      }
-    }
 
     if (this.modeState.kind === "insert" || this.modeState.kind === "replace") {
       // Insert mode delegates plain typing to the host, but replace mode
@@ -273,6 +266,13 @@ export class Vim {
         return true;
       }
       return this.shouldPrepareInsertOrReplaceKey(key, remapWhen);
+    }
+
+    if (isCtrlKey(key)) {
+      const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
+      if (!isMapped) {
+        return this.configuration.useCtrlKeys && isBuiltInCtrlKey(key);
+      }
     }
 
     return true;
@@ -473,6 +473,13 @@ export class Vim {
       if (waiting !== undefined) {
         const waitingResult = this.dispatchWaitingInput(waiting, key);
         if (waitingResult !== undefined) return waitingResult;
+      }
+
+      if (this.keymapResolver.isPending()) {
+        this.recordMacroKey(key);
+        this.recordRepeatableKey(key);
+        const finiteKeymapResult = this.handleFiniteKeymapKey(key);
+        if (finiteKeymapResult !== undefined) return finiteKeymapResult;
       }
 
       const macroControlResult = this.handleMacroControlKey(key);
@@ -916,6 +923,10 @@ export class Vim {
         }
         return "handled";
       }
+      case "editorTab":
+        this.globalState.repeat.cancelCurrent();
+        this.switchEditorTab(action.direction, this.takeCount(undefined));
+        return "handled";
       case "native":
         this.globalState.repeat.cancelCurrent();
         this.editor.executeNativeCommand(action.command);
@@ -937,6 +948,24 @@ export class Vim {
         this.editor.executeFoldCommand(action.command);
         this.syncFromEditorState();
         return "handled";
+    }
+  }
+
+  private switchEditorTab(direction: "next" | "previous", count: number | undefined): void {
+    if (count !== undefined && count <= 0) return;
+
+    if (direction === "next" && count !== undefined) {
+      // VSCodeVim follows Vim's `{count}gt`: jump to the one-based tab index
+      // instead of repeating next-tab movement.
+      this.editor.executeNativeCommand("workbench.action.openEditorAtIndex", [count - 1], { syncSelectionAfter: true });
+      return;
+    }
+
+    const command = direction === "next"
+      ? "workbench.action.nextEditorInGroup"
+      : "workbench.action.previousEditorInGroup";
+    for (let index = 0; index < (count ?? 1); index++) {
+      this.editor.executeNativeCommand(command, [], { syncSelectionAfter: true });
     }
   }
 
@@ -1758,6 +1787,8 @@ function isBuiltInCtrlKey(key: string): boolean {
     case "ctrl-right":
     case "ctrl-home":
     case "ctrl-end":
+    case "ctrl-pageup":
+    case "ctrl-pagedown":
       return true;
     default:
       return false;

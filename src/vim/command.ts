@@ -52,6 +52,35 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
     bang: ({ editor }) => editor.executeNativeCommand("workbench.action.revertAndCloseActiveEditor"),
   },
   {
+    name: ["bn", "ext"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.nextEditorInGroup"),
+  },
+  {
+    name: ["bN", "ext"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.previousEditorInGroup"),
+  },
+  {
+    name: ["bp", "revious"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.previousEditorInGroup"),
+  },
+  {
+    name: ["tabn", "ext"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.nextEditorInGroup"),
+  },
+  {
+    name: ["tabN", "ext"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.previousEditorInGroup"),
+  },
+  {
+    name: ["tabp", "revious"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.previousEditorInGroup"),
+  },
+  {
+    name: ["bd", "elete"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeActiveEditor"),
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.revertAndCloseActiveEditor"),
+  },
+  {
     name: ["j", "oin"],
     run: ({ editor, range }) => joinRange(editor, range ?? currentLineRange(editor, 2)),
   },

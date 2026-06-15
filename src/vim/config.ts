@@ -291,6 +291,8 @@ export function normalizeKey(key: string, leader: string): string {
   if (normalized === "<down>") return "down";
   if (normalized === "<home>") return "home";
   if (normalized === "<end>") return "end";
+  if (normalized === "<pageup>") return "pageup";
+  if (normalized === "<pagedown>") return "pagedown";
 
   const ctrl = /^<c(?:trl)?-(.+)>$/.exec(normalized);
   if (ctrl !== null) return `ctrl-${normalizeModifierKey(ctrl[1])}`;
@@ -307,6 +309,10 @@ function normalizeModifierKey(key: string): string {
       return "[";
     case "space":
       return "space";
+    case "pageup":
+      return "pageup";
+    case "pagedown":
+      return "pagedown";
     default:
       return key;
   }
