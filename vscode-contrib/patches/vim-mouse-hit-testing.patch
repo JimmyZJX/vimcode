@@ -1,8 +1,17 @@
 diff --git a/src/vs/editor/browser/controller/mouseHandler.ts b/src/vs/editor/browser/controller/mouseHandler.ts
-index 5229133..4210747 100644
+index 4ad4ca9..e57e3f2 100644
 --- a/src/vs/editor/browser/controller/mouseHandler.ts
 +++ b/src/vs/editor/browser/controller/mouseHandler.ts
-@@ -637,6 +637,7 @@ class MouseDownOperation extends Disposable {
+@@ -470,7 +470,7 @@ class MouseDownOperation extends Disposable {
+ 			&& !this._isActive // the mouse is not down yet
+ 			&& !this._currentSelection.isEmpty() // we don't drag single cursor
+ 			&& (position.type === MouseTargetType.CONTENT_TEXT) // single click on text
+-			&& position.position && this._currentSelection.containsPosition(position.position) // single click on a selection
++			&& position.position && this._containsPositionForDragAndDrop(position.position) // single click on a selection
+ 		) {
+ 			this._mouseState.isDragAndDrop = true;
+ 			this._isActive = true;
+@@ -641,6 +641,7 @@ class MouseDownOperation extends Disposable {
  		this._viewController.dispatchMouse({
  			position: position.position,
  			mouseColumn: position.mouseColumn,
@@ -10,7 +19,7 @@ index 5229133..4210747 100644
  			startedOnLineNumbers: this._mouseState.startedOnLineNumbers,
  			revealType,
  
-@@ -653,6 +654,15 @@ class MouseDownOperation extends Disposable {
+@@ -657,6 +658,29 @@ class MouseDownOperation extends Disposable {
  			onInjectedText: position.type === MouseTargetType.CONTENT_TEXT && position.detail.injectedText !== null
  		});
  	}
@@ -22,6 +31,20 @@ index 5229133..4210747 100644
 +	 */
 +	private _isVimCharacterModeEnabled(): boolean {
 +		return this._viewHelper.viewDomNode.closest('.vim-character-mode-enabled') !== null;
++	}
++
++	private _containsPositionForDragAndDrop(position: Position): boolean {
++		if (!this._isVimCharacterModeEnabled()) {
++			return this._currentSelection.containsPosition(position);
++		}
++
++		// vimcode: VSCode ranges include both edges, but Vim charwise selections
++		// lower to half-open native ranges. Exclude the end boundary so clicking
++		// the character cell just to the right of a forward visual selection starts
++		// a new selection instead of a drag-and-drop move.
++		const start = this._currentSelection.getStartPosition();
++		const end = this._currentSelection.getEndPosition();
++		return start.isBeforeOrEqual(position) && position.isBefore(end);
 +	}
  }
  
@@ -80,10 +103,10 @@ index 9331eea..f29bc13 100644
  			);
  			if (cursorStateChanged && args.revealType !== NavigationCommandRevealType.None) {
 diff --git a/src/vs/editor/browser/view/viewController.ts b/src/vs/editor/browser/view/viewController.ts
-index 5acc299..a215816 100644
+index cd312c9..fa1d82d 100644
 --- a/src/vs/editor/browser/view/viewController.ts
 +++ b/src/vs/editor/browser/view/viewController.ts
-@@ -24,6 +24,8 @@ export interface IMouseDispatchData {
+@@ -23,6 +23,8 @@ export interface IMouseDispatchData {
  	 * Desired mouse column (e.g. when position.column gets clamped to text length -- clicking after text on a line).
  	 */
  	mouseColumn: number;
@@ -92,7 +115,7 @@ index 5acc299..a215816 100644
  	revealType: NavigationCommandRevealType;
  	startedOnLineNumbers: boolean;
  
-@@ -300,32 +302,33 @@ export class ViewController {
+@@ -275,32 +277,33 @@ export class ViewController {
  						if (columnSelection) {
  							this._columnSelect(data.position, data.mouseColumn, true);
  						} else {
@@ -134,7 +157,7 @@ index 5acc299..a215816 100644
  
  	private _columnSelect(viewPosition: Position, mouseColumn: number, doColumnSelect: boolean): void {
 diff --git a/src/vs/editor/common/cursor/cursorMoveCommands.ts b/src/vs/editor/common/cursor/cursorMoveCommands.ts
-index d3183d4..3d8d550 100644
+index a447e3a..8c03d41 100644
 --- a/src/vs/editor/common/cursor/cursorMoveCommands.ts
 +++ b/src/vs/editor/common/cursor/cursorMoveCommands.ts
 @@ -252,7 +252,7 @@ export class CursorMoveCommands {

@@ -653,13 +653,16 @@ them rather than adding case-specific guards:
    `vim-mouse-hit-testing.patch`). Every native consumer — plain clicks, drags,
    drag-and-drop drop targets, word/line select seeds, multicursor clicks — shares the
    floored position, so VSCode's own gesture logic stays untouched. The only other
-   mouse-specific rule is one direction-aware cell-extension hook in
+   mouse-specific rules are: a direction-aware cell-extension hook in
    `CursorMoveCommands.moveTo` so charwise drags include both the anchor cell and the
-   pointed-at cell, mirroring the native word/line range-anchor model. The adapter
-   reads `SelectionStartKind` from `vim-selection-start-kind-event.patch` when
-   deciding whether a one-character selection should become Vim visual mode: ordinary
-   mouse drags stay collapsed to normal mode, while double-click word selections
-   (`SelectionStartKind.Word`) enter visual mode even for one-character words.
+   pointed-at cell, mirroring the native word/line range-anchor model; and a
+   Vim-mode drag-and-drop containment check that treats the lowered native selection
+   as half-open, so clicking the cell just past a visual selection's end starts a new
+   selection instead of moving the old one. The adapter reads `SelectionStartKind`
+   from `vim-selection-start-kind-event.patch` when deciding whether a one-character
+   selection should become Vim visual mode: ordinary mouse drags stay collapsed to
+   normal mode, while double-click word selections (`SelectionStartKind.Word`) enter
+   visual mode even for one-character words.
 2. Canonical write-back, but only when it changes meaning. After every external sync,
    `Vim.syncFromEditorState` compares the adopted selections against their canonical
    form. Selections whose canonicalization changes the raised Vim geometry are
