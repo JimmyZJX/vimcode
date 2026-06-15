@@ -144,7 +144,6 @@ type NormalChordKey = {
   key: string;
   includeCount?: boolean;
   countText: string;
-  hasSelectedRegister: boolean;
 };
 
 // Zed: the `vim_operator` key-context value computed in
@@ -513,7 +512,10 @@ export class VimOperatorStack {
 
   pushSurround(surround: PendingSurroundOperator): void {
     if (surround.type === "addSurrounds" && surround.target === undefined) {
-      this.pushNormalChordKey({ key: "s", countText: "", hasSelectedRegister: true });
+      // The `y` edit operator is still on the stack here (`ys` pops it after
+      // this push), so the staleness clear in [pushNormalChordKey] cannot
+      // discard the `y` chord key.
+      this.pushNormalChordKey({ key: "s", countText: "" });
     }
     this.push(surround);
   }
@@ -538,7 +540,12 @@ export class VimOperatorStack {
 
   private pushNormalChordKey(chord: NormalChordKey | undefined): void {
     if (chord === undefined) return;
-    if (this.length === 0 && !chord.hasSelectedRegister) this.clearChordKeys();
+    // Chord keys record the canonical keys of the pending command for seeding
+    // dot-repeat recordings (see [NormalMode.pendingChord]). They are not
+    // cleared when a command finishes executing; any leftovers from the
+    // previous command are discarded lazily here, when the next chord starts
+    // from an empty operator stack.
+    if (this.length === 0) this.clearChordKeys();
     if (chord.includeCount && chord.countText.length > 0) this.pushChordKeys(chord.countText);
     this.pushChordKey(chord.key);
   }
@@ -604,35 +611,6 @@ export function isTopLevelPendingOperator(operator: VimOperator | undefined): op
     case "digraph":
     case "visualAddSurrounds":
       return false;
-  }
-}
-
-export function pendingOperatorStatus(operator: TopLevelPendingOperator): string {
-  switch (operator.type) {
-    case "search":
-      return operator.backwards ? "?" : "/";
-    case "findForward":
-      return operator.before ? "t" : "f";
-    case "findBackward":
-      return operator.after ? "T" : "F";
-    case "insertDigraph":
-      return operator.first === undefined ? "ctrl-k" : `ctrl-k${operator.first}`;
-    case "literal":
-      return operator.kind === "plain" ? "ctrl-v" : `ctrl-v${operator.digits}`;
-    case "insertRegister":
-      return "ctrl-r";
-    case "mark":
-      return "m";
-    case "jump":
-      return operator.line ? "'" : "`";
-    case "register":
-      return "\"";
-    case "recordRegister":
-      return "q";
-    case "replayRegister":
-      return "@";
-    case "command":
-      return `:${operator.input}`;
   }
 }
 

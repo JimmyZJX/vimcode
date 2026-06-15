@@ -30,10 +30,9 @@ src/vs/editor/contrib/vim/
       yank.ts
 ```
 
-After syncing, VSCode also needs this import added to `src/vs/editor/editor.all.ts`:
+The sync script also applies `vscode-contrib/patches/*.patch`. The key patches are:
 
-```ts
-import './contrib/vim/browser/vim.contribution.js';
-```
-
-The sync script can patch that import automatically.
+- `editor-vim-contribution.patch` / `workbench-vim-status.patch`: import the editor and status-bar contributions.
+- `vim-cursor-rendering.patch` / `vim-half-block-cursor.patch`: cursor-cell rendering and pending-operator cursor style.
+- `vim-mouse-hit-testing.patch`: Vim character-cell mouse hit testing and charwise drag extension.
+- `vim-selection-start-kind-event.patch`: exposes VSCode's existing `SelectionStartKind` on cursor-selection events so the adapter can handle one-character double-click word selections without changing `event.source`.

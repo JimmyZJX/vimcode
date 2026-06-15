@@ -28,15 +28,28 @@ export type CursorReconciliation = {
   reason: string;
 };
 
+export type CursorReconciliationOptions = {
+  /**
+   * VSCode mouse gestures can produce a one-character native selection in two
+   * cases that look identical after the fact: a tiny character-cell drag, and
+   * a double-click word selection of a one-character word. Keep the core
+   * default conservative for generic external selections, but let the VSCode
+   * mouse path opt into adopting the selection as visual so double-click-drag
+   * can extend it.
+   */
+  oneCharacterSelection?: "collapse" | "visual";
+};
+
 export function reconcileCursorState(
   vscodeState: EditorCursorState,
-  vimState: VimCursorState
+  vimState: VimCursorState,
+  { oneCharacterSelection = "collapse" }: CursorReconciliationOptions = {}
 ): CursorReconciliation {
   // Minor mouse movement in normal mode produces a single one-character native
   // selection (the patched hit testing selects the character cell under the
-  // pointer). Treat it as cursor placement on that character, not visual mode.
+  // pointer). Treat it as cursor placement on that character by default.
   const minorSelection = minorSingleCharacterSelection(vscodeState.selections, vimState.mode);
-  if (minorSelection !== undefined) {
+  if (oneCharacterSelection === "collapse" && minorSelection !== undefined) {
     return {
       modeKind: "normal",
       selections: [collapseToSelectedCharacterCursor(minorSelection)],

@@ -70,7 +70,6 @@ export class NormalMode {
       key,
       includeCount,
       countText: this.countState.get(),
-      hasSelectedRegister: this.registerSelection.get() !== undefined,
     };
   }
 
@@ -232,6 +231,11 @@ export class NormalMode {
     }
   }
 
+  // Canonical (post-remap) keys of the pending command. Not used for the
+  // status display (that is [Vim.showcmdKeys], the literal typed keys); this
+  // seeds dot-repeat recordings, which replay through the keymap and so must
+  // not contain pre-remap keys. E.g. recording for `ysiw` only starts at `i`,
+  // and the seed supplies the `y s` prefix.
   pendingChord(): string {
     if (this.operatorStack.length > 0) {
       return `${this.operatorStack.chordText()}${this.countState.get()}`;

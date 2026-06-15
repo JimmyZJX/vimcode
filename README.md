@@ -605,7 +605,16 @@ VSCode-specific contribution files live in `vscode-contrib/` in this repo so the
 scripts/sync-vscode-contrib.sh /path/to/vscode
 ```
 
-The script copies production core files from `src/vim` into the VSCode checkout, excluding tests and fixtures, copies `vscode-contrib/browser` into the VSCode contribution directory, adds Microsoft copyright headers to copied core files when needed, and patches `src/vs/editor/editor.all.ts` to import the Vim contribution.
+The script copies production core files from `src/vim` into the VSCode checkout, excluding tests and fixtures, copies `vscode-contrib/browser` into the VSCode contribution directory, adds Microsoft copyright headers to copied core files when needed, and applies the patches under `vscode-contrib/patches`.
+
+Current patch files:
+
+- `editor-vim-contribution.patch`: imports the Vim editor contribution from `src/vs/editor/editor.all.ts`.
+- `workbench-vim-status.patch`: imports the workbench status bar contribution.
+- `vim-cursor-rendering.patch`: preserves Vim cursor cells through VSCode selection rendering.
+- `vim-half-block-cursor.patch`: adds the native half-block cursor style used for pending operators.
+- `vim-mouse-hit-testing.patch`: floors Vim-mode mouse hit testing to character cells and extends charwise drags by whole cells.
+- `vim-selection-start-kind-event.patch`: exposes VSCode's existing primary `SelectionStartKind` on cursor-selection events so the adapter can distinguish double-click word selections from ordinary mouse drags without changing `event.source`.
 
 Target patch shape
 
@@ -646,7 +655,11 @@ them rather than adding case-specific guards:
    floored position, so VSCode's own gesture logic stays untouched. The only other
    mouse-specific rule is one direction-aware cell-extension hook in
    `CursorMoveCommands.moveTo` so charwise drags include both the anchor cell and the
-   pointed-at cell, mirroring the native word/line range-anchor model.
+   pointed-at cell, mirroring the native word/line range-anchor model. The adapter
+   reads `SelectionStartKind` from `vim-selection-start-kind-event.patch` when
+   deciding whether a one-character selection should become Vim visual mode: ordinary
+   mouse drags stay collapsed to normal mode, while double-click word selections
+   (`SelectionStartKind.Word`) enter visual mode even for one-character words.
 2. Canonical write-back, but only when it changes meaning. After every external sync,
    `Vim.syncFromEditorState` compares the adopted selections against their canonical
    form. Selections whose canonicalization changes the raised Vim geometry are

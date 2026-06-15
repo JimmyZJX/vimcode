@@ -16,7 +16,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
-import { CursorChangeReason, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
+import { CursorChangeReason, CursorSelectionStartKind, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import type { ITextModel } from '../../../common/model.js';
 import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
@@ -381,7 +381,11 @@ export class VimController extends Disposable {
 		if (this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
 			return;
 		}
-		this.handleExternalEditorStateChanged(event.source);
+		this.handleExternalEditorStateChanged(event.source, {
+			oneCharacterSelection: event.source === 'mouse' && event.selectionStartKind === CursorSelectionStartKind.Word
+				? 'visual'
+				: 'collapse',
+		});
 	}
 
 	private isModelMarkerRecoveryNoise(event: ICursorSelectionChangedEvent): boolean {
@@ -423,7 +427,7 @@ export class VimController extends Disposable {
 		this.handleExternalEditorStateChanged('model');
 	}
 
-	private handleExternalEditorStateChanged(source?: string): void {
+	private handleExternalEditorStateChanged(source?: string, options: { oneCharacterSelection?: 'collapse' | 'visual' } = {}): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		if (!this.hasModel()) {
 			this.pendingUndoRedoContentSync = false;
@@ -432,7 +436,7 @@ export class VimController extends Disposable {
 			return;
 		}
 		this.vimEditor.invalidateCachedSelections();
-		const result = this.vim.syncFromEditorState();
+		const result = this.vim.syncFromEditorState(options);
 		this.logVisualSyncDecision(source ?? 'external', result);
 		this.syncEditorState();
 	}

@@ -10,13 +10,14 @@ import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, Vi
 import type { RemapWhenEvaluator } from "./config.js";
 import { lookupDigraph } from "./digraph.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
+import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { resolveVimAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
-import { VimOperatorStack, WaitingInput, convertTargetForPending, isRangeOperatorContext, isSelfEscapingWaitingInput, isTopLevelPendingOperator, pendingOperatorStatus } from "./operator.js";
+import { VimOperatorStack, WaitingInput, convertTargetForPending, isRangeOperatorContext, isSelfEscapingWaitingInput } from "./operator.js";
 import type { RangeOperator } from "./operator_target.js";
 import type {
   PendingFindOperator,
@@ -76,6 +77,12 @@ export class Vim {
   private modelState: VimModelState;
   private selectedRegister: RegisterName | undefined;
   private countBuffer = "";
+  // Vim 'showcmd': the literal keys typed for the in-flight pending command,
+  // used only for the status chord display. The buffer is never cleared
+  // eagerly when a command completes or aborts; instead it resets lazily when
+  // a key arrives while nothing is pending, and the status renders it only
+  // while something is pending.
+  private readonly showcmdKeys: string[] = [];
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remapResolver = new RemapResolver(this.configuration);
   private searchOriginMode: VimMode["kind"] | undefined;
@@ -228,7 +235,7 @@ export class Vim {
       run: async ({ clipboard }: { clipboard?: VimSystemClipboard } = {}) => {
         await this.globalState.registers.withSystemClipboard(clipboard, async () => {
           await this.refreshSystemClipboardRegisterForKey(key);
-          this.dispatchKey(key, { allowRemap: true, remapWhen });
+          this.dispatchTypedKey(key, { allowRemap: true, remapWhen });
         });
       },
     };
@@ -298,12 +305,13 @@ export class Vim {
   // selections, adapter cache, and rendered cursor cell agree with Vim after
   // every external event. Vim-sourced selection events are ignored by the
   // controller, so the write-back cannot feed back into this path.
-  syncFromEditorState(): EditorSyncResult {
+  syncFromEditorState(options: CursorReconciliationOptions = {}): EditorSyncResult {
     const modeBeforeSync = this.modeState.kind;
     const selections = this.editor.getSelections();
     const reconciliation = reconcileCursorState(
       { selections },
-      { mode: this.modeState, selections }
+      { mode: this.modeState, selections },
+      options
     );
 
     if (reconciliation.modeKind === "visual") {
@@ -383,20 +391,35 @@ export class Vim {
   }
 
   private pendingChord(): string {
+    // Prompt-like pending states render their editable input line (queries
+    // support cursor movement and backspace, which a key log cannot show).
+    // Everything else renders the showcmd buffer: the literal keys typed for
+    // the command in flight.
     const pendingOperator = this.operatorStack.top();
     if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
-    if (isTopLevelPendingOperator(pendingOperator)) return pendingOperatorStatus(pendingOperator);
-    if (this.selectedRegister !== undefined) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}\"${this.selectedRegister}`;
-    if (this.remapResolver.isPending()) return this.remapResolver.pendingChord();
-    if (this.keymapResolver.isPending()) return `${this.modeState.kind === "normal" ? this.normalMode.pendingChord() : ""}${this.keymapResolver.pendingChord()}`;
-    return this.modeState.kind === "normal" ? this.normalMode.pendingChord() : "";
+    if (pendingOperator?.type === "command") return `:${pendingOperator.input}`;
+    return this.isPending() ? this.showcmdKeys.join("") : "";
   }
 
   // Zed: key dispatch normally arrives through GPUI actions registered by
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyDispatchResult {
-    return this.dispatchKey(key, { allowRemap: true, remapWhen: alwaysActiveRemapWhen });
+    return this.dispatchTypedKey(key, { allowRemap: true, remapWhen: alwaysActiveRemapWhen });
+  }
+
+  private dispatchTypedKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyDispatchResult {
+    // Remap expansions re-enter through [dispatchKey] and bypass this append,
+    // so the showcmd buffer shows remapped sequences as physically typed
+    // (`x`, not its expansion). This intentionally differs from Vim's
+    // showcmd, which displays the expanded typeahead. Macro and `.` replays
+    // re-enter through [onKey] and do append: if a replay ends with a command
+    // still pending, the chord shows the replayed keys that formed it.
+    if (!this.isPending()) this.showcmdKeys.length = 0;
+    this.showcmdKeys.push(key);
+    const result = this.dispatchKey(key, { allowRemap, remapWhen });
+    if (result === "native") this.showcmdKeys.pop();
+    return result;
   }
 
   private async refreshSystemClipboardRegisterForKey(key: string): Promise<void> {

@@ -1785,6 +1785,67 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.status.text).toBe("NORMAL di");
   });
 
+  it("shows unfinished chords through the async key plan used by VSCode", async () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    await vim.handleKey("d")?.run();
+    expect(vim.status.chord).toBe("d");
+    expect(vim.status.text).toBe("NORMAL d");
+
+    await vim.handleKey("i")?.run();
+    expect(vim.status.chord).toBe("di");
+    expect(vim.status.text).toBe("NORMAL di");
+  });
+
+  it("shows register-prefixed chords without leaking chords of previous commands", () => {
+    const editor = new InMemoryVimEditor("one two three four");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["\"", "a", "d", "w"]);
+    expect(editor.getText()).toBe("two three four");
+    expect(vim.status.chord).toBe("");
+
+    runKeys(vim, ["\"", "a"]);
+    expect(vim.status.chord).toBe("\"a");
+
+    runKeys(vim, ["d"]);
+    expect(vim.status.chord).toBe("\"ad");
+
+    runKeys(vim, ["w"]);
+    expect(editor.getText()).toBe("three four");
+    expect(vim.status.chord).toBe("");
+  });
+
+  it("shows pending chords in the order they were typed", () => {
+    const editor = new InMemoryVimEditor("one two three four");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["2", "\"", "a", "d"]);
+    expect(vim.status.chord).toBe("2\"ad");
+
+    runKeys(vim, ["escape", "d", "f"]);
+    expect(vim.status.chord).toBe("df");
+
+    runKeys(vim, ["t"]);
+    expect(editor.getText()).toBe("wo three four");
+    expect(vim.status.chord).toBe("");
+  });
+
+  it("shows remapped pending chords as typed rather than as their expansion", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["x"], after: ["d"] }],
+    });
+
+    runKeys(vim, ["x"]);
+    expect(vim.status.chord).toBe("x");
+
+    runKeys(vim, ["w"]);
+    expect(editor.getText()).toBe("two");
+    expect(vim.status.chord).toBe("");
+  });
+
   it("ignores invalid text objects without entering insert mode", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor);
@@ -2201,6 +2262,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.getSelections()).toEqual([charwiseSelection({ row: 0, column: 1 })]);
+  });
+
+  it("can adopt a one-character external selection as visual for mouse word selection", () => {
+    const editor = new InMemoryVimEditor("a b");
+    const vim = new Vim(editor);
+    const mouseSelection = { type: "charwise" as const, anchor: { row: 0, column: 0 }, head: { row: 0, column: 1 } };
+
+    editor.setSelections([mouseSelection]);
+    vim.syncFromEditorState({ oneCharacterSelection: "visual" });
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([mouseSelection]);
   });
 
   it("collapses a backward one-character external selection onto the selected character", () => {
