@@ -459,7 +459,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
-  it("turns synced multicursor visual selections into normal-mode cursors on escape", () => {
+  it("canonicalizes synced native multicursor visual selections into Vim-owned selections", () => {
     const editor = new InMemoryVimEditor("one\ntwo");
     const vim = new Vim(editor);
 
@@ -467,15 +467,20 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
       { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 } },
     ]);
-    vim.syncFromEditorState();
+    vim.syncFromEditorState({ canonicalizeVisualSelection: true });
 
     expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getSelections()).toEqual([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 }, cursor: { row: 0, column: 2 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 3 }, cursor: { row: 1, column: 2 } },
+    ]);
+
     runKeys(vim, ["<escape>"]);
 
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.getSelections()).toEqual([
-      { type: "charwise", anchor: { row: 0, column: 3 }, head: { row: 0, column: 3 } },
-      { type: "charwise", anchor: { row: 1, column: 3 }, head: { row: 1, column: 3 } },
+      { type: "charwise", anchor: { row: 0, column: 2 }, head: { row: 0, column: 2 } },
+      { type: "charwise", anchor: { row: 1, column: 2 }, head: { row: 1, column: 2 } },
     ]);
   });
 
@@ -2234,6 +2239,36 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["V", "j", "A", "x", "<escape>"]);
 
     expect(editor.getText()).toBe("onex\n  twox\nthree");
+  });
+
+  it("can use VSCodeVim-style visual insert for multicursor charwise selections", () => {
+    const editor = new InMemoryVimEditor("one two\nthree four");
+    const vim = new Vim(editor, { visualMultilineInsert: true });
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 5 } },
+    ]);
+    vim.syncFromEditorState({ canonicalizeVisualSelection: true });
+
+    runKeys(vim, ["I", "x", "<escape>"]);
+
+    expect(editor.getText()).toBe("xone two\nxthree four");
+  });
+
+  it("can use VSCodeVim-style visual append for multicursor charwise selections", () => {
+    const editor = new InMemoryVimEditor("one two\nthree four");
+    const vim = new Vim(editor, { visualMultilineInsert: true });
+
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+      { type: "charwise", anchor: { row: 1, column: 0 }, head: { row: 1, column: 5 } },
+    ]);
+    vim.syncFromEditorState({ canonicalizeVisualSelection: true });
+
+    runKeys(vim, ["A", "x", "<escape>"]);
+
+    expect(editor.getText()).toBe("onex two\nthreex four");
   });
 
   it("adds surrounds around a text object", () => {

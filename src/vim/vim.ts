@@ -330,7 +330,9 @@ export class Vim {
     if (reconciliation.modeKind === "visual") {
       const visualSelection = reconciliation.selections.find(selection => selection.type === "charwise");
       const adopted = visualSelection !== undefined
-        && this.visualMode.adoptSelection(visualSelection);
+        && this.visualMode.adoptSelection(visualSelection, {
+          canonicalize: options.canonicalizeVisualSelection === true,
+        });
       if (adopted) {
         this.clearPendingForExternalModeChange();
         this.insertOrigin = undefined;

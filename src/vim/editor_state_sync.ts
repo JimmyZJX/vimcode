@@ -38,6 +38,15 @@ export type CursorReconciliationOptions = {
    * can extend it.
    */
   oneCharacterSelection?: "collapse" | "visual";
+  /**
+   * A Vim-triggered native command such as `ctrl-n` multicursor selection can
+   * produce the same native range shape as a Vim-owned visual selection, but
+   * without explicit Vim cursor-cell metadata. Generic mouse/host sync avoids
+   * rewriting such equivalent shapes to preserve active gesture anchors; Vim-
+   * initiated native commands can opt in to re-lowering them into Vim-owned
+   * selections.
+   */
+  canonicalizeVisualSelection?: boolean;
 };
 
 export function reconcileCursorState(

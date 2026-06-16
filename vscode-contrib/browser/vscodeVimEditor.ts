@@ -63,7 +63,8 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private appliedCursorStyle: CursorStyle | undefined = undefined;
 	private skipNextPrimaryReveal = false;
 	private viewportRevealRequestId = 0;
-	private nativeCommandInProgress = false;
+	private nativeCommandInProgressDepth = 0;
+	private readonly pendingNativeSelectionSyncs: Promise<void>[] = [];
 	private vimEditInProgress = false;
 	private undoTransaction: VimUndoTransaction | undefined;
 
@@ -296,17 +297,30 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		const selectionsToRestore = options.preserveVisualSelection === true
 			? visualSemanticSelections(this.lastSetVimSelections)
 			: undefined;
-		this.nativeCommandInProgress = !syncSelectionAfter;
-		void this.commandService.executeCommand(command, ...args).finally(() => {
-			this.nativeCommandInProgress = false;
+		this.nativeCommandInProgressDepth++;
+		const commandPromise = this.commandService.executeCommand(command, ...args).finally(() => {
+			this.nativeCommandInProgressDepth = Math.max(0, this.nativeCommandInProgressDepth - 1);
 			if (selectionsToRestore !== undefined) {
 				this.setSelections(selectionsToRestore);
 			}
 		});
+		if (syncSelectionAfter) {
+			this.pendingNativeSelectionSyncs.push(commandPromise.then(() => undefined, () => undefined));
+		}
+		void commandPromise;
+	}
+
+	async waitForNativeSelectionSync(): Promise<boolean> {
+		if (this.pendingNativeSelectionSyncs.length === 0) {
+			return false;
+		}
+		const pending = this.pendingNativeSelectionSyncs.splice(0);
+		await Promise.all(pending);
+		return true;
 	}
 
 	isExecutingNativeCommand(): boolean {
-		return this.nativeCommandInProgress || this.vimEditInProgress;
+		return this.nativeCommandInProgressDepth > 0 || this.vimEditInProgress;
 	}
 
 	revealPrimaryCursorIfOutsideViewport(): void {

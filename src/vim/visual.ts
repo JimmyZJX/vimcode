@@ -165,17 +165,19 @@ export class VisualMode {
     }
   }
 
-  adoptSelection(selection: VimSelection): boolean {
+  adoptSelection(selection: VimSelection, { canonicalize = false }: { canonicalize?: boolean } = {}): boolean {
     if (!this.adoptCharwiseSelection(selection, { allowEmpty: false })) return false;
     // Canonical write-back invariant: after adopting external selection state,
     // re-lower it through the shared cell geometry so native selections and the
-    // adopted Vim state agree. The write-back only happens when canonicalization
-    // changes a selection's Vim meaning: rewriting equivalent shapes would
+    // adopted Vim state agree. Generic external sync only writes back when
+    // canonicalization changes Vim meaning: rewriting equivalent shapes would
     // destroy in-progress native gesture state (e.g. the word-range anchor of a
     // double-click drag), and for equivalent shapes the rendered cursor already
-    // matches the Vim cursor cell.
+    // matches the Vim cursor cell. Vim-triggered native commands can opt in to
+    // canonicalizing equivalent shapes so the adapter caches explicit Vim
+    // cursor-cell metadata for follow-up keys like Escape.
     const current = this.editor.getSelections();
-    if (current.some(selection => canonicalizationChangesMeaning(this.editor, selection))) {
+    if (canonicalize || current.some(selection => canonicalizationChangesMeaning(this.editor, selection))) {
       this.editor.setSelections(current.map(selection => canonicalVimSelection(this.editor, selection)));
     }
     return true;
@@ -198,7 +200,7 @@ export class VisualMode {
     this.editor.setCursorStyle("block");
     const selections = this.editor.getSelections();
     if (state === undefined || (state.kind !== "blockwise" && selections.length > 1)) {
-      this.editor.setSelections(selections.map(selection => charwiseSelection(selectionHead(selection))));
+      this.editor.setSelections(selections.map(selection => visualExitSelectionForEditorSelection(this.editor, selection)));
     } else {
       this.editor.setSelections([charwiseSelection(visualExitPosition(this.editor, state))]);
     }
@@ -319,7 +321,7 @@ export class VisualMode {
 
     if (this.visualMultilineInsert && (state.kind === "charwise" || state.kind === "linewise")) {
       this.rememberState(state);
-      beginVisualUndoTransaction(this.editor, state);
+      this.editor.beginUndoTransaction(visualCurrentUndoSelections(this.editor, state));
       this.editor.setSelections(visualMultilineInsertSelections(this.editor, state, { side }));
       this.state = undefined;
       this.editor.setCursorStyle("line");
@@ -876,6 +878,13 @@ function convertTargetForKey(key: string): ConvertTarget {
 
 function externalSelectionToCharwiseState(editor: VimEditorCapabilities, selection: Extract<VimSelection, { type: "charwise" }>): CharwiseVisualState {
   return { kind: "charwise", ...raiseCharwiseSelection(editor, selection) };
+}
+
+function visualExitSelectionForEditorSelection(editor: VimEditorCapabilities, selection: VimSelection): VimSelection {
+  if (selection.type === "charwise") {
+    return charwiseSelection(visualExitPosition(editor, externalSelectionToCharwiseState(editor, selection)));
+  }
+  return charwiseSelection(selectionHead(selection));
 }
 
 function initialCharwiseHead(_editor: VimEditorCapabilities, head: Position): Position {
@@ -1664,7 +1673,14 @@ function visualMultilineInsertSelections(
     return selections;
   }
 
-  const range = charwiseVisualRange(editor, state);
+  return currentCharwiseVisualRanges(editor, state).flatMap(range => visualMultilineInsertSelectionsForRange(editor, range, { side }));
+}
+
+function visualMultilineInsertSelectionsForRange(
+  editor: VimEditorCapabilities,
+  range: TextRange,
+  { side }: { side: "start" | "end" }
+): VimSelection[] {
   const end = inclusiveHeadForRangeEnd(editor, range);
   const selections: VimSelection[] = [];
   for (let row = range.start.row; row <= end.row; row++) {

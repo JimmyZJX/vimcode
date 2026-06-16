@@ -407,6 +407,11 @@ export class VimController extends Disposable {
 		await clipboard.with(async () => {
 			await keyPlan.run({ clipboard });
 		});
+		if (await this.vimEditor.waitForNativeSelectionSync()) {
+			this.vimEditor.invalidateCachedSelections();
+			const result = this.vim.syncFromEditorState({ canonicalizeVisualSelection: true });
+			this.logVisualSyncDecision('nativeCommand', result);
+		}
 		if (!this.vim.status.pending) {
 			this.vimEditor.revealPrimaryCursorIfOutsideViewport();
 			this.syncEditorState();
