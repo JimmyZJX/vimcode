@@ -1,4 +1,5 @@
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason } from '../../../common/cursorEvents.js';
@@ -12,6 +13,7 @@ import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
+import type { EasyMotionMarker } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
 import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
@@ -28,9 +30,29 @@ type VimUndoTransaction = {
 	hasEdits: boolean;
 };
 
+registerThemingParticipant((_theme, collector) => {
+	collector.addRule(`
+		.monaco-editor .vim-easymotion-marker {
+			color: #ff0000;
+			background-color: transparent;
+			font-weight: bold;
+			font-style: normal;
+			position: absolute;
+			display: inline-block;
+			width: max-content;
+			min-width: max-content;
+			overflow: visible;
+			height: 100%;
+			margin: 0 -1ch 0 0;
+			z-index: 10;
+		}
+	`);
+});
+
 export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
 	private readonly insertPendingDecorations: IEditorDecorationsCollection;
+	private readonly easyMotionDecorations: IEditorDecorationsCollection;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
@@ -52,6 +74,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	) {
 		this.visualLineDecorations = editor.createDecorationsCollection();
 		this.insertPendingDecorations = editor.createDecorationsCollection();
+		this.easyMotionDecorations = editor.createDecorationsCollection();
 	}
 
 	lineCount(): number {
@@ -170,6 +193,36 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.insertPendingDecorations.set(decorations);
 	}
 
+	showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void {
+		if (!this.editor.hasModel()) {
+			this.easyMotionDecorations.clear();
+			return;
+		}
+		const decorations: IModelDeltaDecoration[] = [];
+		for (const marker of markers) {
+			const lineNumber = marker.position.row + 1;
+			const column = marker.position.column + 1;
+			const position = new VSCodePosition(lineNumber, column);
+			decorations.push({
+				range: Range.fromPositions(position),
+				options: {
+					description: 'vim-easymotion-marker',
+					before: {
+						content: marker.label,
+						inlineClassName: 'vim-easymotion-marker',
+						cursorStops: InjectedTextCursorStops.Right,
+					},
+					showIfCollapsed: true,
+				},
+			});
+		}
+		this.easyMotionDecorations.set(decorations);
+	}
+
+	clearEasyMotionMarkers(): void {
+		this.easyMotionDecorations.clear();
+	}
+
 	beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void {
 		this.logUndo(`beginUndoTransaction open=${this.isUndoTransactionOpen()} before=${formatVimSelections(selectionsBefore)} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		if (this.isUndoTransactionOpen()) return;
@@ -271,17 +324,41 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			return;
 		}
 
+		const layoutInfo = this.editor.getLayoutInfo();
 		const scrollTop = this.editor.getScrollTop();
-		const viewportHeight = this.editor.getLayoutInfo().height;
+		const viewportHeight = layoutInfo.height;
 		const bandTop = scrollTop + viewportHeight * 0.15;
 		const bandBottom = scrollTop + viewportHeight * 0.85;
 		const cursorTop = this.editor.getTopForLineNumber(position.lineNumber);
 		const cursorBottom = this.editor.getBottomForLineNumber(position.lineNumber);
-
+		let targetScrollTop: number | undefined;
 		if (cursorTop < bandTop) {
-			this.scheduleViewportReveal(scrollTop - (bandTop - cursorTop));
+			targetScrollTop = scrollTop - (bandTop - cursorTop);
 		} else if (cursorBottom > bandBottom) {
-			this.scheduleViewportReveal(scrollTop + (cursorBottom - bandBottom));
+			targetScrollTop = scrollTop + (cursorBottom - bandBottom);
+		}
+
+		const scrollLeft = this.editor.getScrollLeft();
+		const viewportWidth = Math.max(0, layoutInfo.contentWidth - layoutInfo.verticalScrollbarWidth);
+		let targetScrollLeft: number | undefined;
+		if (viewportWidth > 0) {
+			const maxColumn = this.model().getLineMaxColumn(position.lineNumber);
+			const nextColumn = Math.min(position.column + 1, maxColumn);
+			const cursorLeft = this.editor.getOffsetForColumn(position.lineNumber, position.column);
+			const cursorRight = nextColumn > position.column
+				? this.editor.getOffsetForColumn(position.lineNumber, nextColumn)
+				: cursorLeft + this.editor.getOption(EditorOption.fontInfo).typicalHalfwidthCharacterWidth;
+			const bandLeft = scrollLeft + viewportWidth * 0.15;
+			const bandRight = scrollLeft + viewportWidth * 0.85;
+			if (cursorLeft < bandLeft) {
+				targetScrollLeft = Math.max(0, scrollLeft - (bandLeft - cursorLeft));
+			} else if (cursorRight > bandRight) {
+				targetScrollLeft = Math.max(0, scrollLeft + (cursorRight - bandRight));
+			}
+		}
+
+		if (targetScrollTop !== undefined || targetScrollLeft !== undefined) {
+			this.scheduleViewportReveal({ scrollTop: targetScrollTop, scrollLeft: targetScrollLeft });
 		}
 	}
 
@@ -293,9 +370,9 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		const rangeBottom = this.editor.getBottomForLineNumber(range.end.row + 1);
 
 		if (rangeTop < scrollTop) {
-			this.scheduleViewportReveal(rangeTop);
+			this.scheduleViewportReveal({ scrollTop: rangeTop });
 		} else if (rangeBottom > viewportBottom) {
-			this.scheduleViewportReveal(scrollTop + (rangeBottom - viewportBottom));
+			this.scheduleViewportReveal({ scrollTop: scrollTop + (rangeBottom - viewportBottom) });
 		}
 	}
 
@@ -318,14 +395,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 	}
 
-	private scheduleViewportReveal(targetScrollTop: number): void {
+	private scheduleViewportReveal(position: { scrollTop?: number; scrollLeft?: number }): void {
 		const requestId = ++this.viewportRevealRequestId;
 		// Defer until after VSCode has finished processing the selection/cursor event for
 		// this command. Applying the smooth scroll synchronously can be overwritten by
 		// editor scroll stabilization, especially for visual selections.
 		queueMicrotask(() => {
 			if (requestId === this.viewportRevealRequestId) {
-				this.editor.setScrollTop(targetScrollTop, ScrollType.Smooth);
+				this.editor.setScrollPosition(position, ScrollType.Smooth);
 			}
 		});
 	}
@@ -491,6 +568,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	dispose(): void {
 		this.setInsertPendingText(undefined);
+		this.clearEasyMotionMarkers();
 		this.clearSearchHighlights();
 		this.detachFromModel();
 	}
@@ -499,6 +577,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.endSearchPreview({ restoreViewport: false });
 		this.clearSearchHighlights();
 		this.setInsertPendingText(undefined);
+		this.clearEasyMotionMarkers();
 		this.closeUndoTransaction({ pushUndoStop: false });
 		this.invalidateCachedSelections();
 		this.rememberedSelectionGoals.clear();

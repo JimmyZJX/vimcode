@@ -19,6 +19,11 @@ import {
 } from "./state.js";
 import { SearchDirection, SearchMatch, SearchOptions, findSearchMatchInText } from "./search.js";
 
+export type EasyMotionMarker = {
+  label: string;
+  position: Position;
+};
+
 export type HostCommand = "navigateBack" | "navigateForward" | "undo" | "redo";
 export type HostDirection = "up" | "down";
 export type HostRevealTarget = "top" | "center" | "bottom";
@@ -60,6 +65,8 @@ export interface VimEditorCapabilities {
   setSelections(selections: readonly VimSelection[]): void;
   setCursorStyle(style: CursorStyle): void;
   setInsertPendingText(text: string | undefined): void;
+  showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void;
+  clearEasyMotionMarkers(): void;
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options?: ApplyEditsOptions): void;
   beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void;
@@ -142,6 +149,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private pendingUndoSelectionsBefore: VimSelection[] | undefined;
   public cursorStyle: CursorStyle = "block";
   public insertPendingText: string | undefined;
+  public easyMotionMarkers: readonly EasyMotionMarker[] = [];
   private viewportLines: number | undefined;
   private viewportScrolloff = 0;
   private viewportTopRow = 0;
@@ -160,6 +168,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.redoStack = [];
     this.pendingUndoSnapshot = undefined;
     this.pendingUndoSelectionsBefore = undefined;
+    this.easyMotionMarkers = [];
     this.viewportTopRow = 0;
     this.setSelections(selections);
   }
@@ -270,6 +279,14 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   setInsertPendingText(text: string | undefined): void {
     this.insertPendingText = text;
+  }
+
+  showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void {
+    this.easyMotionMarkers = markers.map(marker => ({ ...marker }));
+  }
+
+  clearEasyMotionMarkers(): void {
+    this.easyMotionMarkers = [];
   }
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {

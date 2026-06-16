@@ -86,7 +86,7 @@ export class VimController extends Disposable {
 		private readonly editor: ICodeEditor,
 		private readonly contextKeyService: IContextKeyService,
 		clipboardService: IClipboardService,
-		commandService: ICommandService,
+		private readonly commandService: ICommandService,
 		private readonly configurationService: IConfigurationService,
 		private readonly keybindingService: IKeybindingService,
 		private readonly extensionManagementService: IExtensionManagementService,
@@ -141,6 +141,25 @@ export class VimController extends Disposable {
 
 	getStatus(): VimStatus {
 		return this.vim.status;
+	}
+
+	runRemapCommand(args: unknown): void {
+		if (!this.enabled || !this.hasModel()) {
+			return;
+		}
+		const remap = readRemapCommandArgs(args);
+		if (remap === undefined) {
+			throw new Error("vim.remap requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]");
+		}
+		void this.asyncKeyQueue.enqueue(async () => {
+			this.vim.executeExternalRemap(remap);
+			if (!this.vim.status.pending) {
+				this.vimEditor.revealPrimaryCursorIfOutsideViewport();
+				this.syncEditorState();
+			} else {
+				this.syncStatus();
+			}
+		}).then(undefined, () => this.syncStatus());
 	}
 
 	isVimEnabled(): boolean {
@@ -234,6 +253,9 @@ export class VimController extends Disposable {
 		const useSystemClipboard = this.configurationService.getValue<unknown>('vim.useSystemClipboard');
 		const timeout = this.configurationService.getValue<unknown>('vim.timeout');
 		const visualMultilineInsert = this.configurationService.getValue<unknown>('vim.visualMultilineInsert');
+		const easymotion = this.configurationService.getValue<unknown>('vim.easymotion');
+		const easymotionKeys = this.configurationService.getValue<unknown>('vim.easymotionKeys');
+		const easymotionJumpToAnywhereRegex = this.configurationService.getValue<unknown>('vim.easymotionJumpToAnywhereRegex');
 		return {
 			leader: typeof vimConfig.leader === 'string' ? vimConfig.leader : undefined,
 			useCtrlKeys: typeof useCtrlKeys === 'boolean'
@@ -248,6 +270,15 @@ export class VimController extends Disposable {
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean'
 				? visualMultilineInsert
 				: typeof vimConfig.visualMultilineInsert === 'boolean' ? vimConfig.visualMultilineInsert : undefined,
+			easymotion: typeof easymotion === 'boolean'
+				? easymotion
+				: typeof vimConfig.easymotion === 'boolean' ? vimConfig.easymotion : undefined,
+			easymotionKeys: typeof easymotionKeys === 'string'
+				? easymotionKeys
+				: typeof vimConfig.easymotionKeys === 'string' ? vimConfig.easymotionKeys : undefined,
+			easymotionJumpToAnywhereRegex: typeof easymotionJumpToAnywhereRegex === 'string'
+				? easymotionJumpToAnywhereRegex
+				: typeof vimConfig.easymotionJumpToAnywhereRegex === 'string' ? vimConfig.easymotionJumpToAnywhereRegex : undefined,
 			handleKeys: readHandleKeys(layeredConfigValue(vimConfig, 'handleKeys')),
 			normalModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindings')),
 			normalModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindingsNonRecursive')),
@@ -728,6 +759,16 @@ function cursorChangeReasonName(reason: CursorChangeReason): string {
 function readHandleKeys(value: unknown): Record<string, boolean> {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
 	return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'));
+}
+
+function readRemapCommandArgs(value: unknown): { after?: readonly string[]; commands?: readonly VimCommandMapping[] } | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+	const args = value as { after?: unknown; commands?: unknown };
+	const after = Array.isArray(args.after) && args.after.every(key => typeof key === 'string')
+		? args.after
+		: undefined;
+	const commands = Array.isArray(args.commands) ? readRemapCommands(args.commands) : undefined;
+	return after !== undefined || commands !== undefined ? { after, commands } : undefined;
 }
 
 function readRemaps(value: unknown): VimKeyRemapping[] {

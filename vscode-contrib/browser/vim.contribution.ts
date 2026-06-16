@@ -13,7 +13,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
-import { EditorContributionInstantiation, ServicesAccessor, registerEditorContribution } from '../../../browser/editorExtensions.js';
+import { EditorCommand, EditorContributionInstantiation, ServicesAccessor, registerEditorCommand, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { VimController } from './vimController.js';
 
@@ -196,6 +196,24 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			description: nls.localize('vim.visualMultilineInsert', "Use VSCodeVim-compatible multi-cursor insertion for I/A in Visual and Visual Line modes."),
 		},
+		'vim.easymotion': {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			description: nls.localize('vim.easymotion', "Enable VSCodeVim-compatible EasyMotion commands."),
+		},
+		'vim.easymotionKeys': {
+			type: 'string',
+			default: 'hklyuiopnm,qwertzxcvbasdgjf;',
+			scope: ConfigurationScope.APPLICATION,
+			description: nls.localize('vim.easymotionKeys', "Keys used to label EasyMotion targets."),
+		},
+		'vim.easymotionJumpToAnywhereRegex': {
+			type: 'string',
+			default: '\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]',
+			scope: ConfigurationScope.APPLICATION,
+			description: nls.localize('vim.easymotionJumpToAnywhereRegex', "Regular expression used by EasyMotion jump-to-anywhere commands."),
+		},
 		'vim.handleKeys': {
 			type: 'object',
 			default: {},
@@ -253,5 +271,13 @@ class VimContribution extends VimController implements IEditorContribution {
 		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, extensionEnablementService, notificationService, logService);
 	}
 }
+
+const VimCommand = EditorCommand.bindToContribution<VimContribution>(editor => editor.getContribution<VimContribution>(VimController.ID));
+
+registerEditorCommand(new VimCommand({
+	id: 'vim.remap',
+	precondition: undefined,
+	handler: (controller, args) => controller.runRemapCommand(args),
+}));
 
 registerEditorContribution(VimController.ID, VimContribution, EditorContributionInstantiation.Eager);

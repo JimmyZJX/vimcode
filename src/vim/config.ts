@@ -42,6 +42,9 @@ export type VimConfiguration = {
   useSystemClipboard: boolean;
   timeout: number;
   visualMultilineInsert: boolean;
+  easymotion: boolean;
+  easymotionKeys: string;
+  easymotionJumpToAnywhereRegex: string;
 };
 
 export const defaultVimConfiguration: VimConfiguration = {
@@ -59,6 +62,9 @@ export const defaultVimConfiguration: VimConfiguration = {
   useSystemClipboard: false,
   timeout: 1000,
   visualMultilineInsert: true,
+  easymotion: false,
+  easymotionKeys: "hklyuiopnm,qwertzxcvbasdgjf;",
+  easymotionJumpToAnywhereRegex: "\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]",
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {

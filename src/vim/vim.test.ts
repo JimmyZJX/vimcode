@@ -330,6 +330,43 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
+  it("runs EasyMotion word jumps with VSCodeVim leader bindings", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor, { easymotion: true });
+
+    runKeys(vim, ["\\", "\\", "w"]);
+
+    expect(editor.easyMotionMarkers).toEqual([
+      { label: "h", position: { row: 0, column: 4 } },
+      { label: "k", position: { row: 0, column: 8 } },
+    ]);
+    expect(vim.status.pending).toBe(true);
+
+    runKeys(vim, ["h"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+    expect(editor.easyMotionMarkers).toEqual([]);
+    expect(vim.status.pending).toBe(false);
+  });
+
+
+  it("runs EasyMotion character searches", () => {
+    const editor = new InMemoryVimEditor("foo bar foo");
+    const vim = new Vim(editor, { easymotion: true, easymotionKeys: "abcdef" });
+
+    runKeys(vim, ["\\", "\\", "f", "o"]);
+
+    expect(editor.easyMotionMarkers.slice(0, 2)).toEqual([
+      { label: "a", position: { row: 0, column: 1 } },
+      { label: "b", position: { row: 0, column: 2 } },
+    ]);
+
+    runKeys(vim, ["a"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 1 });
+    expect(editor.easyMotionMarkers).toEqual([]);
+  });
+
   it("enters visual mode from every normal-mode cursor", () => {
     const editor = new InMemoryVimEditor("one\ntwo");
     const vim = new Vim(editor);
@@ -760,6 +797,21 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["q"]);
 
     expect(head(editor)).toEqual({ row: 1, column: 0 });
+  });
+
+  it("runs VSCodeVim-compatible vim.remap command args", () => {
+    const editor = new InMemoryVimEditor("one\ntwo");
+    const vim = new Vim(editor);
+
+    vim.executeExternalRemap({
+      after: ["j"],
+      commands: [":1", { command: "workbench.action.openSettings", args: ["vim.enabled"] }],
+    });
+
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.openSettings", args: ["vim.enabled"] },
+    ]);
   });
 
   it("supports VSCodeVim-style gh hover", () => {

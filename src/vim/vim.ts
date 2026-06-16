@@ -6,9 +6,10 @@
 //   from the VSCode patch / tests.
 
 import { LineRange, executeCommand } from "./command.js";
-import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, remapModeForVimMode } from "./config.js";
-import type { RemapWhenEvaluator } from "./config.js";
+import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
+import type { RemapWhenEvaluator, VimCommandMapping } from "./config.js";
 import { lookupDigraph } from "./digraph.js";
+import { EasyMotionState } from "./easymotion.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
@@ -73,6 +74,7 @@ export { VimGlobalState, VimModelState };
 export class Vim {
   private modeState: VimMode = { dialect: "vim", kind: "normal" };
   private readonly keymapResolver = new VimKeymapResolver();
+  private readonly easyMotion = new EasyMotionState();
   private readonly operatorStack = new VimOperatorStack();
   private modelState: VimModelState;
   private selectedRegister: RegisterName | undefined;
@@ -241,6 +243,16 @@ export class Vim {
     };
   }
 
+  executeExternalRemap(mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] }): void {
+    for (const key of mapping.after ?? []) {
+      this.dispatchKey(normalizeKey(key, this.configuration.leader), {
+        allowRemap: true,
+        remapWhen: alwaysActiveRemapWhen,
+      });
+    }
+    for (const command of mapping.commands ?? []) this.executeMappedCommand(command);
+  }
+
   hasActiveRemapStartingWithOrPending(key: string, remapWhen: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
     return this.remapResolver.isPending()
       || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
@@ -253,7 +265,7 @@ export class Vim {
     const pendingSearch = this.operatorStack.activeTopLevel("search");
     if (pendingSearch !== undefined) return isSearchInputKey(key);
 
-    if (this.operatorStack.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending()) return true;
+    if (this.operatorStack.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapResolver.isPending()) return true;
 
     if (this.isEscape(key)) return this.shouldHandleEscapeKey();
 
@@ -296,6 +308,7 @@ export class Vim {
       || this.hasMultipleCursorsOrSelection()
       || this.operatorStack.length > 0
       || this.keymapResolver.isPending()
+      || this.easyMotion.isPending()
       || this.remapResolver.isPending()
       || this.normalMode.isPending();
   }
@@ -364,6 +377,7 @@ export class Vim {
   private clearPendingGrammar({ closeSearchHighlights }: { closeSearchHighlights: boolean }): void {
     const pendingSearch = this.operatorStack.activeTopLevel("search");
     this.keymapResolver.clearPending();
+    this.easyMotion.clear(this.editor);
     this.remapResolver.clearPending();
     this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
     this.searchOriginMode = undefined;
@@ -375,7 +389,7 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -387,6 +401,7 @@ export class Vim {
       + (this.selectedRegister !== undefined ? 1 : 0)
       + (this.countBuffer.length > 0 ? 1 : 0)
       + (this.keymapResolver.isPending() ? 1 : 0)
+      + (this.easyMotion.isPending() ? 1 : 0)
       + (this.remapResolver.isPending() ? 1 : 0);
   }
 
@@ -398,6 +413,7 @@ export class Vim {
     const pendingOperator = this.operatorStack.top();
     if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
     if (pendingOperator?.type === "command") return `:${pendingOperator.input}`;
+    if (this.easyMotion.isPending()) return this.easyMotion.pendingChord();
     return this.isPending() ? this.showcmdKeys.join("") : "";
   }
 
@@ -475,6 +491,13 @@ export class Vim {
         if (waitingResult !== undefined) return waitingResult;
       }
 
+      if (this.easyMotion.isPending()) {
+        this.recordMacroKey(key);
+        this.recordRepeatableKey(key);
+        const easyMotionResult = this.dispatchEasyMotionKey(key);
+        if (easyMotionResult !== undefined) return easyMotionResult;
+      }
+
       if (this.keymapResolver.isPending()) {
         this.recordMacroKey(key);
         this.recordRepeatableKey(key);
@@ -492,6 +515,9 @@ export class Vim {
       // actions that are not repeatable cancel via their dispatch arms.
       this.recordMacroKey(key);
       this.recordRepeatableKey(key);
+
+      const easyMotionResult = this.dispatchEasyMotionKey(key);
+      if (easyMotionResult !== undefined) return easyMotionResult;
 
       const finiteKeymapResult = this.handleFiniteKeymapKey(key);
       if (finiteKeymapResult !== undefined) return finiteKeymapResult;
@@ -696,6 +722,18 @@ export class Vim {
   private recordWaitingOperatorKey(key: string): void {
     this.recordMacroKey(key);
     this.recordRepeatableKey(key);
+  }
+
+  private dispatchEasyMotionKey(key: string): KeyResult | undefined {
+    const result = this.easyMotion.handleKey(this.editor, this.configuration, key, {
+      canStart: this.shouldStartEasyMotion(),
+    });
+    if (result === undefined) return undefined;
+    if (result.type === "jump") {
+      this.globalState.repeat.cancelCurrent();
+      this.applyMotion({ type: "jump", position: result.position, line: false }, 1);
+    }
+    return "handled";
   }
 
   private handleFiniteKeymapKey(key: string): KeyResult | undefined {
@@ -1281,7 +1319,7 @@ export class Vim {
 
   private shouldResolveRemap(): boolean {
     if (this.remapResolver.isPending()) return true;
-    return !this.keymapResolver.isPending() && this.operatorStack.length === 0;
+    return !this.keymapResolver.isPending() && !this.easyMotion.isPending() && this.operatorStack.length === 0;
   }
 
   private currentRemapMode() {
@@ -1338,6 +1376,14 @@ export class Vim {
       return operator === "none" || isRangeOperatorContext(operator);
     }
     return this.isVisualMode() && operator === "none";
+  }
+
+  private shouldStartEasyMotion(): boolean {
+    return this.isMotionMode()
+      && !this.modeIsExpectingRegisterName()
+      && this.operatorStack.operatorContext() === "none"
+      && this.countBuffer.length === 0
+      && this.selectedRegister === undefined;
   }
 
   private shouldResolveSharedAction(key: string): boolean {
