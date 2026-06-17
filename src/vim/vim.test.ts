@@ -155,17 +155,26 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.status.pendingDepth).toBe(0);
   });
 
-  // Insert mode delegates plain typing to the host editor; replace mode must
-  // own it (native typing inserts instead of overwriting) and must own
-  // backspace (which restores the overwritten text).
-  it("owns plain text keys in replace mode but not insert mode", () => {
+  // Insert mode delegates plain typing to the host editor unless Vim needs to
+  // capture the key stream for macro recording; replace mode must own text
+  // keys because native typing inserts instead of overwriting.
+  it("owns plain text keys in insert mode only while recording", () => {
     const editor = new InMemoryVimEditor("abcdef");
     const vim = new Vim(editor);
 
     runKeys(vim, ["i"]);
     expect(vim.wouldHandleKeyForTest("x")).toBe(false);
     expect(vim.wouldHandleKeyForTest("backspace")).toBe(false);
-    runKeys(vim, ["<escape>", "R"]);
+
+    runKeys(vim, ["<escape>", "q", "q", "a"]);
+    expect(vim.modeName).toBe("vim:insert");
+    expect(vim.wouldHandleKeyForTest("x")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("space")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("enter")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("backspace")).toBe(false);
+    runKeys(vim, ["<escape>", "q"]);
+
+    runKeys(vim, ["R"]);
     expect(vim.wouldHandleKeyForTest("x")).toBe(true);
     expect(vim.wouldHandleKeyForTest("space")).toBe(true);
     expect(vim.wouldHandleKeyForTest("enter")).toBe(true);
@@ -1316,6 +1325,24 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 1 });
   });
 
+  it("supports insert-mode ctrl-w across line boundaries", () => {
+    const bolEditor = new InMemoryVimEditor("hello\nworld");
+    const bolVim = new Vim(bolEditor);
+
+    runKeys(bolVim, ["j", "I", "ctrl-w", "<escape>"]);
+
+    expect(bolEditor.getText()).toBe("world");
+    expect(head(bolEditor)).toEqual({ row: 0, column: 0 });
+
+    const indentedEditor = new InMemoryVimEditor("hello  \n  world");
+    const indentedVim = new Vim(indentedEditor);
+
+    runKeys(indentedVim, ["j", "I", "ctrl-w", "<escape>"]);
+
+    expect(indentedEditor.getText()).toBe("world");
+    expect(head(indentedEditor)).toEqual({ row: 0, column: 0 });
+  });
+
   it("supports counted insert and replace sessions", () => {
     const insertEditor = new InMemoryVimEditor("hello");
     const insertVim = new Vim(insertEditor);
@@ -1452,6 +1479,48 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("shows macro recording status with the target register and recorded keys", () => {
+    const editor = new InMemoryVimEditor("abqc");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["q", "q"]);
+    expect(vim.status.macroRecording).toEqual({ register: "q", keys: [] });
+    expect(vim.status.text).toBe("NORMAL recording @q");
+
+    runKeys(vim, ["f"]);
+    expect(vim.status.text).toBe("NORMAL f recording @q: f");
+
+    runKeys(vim, ["q"]);
+    expect(vim.status.macroRecording).toEqual({ register: "q", keys: ["f", "q"] });
+    expect(vim.status.text).toBe("NORMAL recording @q: fq");
+
+    runKeys(vim, ["x"]);
+    expect(editor.getText()).toBe("abc");
+    expect(vim.status.macroRecording).toEqual({ register: "q", keys: ["f", "q", "x"] });
+    expect(vim.status.text).toBe("NORMAL recording @q: fqx");
+
+    runKeys(vim, ["q"]);
+    expect(vim.status.macroRecording).toBeUndefined();
+    expect(vim.status.text).toBe("NORMAL");
+  });
+
+  it("records insert-mode text keys into macros through the handled-key path", async () => {
+    const editor = new InMemoryVimEditor("");
+    const vim = new Vim(editor);
+
+    for (const key of ["q", "q", "a", "a", "b", "c", "<escape>", "q"]) {
+      await vim.handleKey(key)?.run();
+    }
+
+    expect(editor.getText()).toBe("abc");
+
+    for (const key of ["@", "q"]) {
+      await vim.handleKey(key)?.run();
+    }
+
+    expect(editor.getText()).toBe("abcabc");
+  });
+
   it("records waiting-input keys into macros", () => {
     // Regression: keys consumed by waiting input (find targets, search input,
     // register names, mark names) must be macro-recorded so replays work.
@@ -1490,6 +1559,20 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const vim = new Vim(editor);
     runKeys(vim, ["q", "q", "x", "q", "@", "q"]);
     expect(editor.getText()).toBe("a");
+  });
+
+  it("undoes each macro replay as one edit transaction", () => {
+    const editor = new InMemoryVimEditor("abcdefghijklmnop");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["q", "x", "x", "x", "x", "q", "@", "x", "@", "x"]);
+    expect(editor.getText()).toBe("jklmnop");
+
+    runKeys(vim, ["u"]);
+    expect(editor.getText()).toBe("ghijklmnop");
+
+    runKeys(vim, ["u"]);
+    expect(editor.getText()).toBe("defghijklmnop");
   });
 
   it("dot-repeats a delete with a jump-motion target", () => {

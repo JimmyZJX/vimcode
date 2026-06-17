@@ -12,7 +12,7 @@ import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
-import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
+import { ApplyEditsOptions, FinishUndoTransactionOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, UndoTransactionOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
@@ -67,6 +67,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly pendingNativeSelectionSyncs: Promise<void>[] = [];
 	private vimEditInProgress = false;
 	private undoTransaction: VimUndoTransaction | undefined;
+	private undoTransactionHoldDepth = 0;
 
 	constructor(
 		private readonly editor: ICodeEditor,
@@ -224,8 +225,9 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.easyMotionDecorations.clear();
 	}
 
-	beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void {
-		this.logUndo(`beginUndoTransaction open=${this.isUndoTransactionOpen()} before=${formatVimSelections(selectionsBefore)} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+	beginUndoTransaction(selectionsBefore: readonly VimSelection[], options: UndoTransactionOptions = {}): void {
+		this.logUndo(`beginUndoTransaction open=${this.isUndoTransactionOpen()} keepOpen=${options.keepOpen === true} before=${formatVimSelections(selectionsBefore)} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		if (options.keepOpen) this.undoTransactionHoldDepth++;
 		if (this.isUndoTransactionOpen()) return;
 		this.editor.pushUndoStop();
 		this.openUndoTransaction(this.model(), this.lowerSelections(selectionsBefore).selections, { hasEdits: false });
@@ -248,14 +250,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.logUndo(`executeEdits nativeAfter=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		});
 		if (options.undoStopAfter !== false) {
-			if (this.isUndoTransactionOpen()) this.closeUndoTransaction({ pushUndoStop: true });
+			if (this.isUndoTransactionOpen()) this.finishUndoTransaction();
 			else this.editor.pushUndoStop();
 		}
 		this.logUndo(`applyEdits end open=${this.isUndoTransactionOpen()} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 	}
 
-	finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void {
-		this.logUndo(`finishUndoTransaction start open=${this.isUndoTransactionOpen()} selectionsAfter=${formatVimSelections(selectionsAfter)} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+	finishUndoTransaction(selectionsAfter?: readonly VimSelection[], options: FinishUndoTransactionOptions = {}): void {
+		this.logUndo(`finishUndoTransaction start open=${this.isUndoTransactionOpen()} force=${options.force === true} holdDepth=${this.undoTransactionHoldDepth} selectionsAfter=${formatVimSelections(selectionsAfter)} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		const transaction = this.undoTransaction;
 		if (transaction !== undefined && transaction.hasEdits && selectionsAfter !== undefined) {
 			const lowered = this.lowerSelections(selectionsAfter);
@@ -264,6 +266,13 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.withVimEditInProgress(() => {
 				this.applyModelEdits([], this.editor.getSelections() ?? [], lowered.selections);
 			});
+		}
+		if (this.undoTransactionHoldDepth > 0) {
+			if (options.force) this.undoTransactionHoldDepth--;
+			if (this.undoTransactionHoldDepth > 0 || !options.force) {
+				this.logUndo(`finishUndoTransaction deferred holdDepth=${this.undoTransactionHoldDepth}`);
+				return;
+			}
 		}
 		if (transaction === undefined) this.editor.pushUndoStop();
 		else this.closeUndoTransaction({ pushUndoStop: transaction.hasEdits });

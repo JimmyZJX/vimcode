@@ -105,7 +105,7 @@ export function deleteToPreviousWord(editor: VimEditorCapabilities, options: App
   const selectionsAfter: VimSelection[] = [];
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
-    const start = previousWordStart(editor.line(head.row), head);
+    const start = previousWordStart(editor, head);
     edits.push({ range: { start, end: head }, text: "" });
     selectionsAfter.push(charwiseSelection(start));
   }
@@ -126,11 +126,23 @@ export function enterNormalMode(
   );
 }
 
-function previousWordStart(line: string, head: Position): Position {
+function previousWordStart(editor: VimEditorCapabilities, head: Position): Position {
+  let row = head.row;
   let column = head.column;
-  while (column > 0 && /\s/.test(line[column - 1])) column--;
-  while (column > 0 && !/\s/.test(line[column - 1])) column--;
-  return { row: head.row, column };
+
+  while (row > 0 || column > 0) {
+    if (column === 0) {
+      row--;
+      column = editor.lineLength(row);
+    } else if (/\s/.test(editor.line(row)[column - 1])) {
+      column--;
+    } else {
+      break;
+    }
+  }
+
+  while (column > 0 && !/\s/.test(editor.line(row)[column - 1])) column--;
+  return { row, column };
 }
 
 export function firstNonWhitespace(line: string, row: number): Position {

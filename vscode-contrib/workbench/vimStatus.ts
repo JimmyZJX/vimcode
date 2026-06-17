@@ -52,12 +52,12 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 			return;
 		}
 		const status = controller.getStatus();
-		const text = status.chord ? `VIM ${status.mode.toUpperCase()} ${status.chord}` : `VIM ${status.mode.toUpperCase()}`;
+		const text = `VIM ${status.text}`;
 		const entry = {
 			name: 'Vim Mode',
 			text,
-			ariaLabel: `Vim mode ${status.mode}${status.chord ? `, pending ${status.chord}` : ''}`,
-			tooltip: 'Current Vim mode and unfinished key sequence',
+			ariaLabel: `Vim mode ${status.mode}${status.chord ? `, pending ${status.chord}` : ''}${status.macroRecording ? `, recording @${status.macroRecording.register}` : ''}`,
+			tooltip: 'Current Vim mode, unfinished key sequence, and macro recording state',
 		};
 
 		if (this.statusbarEntry.value) {

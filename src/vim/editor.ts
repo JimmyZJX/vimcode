@@ -38,6 +38,14 @@ export type NativeCommandOptions = {
   syncSelectionAfter?: boolean;
 };
 
+export type UndoTransactionOptions = {
+  keepOpen?: boolean;
+};
+
+export type FinishUndoTransactionOptions = {
+  force?: boolean;
+};
+
 // Most Vim edits are complete commands and should become one native undo unit.
 // Change-like commands ([c], [s], visual [c], etc.) first delete text and then
 // enter insert/replace mode; use [keepUndoTransactionOpen] for the deletion half
@@ -69,8 +77,8 @@ export interface VimEditorCapabilities {
   clearEasyMotionMarkers(): void;
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options?: ApplyEditsOptions): void;
-  beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void;
-  finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void;
+  beginUndoTransaction(selectionsBefore: readonly VimSelection[], options?: UndoTransactionOptions): void;
+  finishUndoTransaction(selectionsAfter?: readonly VimSelection[], options?: FinishUndoTransactionOptions): void;
 
   executeHostCommand(command: HostCommand): void;
   executeNativeCommand(command: string, args?: readonly unknown[], options?: NativeCommandOptions): void;
@@ -147,6 +155,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private redoStack: UndoSnapshot[] = [];
   private pendingUndoSnapshot: UndoSnapshot | undefined;
   private pendingUndoSelectionsBefore: VimSelection[] | undefined;
+  private undoTransactionHoldDepth = 0;
   public cursorStyle: CursorStyle = "block";
   public insertPendingText: string | undefined;
   public easyMotionMarkers: readonly EasyMotionMarker[] = [];
@@ -168,6 +177,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.redoStack = [];
     this.pendingUndoSnapshot = undefined;
     this.pendingUndoSelectionsBefore = undefined;
+    this.undoTransactionHoldDepth = 0;
     this.easyMotionMarkers = [];
     this.viewportTopRow = 0;
     this.setSelections(selections);
@@ -321,12 +331,24 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     if (undoStopAfter && snapshotBefore === undefined) this.finishUndoTransaction();
   }
 
-  beginUndoTransaction(selectionsBefore: readonly VimSelection[]): void {
+  beginUndoTransaction(selectionsBefore: readonly VimSelection[], options: UndoTransactionOptions = {}): void {
+    if (options.keepOpen) this.undoTransactionHoldDepth++;
     if (this.pendingUndoSnapshot !== undefined || this.pendingUndoSelectionsBefore !== undefined) return;
     this.pendingUndoSelectionsBefore = cloneSelections(selectionsBefore);
   }
 
-  finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void {
+  finishUndoTransaction(selectionsAfter?: readonly VimSelection[], options: FinishUndoTransactionOptions = {}): void {
+    if (selectionsAfter !== undefined && this.pendingUndoSnapshot !== undefined) {
+      this.pendingUndoSnapshot = {
+        ...this.pendingUndoSnapshot,
+        selectionsAfter: cloneSelections(selectionsAfter),
+      };
+    }
+    if (this.undoTransactionHoldDepth > 0) {
+      if (options.force) this.undoTransactionHoldDepth--;
+      if (this.undoTransactionHoldDepth > 0 || !options.force) return;
+    }
+
     const snapshot = this.pendingUndoSnapshot;
     this.pendingUndoSelectionsBefore = undefined;
     if (snapshot === undefined) return;

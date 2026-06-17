@@ -25,7 +25,7 @@ import type {
   PendingLiteralOperator,
   TopLevelPendingOperator,
 } from "./operator.js";
-import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
+import { MacroRecordingStatus, RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
 import { isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
@@ -52,7 +52,22 @@ export type VimStatus = {
   remapPending: boolean;
   remapTimeoutMs: number;
   insertPendingText: string | undefined;
+  macroRecording: MacroRecordingStatus | undefined;
 };
+
+function statusText(mode: VimMode["kind"], chord: string, macroRecording: MacroRecordingStatus | undefined): string {
+  const modeText = chord.length > 0 ? `${mode.toUpperCase()} ${chord}` : mode.toUpperCase();
+  if (macroRecording === undefined) return modeText;
+  const keys = macroRecording.keys.map(keyForStatus).join("");
+  return keys.length === 0
+    ? `${modeText} recording @${macroRecording.register}`
+    : `${modeText} recording @${macroRecording.register}: ${keys}`;
+}
+
+function keyForStatus(key: string): string {
+  if (key.length === 1) return key;
+  return key.startsWith("<") && key.endsWith(">") ? key : `<${key}>`;
+}
 
 export type EditorSyncResult = {
   mode: VimMode["kind"];
@@ -173,16 +188,19 @@ export class Vim {
   get status(): VimStatus {
     const chord = this.pendingChord();
     const mode = this.modeState.kind;
+    const macroRecording = this.globalState.macro.recordingStatus();
+    const text = statusText(mode, chord, macroRecording);
     return {
       mode,
       pending: this.isPending(),
       pendingDepth: this.pendingDepth(),
       operator: this.modeState.kind === "normal" ? this.normalMode.pendingOperatorName() : undefined,
       chord,
-      text: chord.length > 0 ? `${mode.toUpperCase()} ${chord}` : mode.toUpperCase(),
+      text,
       remapPending: this.remapResolver.isPending(),
       remapTimeoutMs: this.configuration.timeout,
       insertPendingText: mode === "insert" || mode === "replace" ? this.remapResolver.pendingInsertText() : undefined,
+      macroRecording,
     };
   }
 
@@ -270,10 +288,19 @@ export class Vim {
     if (this.isEscape(key)) return this.shouldHandleEscapeKey();
 
     if (this.modeState.kind === "insert" || this.modeState.kind === "replace") {
-      // Insert mode delegates plain typing to the host, but replace mode
-      // cannot: native typing inserts, while Vim `R` overwrites and backspace
-      // restores what was overwritten. (Keys the host produces outside the
-      // keydown map — e.g. IME composition — still fall through natively.)
+      // Insert mode normally delegates plain typing to the host. While a macro
+      // recording is in flight, own the printable keys we can apply ourselves
+      // so the recording captures the same key stream it will later replay.
+      // This mirrors Zed's split between `VimGlobals::observe_action` and
+      // `VimGlobals::observe_insertion`, but keeps vimcode's replay
+      // representation key-based.
+      if (this.modeState.kind === "insert" && this.shouldRecordInsertTextKeyThroughVim(key)) {
+        return true;
+      }
+      // Replace mode cannot delegate plain typing: native typing inserts,
+      // while Vim `R` overwrites and backspace restores what was overwritten.
+      // (Keys the host produces outside the keydown map — e.g. IME composition
+      // — still fall through natively.)
       if (this.modeState.kind === "replace" && (insertTextForKey(key) !== undefined || key === "backspace")) {
         return true;
       }
@@ -301,6 +328,10 @@ export class Vim {
       || key === "ctrl-u"
       || key === "ctrl-y"
       || key === "ctrl-e";
+  }
+
+  private shouldRecordInsertTextKeyThroughVim(key: string): boolean {
+    return insertTextForKey(key) !== undefined && this.globalState.macro.isRecording();
   }
 
   private shouldHandleEscapeKey(): boolean {
@@ -658,7 +689,7 @@ export class Vim {
         const pending = this.operatorStack.popTopLevel("replayRegister");
         if (pending === undefined) return "handled";
         this.recordMacroKey(key);
-        this.globalState.macro.replayRegisterKey(key, pending.count, key => this.onKey(key));
+        this.replayMacro(() => this.globalState.macro.replayRegisterKey(key, pending.count, key => this.onKey(key)));
         return "handled";
       }
       case "register":
@@ -1074,11 +1105,20 @@ export class Vim {
 
     if (key === "Q") {
       this.recordMacroKey(key);
-      this.globalState.macro.replayLast(this.normalMode.takeCountForMotion(1), key => this.onKey(key));
+      this.replayMacro(() => this.globalState.macro.replayLast(this.normalMode.takeCountForMotion(1), key => this.onKey(key)));
       return "handled";
     }
 
     return undefined;
+  }
+
+  private replayMacro(run: () => void): void {
+    this.editor.beginUndoTransaction(this.editor.getSelections(), { keepOpen: true });
+    try {
+      run();
+    } finally {
+      this.editor.finishUndoTransaction(this.editor.getSelections(), { force: true });
+    }
   }
 
   private handleEscapeKey(): void {

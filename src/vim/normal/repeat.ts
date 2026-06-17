@@ -102,6 +102,11 @@ export class RepeatState {
   }
 }
 
+export type MacroRecordingStatus = {
+  register: string;
+  keys: readonly string[];
+};
+
 export class MacroState {
   private recordingRegister: string | undefined;
   private current: string[] = [];
@@ -116,6 +121,12 @@ export class MacroState {
 
   isReplaying(): boolean {
     return this.replaying;
+  }
+
+  recordingStatus(): MacroRecordingStatus | undefined {
+    return this.recordingRegister === undefined
+      ? undefined
+      : { register: this.recordingRegister, keys: [...this.current] };
   }
 
   startRecording(key: string): void {
