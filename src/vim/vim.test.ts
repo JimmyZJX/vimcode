@@ -1,7 +1,7 @@
 import { RemapTimeoutKey, layeredConfigValue, normalizeKey } from "./config.js";
 import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
-import type { HostRevealTarget } from "./editor.js";
+import type { HostDirection, HostRevealTarget } from "./editor.js";
 import { Vim, VimModelState, runKeys } from "./vim.js";
 import type { VimSystemClipboard } from "./registers.js";
 import type { SearchDirection, SearchOptions } from "./search.js";
@@ -47,9 +47,14 @@ class FakeAsyncClipboard implements VimSystemClipboard {
 
 class ActionTrackingEditor extends InMemoryVimEditor {
   revealCurrentLineTargets: string[] = [];
+  scrollLineCalls: { direction: HostDirection; count: number; extend: boolean | undefined }[] = [];
 
   override revealCurrentLine(target: HostRevealTarget): void {
     this.revealCurrentLineTargets.push(target);
+  }
+
+  override scrollByLines(direction: HostDirection, count: number, options: { extend?: boolean } = {}): void {
+    this.scrollLineCalls.push({ direction, count, extend: options.extend });
   }
 }
 
@@ -345,6 +350,19 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(blockVim, ["ctrl-v", "j", "z", "z"]);
     expect(blockVim.modeName).toBe("vim:visualBlock");
     expect(blockEditor.revealCurrentLineTargets).toEqual(["center"]);
+  });
+
+  it("supports VSCodeVim ctrl-e and ctrl-y scroll chords in visual modes", () => {
+    const editor = new ActionTrackingEditor("one\ntwo\nthree");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "ctrl-e", "ctrl-y"]);
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.scrollLineCalls).toEqual([
+      { direction: "down", count: 1, extend: true },
+      { direction: "up", count: 1, extend: true },
+    ]);
   });
 
   it("delegates VSCodeVim tab navigation keys to VSCode actions", () => {

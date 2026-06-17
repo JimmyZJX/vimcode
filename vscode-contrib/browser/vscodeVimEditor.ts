@@ -528,14 +528,14 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return { top: top.lineNumber - 1, bottom: bottom.lineNumber - 1 };
 	}
 
-	scrollByLines(direction: HostDirection, count: number): void {
+	scrollByLines(direction: HostDirection, count: number, { extend = false }: { extend?: boolean } = {}): void {
 		this.viewportControlledByCommand = true;
 		this.editor.trigger('vim', 'editorScroll', {
 			to: direction,
 			by: 'wrappedLine',
 			value: count,
 			revealCursor: false,
-			select: false,
+			select: extend,
 		});
 	}
 

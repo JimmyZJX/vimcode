@@ -1008,8 +1008,8 @@ export class Vim {
         this.syncFromEditorState();
         return "handled";
       case "scrollLines":
-        this.editor.scrollByLines(action.direction, this.takeCountForMotion(1));
-        this.syncFromEditorState();
+        this.editor.scrollByLines(action.direction, this.takeCountForMotion(1), { extend: this.isVisualMode() });
+        if (this.isVisualMode()) this.visualMode.adoptSelectionFromHost();
         return "handled";
       case "revealCurrentLine":
         this.editor.revealCurrentLine(action.target);

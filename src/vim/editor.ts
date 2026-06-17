@@ -86,7 +86,7 @@ export interface VimEditorCapabilities {
   executeFoldCommand(command: HostFoldCommand): void;
   moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
   moveByPages(direction: HostDirection, count: number, options: { halfPage: boolean; extend: boolean }): readonly VimSelection[] | undefined;
-  scrollByLines(direction: HostDirection, count: number): void;
+  scrollByLines(direction: HostDirection, count: number, options?: { extend: boolean }): void;
   /** Model rows currently visible in the host viewport (both inclusive), or
       undefined when the host has no viewport. Used by `H`/`M`/`L`. */
   visibleRowRange(): { top: number; bottom: number } | undefined;
@@ -447,7 +447,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     return this.modelRowSelections(direction, 0, { extend }, () => row);
   }
 
-  scrollByLines(direction: HostDirection, count: number): void {
+  scrollByLines(direction: HostDirection, count: number, { extend = false }: { extend?: boolean } = {}): void {
     const height = this.viewportHeight();
     if (height === undefined) return;
     // Vim: `ctrl-e`/`ctrl-y` scroll the viewport; the cursor stays put until
@@ -456,7 +456,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     const signedDelta = direction === "up" ? -count : count;
     this.viewportTopRow = Math.max(0, Math.min(this.viewportTopRow + signedDelta, lastRow));
     this.setSelections(
-      this.modelRowSelections(direction, 0, { extend: false }, row => this.rowInsideScrolloffMargins(row))
+      this.modelRowSelections(direction, 0, { extend }, row => this.rowInsideScrolloffMargins(row))
     );
   }
 

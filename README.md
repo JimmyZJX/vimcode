@@ -106,7 +106,7 @@ Done in this branch:
   still falls through natively.
 - Current validation:
   - `npm run build -- --noEmit` passes.
-  - `npm test -- --runInBand` passes with 542 enabled tests (28 skipped).
+  - `npm test -- --runInBand` passes with 543 enabled tests (28 skipped).
   - The disabled-fixture backlog is fully triaged **and intentionally parked**: every
     `// DISABLED:` header states the concrete blocker, and the remaining 28 fixtures
     were reviewed and deliberately left disabled because they cover behavior that the
