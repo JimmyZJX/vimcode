@@ -172,6 +172,7 @@ export class VimController extends Disposable {
 
 	override dispose(): void {
 		this.clearRemapTimeout();
+		this.vimEditor.flushUndoTransaction();
 		this.vimEditor.dispose();
 		this.syncDisabledStatus();
 		this.restoreNativeCursorAppearance();
@@ -229,6 +230,7 @@ export class VimController extends Disposable {
 		} else {
 			this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 			if (wasEnabled) {
+				this.vimEditor.flushUndoTransaction();
 				this.restoreNativeCursorAppearance();
 			}
 			this.syncDisabledStatus();
@@ -509,6 +511,7 @@ export class VimController extends Disposable {
 	private handleEditorModelChanged(): void {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		this.pendingUndoRedoContentSync = false;
+		this.vimEditor.flushUndoTransaction();
 		this.vimEditor.detachFromModel();
 		if (!this.attachCurrentModelState()) {
 			this.syncDetachedStatus();
@@ -521,6 +524,7 @@ export class VimController extends Disposable {
 		if (!this.enabled || this.vimEditor.isExecutingNativeCommand?.()) return;
 		if (!this.hasModel()) {
 			this.pendingUndoRedoContentSync = false;
+			this.vimEditor.flushUndoTransaction();
 			this.vimEditor.detachFromModel();
 			this.syncDetachedStatus();
 			return;

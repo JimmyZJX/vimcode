@@ -12,7 +12,7 @@ import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
-import { ApplyEditsOptions, FinishUndoTransactionOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, UndoTransactionOptions, VimEditorCapabilities, normalCursorPosition } from '../common/editor.js';
+import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, normalCursorPosition } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
@@ -22,7 +22,7 @@ type ExplicitSelectionEditor = ICodeEditor & {
 	setSelections(selections: readonly Selection[], source?: string, reason?: CursorChangeReason): void;
 };
 
-type VimUndoTransaction = {
+type VSCodeUndoTransaction = {
 	model: ITextModel;
 	undoSelectionsBefore: Selection[];
 	pushStackElement: ITextModel['pushStackElement'];
@@ -66,8 +66,8 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private nativeCommandInProgressDepth = 0;
 	private readonly pendingNativeSelectionSyncs: Promise<void>[] = [];
 	private vimEditInProgress = false;
-	private undoTransaction: VimUndoTransaction | undefined;
-	private undoTransactionHoldDepth = 0;
+	private undoTransaction: VSCodeUndoTransaction | undefined;
+	private undoTransactionDepth = 0;
 
 	constructor(
 		private readonly editor: ICodeEditor,
@@ -225,12 +225,21 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.easyMotionDecorations.clear();
 	}
 
-	beginUndoTransaction(selectionsBefore: readonly VimSelection[], options: UndoTransactionOptions = {}): void {
-		this.logUndo(`beginUndoTransaction open=${this.isUndoTransactionOpen()} keepOpen=${options.keepOpen === true} before=${formatVimSelections(selectionsBefore)} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
-		if (options.keepOpen) this.undoTransactionHoldDepth++;
-		if (this.isUndoTransactionOpen()) return;
-		this.editor.pushUndoStop();
-		this.openUndoTransaction(this.model(), this.lowerSelections(selectionsBefore).selections, { hasEdits: false });
+	beginUndoTransaction(selectionsBefore: readonly VimSelection[]): VimUndoTransaction {
+		this.logUndo(`beginUndoTransaction open=${this.isUndoTransactionOpen()} depth=${this.undoTransactionDepth} before=${formatVimSelections(selectionsBefore)} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		if (this.undoTransactionDepth === 0) {
+			this.editor.pushUndoStop();
+			this.openUndoTransaction(this.model(), this.lowerSelections(selectionsBefore).selections, { hasEdits: false });
+		}
+		this.undoTransactionDepth++;
+		let finished = false;
+		return {
+			finish: (selectionsAfter?: readonly VimSelection[]) => {
+				if (finished) return;
+				finished = true;
+				this.finishUndoTransaction(selectionsAfter);
+			},
+		};
 	}
 
 	applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
@@ -250,14 +259,13 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.logUndo(`executeEdits nativeAfter=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		});
 		if (options.undoStopAfter !== false) {
-			if (this.isUndoTransactionOpen()) this.finishUndoTransaction();
-			else this.editor.pushUndoStop();
+			if (!this.isUndoTransactionOpen()) this.editor.pushUndoStop();
 		}
 		this.logUndo(`applyEdits end open=${this.isUndoTransactionOpen()} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 	}
 
-	finishUndoTransaction(selectionsAfter?: readonly VimSelection[], options: FinishUndoTransactionOptions = {}): void {
-		this.logUndo(`finishUndoTransaction start open=${this.isUndoTransactionOpen()} force=${options.force === true} holdDepth=${this.undoTransactionHoldDepth} selectionsAfter=${formatVimSelections(selectionsAfter)} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+	finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void {
+		this.logUndo(`finishUndoTransaction start open=${this.isUndoTransactionOpen()} depth=${this.undoTransactionDepth} selectionsAfter=${formatVimSelections(selectionsAfter)} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
 		const transaction = this.undoTransaction;
 		if (transaction !== undefined && transaction.hasEdits && selectionsAfter !== undefined) {
 			const lowered = this.lowerSelections(selectionsAfter);
@@ -267,16 +275,23 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				this.applyModelEdits([], this.editor.getSelections() ?? [], lowered.selections);
 			});
 		}
-		if (this.undoTransactionHoldDepth > 0) {
-			if (options.force) this.undoTransactionHoldDepth--;
-			if (this.undoTransactionHoldDepth > 0 || !options.force) {
-				this.logUndo(`finishUndoTransaction deferred holdDepth=${this.undoTransactionHoldDepth}`);
+		if (this.undoTransactionDepth > 0) {
+			this.undoTransactionDepth--;
+			if (this.undoTransactionDepth > 0) {
+				this.logUndo(`finishUndoTransaction deferred depth=${this.undoTransactionDepth}`);
 				return;
 			}
 		}
 		if (transaction === undefined) this.editor.pushUndoStop();
 		else this.closeUndoTransaction({ pushUndoStop: transaction.hasEdits });
 		this.logUndo(`finishUndoTransaction end native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+	}
+
+	flushUndoTransaction(): void {
+		this.logUndo(`flushUndoTransaction open=${this.isUndoTransactionOpen()} depth=${this.undoTransactionDepth} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		this.undoTransactionDepth = 0;
+		const transaction = this.undoTransaction;
+		if (transaction !== undefined) this.closeUndoTransaction({ pushUndoStop: transaction.hasEdits });
 	}
 
 	executeHostCommand(command: HostCommand): void {

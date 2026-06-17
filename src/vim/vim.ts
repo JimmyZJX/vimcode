@@ -1113,11 +1113,11 @@ export class Vim {
   }
 
   private replayMacro(run: () => void): void {
-    this.editor.beginUndoTransaction(this.editor.getSelections(), { keepOpen: true });
+    const undoTransaction = this.editor.beginUndoTransaction(this.editor.getSelections());
     try {
       run();
     } finally {
-      this.editor.finishUndoTransaction(this.editor.getSelections(), { force: true });
+      undoTransaction.finish(this.editor.getSelections());
     }
   }
 

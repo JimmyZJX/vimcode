@@ -10,7 +10,7 @@
 import { VimConfiguration } from "./config.js";
 import type { VisualCommand, VisualModeKind } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
-import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
+import { VimEditorCapabilities, VimUndoTransaction, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, linewiseCursorAfterDelete, matchingPositionFromLine, Motion } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
@@ -443,8 +443,12 @@ export class VisualMode {
   handlePendingSurroundKey(key: string): VisualKeyResult {
     const pendingSurround = this.operatorStack.popVisualOperator("visualAddSurrounds");
     if (pendingSurround === undefined) return handled();
-    this.editor.beginUndoTransaction(pendingSurround.undoSelectionsBefore);
-    addSurrounds(this.editor, pendingSurround.ranges, key, { linewise: pendingSurround.linewise });
+    const undoTransaction = this.editor.beginUndoTransaction(pendingSurround.undoSelectionsBefore);
+    try {
+      addSurrounds(this.editor, pendingSurround.ranges, key, { linewise: pendingSurround.linewise });
+    } finally {
+      undoTransaction.finish();
+    }
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal" });
@@ -606,19 +610,28 @@ export class VisualMode {
 
   private delete(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
-      case "charwise":
-        this.editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(this.editor, state));
-        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualCharwiseTarget(this.editor, state));
+      case "charwise": {
+        const undoTransaction = this.editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(this.editor, state));
+        try {
+          applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualCharwiseTarget(this.editor, state));
+        } finally {
+          undoTransaction.finish();
+        }
         break;
+      }
       case "linewise": {
         const { startLine, endLine } = lineBounds(state);
-        beginVisualUndoTransaction(this.editor, state);
-        applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualLinewiseTarget(state, {
-          column: state.headColumn,
-          // Vim `v_d` linewise: the cursor column clamps against the line
-          // that follows the deleted range, not the first deleted line.
-          cursor: linewiseCursorAfterDelete(this.editor, startLine, state.headColumn, endLine - startLine + 1),
-        }));
+        const undoTransaction = beginVisualUndoTransaction(this.editor, state);
+        try {
+          applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualLinewiseTarget(state, {
+            column: state.headColumn,
+            // Vim `v_d` linewise: the cursor column clamps against the line
+            // that follows the deleted range, not the first deleted line.
+            cursor: linewiseCursorAfterDelete(this.editor, startLine, state.headColumn, endLine - startLine + 1),
+          }));
+        } finally {
+          undoTransaction.finish();
+        }
         break;
       }
       case "blockwise":
@@ -1405,8 +1418,8 @@ function linewiseEditRange(editor: VimEditorCapabilities, state: LinewiseVisualS
   return { start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } };
 }
 
-function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: VisualState): void {
-  editor.beginUndoTransaction(visualUndoSelections(state));
+function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: VisualState): VimUndoTransaction {
+  return editor.beginUndoTransaction(visualUndoSelections(state));
 }
 
 function openVisualChangeEditOptions() {
@@ -1486,8 +1499,12 @@ function pasteDistributedOverCharwise(
     "characterwise",
     deleted.map(text => ({ text, kind: "characterwise" }))
   );
-  editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(editor, state));
-  editor.applyEdits(edits, selectionsAfter);
+  const undoTransaction = editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(editor, state));
+  try {
+    editor.applyEdits(edits, selectionsAfter);
+  } finally {
+    undoTransaction.finish();
+  }
   return firstPastedRange === undefined ? undefined : charwiseStateForRange(editor, firstPastedRange);
 }
 
@@ -1634,12 +1651,13 @@ function deleteBlockwise(
   const selectionsAfter = collapse
     ? [charwiseSelection({ row: startRow, column: startColumn })]
     : blockInsertSelections(editor, state, { side: "start" });
-  beginVisualUndoTransaction(editor, state);
+  const undoTransaction = beginVisualUndoTransaction(editor, state);
   editor.applyEdits(
     edits,
     selectionsAfter,
     collapse ? {} : openVisualChangeEditOptions()
   );
+  if (collapse) undoTransaction.finish();
 }
 
 function enterBlockInsert(
