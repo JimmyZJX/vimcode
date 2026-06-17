@@ -57,6 +57,11 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
     bang: ({ editor }) => editor.executeNativeCommand("workbench.action.closeAllEditors"),
   },
   {
+    name: ["quita", "ll"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeAllEditors"),
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.closeAllEditors"),
+  },
+  {
     name: ["wq", ""],
     run: ({ editor }) => saveAndClose(editor),
     bang: ({ editor }) => saveAndClose(editor),
@@ -71,6 +76,31 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.saveAll"),
   },
   {
+    name: ["wqa", "ll"],
+    run: ({ editor }) => saveAllAndClose(editor),
+    bang: ({ editor }) => saveAllAndClose(editor),
+  },
+  {
+    name: ["xa", "ll"],
+    run: ({ editor }) => saveAllAndClose(editor),
+    bang: ({ editor }) => saveAllAndClose(editor),
+  },
+  {
+    name: ["e", "dit"],
+    run: () => {},
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.files.revert"),
+  },
+  {
+    name: ["ex", ""],
+    run: () => {},
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.files.revert"),
+  },
+  {
+    name: ["ene", "w"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.newUntitledFile"),
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.files.newUntitledFile"),
+  },
+  {
     name: ["clo", "se"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeActiveEditor"),
     bang: ({ editor }) => editor.executeNativeCommand("workbench.action.revertAndCloseActiveEditor"),
@@ -78,6 +108,70 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
   {
     name: ["on", "ly"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.maximizeEditor"),
+  },
+  {
+    name: ["ter", "minal"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.createTerminalEditor"),
+  },
+  {
+    name: ["ccl", "ose"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closePanel"),
+  },
+  {
+    name: ["lcl", "ose"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closePanel"),
+  },
+  {
+    name: ["cope", "n"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.panel.markers.view.focus"),
+  },
+  {
+    name: ["cw", "indow"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.panel.markers.view.focus"),
+  },
+  {
+    name: ["lope", "n"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.focusCommentsPanel"),
+  },
+  {
+    name: ["lw", "indow"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.focusCommentsPanel"),
+  },
+  {
+    name: ["cn", "ext"],
+    run: ({ editor }) => editor.executeNativeCommand("editor.action.marker.nextInFiles"),
+  },
+  {
+    name: ["cnf", "ile"],
+    run: ({ editor }) => editor.executeNativeCommand("editor.action.marker.nextInFiles"),
+  },
+  {
+    name: ["cp", "revious"],
+    run: ({ editor }) => editor.executeNativeCommand("editor.action.marker.prevInFiles"),
+  },
+  {
+    name: ["cpf", "ile"],
+    run: ({ editor }) => editor.executeNativeCommand("editor.action.marker.prevInFiles"),
+  },
+  {
+    name: ["lne", "xt"],
+    run: ({ editor }) => editor.executeNativeCommand("editor.action.nextCommentThreadAction"),
+  },
+  {
+    name: ["lp", "revious"],
+    run: ({ editor }) => editor.executeNativeCommand("editor.action.previousCommentThreadAction"),
+  },
+  {
+    name: ["ls", ""],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.quickOpenLeastRecentlyUsedEditorInGroup"),
+  },
+  {
+    name: ["u", "ndo"],
+    run: ({ editor }) => editor.executeHostCommand("undo"),
+  },
+  {
+    name: ["red", "o"],
+    run: ({ editor }) => editor.executeHostCommand("redo"),
   },
   {
     name: ["sp", "lit"],
@@ -112,6 +206,10 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.firstEditorInGroup"),
   },
   {
+    name: ["br", "ewind"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.firstEditorInGroup"),
+  },
+  {
     name: ["bl", "ast"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.lastEditorInGroup"),
   },
@@ -129,6 +227,10 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
   },
   {
     name: ["tabfir", "st"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.firstEditorInGroup"),
+  },
+  {
+    name: ["tabr", "ewind"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.firstEditorInGroup"),
   },
   {
@@ -176,6 +278,11 @@ function saveAndClose(editor: VimEditorCapabilities): void {
   editor.executeNativeCommand("workbench.action.closeActiveEditor");
 }
 
+function saveAllAndClose(editor: VimEditorCapabilities): void {
+  editor.executeNativeCommand("workbench.action.files.saveAll");
+  editor.executeNativeCommand("workbench.action.closeAllEditors");
+}
+
 function newSplit(editor: VimEditorCapabilities, splitCommand: string): void {
   editor.executeNativeCommand(splitCommand);
   editor.executeNativeCommand("workbench.action.files.newUntitledFile");
@@ -203,6 +310,12 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
     return;
   }
 
+  const vscodeCommand = parseVSCodeCommand(trimmedRest);
+  if (vscodeCommand !== undefined) {
+    editor.executeNativeCommand(vscodeCommand);
+    return;
+  }
+
   if (dispatchSimpleCommand({ editor, range }, trimmedRest)) return;
 
   const setOption = parseSetCommand(trimmedRest);
@@ -226,6 +339,14 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
   if (trimmedRest.startsWith("s")) {
     substitute(editor, range ?? currentLineRange(editor, 1), trimmedRest, options.exOptions?.gdefault ?? false);
   }
+}
+
+// VSCodeVim `:vsc[ode]`: run a VSCode command by id.
+function parseVSCodeCommand(command: string): string | undefined {
+  const match = /^(\S+)\s+(.+)$/.exec(command);
+  if (match === null) return undefined;
+  const [, name, commandId] = match;
+  return matchesVimCommandAbbreviation(name, ["vsc", "ode"]) ? commandId.trim() : undefined;
 }
 
 // Vim `:h :set`: the tiny subset of boolean options the core understands.
