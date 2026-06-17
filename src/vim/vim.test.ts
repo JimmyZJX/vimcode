@@ -1,6 +1,7 @@
 import { RemapTimeoutKey, layeredConfigValue, normalizeKey } from "./config.js";
 import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
+import type { HostRevealTarget } from "./editor.js";
 import { Vim, VimModelState, runKeys } from "./vim.js";
 import type { VimSystemClipboard } from "./registers.js";
 import type { SearchDirection, SearchOptions } from "./search.js";
@@ -41,6 +42,14 @@ class FakeAsyncClipboard implements VimSystemClipboard {
   writeText(text: string): void {
     this.text = text;
     this.writes.push(text);
+  }
+}
+
+class ActionTrackingEditor extends InMemoryVimEditor {
+  revealCurrentLineTargets: string[] = [];
+
+  override revealCurrentLine(target: HostRevealTarget): void {
+    this.revealCurrentLineTargets.push(target);
   }
 }
 
@@ -316,6 +325,26 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { command: "workbench.action.closeActiveEditor", args: [] },
       { command: "workbench.action.maximizeEditor", args: [] },
     ]);
+  });
+
+  it("supports VSCodeVim z scroll chords in visual modes", () => {
+    const visualEditor = new ActionTrackingEditor("one\ntwo\nthree");
+    const visualVim = new Vim(visualEditor);
+    runKeys(visualVim, ["v", "j", "z", "z", "z", "t", "z", "b"]);
+    expect(visualVim.modeName).toBe("vim:visual");
+    expect(visualEditor.revealCurrentLineTargets).toEqual(["center", "top", "bottom"]);
+
+    const lineEditor = new ActionTrackingEditor("one\ntwo\nthree");
+    const lineVim = new Vim(lineEditor);
+    runKeys(lineVim, ["V", "z", "z"]);
+    expect(lineVim.modeName).toBe("vim:visualLine");
+    expect(lineEditor.revealCurrentLineTargets).toEqual(["center"]);
+
+    const blockEditor = new ActionTrackingEditor("one\ntwo\nthree");
+    const blockVim = new Vim(blockEditor);
+    runKeys(blockVim, ["ctrl-v", "j", "z", "z"]);
+    expect(blockVim.modeName).toBe("vim:visualBlock");
+    expect(blockEditor.revealCurrentLineTargets).toEqual(["center"]);
   });
 
   it("delegates VSCodeVim tab navigation keys to VSCode actions", () => {

@@ -1013,7 +1013,6 @@ export class Vim {
         return "handled";
       case "revealCurrentLine":
         this.editor.revealCurrentLine(action.target);
-        this.syncFromEditorState();
         return "handled";
       case "fold":
         this.editor.executeFoldCommand(action.command);
