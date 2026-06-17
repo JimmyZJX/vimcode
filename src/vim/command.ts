@@ -52,6 +52,50 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
     bang: ({ editor }) => editor.executeNativeCommand("workbench.action.revertAndCloseActiveEditor"),
   },
   {
+    name: ["qa", "ll"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeAllEditors"),
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.closeAllEditors"),
+  },
+  {
+    name: ["wq", ""],
+    run: ({ editor }) => saveAndClose(editor),
+    bang: ({ editor }) => saveAndClose(editor),
+  },
+  {
+    name: ["x", "it"],
+    run: ({ editor }) => saveAndClose(editor),
+    bang: ({ editor }) => saveAndClose(editor),
+  },
+  {
+    name: ["wa", "ll"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.saveAll"),
+  },
+  {
+    name: ["clo", "se"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeActiveEditor"),
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.revertAndCloseActiveEditor"),
+  },
+  {
+    name: ["on", "ly"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.maximizeEditor"),
+  },
+  {
+    name: ["sp", "lit"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.splitEditorOrthogonal"),
+  },
+  {
+    name: ["vs", "plit"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.splitEditor"),
+  },
+  {
+    name: ["new", ""],
+    run: ({ editor }) => newSplit(editor, "workbench.action.splitEditorOrthogonal"),
+  },
+  {
+    name: ["vne", "w"],
+    run: ({ editor }) => newSplit(editor, "workbench.action.splitEditor"),
+  },
+  {
     name: ["bn", "ext"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.nextEditorInGroup"),
   },
@@ -64,6 +108,14 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.previousEditorInGroup"),
   },
   {
+    name: ["bf", "irst"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.firstEditorInGroup"),
+  },
+  {
+    name: ["bl", "ast"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.lastEditorInGroup"),
+  },
+  {
     name: ["tabn", "ext"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.nextEditorInGroup"),
   },
@@ -74,6 +126,31 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
   {
     name: ["tabp", "revious"],
     run: ({ editor }) => editor.executeNativeCommand("workbench.action.previousEditorInGroup"),
+  },
+  {
+    name: ["tabfir", "st"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.firstEditorInGroup"),
+  },
+  {
+    name: ["tabl", "ast"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.lastEditorInGroup"),
+  },
+  {
+    name: ["tabnew", ""],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.newUntitledFile"),
+  },
+  {
+    name: ["tabe", "dit"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.newUntitledFile"),
+  },
+  {
+    name: ["tabc", "lose"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeActiveEditor"),
+    bang: ({ editor }) => editor.executeNativeCommand("workbench.action.revertAndCloseActiveEditor"),
+  },
+  {
+    name: ["tabo", "nly"],
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.closeOtherEditors"),
   },
   {
     name: ["bd", "elete"],
@@ -93,6 +170,16 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
     run: ({ editor, range }) => sortRange(editor, range ?? wholeBufferRange(editor)),
   },
 ];
+
+function saveAndClose(editor: VimEditorCapabilities): void {
+  editor.executeNativeCommand("workbench.action.files.save");
+  editor.executeNativeCommand("workbench.action.closeActiveEditor");
+}
+
+function newSplit(editor: VimEditorCapabilities, splitCommand: string): void {
+  editor.executeNativeCommand(splitCommand);
+  editor.executeNativeCommand("workbench.action.files.newUntitledFile");
+}
 
 export function executeCommand(editor: VimEditorCapabilities, rawCommand: string, options: CommandOptions = {}): void {
   const command = rawCommand.trimStart();

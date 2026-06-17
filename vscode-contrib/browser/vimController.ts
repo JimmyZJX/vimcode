@@ -34,6 +34,11 @@ const VimPendingContext = new RawContextKey<boolean>('vim.pending', false, true)
 const VimOperatorContext = new RawContextKey<string>('vim.operator', '', true);
 const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
 
+type NativeCursorAppearance = {
+	cursorStyle: ReturnType<ICodeEditor['getRawOptions']>['cursorStyle'];
+	cursorBlinking: NonNullable<ReturnType<ICodeEditor['getRawOptions']>['cursorBlinking']>;
+};
+
 class VimModelStateStore {
 	private readonly entries = new Map<string, { state: VimModelState; disposeListener: IDisposable }>();
 
@@ -74,8 +79,7 @@ export class VimController extends Disposable {
 	private remapTimeoutGeneration = 0;
 	private readonly remapWhenExpressionCache = new Map<string, ContextKeyExpression | undefined>();
 	private pendingUndoRedoContentSync = false;
-	private readonly originalCursorStyle = this.editor.getRawOptions().cursorStyle;
-	private readonly originalCursorBlinking = this.editor.getRawOptions().cursorBlinking ?? 'blink';
+	private nativeCursorAppearance: NativeCursorAppearance | undefined = undefined;
 	private appliedCursorBlinking: 'vim-solid' | 'original' | undefined = undefined;
 	private appliedPendingCursorInset: string | undefined = undefined;
 	private restoringNativeCursor = false;
@@ -174,17 +178,30 @@ export class VimController extends Disposable {
 		super.dispose();
 	}
 
+	private rememberNativeCursorAppearance(): void {
+		const rawOptions = this.editor.getRawOptions();
+		this.nativeCursorAppearance = {
+			cursorStyle: rawOptions.cursorStyle,
+			cursorBlinking: rawOptions.cursorBlinking ?? 'blink',
+		};
+	}
+
 	private restoreNativeCursorAppearance(): void {
+		const nativeCursorAppearance = this.nativeCursorAppearance;
+		this.nativeCursorAppearance = undefined;
 		this.appliedCursorBlinking = undefined;
 		this.vimEditor.clearAppliedCursorStyle();
 		this.syncPendingCursorInset(undefined);
+		if (nativeCursorAppearance === undefined) {
+			return;
+		}
 		// `dispose` restores while `this.enabled` is still true; keep the
 		// option-change listener from re-applying the Vim cursor on top.
 		this.restoringNativeCursor = true;
 		try {
 			this.editor.updateOptions({
-				cursorStyle: this.originalCursorStyle,
-				cursorBlinking: this.originalCursorBlinking,
+				cursorStyle: nativeCursorAppearance.cursorStyle,
+				cursorBlinking: nativeCursorAppearance.cursorBlinking,
 			});
 		} finally {
 			this.restoringNativeCursor = false;
@@ -197,6 +214,13 @@ export class VimController extends Disposable {
 
 	private updateEnabledState(): void {
 		const enabled = this.isEnabled();
+		const wasEnabled = this.enabled;
+		// Only snapshot/restore cursor options around an enabled Vim session. When
+		// Vim is disabled, this contribution must not write editor options or it
+		// can clobber native setting changes.
+		if (enabled && !wasEnabled) {
+			this.rememberNativeCursorAppearance();
+		}
 		this.enabled = enabled;
 		if (enabled) {
 			this.attachCurrentModelState();
@@ -204,7 +228,9 @@ export class VimController extends Disposable {
 			this.syncEditorState();
 		} else {
 			this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
-			this.restoreNativeCursorAppearance();
+			if (wasEnabled) {
+				this.restoreNativeCursorAppearance();
+			}
 			this.syncDisabledStatus();
 			// `syncDisabledStatus` only resets context keys; notify status
 			// listeners (the workbench status bar entry) about the transition
@@ -625,7 +651,7 @@ export class VimController extends Disposable {
 		if (blinking !== this.appliedCursorBlinking) {
 			this.appliedCursorBlinking = blinking;
 			this.editor.updateOptions({
-				cursorBlinking: blinking === 'vim-solid' ? 'solid' : this.originalCursorBlinking,
+				cursorBlinking: blinking === 'vim-solid' ? 'solid' : (this.nativeCursorAppearance?.cursorBlinking ?? 'blink'),
 			});
 		}
 		// The pending cursor shrinks geometrically with the pending-stack

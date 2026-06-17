@@ -903,6 +903,57 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
+  it("supports more VSCodeVim window, tab, and save ex commands", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [
+      ":", "v", "s", "p", "l", "i", "t", "enter",
+      ":", "s", "p", "l", "i", "t", "enter",
+      ":", "v", "n", "e", "w", "enter",
+      ":", "n", "e", "w", "enter",
+      ":", "o", "n", "l", "y", "enter",
+      ":", "q", "a", "enter",
+      ":", "w", "q", "enter",
+      ":", "x", "i", "t", "enter",
+      ":", "w", "a", "enter",
+      ":", "c", "l", "o", "s", "e", "enter",
+      ":", "b", "f", "i", "r", "s", "t", "enter",
+      ":", "b", "l", "a", "s", "t", "enter",
+      ":", "t", "a", "b", "n", "e", "w", "enter",
+      ":", "t", "a", "b", "e", "d", "i", "t", "enter",
+      ":", "t", "a", "b", "c", "l", "o", "s", "e", "enter",
+      ":", "t", "a", "b", "o", "n", "l", "y", "enter",
+      ":", "t", "a", "b", "f", "i", "r", "s", "t", "enter",
+      ":", "t", "a", "b", "l", "a", "s", "t", "enter",
+    ]);
+
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.splitEditor", args: [] },
+      { command: "workbench.action.splitEditorOrthogonal", args: [] },
+      { command: "workbench.action.splitEditor", args: [] },
+      { command: "workbench.action.files.newUntitledFile", args: [] },
+      { command: "workbench.action.splitEditorOrthogonal", args: [] },
+      { command: "workbench.action.files.newUntitledFile", args: [] },
+      { command: "workbench.action.maximizeEditor", args: [] },
+      { command: "workbench.action.closeAllEditors", args: [] },
+      { command: "workbench.action.files.save", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+      { command: "workbench.action.files.save", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+      { command: "workbench.action.files.saveAll", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+      { command: "workbench.action.firstEditorInGroup", args: [] },
+      { command: "workbench.action.lastEditorInGroup", args: [] },
+      { command: "workbench.action.files.newUntitledFile", args: [] },
+      { command: "workbench.action.files.newUntitledFile", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+      { command: "workbench.action.closeOtherEditors", args: [] },
+      { command: "workbench.action.firstEditorInGroup", args: [] },
+      { command: "workbench.action.lastEditorInGroup", args: [] },
+    ]);
+  });
+
   it("passes VSCodeVim-style command remap args to native commands", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor, {
