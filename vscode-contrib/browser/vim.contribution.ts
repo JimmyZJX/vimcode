@@ -103,6 +103,32 @@ function registerVimListKeybindings(): void {
 	KeybindingsRegistry.registerKeybindingRule({ id: 'list.focusLast', weight, when: VimActiveListFocusContext, primary: KeyMod.Shift | KeyCode.KeyG });
 }
 
+function registerVimCompletionKeybindings(): void {
+	const weight = KeybindingWeight.WorkbenchContrib + 50;
+	for (const modeContext of [ContextKeyExpr.has('vim.insert'), ContextKeyExpr.equals('vim.mode', 'Replace')]) {
+		for (const [visibleContext, nextCommand, previousCommand] of [
+			[ContextKeyExpr.has('suggestWidgetVisible'), 'selectNextSuggestion', 'selectPrevSuggestion'],
+			[ContextKeyExpr.has('parameterHintsVisible'), 'showNextParameterHint', 'showPrevParameterHint'],
+		] as const) {
+			const when = ContextKeyExpr.and(ContextKeyExpr.has('vim.active'), modeContext, visibleContext);
+			KeybindingsRegistry.registerKeybindingRule({
+				id: nextCommand,
+				weight,
+				when,
+				primary: KeyMod.CtrlCmd | KeyCode.KeyN,
+				mac: { primary: KeyMod.WinCtrl | KeyCode.KeyN },
+			});
+			KeybindingsRegistry.registerKeybindingRule({
+				id: previousCommand,
+				weight,
+				when,
+				primary: KeyMod.CtrlCmd | KeyCode.KeyP,
+				mac: { primary: KeyMod.WinCtrl | KeyCode.KeyP },
+			});
+		}
+	}
+}
+
 function registerVimNotebookKeybindings(): void {
 	const weight = KeybindingWeight.WorkbenchContrib + 50;
 	KeybindingsRegistry.registerKeybindingRule({
@@ -140,6 +166,7 @@ function registerVimNotebookKeybindings(): void {
 }
 
 registerVimListKeybindings();
+registerVimCompletionKeybindings();
 registerVimNotebookKeybindings();
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({

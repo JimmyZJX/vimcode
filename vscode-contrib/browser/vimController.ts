@@ -34,6 +34,13 @@ const VimPendingContext = new RawContextKey<boolean>('vim.pending', false, true)
 const VimOperatorContext = new RawContextKey<string>('vim.operator', '', true);
 const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
 
+const VimNativePassthroughCommands = new Set([
+	'selectNextSuggestion',
+	'selectPrevSuggestion',
+	'showNextParameterHint',
+	'showPrevParameterHint',
+]);
+
 type NativeCursorAppearance = {
 	cursorStyle: ReturnType<ICodeEditor['getRawOptions']>['cursorStyle'];
 	cursorBlinking: NonNullable<ReturnType<ICodeEditor['getRawOptions']>['cursorBlinking']>;
@@ -325,12 +332,16 @@ export class VimController extends Disposable {
 		}
 		const key = keyFromEvent(event);
 		const remapWhen = (when: string | undefined) => this.evaluateRemapWhen(when, event.target);
-		const vimRemapOwnsKey = key !== undefined && this.vim.hasActiveRemapStartingWithOrPending(key, remapWhen);
-		if (!vimRemapOwnsKey && key !== undefined && this.handleCompletionNavigationKey(event, key)) {
+		// When Vim is waiting for the rest of a command (`g`, `d`, a register name,
+		// search input, a pending remap, ...), the next key belongs to Vim. Otherwise
+		// user/extension VSCode keybindings get first refusal, and Vim only runs if it
+		// returns a concrete KeyPlan.
+		const vimPending = this.vim.status.pending;
+		if (!vimPending && this.shouldLetNativeKeybindingHandle(event)) {
 			return;
 		}
 		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { remapWhen });
-		if (keyPlan === null || (!vimRemapOwnsKey && this.shouldLetNativeKeybindingHandle(event))) {
+		if (keyPlan === null) {
 			return;
 		}
 
@@ -339,30 +350,6 @@ export class VimController extends Disposable {
 		void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan)).then(undefined, () => this.syncStatus());
 	}
 
-	private handleCompletionNavigationKey(event: IKeyboardEvent, key: string): boolean {
-		if (key !== 'ctrl-n' && key !== 'ctrl-p') {
-			return false;
-		}
-		if (this.vim.mode.kind !== 'insert' && this.vim.mode.kind !== 'replace') {
-			return false;
-		}
-
-		const context = this.contextKeyService.getContext(event.target);
-		let command: string | undefined;
-		if (context.getValue('suggestWidgetVisible') === true) {
-			command = key === 'ctrl-n' ? 'selectNextSuggestion' : 'selectPrevSuggestion';
-		} else if (context.getValue('parameterHintsVisible') === true) {
-			command = key === 'ctrl-n' ? 'showNextParameterHint' : 'showPrevParameterHint';
-		}
-		if (command === undefined) {
-			return false;
-		}
-
-		event.preventDefault();
-		event.stopPropagation();
-		void this.commandService.executeCommand(command);
-		return true;
-	}
 
 	private evaluateRemapWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
 		if (when === undefined || when.trim().length === 0) {
@@ -426,7 +413,9 @@ export class VimController extends Disposable {
 			if (keybinding.when !== undefined && !keybinding.when.evaluate(context)) {
 				return false;
 			}
-			return !keybinding.isDefault || (keybinding.extensionId !== null && !keybinding.isBuiltinExtension);
+			return VimNativePassthroughCommands.has(keybinding.command)
+				|| !keybinding.isDefault
+				|| (keybinding.extensionId !== null && !keybinding.isBuiltinExtension);
 		});
 	}
 
