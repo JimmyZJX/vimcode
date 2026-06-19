@@ -307,6 +307,8 @@ export class Vim {
       return this.shouldPrepareInsertOrReplaceKey(key, remapWhen);
     }
 
+    if (this.isVisualMode() && key === "ctrl-c") return true;
+
     if (isCtrlKey(key)) {
       const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
       if (!isMapped) {

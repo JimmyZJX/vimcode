@@ -487,6 +487,7 @@ function visualCommandForKey(key: string): VisualCommand | undefined {
     case "Y":
       return { type: "yankLinewise" };
     case "y":
+    case "ctrl-c":
       return { type: "yank" };
     case "D":
       return { type: "deleteToLineEnd" };

@@ -1824,6 +1824,27 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("yanks with ctrl-c in visual modes", () => {
+    for (const keys of [
+      ["v", "e"],
+      ["V", "j"],
+      ["ctrl-v", "j", "l"],
+    ]) {
+      const text = "one two\nred blue";
+      const yEditor = new InMemoryVimEditor(text);
+      const yVim = new Vim(yEditor);
+      runKeys(yVim, [...keys, "y"]);
+
+      const ctrlCEditor = new InMemoryVimEditor(text);
+      const ctrlCVim = new Vim(ctrlCEditor);
+      runKeys(ctrlCVim, [...keys, "ctrl-c"]);
+
+      expect(ctrlCEditor.getText()).toBe(text);
+      expect(ctrlCVim.readRegister(undefined)).toBe(yVim.readRegister(undefined));
+      expect(ctrlCVim.modeName).toBe("vim:normal");
+    }
+  });
+
   it("yanks into named registers while also updating the unnamed register", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor);
