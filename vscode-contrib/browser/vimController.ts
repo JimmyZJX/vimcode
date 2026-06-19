@@ -20,7 +20,7 @@ import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason, CursorSelectionStartKind, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import type { ITextModel } from '../../../common/model.js';
-import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValueFromSources } from '../common/config.js';
+import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, defaultVimHandleKeys, layeredConfigValueFromSources } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
 import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
@@ -327,7 +327,7 @@ export class VimController extends Disposable {
 
 	private readVimCompatibilityConfiguration(): Partial<VimConfiguration> {
 		const vimConfig = this.configurationService.getValue<Record<string, unknown>>('vim') ?? {};
-		const vimcodeConfig = this.configurationService.getValue<Record<string, unknown>>('vimcode') ?? {};
+		const vimcodeConfig = this.readConfiguredConfigSection('vimcode');
 		const configSources = [vimConfig, vimcodeConfig];
 		const useCtrlKeys = this.readCompatibilityConfigValue('useCtrlKeys');
 		const useSystemClipboard = this.readCompatibilityConfigValue('useSystemClipboard');
@@ -346,7 +346,7 @@ export class VimController extends Disposable {
 			easymotion: typeof easymotion === 'boolean' ? easymotion : undefined,
 			easymotionKeys: typeof easymotionKeys === 'string' ? easymotionKeys : undefined,
 			easymotionJumpToAnywhereRegex: typeof easymotionJumpToAnywhereRegex === 'string' ? easymotionJumpToAnywhereRegex : undefined,
-			handleKeys: readHandleKeys(layeredConfigValueFromSources(configSources, 'handleKeys')),
+			handleKeys: readHandleKeys(layeredConfigValueFromSources([{ handleKeys: defaultVimHandleKeys }, ...configSources], 'handleKeys')),
 			normalModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'normalModeKeyBindings')),
 			normalModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'normalModeKeyBindingsNonRecursive')),
 			insertModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'insertModeKeyBindings')),
@@ -361,6 +361,23 @@ export class VimController extends Disposable {
 	private readCompatibilityConfigValue(key: string): unknown {
 		const vimcodeValue = this.readConfiguredConfigValue(`vimcode.${key}`);
 		return vimcodeValue !== undefined ? vimcodeValue : this.configurationService.getValue<unknown>(`vim.${key}`);
+	}
+
+	private readConfiguredConfigSection(section: string): Record<string, unknown> {
+		const inspected = this.configurationService.inspect<Record<string, unknown>>(section);
+		return Object.assign(
+			{},
+			...[
+				inspected.applicationValue,
+				inspected.userValue,
+				inspected.userLocalValue,
+				inspected.userRemoteValue,
+				inspected.workspaceValue,
+				inspected.workspaceFolderValue,
+				inspected.memoryValue,
+				inspected.policyValue,
+			].filter((value): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value))
+		);
 	}
 
 	/**

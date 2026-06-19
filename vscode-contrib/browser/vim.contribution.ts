@@ -15,6 +15,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorContributionInstantiation, ServicesAccessor, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
+import { defaultVimHandleKeys } from '../common/config.js';
 import { VimController } from './vimController.js';
 
 // List/tree widgets evaluate keybinding when-clauses against their own
@@ -244,7 +245,7 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 	},
 	'vim.handleKeys': {
 		type: 'object',
-		default: {},
+		default: defaultVimHandleKeys,
 		scope: ConfigurationScope.APPLICATION,
 		additionalProperties: { type: 'boolean' },
 		description: nls.localize('vim.handleKeys', "Override whether vimcode handles individual keys, using VSCodeVim key notation."),

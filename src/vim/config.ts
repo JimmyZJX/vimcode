@@ -47,6 +47,12 @@ export type VimConfiguration = {
   easymotionJumpToAnywhereRegex: string;
 };
 
+export const defaultVimHandleKeys: Readonly<Record<string, boolean>> = {
+  "<C-d>": true,
+  "<C-s>": false,
+  "<C-z>": false,
+};
+
 export const defaultVimConfiguration: VimConfiguration = {
   leader: "\\",
   normalModeKeyBindings: [],
@@ -57,7 +63,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   visualModeKeyBindingsNonRecursive: [],
   operatorPendingModeKeyBindings: [],
   operatorPendingModeKeyBindingsNonRecursive: [],
-  handleKeys: {},
+  handleKeys: defaultVimHandleKeys,
   useCtrlKeys: true,
   useSystemClipboard: false,
   timeout: 1000,

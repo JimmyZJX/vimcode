@@ -149,10 +149,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.handleKeyOverride("ctrl-x")).toBeUndefined();
   });
 
-  it("uses vim.useCtrlKeys for unmapped built-in Ctrl keys", () => {
+  it("uses VSCodeVim-compatible handleKeys defaults", () => {
+    const vim = new Vim(new InMemoryVimEditor(""));
+
+    expect(vim.handleKeyOverride("ctrl-d")).toBe(true);
+    expect(vim.handleKeyOverride("ctrl-s")).toBe(false);
+    expect(vim.handleKeyOverride("ctrl-z")).toBe(false);
+  });
+
+  it("uses vim.useCtrlKeys for Ctrl keys without handleKeys overrides", () => {
     const vim = new Vim(new InMemoryVimEditor("one\ntwo"), { useCtrlKeys: false });
 
-    expect(vim.wouldHandleKeyForTest("ctrl-d")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-u")).toBe(false);
     expect(vim.wouldHandleKeyForTest("ctrl-h")).toBe(false);
   });
 
