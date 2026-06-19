@@ -2290,6 +2290,17 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.modeName).toBe("vim:normal");
   });
 
+  it("substitutes the last character without moving insert left", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["$", "s", "X", "<escape>"]);
+
+    expect(editor.getText()).toBe("one twX");
+    expect(head(editor)).toEqual({ row: 0, column: 6 });
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
   it("stays in insert mode while typing", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor);

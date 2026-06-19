@@ -307,9 +307,29 @@ export class NormalMode {
 
   private substituteCharacters(): NormalKeyResult {
     const count = this.takeCount(1);
-    deleteCharacters(this.editor, this.registers, this.takeSelectedRegister(), count, keepUndoTransactionOpen());
-    enterInsertAtSelections(this.editor, (pos) => pos);
-    return handled({ enterInsert: true });
+    const target: OperatorTarget = {
+      kind: "charwise",
+      targets: this.editor.getSelections().map(selection => {
+        const head = selectionHead(selection);
+        return {
+          head,
+          range: {
+            start: head,
+            end: { row: head.row, column: Math.min(head.column + count, this.editor.lineLength(head.row)) },
+          },
+          cursor: head,
+        };
+      }),
+    };
+    const outcome = applyOperatorToTarget(
+      this.editor,
+      this.registers,
+      this.takeSelectedRegister(),
+      { type: "change" },
+      target
+    );
+    if (outcome.enterInsert) enterInsertAtSelections(this.editor, pos => pos);
+    return handled({ enterInsert: outcome.enterInsert });
   }
 
   private substituteLines(): NormalKeyResult {
