@@ -13,7 +13,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
-import { EditorCommand, EditorContributionInstantiation, ServicesAccessor, registerEditorCommand, registerEditorContribution } from '../../../browser/editorExtensions.js';
+import { EditorContributionInstantiation, ServicesAccessor, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { VimController } from './vimController.js';
 
@@ -38,6 +38,7 @@ const VimActiveNavigableListFocusContext = ContextKeyExpr.and(
 	ContextKeyExpr.has('listSupportsKeyboardNavigation')
 );
 const VimActiveNormalContext = ContextKeyExpr.and(
+	VimCodeEnabledContext,
 	ContextKeyExpr.has('vim.active'),
 	ContextKeyExpr.has('vim.normal')
 );
@@ -114,7 +115,7 @@ function registerVimCompletionKeybindings(): void {
 			[ContextKeyExpr.has('suggestWidgetVisible'), 'selectNextSuggestion', 'selectPrevSuggestion'],
 			[ContextKeyExpr.has('parameterHintsVisible'), 'showNextParameterHint', 'showPrevParameterHint'],
 		] as const) {
-			const when = ContextKeyExpr.and(ContextKeyExpr.has('vim.active'), modeContext, visibleContext);
+			const when = ContextKeyExpr.and(VimCodeEnabledContext, ContextKeyExpr.has('vim.active'), modeContext, visibleContext);
 			KeybindingsRegistry.registerKeybindingRule({
 				id: nextCommand,
 				weight,
@@ -339,13 +340,5 @@ class VimContribution extends VimController implements IEditorContribution {
 		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, extensionEnablementService, notificationService, logService);
 	}
 }
-
-const VimCommand = EditorCommand.bindToContribution<VimContribution>(editor => editor.getContribution<VimContribution>(VimController.ID));
-
-registerEditorCommand(new VimCommand({
-	id: 'vim.remap',
-	precondition: undefined,
-	handler: (controller, args) => controller.runRemapCommand(args),
-}));
 
 registerEditorContribution(VimController.ID, VimContribution, EditorContributionInstantiation.Eager);

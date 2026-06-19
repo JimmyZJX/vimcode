@@ -15,6 +15,7 @@ import { ResultKind } from '../../../../platform/keybinding/common/keybindingRes
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
+import { EditorCommand, registerEditorCommand } from '../../../browser/editorExtensions.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason, CursorSelectionStartKind, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
@@ -43,9 +44,34 @@ const VimNativePassthroughCommands = new Set([
 	'showPrevParameterHint',
 ]);
 
+let vimRemapCommandRegistered = false;
+
+function registerVimRemapCommandOnce(): void {
+	if (vimRemapCommandRegistered) {
+		return;
+	}
+	vimRemapCommandRegistered = true;
+	const VimCommand = EditorCommand.bindToContribution<VimController>(editor => editor.getContribution<VimController>(VimController.ID));
+	registerEditorCommand(new VimCommand({
+		id: 'vim.remap',
+		precondition: undefined,
+		handler: (controller, args) => controller.runRemapCommand(args),
+	}));
+}
+
 type NativeCursorAppearance = {
 	cursorStyle: ReturnType<ICodeEditor['getRawOptions']>['cursorStyle'];
 	cursorBlinking: NonNullable<ReturnType<ICodeEditor['getRawOptions']>['cursorBlinking']>;
+};
+
+type VimContextKeys = {
+	active: IContextKey<boolean>;
+	mode: IContextKey<string>;
+	normal: IContextKey<boolean>;
+	insert: IContextKey<boolean>;
+	pending: IContextKey<boolean>;
+	operator: IContextKey<string>;
+	chord: IContextKey<string>;
 };
 
 class VimModelStateStore {
@@ -76,13 +102,7 @@ export class VimController extends Disposable {
 	private readonly vimEditor: VSCodeVimEditor;
 	private readonly vim: Vim;
 	private readonly asyncKeyQueue = new AsyncKeyQueue();
-	private readonly vimActiveContext: IContextKey<boolean>;
-	private readonly vimModeContext: IContextKey<string>;
-	private readonly vimNormalContext: IContextKey<boolean>;
-	private readonly vimInsertContext: IContextKey<boolean>;
-	private readonly vimPendingContext: IContextKey<boolean>;
-	private readonly vimOperatorContext: IContextKey<string>;
-	private readonly vimChordContext: IContextKey<string>;
+	private vimContexts: VimContextKeys | undefined = undefined;
 	private enabled = false;
 	private remapTimeout: ReturnType<typeof setTimeout> | undefined;
 	private remapTimeoutGeneration = 0;
@@ -111,14 +131,6 @@ export class VimController extends Disposable {
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
 		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message));
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration(), VimController.globalState);
-		this.vimActiveContext = VimActiveContext.bindTo(contextKeyService);
-		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
-		this.vimNormalContext = VimNormalContext.bindTo(contextKeyService);
-		this.vimInsertContext = VimInsertContext.bindTo(contextKeyService);
-		this.vimPendingContext = VimPendingContext.bindTo(contextKeyService);
-		this.vimOperatorContext = VimOperatorContext.bindTo(contextKeyService);
-		this.vimChordContext = VimChordContext.bindTo(contextKeyService);
-		this.attachCurrentModelState();
 		this.updateEnabledState();
 		this._register(this.editor.onKeyDown(event => this.handleKeyDown(event)));
 		this._register(this.editor.onDidFocusEditorText(() => this.syncEditorState()));
@@ -229,6 +241,21 @@ export class VimController extends Disposable {
 		}
 	}
 
+	private ensureVimContextKeys(): VimContextKeys {
+		if (this.vimContexts === undefined) {
+			this.vimContexts = {
+				active: VimActiveContext.bindTo(this.contextKeyService),
+				mode: VimModeContext.bindTo(this.contextKeyService),
+				normal: VimNormalContext.bindTo(this.contextKeyService),
+				insert: VimInsertContext.bindTo(this.contextKeyService),
+				pending: VimPendingContext.bindTo(this.contextKeyService),
+				operator: VimOperatorContext.bindTo(this.contextKeyService),
+				chord: VimChordContext.bindTo(this.contextKeyService),
+			};
+		}
+		return this.vimContexts;
+	}
+
 	private updateEnabledState(): void {
 		const enabled = this.isEnabled();
 		const wasEnabled = this.enabled;
@@ -246,6 +273,7 @@ export class VimController extends Disposable {
 		// from vimcode. Users switching back to VSCodeVim should reload the window.
 		this.setGlobalEnabledContexts(enabled, { mirrorVimEnabled: enabled || wasEnabled });
 		if (enabled) {
+			registerVimRemapCommandOnce();
 			this.attachCurrentModelState();
 			this.warnIfVSCodeVimEnabled();
 			this.syncEditorState();
@@ -608,29 +636,34 @@ export class VimController extends Disposable {
 
 	private syncDetachedStatus(): void {
 		const status = this.vim.status;
+		const contexts = this.ensureVimContextKeys();
 		this.clearRemapTimeout();
 		this.vimEditor.setInsertPendingText(undefined);
 		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
-		this.vimActiveContext.set(true);
-		this.vimModeContext.set(vscodeVimModeContextValue(status));
-		this.vimNormalContext.set(status.mode === 'normal');
-		this.vimInsertContext.set(status.mode === 'insert');
-		this.vimPendingContext.set(status.pending);
-		this.vimOperatorContext.set(status.operator ?? '');
-		this.vimChordContext.set(status.chord);
+		contexts.active.set(true);
+		contexts.mode.set(vscodeVimModeContextValue(status));
+		contexts.normal.set(status.mode === 'normal');
+		contexts.insert.set(status.mode === 'insert');
+		contexts.pending.set(status.pending);
+		contexts.operator.set(status.operator ?? '');
+		contexts.chord.set(status.chord);
 	}
 
 	private syncDisabledStatus(): void {
 		this.clearRemapTimeout();
 		this.vimEditor.setInsertPendingText(undefined);
 		this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
-		this.vimActiveContext.set(false);
-		this.vimModeContext.set('Disabled');
-		this.vimNormalContext.set(false);
-		this.vimInsertContext.set(false);
-		this.vimPendingContext.set(false);
-		this.vimOperatorContext.set('');
-		this.vimChordContext.set('');
+		const contexts = this.vimContexts;
+		if (contexts === undefined) {
+			return;
+		}
+		contexts.active.set(false);
+		contexts.mode.set('Disabled');
+		contexts.normal.set(false);
+		contexts.insert.set(false);
+		contexts.pending.set(false);
+		contexts.operator.set('');
+		contexts.chord.set('');
 	}
 
 	private syncStatus(): void {
@@ -639,14 +672,15 @@ export class VimController extends Disposable {
 			return;
 		}
 		const status = this.vim.status;
+		const contexts = this.ensureVimContextKeys();
 		this.editor.getContainerDomNode().classList.toggle('vim-character-mode-enabled', status.mode !== 'insert' && status.mode !== 'replace');
-		this.vimActiveContext.set(true);
-		this.vimModeContext.set(vscodeVimModeContextValue(status));
-		this.vimNormalContext.set(status.mode === 'normal');
-		this.vimInsertContext.set(status.mode === 'insert');
-		this.vimPendingContext.set(status.pending);
-		this.vimOperatorContext.set(status.operator ?? '');
-		this.vimChordContext.set(status.chord);
+		contexts.active.set(true);
+		contexts.mode.set(vscodeVimModeContextValue(status));
+		contexts.normal.set(status.mode === 'normal');
+		contexts.insert.set(status.mode === 'insert');
+		contexts.pending.set(status.pending);
+		contexts.operator.set(status.operator ?? '');
+		contexts.chord.set(status.chord);
 		this.syncCursorAppearance(status);
 		this.vimEditor.setInsertPendingText(status.insertPendingText);
 		this.updateRemapTimeout(status);
