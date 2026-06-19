@@ -97,7 +97,7 @@ export class VimController extends Disposable {
 		private readonly editor: ICodeEditor,
 		private readonly contextKeyService: IContextKeyService,
 		clipboardService: IClipboardService,
-		private readonly commandService: ICommandService,
+		commandService: ICommandService,
 		private readonly configurationService: IConfigurationService,
 		private readonly keybindingService: IKeybindingService,
 		private readonly extensionManagementService: IExtensionManagementService,
@@ -385,7 +385,10 @@ export class VimController extends Disposable {
 			return false;
 		}
 		if (result.kind === ResultKind.MoreChordsNeeded) {
-			return this.hasMatchingUserOrExtensionKeybinding(event, undefined, true);
+			// Do not let native chord prefixes preempt Vim prefixes (`z`, `g`,
+			// `ctrl-w`, ...). If Vim refuses the key, [handleKeyDown] returns without
+			// preventing the event, so VSCode can still enter its chord mode.
+			return false;
 		}
 		if (result.commandId === null || result.isBubble) {
 			return false;

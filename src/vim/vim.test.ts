@@ -1497,6 +1497,15 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 3, column: 5 });
   });
 
+  it("supports pageup and pagedown as full-page Vim motions", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nx\nabcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["5", "l", "pagedown", "pagedown", "pageup"]);
+
+    expect(head(editor)).toEqual({ row: 0, column: 5 });
+  });
+
   it("preserves the end-of-line goal across vertical motions", () => {
     const editor = new InMemoryVimEditor("abcdef\nx\nabcdefghi");
     const vim = new Vim(editor);

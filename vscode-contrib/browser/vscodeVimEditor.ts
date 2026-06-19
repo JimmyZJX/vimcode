@@ -433,16 +433,23 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 	}
 
-	private scheduleViewportReveal(position: { scrollTop?: number; scrollLeft?: number }): void {
+	private scheduleViewportAction(action: () => void): void {
 		const requestId = ++this.viewportRevealRequestId;
-		// Defer until after VSCode has finished processing the selection/cursor event for
-		// this command. Applying the smooth scroll synchronously can be overwritten by
-		// editor scroll stabilization, especially for visual selections.
-		queueMicrotask(() => {
-			if (requestId === this.viewportRevealRequestId) {
-				this.editor.setScrollPosition(position, ScrollType.Smooth);
-			}
-		});
+		// Defer until after VSCode has finished processing this key event and Vim's
+		// post-key sync. Applying viewport changes earlier can be overwritten by
+		// editor scroll stabilization, especially for visual selections and diff
+		// editors with synchronized scrolling.
+		setTimeout(() => {
+			if (requestId === this.viewportRevealRequestId) action();
+		}, 0);
+	}
+
+	private scheduleViewportReveal(position: { scrollTop?: number; scrollLeft?: number }): void {
+		this.scheduleViewportAction(() => this.editor.setScrollPosition(position, this.editorScrollType()));
+	}
+
+	private editorScrollType(): ScrollType {
+		return this.editor.getOption(EditorOption.smoothScrolling) ? ScrollType.Smooth : ScrollType.Immediate;
 	}
 
 	revealCurrentLine(target: HostRevealTarget): void {
@@ -451,9 +458,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		if (position === null) {
 			return;
 		}
-		this.editor.trigger('vim', 'revealLine', {
-			lineNumber: position.lineNumber - 1,
-			at: target,
+		this.scheduleViewportAction(() => {
+			this.editor.trigger('vim', 'revealLine', {
+				lineNumber: position.lineNumber - 1,
+				at: target,
+			});
 		});
 	}
 
@@ -528,15 +537,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return { top: top.lineNumber - 1, bottom: bottom.lineNumber - 1 };
 	}
 
-	scrollByLines(direction: HostDirection, count: number, { extend = false }: { extend?: boolean } = {}): void {
+	scrollByLines(direction: HostDirection, count: number, { extend: _extend = false }: { extend?: boolean } = {}): void {
 		this.viewportControlledByCommand = true;
-		this.editor.trigger('vim', 'editorScroll', {
-			to: direction,
-			by: 'wrappedLine',
-			value: count,
-			revealCursor: false,
-			select: extend,
-		});
+		const lineHeight = this.editor.getOption(EditorOption.fontInfo).lineHeight;
+		const delta = count * lineHeight * (direction === 'down' ? 1 : -1);
+		this.scheduleViewportReveal({ scrollTop: Math.max(0, this.editor.getScrollTop() + delta) });
 	}
 
 	updateSearch(query: string, _direction: SearchDirection, options: SearchOptions = {}): void {
