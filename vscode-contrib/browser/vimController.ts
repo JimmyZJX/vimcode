@@ -222,9 +222,11 @@ export class VimController extends Disposable {
 		return this.readCompatibilityConfigValue('enabled') === true;
 	}
 
-	private setGlobalEnabledContexts(enabled: boolean): void {
-		void this.commandService.executeCommand('_setContext', VimEnabledContext.key, enabled);
+	private setGlobalEnabledContexts(enabled: boolean, options: { mirrorVimEnabled: boolean }): void {
 		void this.commandService.executeCommand('_setContext', VimCodeEnabledContext.key, enabled);
+		if (options.mirrorVimEnabled) {
+			void this.commandService.executeCommand('_setContext', VimEnabledContext.key, enabled);
+		}
 	}
 
 	private updateEnabledState(): void {
@@ -237,7 +239,12 @@ export class VimController extends Disposable {
 			this.rememberNativeCursorAppearance();
 		}
 		this.enabled = enabled;
-		this.setGlobalEnabledContexts(enabled);
+		// Keep the default disabled startup path inert for users of the VSCodeVim
+		// extension: do not write the shared `vim.enabled` context key until
+		// vimcode has actually taken ownership. Once vimcode is active, mirror it
+		// for VSCodeVim-compatible when-clauses and clear it when toggling away
+		// from vimcode. Users switching back to VSCodeVim should reload the window.
+		this.setGlobalEnabledContexts(enabled, { mirrorVimEnabled: enabled || wasEnabled });
 		if (enabled) {
 			this.attachCurrentModelState();
 			this.warnIfVSCodeVimEnabled();

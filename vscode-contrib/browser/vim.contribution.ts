@@ -22,11 +22,14 @@ import { VimController } from './vimController.js';
 // scope. `vim.active` is editor-scoped (VimController is an editor
 // contribution and binds its keys to the editor-scoped IContextKeyService),
 // so it is invisible from a focused list and rules gated on it never match.
-// `vim.enabled` and `vimcode.enabled` are set on the root context so they are
-// visible in every scope.
-const VimEnabledContext = ContextKeyExpr.has('vim.enabled');
+// `vimcode.enabled` is set on the root context so it is visible in every scope.
+// Gate vimcode's own keybindings on this vimcode-owned key. VimController also
+// mirrors the shared `vim.enabled` context while vimcode is active for
+// VSCodeVim-compatible when-clauses, but the default disabled startup path must
+// not depend on or write that shared key.
+const VimCodeEnabledContext = ContextKeyExpr.has('vimcode.enabled');
 const VimActiveListFocusContext = ContextKeyExpr.and(
-	VimEnabledContext,
+	VimCodeEnabledContext,
 	ContextKeyExpr.has('listFocus'),
 	ContextKeyExpr.not('inputFocus')
 );
