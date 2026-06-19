@@ -1,4 +1,4 @@
-import { RemapTimeoutKey, layeredConfigValue, normalizeKey } from "./config.js";
+import { RemapTimeoutKey, layeredConfigValue, layeredConfigValueFromSources, normalizeKey } from "./config.js";
 import type { VimKeyRemapping } from "./config.js";
 import { InMemoryVimEditor } from "./editor.js";
 import type { HostDirection, HostRevealTarget } from "./editor.js";
@@ -108,6 +108,35 @@ describe("Zed-inspired Vim core smoke tests", () => {
       handleKeys__team: { "<C-f>": false },
       handleKeys: { "<C-d>": true },
     }, "handleKeys")).toEqual({ "<C-f>": false, "<C-d>": true });
+  });
+
+  it("layers vimcode-prefixed config values above vim-prefixed config values", () => {
+    expect(layeredConfigValueFromSources([
+      {
+        normalModeKeyBindings__a: [{ before: ["vim-a"], after: ["h"] }],
+        normalModeKeyBindings__z: [{ before: ["vim-z"], after: ["j"] }],
+      },
+      {
+        normalModeKeyBindings__a: [{ before: ["vimcode-a"], after: ["k"] }],
+        normalModeKeyBindings__z: [{ before: ["vimcode-z"], after: ["l"] }],
+      },
+    ], "normalModeKeyBindings")).toEqual([
+      { before: ["vim-a"], after: ["h"] },
+      { before: ["vimcode-a"], after: ["k"] },
+      { before: ["vim-z"], after: ["j"] },
+      { before: ["vimcode-z"], after: ["l"] },
+    ]);
+
+    expect(layeredConfigValueFromSources([
+      {
+        handleKeys__a: { "<C-f>": "vim-a" },
+        handleKeys__z: { "<C-f>": "vim-z" },
+      },
+      {
+        handleKeys__a: { "<C-f>": "vimcode-a" },
+        handleKeys__z: { "<C-f>": "vimcode-z" },
+      },
+    ], "handleKeys")).toEqual({ "<C-f>": "vimcode-z" });
   });
 
   it("normalizes VSCodeVim handleKeys config", () => {

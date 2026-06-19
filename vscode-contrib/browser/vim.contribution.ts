@@ -22,10 +22,11 @@ import { VimController } from './vimController.js';
 // scope. `vim.active` is editor-scoped (VimController is an editor
 // contribution and binds its keys to the editor-scoped IContextKeyService),
 // so it is invisible from a focused list and rules gated on it never match.
-// Configuration-backed `config.*` keys live at the root context and are
+// `vim.enabled` and `vimcode.enabled` are set on the root context so they are
 // visible in every scope.
+const VimEnabledContext = ContextKeyExpr.has('vim.enabled');
 const VimActiveListFocusContext = ContextKeyExpr.and(
-	ContextKeyExpr.has('config.vim.enabled'),
+	VimEnabledContext,
 	ContextKeyExpr.has('listFocus'),
 	ContextKeyExpr.not('inputFocus')
 );
@@ -169,93 +170,130 @@ registerVimListKeybindings();
 registerVimCompletionKeybindings();
 registerVimNotebookKeybindings();
 
+const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> = {
+	'vim.enabled': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.enabled', "Enable vimcode's built-in Vim key handling."),
+	},
+	'vim.useSystemClipboard': {
+		type: 'boolean',
+		default: true,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.useSystemClipboard', "Use system clipboard for the unnamed register."),
+	},
+	'vim.leader': {
+		type: 'string',
+		default: '\\',
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.leader', "Leader key used by VSCodeVim-compatible remappings."),
+	},
+	'vim.useCtrlKeys': {
+		type: 'boolean',
+		default: true,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.useCtrlKeys', "Enable Vim Ctrl key commands that override common VS Code operations."),
+	},
+	'vim.debugUndo': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.debugUndo', "Log vimcode undo transaction and VS Code undo/redo synchronization details."),
+	},
+	'vim.debugVisual': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.debugVisual', "Log vimcode mouse-selection and visual-mode synchronization decisions."),
+	},
+	'vim.timeout': {
+		type: 'number',
+		default: 1000,
+		minimum: 0,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.timeout', "Timeout in milliseconds for remapped key sequences."),
+	},
+	'vim.visualMultilineInsert': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.visualMultilineInsert', "Use VSCodeVim-compatible multi-cursor insertion for I/A in Visual and Visual Line modes."),
+	},
+	'vim.easymotion': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.easymotion', "Enable VSCodeVim-compatible EasyMotion commands."),
+	},
+	'vim.easymotionKeys': {
+		type: 'string',
+		default: 'hklyuiopnm,qwertzxcvbasdgjf;',
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.easymotionKeys', "Keys used to label EasyMotion targets."),
+	},
+	'vim.easymotionJumpToAnywhereRegex': {
+		type: 'string',
+		default: '\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]',
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.easymotionJumpToAnywhereRegex', "Regular expression used by EasyMotion jump-to-anywhere commands."),
+	},
+	'vim.handleKeys': {
+		type: 'object',
+		default: {},
+		scope: ConfigurationScope.APPLICATION,
+		additionalProperties: { type: 'boolean' },
+		description: nls.localize('vim.handleKeys', "Override whether vimcode handles individual keys, using VSCodeVim key notation."),
+	},
+	'vim.normalModeKeyBindings': remappingSchema(nls.localize('vim.normalModeKeyBindings', "Recursive key remappings in Normal mode.")),
+	'vim.normalModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.normalModeKeyBindingsNonRecursive', "Non-recursive key remappings in Normal mode.")),
+	'vim.insertModeKeyBindings': remappingSchema(nls.localize('vim.insertModeKeyBindings', "Recursive key remappings in Insert mode.")),
+	'vim.insertModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.insertModeKeyBindingsNonRecursive', "Non-recursive key remappings in Insert mode.")),
+	'vim.visualModeKeyBindings': remappingSchema(nls.localize('vim.visualModeKeyBindings', "Recursive key remappings in Visual modes.")),
+	'vim.visualModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.visualModeKeyBindingsNonRecursive', "Non-recursive key remappings in Visual modes.")),
+	'vim.operatorPendingModeKeyBindings': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindings', "Recursive key remappings in Operator-pending mode.")),
+	'vim.operatorPendingModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindingsNonRecursive', "Non-recursive key remappings in Operator-pending mode.")),
+};
+
+function vimcodeConfigurationProperties(): Record<string, IConfigurationPropertySchema> {
+	return Object.fromEntries(Object.entries(vimConfigurationProperties).map(([key, schema]) => [key.replace(/^vim\./, 'vimcode.'), schema]));
+}
+
+function readCompatibilityConfigValue(configurationService: IConfigurationService, key: string): unknown {
+	const vimcodeValue = readConfiguredConfigValue(configurationService, `vimcode.${key}`);
+	return vimcodeValue !== undefined ? vimcodeValue : configurationService.getValue<unknown>(`vim.${key}`);
+}
+
+/**
+ * Return a configuration value only when it was explicitly set outside the
+ * schema default. This lets vimcode.* intentionally override vim.* while
+ * avoiding the registered vimcode.* defaults accidentally shadowing a user's
+ * vim.* settings.
+ */
+function readConfiguredConfigValue(configurationService: IConfigurationService, key: string): unknown {
+	const inspected = configurationService.inspect<unknown>(key);
+	if (
+		inspected.applicationValue === undefined
+		&& inspected.userValue === undefined
+		&& inspected.userLocalValue === undefined
+		&& inspected.userRemoteValue === undefined
+		&& inspected.workspaceValue === undefined
+		&& inspected.workspaceFolderValue === undefined
+		&& inspected.memoryValue === undefined
+		&& inspected.policyValue === undefined
+	) {
+		return undefined;
+	}
+	return inspected.value;
+}
+
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'vim',
 	title: nls.localize('vim.configuration.title', "Vim"),
 	type: 'object',
 	properties: {
-		'vim.enabled': {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.enabled', "Enable vimcode's built-in Vim key handling."),
-		},
-		'vim.useSystemClipboard': {
-			type: 'boolean',
-			default: true,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.useSystemClipboard', "Use system clipboard for the unnamed register."),
-		},
-		'vim.leader': {
-			type: 'string',
-			default: '\\',
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.leader', "Leader key used by VSCodeVim-compatible remappings."),
-		},
-		'vim.useCtrlKeys': {
-			type: 'boolean',
-			default: true,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.useCtrlKeys', "Enable Vim Ctrl key commands that override common VS Code operations."),
-		},
-		'vim.debugUndo': {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.debugUndo', "Log vimcode undo transaction and VS Code undo/redo synchronization details."),
-		},
-		'vim.debugVisual': {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.debugVisual', "Log vimcode mouse-selection and visual-mode synchronization decisions."),
-		},
-		'vim.timeout': {
-			type: 'number',
-			default: 1000,
-			minimum: 0,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.timeout', "Timeout in milliseconds for remapped key sequences."),
-		},
-		'vim.visualMultilineInsert': {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.visualMultilineInsert', "Use VSCodeVim-compatible multi-cursor insertion for I/A in Visual and Visual Line modes."),
-		},
-		'vim.easymotion': {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.easymotion', "Enable VSCodeVim-compatible EasyMotion commands."),
-		},
-		'vim.easymotionKeys': {
-			type: 'string',
-			default: 'hklyuiopnm,qwertzxcvbasdgjf;',
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.easymotionKeys', "Keys used to label EasyMotion targets."),
-		},
-		'vim.easymotionJumpToAnywhereRegex': {
-			type: 'string',
-			default: '\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]',
-			scope: ConfigurationScope.APPLICATION,
-			description: nls.localize('vim.easymotionJumpToAnywhereRegex', "Regular expression used by EasyMotion jump-to-anywhere commands."),
-		},
-		'vim.handleKeys': {
-			type: 'object',
-			default: {},
-			scope: ConfigurationScope.APPLICATION,
-			additionalProperties: { type: 'boolean' },
-			description: nls.localize('vim.handleKeys', "Override whether vimcode handles individual keys, using VSCodeVim key notation."),
-		},
-		'vim.normalModeKeyBindings': remappingSchema(nls.localize('vim.normalModeKeyBindings', "Recursive key remappings in Normal mode.")),
-		'vim.normalModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.normalModeKeyBindingsNonRecursive', "Non-recursive key remappings in Normal mode.")),
-		'vim.insertModeKeyBindings': remappingSchema(nls.localize('vim.insertModeKeyBindings', "Recursive key remappings in Insert mode.")),
-		'vim.insertModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.insertModeKeyBindingsNonRecursive', "Non-recursive key remappings in Insert mode.")),
-		'vim.visualModeKeyBindings': remappingSchema(nls.localize('vim.visualModeKeyBindings', "Recursive key remappings in Visual modes.")),
-		'vim.visualModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.visualModeKeyBindingsNonRecursive', "Non-recursive key remappings in Visual modes.")),
-		'vim.operatorPendingModeKeyBindings': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindings', "Recursive key remappings in Operator-pending mode.")),
-		'vim.operatorPendingModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindingsNonRecursive', "Non-recursive key remappings in Operator-pending mode.")),
+		...vimConfigurationProperties,
+		...vimcodeConfigurationProperties(),
 	},
 });
 
@@ -275,8 +313,8 @@ class ToggleVimAction extends Action2 {
 
 	run(accessor: ServicesAccessor): Promise<void> {
 		const configurationService = accessor.get(IConfigurationService);
-		const enabled = configurationService.getValue<unknown>('vim.enabled') === true;
-		return configurationService.updateValue('vim.enabled', !enabled, ConfigurationTarget.USER);
+		const enabled = readCompatibilityConfigValue(configurationService, 'enabled') === true;
+		return configurationService.updateValue('vimcode.enabled', !enabled, ConfigurationTarget.USER);
 	}
 }
 

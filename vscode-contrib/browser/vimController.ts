@@ -19,13 +19,15 @@ import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason, CursorSelectionStartKind, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
 import type { ITextModel } from '../../../common/model.js';
-import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValue } from '../common/config.js';
+import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, layeredConfigValueFromSources } from '../common/config.js';
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
 import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
+const VimEnabledContext = new RawContextKey<boolean>('vim.enabled', false, true);
+const VimCodeEnabledContext = new RawContextKey<boolean>('vimcode.enabled', false, true);
 const VimActiveContext = new RawContextKey<boolean>('vim.active', false, true);
 const VimModeContext = new RawContextKey<string>('vim.mode', 'Normal', true);
 const VimNormalContext = new RawContextKey<boolean>('vim.normal', true, true);
@@ -97,7 +99,7 @@ export class VimController extends Disposable {
 		private readonly editor: ICodeEditor,
 		private readonly contextKeyService: IContextKeyService,
 		clipboardService: IClipboardService,
-		commandService: ICommandService,
+		private readonly commandService: ICommandService,
 		private readonly configurationService: IConfigurationService,
 		private readonly keybindingService: IKeybindingService,
 		private readonly extensionManagementService: IExtensionManagementService,
@@ -107,7 +109,7 @@ export class VimController extends Disposable {
 	) {
 		super();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
-		this.vimEditor = new VSCodeVimEditor(editor, commandService, message => this.logUndo(message));
+		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message));
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration(), VimController.globalState);
 		this.vimActiveContext = VimActiveContext.bindTo(contextKeyService);
 		this.vimModeContext = VimModeContext.bindTo(contextKeyService);
@@ -217,7 +219,12 @@ export class VimController extends Disposable {
 	}
 
 	private isEnabled(): boolean {
-		return this.configurationService.getValue<unknown>('vim.enabled') === true;
+		return this.readCompatibilityConfigValue('enabled') === true;
+	}
+
+	private setGlobalEnabledContexts(enabled: boolean): void {
+		void this.commandService.executeCommand('_setContext', VimEnabledContext.key, enabled);
+		void this.commandService.executeCommand('_setContext', VimCodeEnabledContext.key, enabled);
 	}
 
 	private updateEnabledState(): void {
@@ -230,6 +237,7 @@ export class VimController extends Disposable {
 			this.rememberNativeCursorAppearance();
 		}
 		this.enabled = enabled;
+		this.setGlobalEnabledContexts(enabled);
 		if (enabled) {
 			this.attachCurrentModelState();
 			this.warnIfVSCodeVimEnabled();
@@ -249,13 +257,13 @@ export class VimController extends Disposable {
 	}
 
 	private logUndo(message: string): void {
-		if (this.configurationService.getValue<unknown>('vim.debugUndo') === true) {
+		if (this.readCompatibilityConfigValue('debugUndo') === true) {
 			this.logService.info(`[vimcode.undo] ${message}`);
 		}
 	}
 
 	private shouldLogVisual(): boolean {
-		return this.configurationService.getValue<unknown>('vim.debugVisual') === true;
+		return this.readCompatibilityConfigValue('debugVisual') === true;
 	}
 
 	private logVisual(message: string): void {
@@ -284,46 +292,63 @@ export class VimController extends Disposable {
 
 	private readVimCompatibilityConfiguration(): Partial<VimConfiguration> {
 		const vimConfig = this.configurationService.getValue<Record<string, unknown>>('vim') ?? {};
-		const useCtrlKeys = this.configurationService.getValue<unknown>('vim.useCtrlKeys');
-		const useSystemClipboard = this.configurationService.getValue<unknown>('vim.useSystemClipboard');
-		const timeout = this.configurationService.getValue<unknown>('vim.timeout');
-		const visualMultilineInsert = this.configurationService.getValue<unknown>('vim.visualMultilineInsert');
-		const easymotion = this.configurationService.getValue<unknown>('vim.easymotion');
-		const easymotionKeys = this.configurationService.getValue<unknown>('vim.easymotionKeys');
-		const easymotionJumpToAnywhereRegex = this.configurationService.getValue<unknown>('vim.easymotionJumpToAnywhereRegex');
+		const vimcodeConfig = this.configurationService.getValue<Record<string, unknown>>('vimcode') ?? {};
+		const configSources = [vimConfig, vimcodeConfig];
+		const useCtrlKeys = this.readCompatibilityConfigValue('useCtrlKeys');
+		const useSystemClipboard = this.readCompatibilityConfigValue('useSystemClipboard');
+		const timeout = this.readCompatibilityConfigValue('timeout');
+		const visualMultilineInsert = this.readCompatibilityConfigValue('visualMultilineInsert');
+		const easymotion = this.readCompatibilityConfigValue('easymotion');
+		const easymotionKeys = this.readCompatibilityConfigValue('easymotionKeys');
+		const easymotionJumpToAnywhereRegex = this.readCompatibilityConfigValue('easymotionJumpToAnywhereRegex');
+		const leader = this.readCompatibilityConfigValue('leader');
 		return {
-			leader: typeof vimConfig.leader === 'string' ? vimConfig.leader : undefined,
-			useCtrlKeys: typeof useCtrlKeys === 'boolean'
-				? useCtrlKeys
-				: typeof vimConfig.useCtrlKeys === 'boolean' ? vimConfig.useCtrlKeys : undefined,
-			useSystemClipboard: typeof useSystemClipboard === 'boolean'
-				? useSystemClipboard
-				: typeof vimConfig.useSystemClipboard === 'boolean' ? vimConfig.useSystemClipboard : undefined,
-			timeout: typeof timeout === 'number'
-				? timeout
-				: typeof vimConfig.timeout === 'number' ? vimConfig.timeout : undefined,
-			visualMultilineInsert: typeof visualMultilineInsert === 'boolean'
-				? visualMultilineInsert
-				: typeof vimConfig.visualMultilineInsert === 'boolean' ? vimConfig.visualMultilineInsert : undefined,
-			easymotion: typeof easymotion === 'boolean'
-				? easymotion
-				: typeof vimConfig.easymotion === 'boolean' ? vimConfig.easymotion : undefined,
-			easymotionKeys: typeof easymotionKeys === 'string'
-				? easymotionKeys
-				: typeof vimConfig.easymotionKeys === 'string' ? vimConfig.easymotionKeys : undefined,
-			easymotionJumpToAnywhereRegex: typeof easymotionJumpToAnywhereRegex === 'string'
-				? easymotionJumpToAnywhereRegex
-				: typeof vimConfig.easymotionJumpToAnywhereRegex === 'string' ? vimConfig.easymotionJumpToAnywhereRegex : undefined,
-			handleKeys: readHandleKeys(layeredConfigValue(vimConfig, 'handleKeys')),
-			normalModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindings')),
-			normalModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'normalModeKeyBindingsNonRecursive')),
-			insertModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'insertModeKeyBindings')),
-			insertModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'insertModeKeyBindingsNonRecursive')),
-			visualModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'visualModeKeyBindings')),
-			visualModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'visualModeKeyBindingsNonRecursive')),
-			operatorPendingModeKeyBindings: readRemaps(layeredConfigValue(vimConfig, 'operatorPendingModeKeyBindings')),
-			operatorPendingModeKeyBindingsNonRecursive: readRemaps(layeredConfigValue(vimConfig, 'operatorPendingModeKeyBindingsNonRecursive')),
+			leader: typeof leader === 'string' ? leader : undefined,
+			useCtrlKeys: typeof useCtrlKeys === 'boolean' ? useCtrlKeys : undefined,
+			useSystemClipboard: typeof useSystemClipboard === 'boolean' ? useSystemClipboard : undefined,
+			timeout: typeof timeout === 'number' ? timeout : undefined,
+			visualMultilineInsert: typeof visualMultilineInsert === 'boolean' ? visualMultilineInsert : undefined,
+			easymotion: typeof easymotion === 'boolean' ? easymotion : undefined,
+			easymotionKeys: typeof easymotionKeys === 'string' ? easymotionKeys : undefined,
+			easymotionJumpToAnywhereRegex: typeof easymotionJumpToAnywhereRegex === 'string' ? easymotionJumpToAnywhereRegex : undefined,
+			handleKeys: readHandleKeys(layeredConfigValueFromSources(configSources, 'handleKeys')),
+			normalModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'normalModeKeyBindings')),
+			normalModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'normalModeKeyBindingsNonRecursive')),
+			insertModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'insertModeKeyBindings')),
+			insertModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'insertModeKeyBindingsNonRecursive')),
+			visualModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'visualModeKeyBindings')),
+			visualModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'visualModeKeyBindingsNonRecursive')),
+			operatorPendingModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'operatorPendingModeKeyBindings')),
+			operatorPendingModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'operatorPendingModeKeyBindingsNonRecursive')),
 		};
+	}
+
+	private readCompatibilityConfigValue(key: string): unknown {
+		const vimcodeValue = this.readConfiguredConfigValue(`vimcode.${key}`);
+		return vimcodeValue !== undefined ? vimcodeValue : this.configurationService.getValue<unknown>(`vim.${key}`);
+	}
+
+	/**
+	 * Return a configuration value only when it was explicitly set outside the
+	 * schema default. This lets vimcode.* intentionally override vim.* while
+	 * avoiding the registered vimcode.* defaults accidentally shadowing a user's
+	 * vim.* settings.
+	 */
+	private readConfiguredConfigValue(key: string): unknown {
+		const inspected = this.configurationService.inspect<unknown>(key);
+		if (
+			inspected.applicationValue === undefined
+			&& inspected.userValue === undefined
+			&& inspected.userLocalValue === undefined
+			&& inspected.userRemoteValue === undefined
+			&& inspected.workspaceValue === undefined
+			&& inspected.workspaceFolderValue === undefined
+			&& inspected.memoryValue === undefined
+			&& inspected.policyValue === undefined
+		) {
+			return undefined;
+		}
+		return inspected.value;
 	}
 
 	private handleKeyDown(event: IKeyboardEvent): void {

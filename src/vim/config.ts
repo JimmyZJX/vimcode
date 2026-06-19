@@ -68,21 +68,33 @@ export const defaultVimConfiguration: VimConfiguration = {
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {
-  const keys = Object.keys(config).sort();
-  const layers = keys
-    .filter(key => key.startsWith(`${option}__`))
-    .map(key => config[key]);
-  const base = config[option];
+  return layeredConfigValueFromSources([config], option);
+}
 
-  if (Array.isArray(base) || layers.some(Array.isArray)) {
-    return [...layers.filter(Array.isArray), Array.isArray(base) ? base : []].flat();
+export function layeredConfigValueFromSources(configs: readonly RawVimConfiguration[], option: string): unknown {
+  const layers = configs.flatMap((config, sourceIndex) =>
+    Object.keys(config)
+      .filter(key => key.startsWith(`${option}__`))
+      .map(key => ({
+        suffix: key.slice(option.length + 2),
+        sourceIndex,
+        value: config[key],
+      })));
+  layers.sort((a, b) => compareStrings(a.suffix, b.suffix) || a.sourceIndex - b.sourceIndex);
+  const values = [
+    ...layers.map(layer => layer.value),
+    ...configs.map(config => config[option]).filter(value => value !== undefined),
+  ];
+
+  if (values.some(Array.isArray)) {
+    return values.filter(Array.isArray).flat();
   }
 
-  if (isPlainObject(base) || layers.some(isPlainObject)) {
-    return Object.assign({}, ...layers.filter(isPlainObject), isPlainObject(base) ? base : {});
+  if (values.some(isPlainObject)) {
+    return Object.assign({}, ...values.filter(isPlainObject));
   }
 
-  return base;
+  return values[values.length - 1];
 }
 
 export function mergeVimConfiguration(config: Partial<VimConfiguration> = {}): VimConfiguration {
@@ -265,6 +277,12 @@ export function remapModeForVimMode(mode: VimMode["kind"], { operatorPending }: 
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function compareStrings(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 function normalizeRemappings(leader: string, mappings: readonly VimKeyRemapping[], recursive: boolean): readonly NormalizedRemapping[] {
