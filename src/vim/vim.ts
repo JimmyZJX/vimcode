@@ -53,6 +53,8 @@ export type VimStatus = {
   remapTimeoutMs: number;
   insertPendingText: string | undefined;
   macroRecording: MacroRecordingStatus | undefined;
+  readonlyWarning: boolean;
+  readonlyWarningRemainingMs: number | undefined;
 };
 
 function statusText(mode: VimMode["kind"], chord: string, macroRecording: MacroRecordingStatus | undefined): string {
@@ -80,6 +82,7 @@ export type EditorSyncResult = {
 export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promise<void> };
 
 const alwaysActiveRemapWhen: RemapWhenEvaluator = () => true;
+const readonlyWarningDurationMs = 2000;
 
 export { VimGlobalState, VimModelState };
 
@@ -113,6 +116,7 @@ export class Vim {
   // insert mode, then back to insert.
   private temporaryNormal = false;
   private pendingVisualRepeatChange: { selection: RecordedSelection } | undefined;
+  private readonlyWarningUntil = 0;
   private readonly insertKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
     ["ctrl-k", () => this.startInsertDigraph()],
     ["ctrl-v", () => this.startPlainLiteral()],
@@ -190,6 +194,7 @@ export class Vim {
     const mode = this.modeState.kind;
     const macroRecording = this.globalState.macro.recordingStatus();
     const text = statusText(mode, chord, macroRecording);
+    const readonlyWarningRemainingMs = this.readonlyWarningRemainingMs();
     return {
       mode,
       pending: this.isPending(),
@@ -201,7 +206,17 @@ export class Vim {
       remapTimeoutMs: this.configuration.timeout,
       insertPendingText: mode === "insert" || mode === "replace" ? this.remapResolver.pendingInsertText() : undefined,
       macroRecording,
+      readonlyWarning: readonlyWarningRemainingMs !== undefined,
+      readonlyWarningRemainingMs,
     };
+  }
+
+  ensureNormalModeForReadonlyDocument(): boolean {
+    if (!this.editor.isReadonly() || (this.modeState.kind !== "insert" && this.modeState.kind !== "replace")) {
+      return false;
+    }
+    this.returnToNormalForReadonlyDocument();
+    return true;
   }
 
   readRegister(name: RegisterName | undefined): string {
@@ -269,6 +284,7 @@ export class Vim {
       });
     }
     for (const command of mapping.commands ?? []) this.executeMappedCommand(command);
+    this.ensureNormalModeForReadonlyDocument();
   }
 
   hasActiveRemapStartingWithOrPending(key: string, remapWhen: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
@@ -581,6 +597,7 @@ export class Vim {
           this.temporaryNormal = false;
         }
       }
+      this.ensureNormalModeForReadonlyDocument();
     }
   }
 
@@ -1232,6 +1249,28 @@ export class Vim {
     this.enterInsertMode({ origin: "normal" });
   }
 
+  private returnToNormalForReadonlyDocument(): void {
+    this.readonlyWarningUntil = Date.now() + readonlyWarningDurationMs;
+    this.clearPendingGrammar({ closeSearchHighlights: true });
+    if (this.isVisualMode()) this.visualMode.clearState();
+    this.pendingVisualRepeatChange = undefined;
+    this.clearInsertOrReplaceSession();
+    this.replaceModeReplacements = [];
+    this.insertOrigin = undefined;
+    this.temporaryNormal = false;
+    const head = selectionHead(this.editor.getSelections()[0]);
+    this.editor.setSelections([charwiseSelection(normalCursorPosition(this.editor, head))]);
+    this.editor.setCursorStyle("block");
+    this.setMode("normal");
+    this.editor.setInsertPendingText(undefined);
+    this.editor.flushUndoTransaction();
+  }
+
+  private readonlyWarningRemainingMs(): number | undefined {
+    const remaining = this.readonlyWarningUntil - Date.now();
+    return remaining > 0 ? remaining : undefined;
+  }
+
   private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode["kind"]; count?: number; separator?: string }): void {
     this.modelState.marks.setBuiltinMark(".", selectionHead(this.editor.getSelections()[0]));
     this.insertOrigin = origin;
@@ -1384,6 +1423,7 @@ export class Vim {
       this.dispatchKey(key, { allowRemap: mapping.recursive && !(skipFirstRecursiveKey && index === 0), remapWhen });
     }
     for (const command of mapping.commands) this.executeMappedCommand(command);
+    this.ensureNormalModeForReadonlyDocument();
   }
 
   private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {

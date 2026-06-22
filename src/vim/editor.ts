@@ -67,6 +67,7 @@ export interface VimEditorCapabilities {
 
   getSelections(): readonly VimSelection[];
   setSelections(selections: readonly VimSelection[]): void;
+  isReadonly(): boolean;
   setCursorStyle(style: CursorStyle): void;
   setInsertPendingText(text: string | undefined): void;
   showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void;
@@ -159,6 +160,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private viewportLines: number | undefined;
   private viewportScrolloff = 0;
   private viewportTopRow = 0;
+  private readonlyForTest = false;
   public readonly nativeCommands: { command: string; args: readonly unknown[] }[] = [];
 
   constructor(text = "") {
@@ -177,6 +179,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.undoTransactionDepth = 0;
     this.easyMotionMarkers = [];
     this.viewportTopRow = 0;
+    this.readonlyForTest = false;
     this.setSelections(selections);
   }
 
@@ -278,6 +281,14 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       else if (top < minTop) top = minTop;
     }
     this.viewportTopRow = Math.max(0, Math.min(top, lastRow));
+  }
+
+  isReadonly(): boolean {
+    return this.readonlyForTest;
+  }
+
+  setReadonlyForTest(readonly: boolean): void {
+    this.readonlyForTest = readonly;
   }
 
   setCursorStyle(style: CursorStyle): void {

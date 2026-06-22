@@ -151,6 +151,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		(this.editor as ExplicitSelectionEditor).setSelections(lowered.selections, source, CursorChangeReason.Explicit);
 	}
 
+	isReadonly(): boolean {
+		return this.editor.getOption(EditorOption.readOnly);
+	}
+
 	setCursorStyle(style: CursorStyle): void {
 		// `updateOptions` is not free (it can recompute scroll state), so skip
 		// the call when the style is unchanged.

@@ -153,13 +153,16 @@ export class VimController extends Disposable {
 			// appearance underneath the change-guards. Invalidate the guards and
 			// re-apply. Re-entrancy terminates: our own re-apply either changes
 			// nothing (no event) or settles on the Vim value (next pass no-ops).
-			if (!event.hasChanged(EditorOption.cursorStyle) && !event.hasChanged(EditorOption.cursorBlinking)) {
-				return;
+			const cursorAppearanceChanged = event.hasChanged(EditorOption.cursorStyle) || event.hasChanged(EditorOption.cursorBlinking);
+			if (cursorAppearanceChanged) {
+				this.vimEditor.clearAppliedCursorStyle();
+				this.appliedCursorBlinking = undefined;
+				if (this.enabled && !this.restoringNativeCursor) {
+					this.syncCursorAppearance(this.vim.status);
+				}
 			}
-			this.vimEditor.clearAppliedCursorStyle();
-			this.appliedCursorBlinking = undefined;
-			if (this.enabled && !this.restoringNativeCursor) {
-				this.syncCursorAppearance(this.vim.status);
+			if (event.hasChanged(EditorOption.readOnly) && this.enabled) {
+				this.syncStatus();
 			}
 		}));
 	}
@@ -415,10 +418,12 @@ export class VimController extends Disposable {
 		// returns a concrete KeyPlan.
 		const vimPending = this.vim.status.pending;
 		if (!vimPending && this.shouldLetNativeKeybindingHandle(event)) {
+			this.syncReadonlyModeAfterNativeKey();
 			return;
 		}
 		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { remapWhen });
 		if (keyPlan === null) {
+			this.syncReadonlyModeAfterNativeKey();
 			return;
 		}
 
@@ -427,6 +432,19 @@ export class VimController extends Disposable {
 		void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan)).then(undefined, () => this.syncStatus());
 	}
 
+
+	private syncReadonlyModeAfterNativeKey(): void {
+		const mode = this.vim.status.mode;
+		if (!this.vimEditor.isReadonly() || (mode !== 'insert' && mode !== 'replace')) {
+			return;
+		}
+		setTimeout(() => {
+			if (!this.enabled || !this.hasModel()) return;
+			if (this.vim.ensureNormalModeForReadonlyDocument()) {
+				this.syncStatus();
+			}
+		}, 0);
+	}
 
 	private evaluateRemapWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
 		if (when === undefined || when.trim().length === 0) {
@@ -688,6 +706,7 @@ export class VimController extends Disposable {
 			this.syncDisabledStatus();
 			return;
 		}
+		this.vim.ensureNormalModeForReadonlyDocument();
 		const status = this.vim.status;
 		const contexts = this.ensureVimContextKeys();
 		this.editor.getContainerDomNode().classList.toggle('vim-character-mode-enabled', status.mode !== 'insert' && status.mode !== 'replace');
@@ -776,6 +795,7 @@ export class VimController extends Disposable {
 			this.remapTimeout = undefined;
 		}
 	}
+
 }
 
 class AsyncKeyQueue {

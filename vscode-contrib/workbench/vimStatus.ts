@@ -12,6 +12,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly focusedEditorListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly statusListener = this._register(new MutableDisposable<IDisposable>());
+	private readonlyWarningTimeout: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		@ICodeEditorService private readonly codeEditorService: ICodeEditorService,
@@ -30,10 +31,16 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		this._register(editor.onDidBlurEditorText(() => this.updateFocusedEditor()));
 	}
 
+	override dispose(): void {
+		this.clearReadonlyWarningTimeout();
+		super.dispose();
+	}
+
 	private updateFocusedEditor(): void {
 		const editor = this.codeEditorService.getFocusedCodeEditor();
 		this.focusedEditorListener.clear();
 		this.statusListener.clear();
+		this.clearReadonlyWarningTimeout();
 
 		const controller = editor?.getContribution<VimController>(VimController.ID) ?? undefined;
 		if (!controller) {
@@ -47,6 +54,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 	}
 
 	private updateEntry(controller: VimController): void {
+		this.clearReadonlyWarningTimeout();
 		if (!controller.isVimEnabled()) {
 			this.statusbarEntry.clear();
 			return;
@@ -56,14 +64,25 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		const entry = {
 			name: 'Vim Mode',
 			text,
-			ariaLabel: `Vim mode ${status.mode}${status.chord ? `, pending ${status.chord}` : ''}${status.macroRecording ? `, recording @${status.macroRecording.register}` : ''}`,
-			tooltip: 'Current Vim mode, unfinished key sequence, and macro recording state',
+			ariaLabel: `Vim mode ${status.mode}${status.chord ? `, pending ${status.chord}` : ''}${status.macroRecording ? `, recording @${status.macroRecording.register}` : ''}${status.readonlyWarning ? ', read-only document' : ''}`,
+			tooltip: status.readonlyWarning ? 'Vim cannot enter Insert or Replace mode in a read-only document' : 'Current Vim mode, unfinished key sequence, and macro recording state',
+			kind: status.readonlyWarning ? 'warning' as const : undefined,
 		};
 
 		if (this.statusbarEntry.value) {
 			this.statusbarEntry.value.update(entry);
 		} else {
 			this.statusbarEntry.value = this.statusbarService.addEntry(entry, 'status.vimMode', StatusbarAlignment.LEFT, 100);
+		}
+		if (status.readonlyWarningRemainingMs !== undefined) {
+			this.readonlyWarningTimeout = setTimeout(() => this.updateEntry(controller), Math.max(0, status.readonlyWarningRemainingMs));
+		}
+	}
+
+	private clearReadonlyWarningTimeout(): void {
+		if (this.readonlyWarningTimeout !== undefined) {
+			clearTimeout(this.readonlyWarningTimeout);
+			this.readonlyWarningTimeout = undefined;
 		}
 	}
 }

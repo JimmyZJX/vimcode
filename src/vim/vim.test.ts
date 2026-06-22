@@ -206,6 +206,38 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.status.pendingDepth).toBe(0);
   });
 
+  it("does not enter insert or replace mode for readonly documents", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    editor.setReadonlyForTest(true);
+    runKeys(vim, ["i"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(vim.status.readonlyWarning).toBe(true);
+    expect(editor.cursorStyle).toBe("block");
+    expect(editor.getText()).toBe("abcdef");
+
+    runKeys(vim, ["R"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(vim.status.readonlyWarning).toBe(true);
+    expect(editor.cursorStyle).toBe("block");
+    expect(editor.getText()).toBe("abcdef");
+  });
+
+  it("returns to normal mode when a document becomes readonly during insert", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["i"]);
+    expect(vim.modeName).toBe("vim:insert");
+    editor.setReadonlyForTest(true);
+
+    expect(vim.ensureNormalModeForReadonlyDocument()).toBe(true);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(vim.status.readonlyWarning).toBe(true);
+    expect(editor.cursorStyle).toBe("block");
+  });
+
   // Insert mode delegates plain typing to the host editor unless Vim needs to
   // capture the key stream for macro recording; replace mode must own text
   // keys because native typing inserts instead of overwriting.
