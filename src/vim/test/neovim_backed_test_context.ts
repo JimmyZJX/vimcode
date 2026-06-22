@@ -89,7 +89,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       // Zed advances the clock past the remap timeout before asserting;
       // resolve any ambiguous pending remap the same way (`pin` vs `pine`).
       if (currentVim.status.remapPending) runKeys(currentVim, [RemapTimeoutKey]);
-      const actual = { mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor, currentVim.mode.kind) };
+      const actual = { mode: currentVim.mode, markedText: markedTextFromEditor(currentEditor, currentVim.mode) };
       const expected = { mode: entry.Get.mode, markedText: entry.Get.state };
       try {
         expect(actual).toEqual(expected);
@@ -105,7 +105,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
   const currentVim = requireVim(vim, fixture.testCaseId);
   return {
     local: {
-      mode: currentVim.mode.kind,
+      mode: currentVim.mode,
       markedText: markedTextFromEditor(currentEditor),
       registers,
     },
@@ -129,7 +129,7 @@ function requireVim(vim: Vim | undefined, testCaseId: string): Vim {
 // Native cursor movement during insert/replace mode: a real host moves the
 // cursor itself, which also breaks Vim's undo block (`i_<Left>` etc.).
 function emulateNativeInsertKey(editor: InMemoryVimEditor, vim: Vim, key: string): void {
-  if (vim.mode.kind !== "insert" && vim.mode.kind !== "replace") return;
+  if (vim.mode !== "insert" && vim.mode !== "replace") return;
   const selection = editor.getSelections()[0];
   if (selection === undefined || selection.type !== "charwise") return;
   const head = selection.cursor ?? selection.head;

@@ -299,8 +299,8 @@ When translating behavior from Zed, add source comments near the local type/func
 Good examples:
 
 ```ts
-// Zed: `state::Mode`. We keep the same conceptual modes but add an explicit
-// `dialect` field so Vim and Helix can share core primitives.
+// Zed: `state::Mode`. Vim and Helix modes are flattened into one union so
+// Vim normal and Helix normal can have distinct key grammars.
 ```
 
 ```ts
@@ -454,8 +454,8 @@ Medium-term (all done):
 
 Longer-term:
 
-1. Implement Helix as an alternate keymap/dialect over the same core primitives
-   (the `dialect` field and select-mode state exist; the keymap does not yet).
+1. Implement Helix as an alternate keymap over the same core primitives
+   (`helixNormal` and `helixSelect` modes exist; the keymap does not yet).
 2. ~~Dot repeat and macro recording/replay~~ — done.
 3. ~~Marks and changelist~~ — done. Jumplist is an intentional non-goal for now:
    `ctrl-o`/`ctrl-i` use VSCode's native navigation history (see the disabled-fixture

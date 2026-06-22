@@ -292,18 +292,18 @@ export class VimOperatorStack {
     }
   }
 
-  waitingInput(mode: VimMode["kind"], key: string): WaitingInput | undefined {
+  waitingInput(mode: VimMode, key: string): WaitingInput | undefined {
     if (this.activeTopLevel("insertDigraph") !== undefined) return { type: "insertDigraph" };
     if (this.activeTopLevel("literal") !== undefined) return { type: "literal" };
     if (this.activeTopLevel("insertRegister") !== undefined) return { type: "insertRegister" };
-    if (mode === "normal" && this.activeTopLevel("recordRegister") !== undefined) return { type: "recordRegister" };
-    if (mode === "normal" && this.activeTopLevel("replayRegister") !== undefined) return { type: "replayRegister" };
+    if ((mode === "normal" || mode === "helixNormal") && this.activeTopLevel("recordRegister") !== undefined) return { type: "recordRegister" };
+    if ((mode === "normal" || mode === "helixNormal") && this.activeTopLevel("replayRegister") !== undefined) return { type: "replayRegister" };
     if (this.activeTopLevel("register") !== undefined) return { type: "register" };
     if (this.activeTopLevel("command") !== undefined) return { type: "command" };
     if (this.activeTopLevel("search") !== undefined) return { type: "search" };
     if (this.activeFind() !== undefined) return { type: "find" };
-    if (mode === "normal" && this.activeTopLevel("mark") !== undefined) return { type: "mark" };
-    if (mode === "normal" && this.activeTopLevel("jump") !== undefined) return { type: "jump" };
+    if ((mode === "normal" || mode === "helixNormal") && this.activeTopLevel("mark") !== undefined) return { type: "mark" };
+    if ((mode === "normal" || mode === "helixNormal") && this.activeTopLevel("jump") !== undefined) return { type: "jump" };
 
     switch (mode) {
       case "normal":

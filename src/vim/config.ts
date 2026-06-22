@@ -261,7 +261,7 @@ export type RemapResolution =
   | { kind: "handled" }
   | { kind: "noMatch" };
 
-export function remapModeForVimMode(mode: VimMode["kind"], { operatorPending }: { operatorPending: boolean }): VimRemapMode {
+export function remapModeForVimMode(mode: VimMode, { operatorPending }: { operatorPending: boolean }): VimRemapMode {
   if (operatorPending) return "operatorPending";
   switch (mode) {
     case "insert":
@@ -273,10 +273,11 @@ export function remapModeForVimMode(mode: VimMode["kind"], { operatorPending }: 
     case "visualBlock":
       return "visualBlock";
     case "normal":
+    case "helixNormal":
+    case "helixSelect":
     case "replace":
     case "search":
     case "command":
-    case "select":
       return "normal";
   }
 }

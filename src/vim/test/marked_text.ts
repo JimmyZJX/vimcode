@@ -22,7 +22,7 @@ export type ParsedMarkedText = {
   column: number;
   anchorRow?: number;
   anchorColumn?: number;
-  mode: VimMode["kind"];
+  mode: VimMode;
 };
 
 export function parseMarkedText(markedText: string): ParsedMarkedText {
@@ -112,7 +112,7 @@ function selectionsFromParsedMarkedText(parsed: ParsedMarkedText): readonly VimS
   return [charwiseSelection({ row: parsed.row, column: parsed.column })];
 }
 
-export function markedTextFromEditor(editor: InMemoryVimEditor, mode: VimMode["kind"] = "normal"): string {
+export function markedTextFromEditor(editor: InMemoryVimEditor, mode: VimMode = "normal"): string {
   const selection = editor.getSelections()[0];
   const head = selectionHead(selection);
   switch (mode) {

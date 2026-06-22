@@ -98,7 +98,7 @@ export type VimKeymapPhase = "motionMode" | "normalFallback";
 // `vim_operator`). Binding conditions are written against this vocabulary
 // instead of pre-combined booleans.
 export type VimKeymapContext = {
-  mode: VimMode["kind"];
+  mode: VimMode;
   /** Operator-stack summary: "none" when empty, the range operator awaiting a
       motion/object ("delete"/"change"/"yank"/"convert"/"indent"), "object"
       when a text-object selector owns the next key, "other" for any other

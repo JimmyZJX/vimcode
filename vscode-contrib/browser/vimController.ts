@@ -546,7 +546,7 @@ export class VimController extends Disposable {
 		}
 		this.logUndo(`selection event source=${event.source} reason=${cursorChangeReasonName(event.reason)} selections=${formatVSCodeSelections(selections)}`);
 		if (event.source === 'mouse' && this.shouldLogVisual()) {
-			this.logVisual(`mouse selection reason=${cursorChangeReasonName(event.reason)} mode=${this.vim.mode.kind} native=${formatVSCodeSelections(selections)}`);
+			this.logVisual(`mouse selection reason=${cursorChangeReasonName(event.reason)} mode=${this.vim.mode} native=${formatVSCodeSelections(selections)}`);
 		}
 		if (event.reason === CursorChangeReason.Undo || event.reason === CursorChangeReason.Redo) {
 			this.pendingUndoRedoContentSync = false;
@@ -557,7 +557,7 @@ export class VimController extends Disposable {
 		// can be changed outside the Vim state machine (mouse selections, multicursor
 		// commands, other editor contributions). Ignore native cursor movement while
 		// insert/replace mode is intentionally letting VSCode handle typed input.
-		if (this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
+		if (this.vim.mode === 'insert' || this.vim.mode === 'replace') {
 			return;
 		}
 		this.handleExternalEditorStateChanged(event.source, {
@@ -575,10 +575,10 @@ export class VimController extends Disposable {
 		// such as log-file appends. Treat it as authoritative for insert/replace via the
 		// existing early return above, but do not let it churn normal-mode cursors or
 		// rewrite an active Vim visual selection.
-		if (this.vim.mode.kind === 'visual' || this.vim.mode.kind === 'visualLine' || this.vim.mode.kind === 'visualBlock') {
+		if (this.vim.mode === 'visual' || this.vim.mode === 'visualLine' || this.vim.mode === 'visualBlock') {
 			return true;
 		}
-		return this.vim.mode.kind === 'normal'
+		return this.vim.mode === 'normal'
 			&& [event.selection, ...event.secondarySelections].every(selection =>
 				selection.selectionStartLineNumber === selection.positionLineNumber
 				&& selection.selectionStartColumn === selection.positionColumn);
@@ -633,11 +633,11 @@ export class VimController extends Disposable {
 			this.syncDetachedStatus();
 			return;
 		}
-		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
+		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode}`);
 		this.vimEditor.invalidateCachedSelections();
 		const result = this.vim.syncFromUndoRedoState();
 		this.logVisualSyncDecision(`undoRedo:${reason}`, result);
-		this.logUndo(`syncFromUndoRedoState end reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
+		this.logUndo(`syncFromUndoRedoState end reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode}`);
 		this.syncEditorState();
 	}
 
@@ -856,6 +856,10 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 			return `VisualLine${suffix}`;
 		case 'visualBlock':
 			return `VisualBlock${suffix}`;
+		case 'helixNormal':
+			return `HelixNormal${suffix}`;
+		case 'helixSelect':
+			return `HelixSelect${suffix}`;
 		default:
 			return `Unknown${suffix}`;
 	}

@@ -33,13 +33,13 @@ import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { ReplacedText, replaceModeText } from "./replace.js";
-import { KeyDispatchResult, KeyResult, Position, TextEdit, TextRange, VimMode, charwiseSelection, comparePositions, isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
+import { KeyDispatchResult, KeyResult, Position, TextEdit, TextRange, VimMode, charwiseSelection, comparePositions, isVisualModeKind, rangeOfSelection, selectionHead, vimModeName } from "./state.js";
 import { VisualMode, visualKindForMode } from "./visual.js";
 import type { VisualKeyResult, VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
 
 export type VimStatus = {
-  mode: VimMode["kind"];
+  mode: VimMode;
   pending: boolean;
   /** Number of entries in the pending input stack (0 when nothing is
       pending): a typed count is one entry regardless of digits, each pending
@@ -57,7 +57,7 @@ export type VimStatus = {
   readonlyWarningRemainingMs: number | undefined;
 };
 
-function statusText(mode: VimMode["kind"], chord: string, macroRecording: MacroRecordingStatus | undefined): string {
+function statusText(mode: VimMode, chord: string, macroRecording: MacroRecordingStatus | undefined): string {
   const modeText = chord.length > 0 ? `${mode.toUpperCase()} ${chord}` : mode.toUpperCase();
   if (macroRecording === undefined) return modeText;
   const keys = macroRecording.keys.map(keyForStatus).join("");
@@ -72,7 +72,7 @@ function keyForStatus(key: string): string {
 }
 
 export type EditorSyncResult = {
-  mode: VimMode["kind"];
+  mode: VimMode;
   selectionCount: number;
   visualSelectionFound: boolean;
   adoptedVisualSelection: boolean;
@@ -90,7 +90,7 @@ export { VimGlobalState, VimModelState };
 // entity/window fields are intentionally replaced by the injected
 // `VimEditorCapabilities`.
 export class Vim {
-  private modeState: VimMode = { dialect: "vim", kind: "normal" };
+  private modeState: VimMode = "normal";
   private readonly keymapResolver = new VimKeymapResolver();
   private readonly easyMotion = new EasyMotionState();
   private readonly operatorStack = new VimOperatorStack();
@@ -105,13 +105,13 @@ export class Vim {
   private readonly showcmdKeys: string[] = [];
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remapResolver = new RemapResolver(this.configuration);
-  private searchOriginMode: VimMode["kind"] | undefined;
+  private searchOriginMode: VimMode | undefined;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
   // Zed: `Vim::replacements` — what replace mode overwrote, for backspace.
   private replaceModeReplacements: ReplacedText[] = [];
   private insertRepeatSeparator = "";
-  private insertOrigin: VimMode["kind"] | undefined;
+  private insertOrigin: VimMode | undefined;
   // Vim `i_CTRL-O` (Zed: `Vim::temp_mode`): one normal-mode command from
   // insert mode, then back to insert.
   private temporaryNormal = false;
@@ -185,13 +185,13 @@ export class Vim {
   }
 
   get modeName(): string {
-    const suffix = this.isPending() && this.modeState.kind !== "search" && this.modeState.kind !== "command" ? "+" : "";
-    return `${this.modeState.dialect}:${this.modeState.kind}${suffix}`;
+    const suffix = this.isPending() && this.modeState !== "search" && this.modeState !== "command" ? "+" : "";
+    return `${vimModeName(this.modeState)}${suffix}`;
   }
 
   get status(): VimStatus {
     const chord = this.pendingChord();
-    const mode = this.modeState.kind;
+    const mode = this.modeState;
     const macroRecording = this.globalState.macro.recordingStatus();
     const text = statusText(mode, chord, macroRecording);
     const readonlyWarningRemainingMs = this.readonlyWarningRemainingMs();
@@ -199,7 +199,7 @@ export class Vim {
       mode,
       pending: this.isPending(),
       pendingDepth: this.pendingDepth(),
-      operator: this.modeState.kind === "normal" ? this.normalMode.pendingOperatorName() : undefined,
+      operator: this.modeState === "normal" ? this.normalMode.pendingOperatorName() : undefined,
       chord,
       text,
       remapPending: this.remapResolver.isPending(),
@@ -212,7 +212,7 @@ export class Vim {
   }
 
   ensureNormalModeForReadonlyDocument(): boolean {
-    if (!this.editor.isReadonly() || (this.modeState.kind !== "insert" && this.modeState.kind !== "replace")) {
+    if (!this.editor.isReadonly() || (this.modeState !== "insert" && this.modeState !== "replace")) {
       return false;
     }
     this.returnToNormalForReadonlyDocument();
@@ -303,21 +303,21 @@ export class Vim {
 
     if (this.isEscape(key)) return this.shouldHandleEscapeKey();
 
-    if (this.modeState.kind === "insert" || this.modeState.kind === "replace") {
+    if (this.modeState === "insert" || this.modeState === "replace") {
       // Insert mode normally delegates plain typing to the host. While a macro
       // recording is in flight, own the printable keys we can apply ourselves
       // so the recording captures the same key stream it will later replay.
       // This mirrors Zed's split between `VimGlobals::observe_action` and
       // `VimGlobals::observe_insertion`, but keeps vimcode's replay
       // representation key-based.
-      if (this.modeState.kind === "insert" && this.shouldRecordInsertTextKeyThroughVim(key)) {
+      if (this.modeState === "insert" && this.shouldRecordInsertTextKeyThroughVim(key)) {
         return true;
       }
       // Replace mode cannot delegate plain typing: native typing inserts,
       // while Vim `R` overwrites and backspace restores what was overwritten.
       // (Keys the host produces outside the keydown map — e.g. IME composition
       // — still fall through natively.)
-      if (this.modeState.kind === "replace" && (insertTextForKey(key) !== undefined || key === "backspace")) {
+      if (this.modeState === "replace" && (insertTextForKey(key) !== undefined || key === "backspace")) {
         return true;
       }
       return this.shouldPrepareInsertOrReplaceKey(key, remapWhen);
@@ -353,7 +353,7 @@ export class Vim {
   }
 
   private shouldHandleEscapeKey(): boolean {
-    return this.modeState.kind !== "normal"
+    return this.modeState !== "normal"
       || this.hasMultipleCursorsOrSelection()
       || this.operatorStack.length > 0
       || this.keymapResolver.isPending()
@@ -368,7 +368,7 @@ export class Vim {
   // every external event. Vim-sourced selection events are ignored by the
   // controller, so the write-back cannot feed back into this path.
   syncFromEditorState(options: CursorReconciliationOptions = {}): EditorSyncResult {
-    const modeBeforeSync = this.modeState.kind;
+    const modeBeforeSync = this.modeState;
     const selections = this.editor.getSelections();
     const reconciliation = reconcileCursorState(
       { selections },
@@ -385,8 +385,8 @@ export class Vim {
       if (adopted) {
         this.clearPendingForExternalModeChange();
         this.insertOrigin = undefined;
-        this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
-        return { mode: this.modeState.kind, ...reconciliation };
+        this.modeState = "visual";
+        return { mode: this.modeState, ...reconciliation };
       }
     }
 
@@ -405,7 +405,7 @@ export class Vim {
       this.setMode("normal");
     }
     return {
-      mode: this.modeState.kind,
+      mode: this.modeState,
       selectionCount: reconciliation.selectionCount,
       visualSelectionFound: reconciliation.visualSelectionFound,
       adoptedVisualSelection: false,
@@ -440,7 +440,7 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapResolver.isPending() || (this.modeState.kind === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapResolver.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -499,11 +499,11 @@ export class Vim {
       const registerName = parseRegisterName(key);
       return isSystemClipboardRegister(registerName) ? { registerName } : undefined;
     }
-    if (this.modeState.kind === "search" && (key === "ctrl-v" || key === "ctrl-y")) {
+    if (this.modeState === "search" && (key === "ctrl-v" || key === "ctrl-y")) {
       return { registerName: "+" };
     }
 
-    if (this.modeState.kind === "normal") return this.normalMode.systemClipboardRegisterToReadForKey(key);
+    if (this.modeState === "normal") return this.normalMode.systemClipboardRegisterToReadForKey(key);
     if (this.isVisualMode()) return this.visualMode.systemClipboardRegisterToReadForKey(key);
     return undefined;
   }
@@ -512,10 +512,10 @@ export class Vim {
     // Cheap content stamp, not the document text: snapshotting/comparing the
     // whole document here made every keypress O(file size) on large files.
     const versionBefore = this.editor.documentVersion();
-    const modeBefore = this.modeState.kind;
+    const modeBefore = this.modeState;
     const temporaryNormalBefore = this.temporaryNormal;
     try {
-      if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState.kind, isPending: this.isPending() });
+      if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
 
       const remapResult = this.dispatchRemapKey(key, { allowRemap, remapWhen });
       if (remapResult !== undefined) return remapResult;
@@ -525,7 +525,7 @@ export class Vim {
       // list lives in [VimOperatorStack.waitingInput]. Only the self-escaping
       // classes (insert digraph/literal/register) see the escape key; for all
       // other waiting input the central escape handling cancels first.
-      const waiting = this.operatorStack.waitingInput(this.modeState.kind, key);
+      const waiting = this.operatorStack.waitingInput(this.modeState, key);
       if (waiting !== undefined && isSelfEscapingWaitingInput(waiting)) {
         return this.dispatchWaitingInput(waiting, key) ?? "native";
       }
@@ -591,9 +591,9 @@ export class Vim {
       // insert. Visual mode extends the excursion (Zed keeps `temp_mode`
       // through visual); entering another mode (`ctrl-o cw`) ends it.
       if (temporaryNormalBefore && this.temporaryNormal) {
-        if (this.modeState.kind === "normal" && !this.isPending()) {
+        if (this.modeState === "normal" && !this.isPending()) {
           this.returnFromTemporaryNormal();
-        } else if (this.modeState.kind !== "normal" && !this.isVisualMode()) {
+        } else if (this.modeState !== "normal" && !this.isVisualMode()) {
           this.temporaryNormal = false;
         }
       }
@@ -626,12 +626,12 @@ export class Vim {
 
   private recordRepeatableKey(key: string): void {
     if (this.globalState.repeat.isReplaying()) return;
-    this.globalState.repeat.maybeStart(key, { mode: this.modeState.kind, pendingChord: this.normalPendingChordForRepeat() });
+    this.globalState.repeat.maybeStart(key, { mode: this.modeState, pendingChord: this.normalPendingChordForRepeat() });
     this.globalState.repeat.recordKey(key);
   }
 
   private dispatchInsertLikeKey(key: string): KeyDispatchResult | undefined {
-    if (this.modeState.kind === "insert") {
+    if (this.modeState === "insert") {
       const handler = this.insertKeyHandlers.get(key);
       if (handler !== undefined) return handler();
       const text = insertTextForKey(key);
@@ -643,7 +643,7 @@ export class Vim {
       return "native";
     }
 
-    if (this.modeState.kind === "replace") {
+    if (this.modeState === "replace") {
       const handler = this.replaceKeyHandlers.get(key);
       if (handler !== undefined) return handler();
       const text = insertTextForKey(key);
@@ -673,11 +673,11 @@ export class Vim {
 
   private dispatchModeFallbackKey(_key: string): KeyDispatchResult {
     if (this.isVisualMode()) {
-      const modeBefore = this.modeState.kind;
+      const modeBefore = this.modeState;
       return this.applyVisualResult(this.visualMode.handleUnhandledKey(), modeBefore);
     }
 
-    if (this.modeState.kind !== "normal") return "native";
+    if (this.modeState !== "normal") return "native";
 
     return this.applyNormalResult(this.normalMode.handleUnhandledKey());
   }
@@ -764,10 +764,10 @@ export class Vim {
         return this.applyNormalResult(this.normalMode.handlePendingSurroundPrefixKey());
       case "visualSurround":
         this.recordWaitingOperatorKey(key);
-        return this.applyVisualResult(this.visualMode.handlePendingSurroundKey(key), this.modeState.kind);
+        return this.applyVisualResult(this.visualMode.handlePendingSurroundKey(key), this.modeState);
       case "visualTextObject":
         this.recordWaitingOperatorKey(key);
-        return this.applyVisualResult(this.visualMode.handlePendingTextObjectKey(key), this.modeState.kind);
+        return this.applyVisualResult(this.visualMode.handlePendingTextObjectKey(key), this.modeState);
     }
   }
 
@@ -802,7 +802,7 @@ export class Vim {
         return "handled";
       case "cancelled":
         if (resolution.scope === "shared"
-          && this.modeState.kind === "normal"
+          && this.modeState === "normal"
           && this.normalMode.pendingOperatorName() !== undefined) {
           this.normalMode.clearPending();
         }
@@ -824,9 +824,9 @@ export class Vim {
   // Zed: `vim::Vim::extend_key_context`.
   private keymapContext(): VimKeymapContext {
     return {
-      mode: this.modeState.kind,
+      mode: this.modeState,
       operator: this.operatorStack.operatorContext(),
-      operatorPendingKey: this.modeState.kind === "normal" ? this.operatorStack.operatorPendingKey() : undefined,
+      operatorPendingKey: this.modeState === "normal" ? this.operatorStack.operatorPendingKey() : undefined,
       hasSelectedRegister: this.selectedRegister !== undefined,
       countText: this.countBuffer,
       repeatIsReplaying: this.globalState.repeat.isReplaying(),
@@ -873,7 +873,7 @@ export class Vim {
         return "handled";
       case "toggleVisual":
         if (this.isVisualMode()) {
-          return this.applyVisualResult(this.visualMode.toggleMode(action.mode), this.modeState.kind);
+          return this.applyVisualResult(this.visualMode.toggleMode(action.mode), this.modeState);
         }
         this.enterVisualMode(action.mode);
         return "handled";
@@ -895,7 +895,7 @@ export class Vim {
         this.operatorStack.push({ type: "findBackward", after: action.after, count: this.takeCountForMotion(1) });
         return "handled";
       case "startSearch":
-        this.searchOriginMode = this.modeState.kind;
+        this.searchOriginMode = this.modeState;
         this.operatorStack.push(this.globalState.search.start(action.backwards, this.editor));
         this.setMode("search");
         return "handled";
@@ -903,7 +903,7 @@ export class Vim {
         this.applySearchUnderCursor({ backwards: action.backwards });
         return "handled";
       case "motion":
-        if (!(this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined)) {
+        if (!(this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined)) {
           this.globalState.repeat.cancelCurrent();
         }
         this.applyMotion(action.motion, this.takeCountForMotion(1));
@@ -921,7 +921,7 @@ export class Vim {
       case "normalCommand":
         return this.applyNormalResult(this.normalMode.handleCommand(action.command));
       case "visualCommand":
-        return this.applyVisualResult(this.visualMode.handleCommand(action.command), this.modeState.kind);
+        return this.applyVisualResult(this.visualMode.handleCommand(action.command), this.modeState);
       case "pushRegister":
         this.operatorStack.push({ type: "register" });
         return "handled";
@@ -935,7 +935,7 @@ export class Vim {
         return "handled";
       }
       case "insertAtPrevious":
-        if (this.modeState.kind === "normal") this.enterInsertAtPrevious();
+        if (this.modeState === "normal") this.enterInsertAtPrevious();
         return "handled";
       case "page": {
         this.globalState.repeat.cancelCurrent();
@@ -950,14 +950,14 @@ export class Vim {
       case "restoreVisualSelection": {
         this.globalState.repeat.cancelCurrent();
         const nextMode = this.visualMode.restoreLastSelection();
-        if (nextMode !== undefined) this.modeState = { dialect: this.modeState.dialect, kind: nextMode };
+        if (nextMode !== undefined) this.modeState = nextMode;
         return "handled";
       }
       case "searchSelection":
         this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
         return "handled";
       case "pushConvert":
-        if (this.modeState.kind === "normal") {
+        if (this.modeState === "normal") {
           // Vim `gugu` (and `gUgU`/`g~g~`): repeating the convert operator is
           // the line-doubling rule, like `guu`.
           const pendingConvert = this.operatorStack.activeConvert();
@@ -978,7 +978,7 @@ export class Vim {
         }
         return "handled";
       case "join":
-        if (this.modeState.kind === "normal") {
+        if (this.modeState === "normal") {
           return this.applyNormalResult(this.normalMode.joinLines({ insertWhitespace: action.insertWhitespace }));
         } else if (this.isVisualMode()) {
           this.visualMode.joinSelections({ insertWhitespace: action.insertWhitespace });
@@ -1064,7 +1064,7 @@ export class Vim {
       this.selectedRegister = registerName;
       return;
     }
-    if (this.modeState.kind === "normal") this.normalMode.clearPending();
+    if (this.modeState === "normal") this.normalMode.clearPending();
     else if (this.isVisualMode()) this.visualMode.clearPending();
   }
 
@@ -1103,7 +1103,7 @@ export class Vim {
   // register/search input win while recording) but before macro key recording
   // (so the `q` that stops a recording is not recorded into it).
   private handleMacroControlKey(key: string): KeyResult | undefined {
-    if (this.modeState.kind !== "normal") return undefined;
+    if (this.modeState !== "normal") return undefined;
 
     if (this.globalState.macro.isRecording() && key === "q") {
       this.globalState.macro.stopRecording();
@@ -1148,16 +1148,16 @@ export class Vim {
       this.setMode("normal");
       return;
     }
-    if (this.modeState.kind === "normal" && this.hasMultipleCursorsOrSelection()) {
+    if (this.modeState === "normal" && this.hasMultipleCursorsOrSelection()) {
       this.collapseToFirstCursor();
       return;
     }
-    if (this.modeState.kind === "search" || this.modeState.kind === "command") {
+    if (this.modeState === "search" || this.modeState === "command") {
       this.setMode("normal");
       return;
     }
-    if (this.modeState.kind !== "normal") {
-      const modeBeforeEscape = this.modeState.kind;
+    if (this.modeState !== "normal") {
+      const modeBeforeEscape = this.modeState;
       if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
         this.finishInsertOrReplaceSession(modeBeforeEscape);
       }
@@ -1190,7 +1190,7 @@ export class Vim {
     if (!this.globalState.macro.isReplaying() && !this.globalState.repeat.isReplaying()) this.globalState.macro.recordKey(key);
   }
 
-  private applyVisualResult(result: VisualKeyResult, modeBefore: VimMode["kind"]): KeyResult {
+  private applyVisualResult(result: VisualKeyResult, modeBefore: VimMode): KeyResult {
     if (result.repeatAction !== undefined && !this.globalState.repeat.isReplaying()) {
       this.globalState.repeat.recordVisualAction(result.repeatAction.selection, result.repeatAction.action);
     }
@@ -1210,7 +1210,7 @@ export class Vim {
   private applyNormalResult(result: NormalKeyResult): KeyResult {
     if (result.enterInsert) {
       this.enterInsertMode({
-        origin: this.modeState.kind,
+        origin: this.modeState,
         count: result.insertCount,
         separator: result.insertSeparator,
       });
@@ -1271,7 +1271,7 @@ export class Vim {
     return remaining > 0 ? remaining : undefined;
   }
 
-  private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode["kind"]; count?: number; separator?: string }): void {
+  private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode; count?: number; separator?: string }): void {
     this.modelState.marks.setBuiltinMark(".", selectionHead(this.editor.getSelections()[0]));
     this.insertOrigin = origin;
     this.startInsertOrReplaceSession({ count, separator });
@@ -1318,15 +1318,15 @@ export class Vim {
     this.setMode("replace");
   }
 
-  private setMode(kind: Exclude<VimMode["kind"], "select">): void {
-    this.modeState = { dialect: this.modeState.dialect, kind };
+  private setMode(mode: VimMode): void {
+    this.modeState = mode;
   }
 
   private enterInsertAtPrevious(): void {
     const position = this.modelState.lastInsertPosition;
     if (position !== undefined) this.editor.setSelections([charwiseSelection(position)]);
     this.editor.setCursorStyle("line");
-    this.enterInsertMode({ origin: this.modeState.kind, count: this.takeCountForMotion(1) });
+    this.enterInsertMode({ origin: this.modeState, count: this.takeCountForMotion(1) });
   }
 
   private startInsertOrReplaceSession({ count, separator }: { count: number; separator: string }): void {
@@ -1405,8 +1405,8 @@ export class Vim {
   }
 
   private currentRemapMode() {
-    return remapModeForVimMode(this.modeState.kind, {
-      operatorPending: this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined,
+    return remapModeForVimMode(this.modeState, {
+      operatorPending: this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined,
     });
   }
 
@@ -1452,7 +1452,7 @@ export class Vim {
   private shouldResolveMotionModeAction(): boolean {
     if (!this.isMotionMode() || this.modeIsExpectingRegisterName()) return false;
     const operator = this.operatorStack.operatorContext();
-    if (this.modeState.kind === "normal") {
+    if (this.modeState === "normal") {
       // Motions are available when idle or as range-operator targets; other
       // pending operators (objects, surrounds, replace) consume motion keys
       // through the waiting-input path instead.
@@ -1472,7 +1472,7 @@ export class Vim {
   private shouldResolveSharedAction(key: string): boolean {
     if (!this.isMotionMode() || this.modeIsExpectingRegisterName()) return false;
     const operator = this.operatorStack.operatorContext();
-    if (this.modeState.kind !== "normal") return operator === "none";
+    if (this.modeState !== "normal") return operator === "none";
     switch (operator) {
       case "none":
         // A selected register is irrelevant for motions, matching Vim.
@@ -1494,11 +1494,11 @@ export class Vim {
   }
 
   private shouldResolveNormalChord(): boolean {
-    return this.modeState.kind === "normal" && this.operatorStack.operatorContext() === "none";
+    return this.modeState === "normal" && this.operatorStack.operatorContext() === "none";
   }
 
   private applySearchUnderCursor({ backwards }: { backwards: boolean }): void {
-    const motion = this.modeState.kind === "normal"
+    const motion = this.modeState === "normal"
       ? searchUnderCursorMotion(this.editor, this.globalState.search, this.globalState.registers, { backwards })
       : this.visualSearchMotion({ backwards });
     if (motion === undefined) return;
@@ -1636,7 +1636,7 @@ export class Vim {
   }
 
   private insertLiteralText(text: string): void {
-    if (this.modeState.kind === "replace") {
+    if (this.modeState === "replace") {
       replaceModeText(this.editor, text, 1, this.insertEditOptions());
     } else {
       insertText(this.editor, text, this.insertEditOptions());
@@ -1679,7 +1679,7 @@ export class Vim {
     for (let row = target.startRow; row <= target.endRowInclusive; row++) {
       this.editor.setSelections([{ type: "charwise", anchor: { row, column: 0 }, head: { row, column: 0 } }]);
       for (const key of keys) this.onKey(key);
-      if (this.modeState.kind === "insert") this.onKey("<escape>");
+      if (this.modeState === "insert") this.onKey("<escape>");
     }
   }
 
@@ -1785,21 +1785,21 @@ export class Vim {
   }
 
   private applySearchSelection({ reversed, count }: { reversed: boolean; count: number }): void {
-    const includeStart = this.modeState.kind === "normal";
+    const includeStart = this.modeState === "normal";
     const range = this.globalState.search.matchRangeForSelection(this.editor, { reversed, count, includeStart });
     if (range === undefined) {
       // Vim: `cgn` with no match aborts the pending operator without editing,
       // and `.`-replaying an aborted `cgn` swallows the rest of the recording
       // (the recorded insert text must not run as normal-mode keys).
-      if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
+      if (this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
         this.normalMode.clearPending();
         this.globalState.repeat.abortCurrentReplay();
       }
       return;
     }
-    if (this.modeState.kind === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
+    if (this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
       const enterInsert = this.normalMode.applyMotion({ type: "searchMatch", range }, 1);
-      if (enterInsert) this.modeState = { dialect: this.modeState.dialect, kind: "insert" };
+      if (enterInsert) this.modeState = "insert";
       return;
     }
 
@@ -1815,13 +1815,13 @@ export class Vim {
         : { type: "charwise", anchor: range.start, head: range.end }]);
     }
     if (this.visualMode.adoptSelection(this.editor.getSelections()[0])) {
-      this.modeState = { dialect: this.modeState.dialect, kind: "visual" };
+      this.modeState = "visual";
     }
   }
 
   private applyMotion(motion: Motion, count: number): void {
-    if (this.modeState.kind === "normal") {
-      const modeBeforeMotion = this.modeState.kind;
+    if (this.modeState === "normal") {
+      const modeBeforeMotion = this.modeState;
       const enterInsert = this.normalMode.applyMotion(motion, count);
       if (enterInsert) this.enterInsertMode({ origin: modeBeforeMotion });
     } else if (this.isVisualMode()) {
@@ -1834,7 +1834,7 @@ export class Vim {
   }
 
   private isMotionMode(): boolean {
-    return this.modeState.kind === "normal" || this.isVisualMode();
+    return this.modeState === "normal" || this.isVisualMode();
   }
 
   private modeIsExpectingRegisterName(): boolean {
@@ -1842,7 +1842,7 @@ export class Vim {
   }
 
   private isVisualMode(): boolean {
-    return isVisualModeKind(this.modeState.kind);
+    return isVisualModeKind(this.modeState);
   }
 
   private isEscape(key: string): boolean {
