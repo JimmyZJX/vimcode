@@ -68,7 +68,7 @@ type HandleResult =
 type Handler = (key: string, state: HandlerState) => HandleResult;
 ```
 
-Multiple pending handlers are a built-in result shape rather than a wrapper handler. The central executor/combinator combines branch results while preserving each branch's own `HandlerEnv`.
+Multiple pending handlers are a built-in result shape rather than a wrapper handler. The central executor/combinator combines branch results while preserving each branch's own `HandlerEnv`. `mapHandler` maps typed handler results by wrapping accepted actions while preserving pending/conflict structure.
 
 ### Handler modes and Helix
 
@@ -130,6 +130,7 @@ Likely mappings:
 
 - `RemapHandler` is the first migrated handler: it implements the generic handler interface and represents shorter-vs-longer ambiguous remaps as `conflict` with replay metadata.
 - `motion_handler.ts` is the first typed non-void handler scaffold: it resolves motion keys to live `MotionResult` values instead of editor actions.
+- `normal_mode_handler.ts` is the first normal-mode handler scaffold: it handles only plain cursor movements by applying motion results to selections.
 - `VimKeymapResolver` becomes a finite-chord handler. Its current `pendingScopes` is evidence that combined handlers need to preserve multiple candidates.
 - `countBuffer` and `selectedRegister` move into `HandlerState`.
 - Count and register prefixes are shared handler wrappers in `prefix_handlers.ts`; they should eventually replace the current legacy Vim count-buffer/selected-register plumbing.

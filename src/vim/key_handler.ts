@@ -36,15 +36,14 @@ export type KeyToDispatch = {
 
 export type QueuedRunResult<T> = T | Promise<T>;
 
+export type EffectAction<T> = { type: "effect"; mode: VimMode; run: () => QueuedRunResult<T> };
+
 type VoidKeyAction =
   | { type: "keys"; mode: VimMode; keys: readonly KeyToDispatch[] }
   | { type: "commands"; mode: VimMode; commands: readonly VimCommandMapping[] }
   | { type: "sequence"; mode: VimMode; actions: readonly KeyAction<void>[] };
 
-export type KeyAction<T> =
-  | { type: "value"; mode: VimMode; value: T }
-  | { type: "effect"; mode: VimMode; run: () => QueuedRunResult<T> }
-  | (T extends void ? VoidKeyAction : never);
+export type KeyAction<T> = EffectAction<T> | (T extends void ? VoidKeyAction : never);
 
 export type Handler<T> = (key: string, state: HandlerState) => HandleResult<T>;
 
@@ -59,6 +58,52 @@ export type HandleResult<T> =
   | { type: "conflict"; accepted: KeyAction<T>; pending: readonly HandlerEnv<T>[] }
   | { type: "unhandled" }
   | { type: "invalid" };
+
+export function mapAction<T, U>(
+  action: KeyAction<T>,
+  f: (value: T) => QueuedRunResult<U>
+): KeyAction<U> {
+  if (action.type !== "effect") {
+    throw new Error("mapAction expects an effect action");
+  }
+  return {
+    type: "effect",
+    mode: action.mode,
+    run: async () => f(await action.run()),
+  };
+}
+
+export function mapHandler<T, U>(
+  underlying: Handler<T>,
+  f: (value: T) => QueuedRunResult<U>
+): Handler<U> {
+  return (key, state) => {
+    const result = underlying(key, state);
+    switch (result.type) {
+      case "run":
+        return { type: "run", action: mapAction(result.action, f) };
+      case "handler":
+        return { type: "handler", handlerEnvs: result.handlerEnvs.map(env => mapHandlerEnv(env, f)) };
+      case "conflict":
+        return {
+          type: "conflict",
+          accepted: mapAction(result.accepted, f),
+          pending: result.pending.map(env => mapHandlerEnv(env, f)),
+        };
+      case "unhandled":
+        return { type: "unhandled" };
+      case "invalid":
+        return { type: "invalid" };
+    }
+  };
+}
+
+function mapHandlerEnv<T, U>(
+  env: HandlerEnv<T>,
+  f: (value: T) => QueuedRunResult<U>
+): HandlerEnv<U> {
+  return { handler: mapHandler(env.handler, f), state: env.state };
+}
 
 export function combineHandleResults<T>(results: readonly HandleResult<T>[]): HandleResult<T> {
   let accepted: KeyAction<T> | undefined;
@@ -97,10 +142,6 @@ export function combineHandleResults<T>(results: readonly HandleResult<T>[]): Ha
 
 export function run<T>(action: KeyAction<T>): HandleResult<T> {
   return { type: "run", action };
-}
-
-export function value<T>(mode: VimMode, value: T): HandleResult<T> {
-  return { type: "run", action: { type: "value", mode, value } };
 }
 
 export function handler<T>(handlerEnvs: readonly HandlerEnv<T>[]): HandleResult<T> {
