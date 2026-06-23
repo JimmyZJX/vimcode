@@ -19,7 +19,7 @@ async function runKeysAsync(vim: Vim, keys: readonly string[], clipboard: VimSys
 
 async function runKeysWithWhen(vim: Vim, keys: readonly string[], activeWhen: string): Promise<void> {
   for (const key of keys) {
-    await vim.handleKey(key, { remapWhen: when => when === undefined || when === activeWhen })?.run();
+    await vim.handleKey(key, { whenEvaluator: when => when === undefined || when === activeWhen })?.run();
   }
 }
 
@@ -855,6 +855,25 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("oneFx");
   });
 
+  it("keeps a shorter ambiguous remap while a longer branch stays pending", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor, {
+      insertModeKeyBindingsNonRecursive: [
+        { before: ["a"], after: ["A"] },
+        { before: ["a", "b", "c", "d"], after: ["Z"] },
+      ],
+    });
+
+    runKeys(vim, ["A", "a", "b", "c"]);
+    expect(editor.getText()).toBe("one");
+    expect(vim.status.insertPendingText).toBe("c");
+
+    runKeys(vim, ["x"]);
+
+    expect(vim.modeName).toBe("vim:insert");
+    expect(editor.getText()).toBe("oneAbcx");
+  });
+
   it("lets unrelated insert keys fall through even when insert remaps exist", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor, {
@@ -888,7 +907,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["A"]);
 
-    expect(vim.handleKey("x", { remapWhen: when => when !== "vimcode.test" })).toBeNull();
+    expect(vim.handleKey("x", { whenEvaluator: when => when !== "vimcode.test" })).toBeNull();
 
     await runKeysWithWhen(vim, ["x", "y"], "vimcode.test");
 
@@ -1179,7 +1198,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 1 });
   });
 
-  it("waits for ambiguous remaps and exposes conflicts for logging", () => {
+  it("waits for ambiguous remaps and exposes debug conflicts for logging", () => {
     const editor = new InMemoryVimEditor("abc");
     const vim = new Vim(editor, {
       normalModeKeyBindingsNonRecursive: [
@@ -1196,7 +1215,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, [RemapTimeoutKey]);
 
     expect(head(editor)).toEqual({ row: 0, column: 1 });
-    expect(vim.ambiguousRemapConflicts()).toEqual([
+    expect(vim.debugRemapConflicts()).toEqual([
       { mode: "normal", shorter: ["q"], longer: ["q", "q"] },
     ]);
   });

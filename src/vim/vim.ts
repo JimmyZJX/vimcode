@@ -6,19 +6,21 @@
 //   from the VSCode patch / tests.
 
 import { LineRange, executeCommand } from "./command.js";
-import { AmbiguousRemapConflict, NoopKey, NormalizedRemapping, RemapResolver, VimConfiguration, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
-import type { RemapWhenEvaluator, VimCommandMapping } from "./config.js";
+import { RemapTimeoutKey, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
+import type { NormalizedRemapping, WhenEvaluator, VimCommandMapping, VimConfiguration } from "./config.js";
 import { lookupDigraph } from "./digraph.js";
 import { EasyMotionState } from "./easymotion.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
-import { resolveVimAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
+import { combineHandleResults, initialHandlerState } from "./key_handler.js";
+import type { HandlerEnv, HandlerState, KeyAction } from "./key_handler.js";
+import { finiteKeymapPermissions, resolveVimAction, shouldResolveMotionModeAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
-import { VimOperatorStack, WaitingInput, convertTargetForPending, isRangeOperatorContext, isSelfEscapingWaitingInput } from "./operator.js";
+import { VimOperatorStack, WaitingInput, convertTargetForPending, isSelfEscapingWaitingInput } from "./operator.js";
 import type { RangeOperator } from "./operator_target.js";
 import type {
   PendingFindOperator,
@@ -29,6 +31,8 @@ import { MacroRecordingStatus, RecordedSelection, VisualRepeatAction } from "./n
 import { incrementNumbers } from "./normal/increment.js";
 import { isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
 import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
+import { DebugRemapConflict, createRemaps, debugRemapConflicts, handleKeyOverride as remapKeyOverride, hasRemapStartingWith, pendingRemapInsertText, remapHandler } from "./remap.js";
+import type { Remaps } from "./remap.js";
 import type { VimSystemClipboard } from "./registers.js";
 import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
@@ -81,9 +85,8 @@ export type EditorSyncResult = {
 
 export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promise<void> };
 
-const alwaysActiveRemapWhen: RemapWhenEvaluator = () => true;
+const alwaysActiveWhenEvaluator: WhenEvaluator = () => true;
 const readonlyWarningDurationMs = 2000;
-
 export { VimGlobalState, VimModelState };
 
 // Zed: `vim::Vim`. This class is the local main state holder; GPUI
@@ -95,7 +98,7 @@ export class Vim {
   private readonly easyMotion = new EasyMotionState();
   private readonly operatorStack = new VimOperatorStack();
   private modelState: VimModelState;
-  private selectedRegister: RegisterName | undefined;
+  private handlerState: HandlerState = { ...initialHandlerState };
   private countBuffer = "";
   // Vim 'showcmd': the literal keys typed for the in-flight pending command,
   // used only for the status chord display. The buffer is never cleared
@@ -104,7 +107,10 @@ export class Vim {
   // while something is pending.
   private readonly showcmdKeys: string[] = [];
   private configuration: VimConfiguration = defaultVimConfiguration;
-  private remapResolver = new RemapResolver(this.configuration);
+  private remaps: Remaps = createRemaps(this.configuration);
+  private pendingRemapEnvs: readonly HandlerEnv<void>[] = [];
+  private pendingRemapAccepted: KeyAction<void> | undefined;
+  private pendingRemapReplaySuffix: readonly string[] = [];
   private searchOriginMode: VimMode | undefined;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
@@ -142,11 +148,11 @@ export class Vim {
   ) {
     this.modelState = modelState;
     this.configuration = mergeVimConfiguration(configuration);
-    this.remapResolver = new RemapResolver(this.configuration);
+    this.remaps = createRemaps(this.configuration);
     this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.editor.setCursorStyle("block");
     this.normalMode = new NormalMode(editor, this.globalState.registers, {
-      get: () => this.selectedRegister,
+      get: () => this.handlerState.register,
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
     }, {
@@ -156,7 +162,7 @@ export class Vim {
       clear: () => this.clearCount(),
     }, this.operatorStack);
     this.visualMode = new VisualMode(editor, this.globalState.registers, {
-      get: () => this.selectedRegister,
+      get: () => this.handlerState.register,
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
     }, {
@@ -175,7 +181,8 @@ export class Vim {
 
   setConfiguration(configuration: Partial<VimConfiguration>): void {
     this.configuration = mergeVimConfiguration(configuration);
-    this.remapResolver = new RemapResolver(this.configuration);
+    this.remaps = createRemaps(this.configuration);
+    this.clearPendingRemaps();
     this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.visualMode.setConfiguration(this.configuration);
   }
@@ -202,9 +209,9 @@ export class Vim {
       operator: this.modeState === "normal" ? this.normalMode.pendingOperatorName() : undefined,
       chord,
       text,
-      remapPending: this.remapResolver.isPending(),
+      remapPending: this.remapIsPending(),
       remapTimeoutMs: this.configuration.timeout,
-      insertPendingText: mode === "insert" || mode === "replace" ? this.remapResolver.pendingInsertText() : undefined,
+      insertPendingText: mode === "insert" || mode === "replace" ? pendingRemapInsertText(this.pendingRemapEnvs) : undefined,
       macroRecording,
       readonlyWarning: readonlyWarningRemainingMs !== undefined,
       readonlyWarningRemainingMs,
@@ -224,13 +231,13 @@ export class Vim {
   }
 
   private takeSelectedRegister(): RegisterName | undefined {
-    const registerName = this.selectedRegister;
-    this.selectedRegister = undefined;
+    const registerName = this.handlerState.register;
+    this.handlerState.register = undefined;
     return registerName;
   }
 
   private clearSelectedRegister(): void {
-    this.selectedRegister = undefined;
+    this.handlerState.register = undefined;
   }
 
   private takeCount(defaultValue: number): number;
@@ -250,12 +257,12 @@ export class Vim {
     this.countBuffer = "";
   }
 
-  ambiguousRemapConflicts(): readonly AmbiguousRemapConflict[] {
-    return this.remapResolver.ambiguousConflicts();
+  debugRemapConflicts(): readonly DebugRemapConflict[] {
+    return debugRemapConflicts(this.remaps);
   }
 
   handleKeyOverride(key: string): boolean | undefined {
-    return this.remapResolver.handleKeyOverride(key);
+    return remapKeyOverride(this.remaps, key);
   }
 
   /** Test helper for asserting the synchronous key ownership decision.
@@ -264,13 +271,13 @@ export class Vim {
     return this.handleKey(key) !== null;
   }
 
-  handleKey(key: string, { remapWhen = alwaysActiveRemapWhen }: { remapWhen?: RemapWhenEvaluator } = {}): KeyPlan | null {
-    if (!this.ownsKey(key, remapWhen)) return null;
+  handleKey(key: string, { whenEvaluator = alwaysActiveWhenEvaluator }: { whenEvaluator?: WhenEvaluator } = {}): KeyPlan | null {
+    if (!this.ownsKey(key, whenEvaluator)) return null;
     return {
       run: async ({ clipboard }: { clipboard?: VimSystemClipboard } = {}) => {
         await this.globalState.registers.withSystemClipboard(clipboard, async () => {
           await this.refreshSystemClipboardRegisterForKey(key);
-          this.dispatchTypedKey(key, { allowRemap: true, remapWhen });
+          this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator });
         });
       },
     };
@@ -280,26 +287,26 @@ export class Vim {
     for (const key of mapping.after ?? []) {
       this.dispatchKey(normalizeKey(key, this.configuration.leader), {
         allowRemap: true,
-        remapWhen: alwaysActiveRemapWhen,
+        whenEvaluator: alwaysActiveWhenEvaluator,
       });
     }
     for (const command of mapping.commands ?? []) this.executeMappedCommand(command);
     this.ensureNormalModeForReadonlyDocument();
   }
 
-  hasActiveRemapStartingWithOrPending(key: string, remapWhen: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
-    return this.remapResolver.isPending()
-      || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
+  hasActiveRemapStartingWithOrPending(key: string, whenEvaluator: WhenEvaluator = alwaysActiveWhenEvaluator): boolean {
+    return this.remapIsPending()
+      || hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, whenEvaluator);
   }
 
-  private ownsKey(key: string, remapWhen: RemapWhenEvaluator): boolean {
+  private ownsKey(key: string, whenEvaluator: WhenEvaluator): boolean {
     const handleOverride = this.handleKeyOverride(key);
     if (handleOverride !== undefined) return handleOverride;
 
     const pendingSearch = this.operatorStack.activeTopLevel("search");
     if (pendingSearch !== undefined) return isSearchInputKey(key);
 
-    if (this.operatorStack.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapResolver.isPending()) return true;
+    if (this.operatorStack.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapIsPending()) return true;
 
     if (this.isEscape(key)) return this.shouldHandleEscapeKey();
 
@@ -320,13 +327,13 @@ export class Vim {
       if (this.modeState === "replace" && (insertTextForKey(key) !== undefined || key === "backspace")) {
         return true;
       }
-      return this.shouldPrepareInsertOrReplaceKey(key, remapWhen);
+      return this.shouldPrepareInsertOrReplaceKey(key, whenEvaluator);
     }
 
     if (this.isVisualMode() && key === "ctrl-c") return true;
 
     if (isCtrlKey(key)) {
-      const isMapped = this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen);
+      const isMapped = hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, whenEvaluator);
       if (!isMapped) {
         return this.configuration.useCtrlKeys && isBuiltInCtrlKey(key);
       }
@@ -335,9 +342,9 @@ export class Vim {
     return true;
   }
 
-  private shouldPrepareInsertOrReplaceKey(key: string, remapWhen: RemapWhenEvaluator): boolean {
-    return this.remapResolver.isPending()
-      || this.remapResolver.hasMappingStartingWith(this.currentRemapMode(), key, remapWhen)
+  private shouldPrepareInsertOrReplaceKey(key: string, whenEvaluator: WhenEvaluator): boolean {
+    return this.remapIsPending()
+      || hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, whenEvaluator)
       || this.operatorStack.length > 0
       || key === "ctrl-k"
       || key === "ctrl-v"
@@ -358,7 +365,7 @@ export class Vim {
       || this.operatorStack.length > 0
       || this.keymapResolver.isPending()
       || this.easyMotion.isPending()
-      || this.remapResolver.isPending()
+      || this.remapIsPending()
       || this.normalMode.isPending();
   }
 
@@ -429,10 +436,10 @@ export class Vim {
     const pendingSearch = this.operatorStack.activeTopLevel("search");
     this.keymapResolver.clearPending();
     this.easyMotion.clear(this.editor);
-    this.remapResolver.clearPending();
+    this.clearPendingRemaps();
     this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
     this.searchOriginMode = undefined;
-    this.selectedRegister = undefined;
+    this.handlerState.register = undefined;
     this.countBuffer = "";
     if (closeSearchHighlights && pendingSearch !== undefined) this.editor.clearSearchHighlights();
     this.operatorStack.clear();
@@ -440,7 +447,7 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.selectedRegister !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapResolver.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.handlerState.register !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapIsPending() || (this.modeState === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -449,11 +456,11 @@ export class Vim {
   // produced them (`2` and `21` are the same depth).
   private pendingDepth(): number {
     return this.operatorStack.length
-      + (this.selectedRegister !== undefined ? 1 : 0)
+      + (this.handlerState.register !== undefined ? 1 : 0)
       + (this.countBuffer.length > 0 ? 1 : 0)
       + (this.keymapResolver.isPending() ? 1 : 0)
       + (this.easyMotion.isPending() ? 1 : 0)
-      + (this.remapResolver.isPending() ? 1 : 0);
+      + (this.remapIsPending() ? 1 : 0);
   }
 
   private pendingChord(): string {
@@ -472,10 +479,10 @@ export class Vim {
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyDispatchResult {
-    return this.dispatchTypedKey(key, { allowRemap: true, remapWhen: alwaysActiveRemapWhen });
+    return this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator: alwaysActiveWhenEvaluator });
   }
 
-  private dispatchTypedKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyDispatchResult {
+  private dispatchTypedKey(key: string, { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }): KeyDispatchResult {
     // Remap expansions re-enter through [dispatchKey] and bypass this append,
     // so the showcmd buffer shows remapped sequences as physically typed
     // (`x`, not its expansion). This intentionally differs from Vim's
@@ -484,7 +491,7 @@ export class Vim {
     // still pending, the chord shows the replayed keys that formed it.
     if (!this.isPending()) this.showcmdKeys.length = 0;
     this.showcmdKeys.push(key);
-    const result = this.dispatchKey(key, { allowRemap, remapWhen });
+    const result = this.dispatchKey(key, { allowRemap, whenEvaluator });
     if (result === "native") this.showcmdKeys.pop();
     return result;
   }
@@ -508,7 +515,7 @@ export class Vim {
     return undefined;
   }
 
-  private dispatchKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyDispatchResult {
+  private dispatchKey(key: string, { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }): KeyDispatchResult {
     // Cheap content stamp, not the document text: snapshotting/comparing the
     // whole document here made every keypress O(file size) on large files.
     const versionBefore = this.editor.documentVersion();
@@ -517,7 +524,7 @@ export class Vim {
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
 
-      const remapResult = this.dispatchRemapKey(key, { allowRemap, remapWhen });
+      const remapResult = this.dispatchRemapKey(key, { allowRemap, whenEvaluator });
       if (remapResult !== undefined) return remapResult;
 
       // Zed: `vim_mode == waiting` contexts. One classification of what the
@@ -601,25 +608,45 @@ export class Vim {
     }
   }
 
-  private dispatchRemapKey(key: string, { allowRemap, remapWhen }: { allowRemap: boolean; remapWhen: RemapWhenEvaluator }): KeyResult | undefined {
+  private dispatchRemapKey(key: string, { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }): KeyResult | undefined {
     if (!(allowRemap && this.shouldResolveRemap())) return undefined;
-    const resolution = this.remapResolver.handleKey(this.currentRemapMode(), key, remapWhen);
-    switch (resolution.kind) {
-      case "pending":
+    if (key === RemapTimeoutKey && this.remapIsPending()) {
+      this.acceptPendingRemap(whenEvaluator, []);
+      return "handled";
+    }
+    const hadPendingRemap = this.remapIsPending();
+    const state = this.handlerStateForRemap(whenEvaluator);
+    const result = hadPendingRemap
+      ? combineHandleResults(this.pendingRemapEnvs.map(({ handler, state }) => handler(key, state)))
+      : remapHandler(this.remaps, this.currentRemapMode())(key, state);
+    switch (result.type) {
+      case "handler":
+        this.pendingRemapEnvs = result.handlerEnvs;
+        if (hadPendingRemap && this.pendingRemapAccepted !== undefined) {
+          this.pendingRemapReplaySuffix = [...this.pendingRemapReplaySuffix, key];
+        } else {
+          this.pendingRemapAccepted = undefined;
+          this.pendingRemapReplaySuffix = [];
+        }
         return "handled";
-      case "matched":
-        this.executeRemapping(resolution.mapping, remapWhen);
+      case "conflict":
+        this.pendingRemapEnvs = result.pending;
+        this.pendingRemapAccepted = result.accepted;
+        this.pendingRemapReplaySuffix = [];
         return "handled";
-      case "matchedWithReplay":
-        this.executeRemapping(resolution.mapping, remapWhen);
-        for (const replayKey of resolution.keys) this.dispatchKey(replayKey, { allowRemap: true, remapWhen });
+      case "run":
+        this.clearPendingRemaps();
+        this.applyKeyAction(result.action, whenEvaluator);
         return "handled";
-      case "replay":
-        this.replayTimedOutRemapKeys(resolution.keys, remapWhen);
+      case "invalid":
+        if (hadPendingRemap) this.acceptPendingRemap(whenEvaluator, [key]);
+        else this.clearPendingRemaps();
         return "handled";
-      case "handled":
-        return "handled";
-      case "noMatch":
+      case "unhandled":
+        if (hadPendingRemap) {
+          this.acceptPendingRemap(whenEvaluator, [key]);
+          return "handled";
+        }
         return undefined;
     }
   }
@@ -659,7 +686,7 @@ export class Vim {
   }
 
   private dispatchMotionModeKey(key: string): KeyResult | undefined {
-    if (!this.shouldResolveMotionModeAction()) return undefined;
+    if (!shouldResolveMotionModeAction(this.keymapContext())) return undefined;
     const motionModeAction = this.resolveKeymapAction(key, "motionMode");
     if (motionModeAction === undefined) return undefined;
     return this.dispatchVimAction(motionModeAction);
@@ -789,8 +816,7 @@ export class Vim {
   }
 
   private handleFiniteKeymapKey(key: string): KeyResult | undefined {
-    const allowShared = this.shouldResolveSharedAction(key);
-    const allowNormal = this.shouldResolveNormalChord();
+    const { allowShared, allowNormal } = finiteKeymapPermissions(key, this.keymapContext());
     if (!allowShared && !allowNormal && !this.keymapResolver.isPending()) return undefined;
 
     const resolution = this.keymapResolver.handleKey(key, { allowShared, allowNormal });
@@ -814,7 +840,7 @@ export class Vim {
 
   private normalPendingChordForRepeat(): string {
     const chord = this.normalMode.pendingChord();
-    return this.selectedRegister === undefined ? chord : `${chord}\"${this.selectedRegister}`;
+    return this.handlerState.register === undefined ? chord : `${chord}\"${this.handlerState.register}`;
   }
 
   private resolveKeymapAction(key: string, phase: VimKeymapPhase): VimAction | undefined {
@@ -827,7 +853,8 @@ export class Vim {
       mode: this.modeState,
       operator: this.operatorStack.operatorContext(),
       operatorPendingKey: this.modeState === "normal" ? this.operatorStack.operatorPendingKey() : undefined,
-      hasSelectedRegister: this.selectedRegister !== undefined,
+      hasSelectedRegister: this.handlerState.register !== undefined,
+      expectsRegisterName: this.modeIsExpectingRegisterName(),
       countText: this.countBuffer,
       repeatIsReplaying: this.globalState.repeat.isReplaying(),
     };
@@ -1061,7 +1088,7 @@ export class Vim {
   private handlePendingRegisterKey(key: string): void {
     const registerName = parseRegisterName(key);
     if (registerName !== undefined) {
-      this.selectedRegister = registerName;
+      this.handlerState.register = registerName;
       return;
     }
     if (this.modeState === "normal") this.normalMode.clearPending();
@@ -1399,8 +1426,55 @@ export class Vim {
     return "handled";
   }
 
+  private handlerStateForRemap(whenEvaluator: WhenEvaluator): HandlerState {
+    this.handlerState.mode = this.modeState;
+    this.handlerState.whenEvaluator = whenEvaluator;
+    return this.handlerState;
+  }
+
+  private applyKeyAction(action: KeyAction<void>, whenEvaluator: WhenEvaluator): void {
+    switch (action.type) {
+      case "effect": {
+        const result = action.run();
+        if (isPromiseLike(result)) void result;
+        break;
+      }
+      case "keys":
+        action.keys.forEach(({ key, allowRemap }) => {
+          this.dispatchKey(key, { allowRemap, whenEvaluator });
+        });
+        break;
+      case "commands":
+        action.commands.forEach(command => this.executeMappedCommand(command));
+        break;
+      case "sequence":
+        action.actions.forEach(nested => this.applyKeyAction(nested, whenEvaluator));
+        break;
+    }
+    this.ensureNormalModeForReadonlyDocument();
+  }
+
+  private acceptPendingRemap(whenEvaluator: WhenEvaluator, extraReplayKeys: readonly string[]): void {
+    const accepted = this.pendingRemapAccepted;
+    const replaySuffix = [...this.pendingRemapReplaySuffix, ...extraReplayKeys];
+    this.clearPendingRemaps();
+    if (accepted === undefined) return;
+    this.applyKeyAction(accepted, whenEvaluator);
+    replaySuffix.forEach(key => this.dispatchKey(key, { allowRemap: true, whenEvaluator }));
+  }
+
+  private remapIsPending(): boolean {
+    return this.pendingRemapEnvs.length > 0;
+  }
+
+  private clearPendingRemaps(): void {
+    this.pendingRemapEnvs = [];
+    this.pendingRemapAccepted = undefined;
+    this.pendingRemapReplaySuffix = [];
+  }
+
   private shouldResolveRemap(): boolean {
-    if (this.remapResolver.isPending()) return true;
+    if (this.remapIsPending()) return true;
     return !this.keymapResolver.isPending() && !this.easyMotion.isPending() && this.operatorStack.length === 0;
   }
 
@@ -1408,22 +1482,6 @@ export class Vim {
     return remapModeForVimMode(this.modeState, {
       operatorPending: this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined,
     });
-  }
-
-  private replayTimedOutRemapKeys(keys: readonly string[], remapWhen: RemapWhenEvaluator): void {
-    keys.forEach((key, index) => {
-      this.dispatchKey(key, { allowRemap: index > 0, remapWhen });
-    });
-  }
-
-  private executeRemapping(mapping: NormalizedRemapping, remapWhen: RemapWhenEvaluator): void {
-    const skipFirstRecursiveKey = mapping.recursive && isPrefixOrEqual(mapping.before, mapping.after);
-    for (const [index, key] of mapping.after.entries()) {
-      if (key === NoopKey) continue;
-      this.dispatchKey(key, { allowRemap: mapping.recursive && !(skipFirstRecursiveKey && index === 0), remapWhen });
-    }
-    for (const command of mapping.commands) this.executeMappedCommand(command);
-    this.ensureNormalModeForReadonlyDocument();
   }
 
   private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
@@ -1449,52 +1507,12 @@ export class Vim {
     return hasMultipleCursorsOrSelection(this.editor.getSelections());
   }
 
-  private shouldResolveMotionModeAction(): boolean {
-    if (!this.isMotionMode() || this.modeIsExpectingRegisterName()) return false;
-    const operator = this.operatorStack.operatorContext();
-    if (this.modeState === "normal") {
-      // Motions are available when idle or as range-operator targets; other
-      // pending operators (objects, surrounds, replace) consume motion keys
-      // through the waiting-input path instead.
-      return operator === "none" || isRangeOperatorContext(operator);
-    }
-    return this.isVisualMode() && operator === "none";
-  }
-
   private shouldStartEasyMotion(): boolean {
     return this.isMotionMode()
       && !this.modeIsExpectingRegisterName()
       && this.operatorStack.operatorContext() === "none"
       && this.countBuffer.length === 0
-      && this.selectedRegister === undefined;
-  }
-
-  private shouldResolveSharedAction(key: string): boolean {
-    if (!this.isMotionMode() || this.modeIsExpectingRegisterName()) return false;
-    const operator = this.operatorStack.operatorContext();
-    if (this.modeState !== "normal") return operator === "none";
-    switch (operator) {
-      case "none":
-        // A selected register is irrelevant for motions, matching Vim.
-        return true;
-      case "delete":
-      case "change":
-      case "yank":
-      case "convert":
-      case "indent":
-      case "surround":
-        // Shared `g`-prefixed motions can be operator targets (`d g g`,
-        // `g u g g`), `g u`-style chords are how convert doubles
-        // (`g u g u`), and the unmatched-bracket chords are motions (`d ] }`).
-        return key === "g" || key === "]" || key === "[";
-      case "object":
-      case "other":
-        return false;
-    }
-  }
-
-  private shouldResolveNormalChord(): boolean {
-    return this.modeState === "normal" && this.operatorStack.operatorContext() === "none";
+      && this.handlerState.register === undefined;
   }
 
   private applySearchUnderCursor({ backwards }: { backwards: boolean }): void {
@@ -1886,10 +1904,6 @@ function insertTextForKey(key: string): string | undefined {
   return undefined;
 }
 
-function isPrefixOrEqual(prefix: readonly string[], full: readonly string[]): boolean {
-  return prefix.length <= full.length && prefix.every((key, index) => key === full[index]);
-}
-
 function isCtrlKey(key: string): boolean {
   return key.startsWith("ctrl-");
 }
@@ -1922,6 +1936,10 @@ function isBuiltInCtrlKey(key: string): boolean {
     default:
       return false;
   }
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof (value as Promise<T>).then === "function";
 }
 
 function commandArgs(command: { args?: unknown | unknown[] }): readonly unknown[] {

@@ -106,7 +106,7 @@ export class VimController extends Disposable {
 	private enabled = false;
 	private remapTimeout: ReturnType<typeof setTimeout> | undefined;
 	private remapTimeoutGeneration = 0;
-	private readonly remapWhenExpressionCache = new Map<string, ContextKeyExpression | undefined>();
+	private readonly whenExpressionCache = new Map<string, ContextKeyExpression | undefined>();
 	private pendingUndoRedoContentSync = false;
 	private nativeCursorAppearance: NativeCursorAppearance | undefined = undefined;
 	private appliedCursorBlinking: 'vim-solid' | 'original' | undefined = undefined;
@@ -411,7 +411,7 @@ export class VimController extends Disposable {
 			return;
 		}
 		const key = keyFromEvent(event);
-		const remapWhen = (when: string | undefined) => this.evaluateRemapWhen(when, event.target);
+		const whenEvaluator = (when: string | undefined) => this.evaluateWhen(when, event.target);
 		// When Vim is waiting for the rest of a command (`g`, `d`, a register name,
 		// search input, a pending remap, ...), the next key belongs to Vim. Otherwise
 		// user/extension VSCode keybindings get first refusal, and Vim only runs if it
@@ -421,7 +421,7 @@ export class VimController extends Disposable {
 			this.syncReadonlyModeAfterNativeKey();
 			return;
 		}
-		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { remapWhen });
+		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { whenEvaluator });
 		if (keyPlan === null) {
 			this.syncReadonlyModeAfterNativeKey();
 			return;
@@ -446,28 +446,28 @@ export class VimController extends Disposable {
 		}, 0);
 	}
 
-	private evaluateRemapWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
+	private evaluateWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
 		if (when === undefined || when.trim().length === 0) {
 			return true;
 		}
-		const expression = this.remapWhenExpression(when);
+		const expression = this.whenExpression(when);
 		if (expression === undefined) {
 			return false;
 		}
 		return expression.evaluate(this.contextKeyService.getContext(target));
 	}
 
-	private remapWhenExpression(when: string): ContextKeyExpression | undefined {
-		if (!this.remapWhenExpressionCache.has(when)) {
+	private whenExpression(when: string): ContextKeyExpression | undefined {
+		if (!this.whenExpressionCache.has(when)) {
 			let expression: ContextKeyExpression | undefined;
 			try {
 				expression = ContextKeyExpr.deserialize(when);
 			} catch (_error) {
 				expression = undefined;
 			}
-			this.remapWhenExpressionCache.set(when, expression);
+			this.whenExpressionCache.set(when, expression);
 		}
-		return this.remapWhenExpressionCache.get(when);
+		return this.whenExpressionCache.get(when);
 	}
 
 	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent): boolean {

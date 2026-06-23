@@ -25,8 +25,8 @@ The refactor should make key handling a typed parser/continuation state machine.
 2. **Handlers are continuations.**
    A pending operator, pending register name, pending finite chord, pending remap, search input, command input, insert digraph, etc. should be represented as a typed handler rather than as unrelated ad-hoc flags.
 
-3. **Continuation state is separate from live context.**
-   Counts, selected register, operator depth/status metadata, and buffered keys are continuation state. Editor, registers, configuration, model state, and services are live context passed to handlers/runs.
+3. **One environment object.**
+   Counts, selected register, operator depth/status metadata, buffered keys, and live services/callbacks needed by handlers live in one environment object. Avoid a second `Context` argument; centralizing dispatch means every handler has the same call shape.
 
 4. **Ambiguity is first-class.**
    Ambiguous shorter-vs-longer matches need timeout and replay semantics. The design must preserve the existing remap behavior where an accepted shorter mapping may run and the extra keys are replayed if the longer candidate fails.
@@ -40,56 +40,35 @@ The refactor should make key handling a typed parser/continuation state machine.
 ## Core vocabulary
 
 ```ts
-type HandlerMode =
-  | "normal"
-  | "insert"
-  | "replace"
-  | "search"
-  | "command"
-  | "visual"
-  | "visualLine"
-  | "visualBlock"
-  | "helixNormal"
-  | "helixSelect";
-
 type HandlerState = {
+  mode: VimMode;
   repeat: number;
   register: RegisterName | undefined;
   operatorDepth: number;
 };
 
-type HandlerContext = {
-  editor: VimEditorCapabilities;
-  registers: Registers;
-  configuration: VimConfiguration;
-  // plus model/global state and host services as migration needs them
-};
+type KeyAction =
+  | { type: "effect"; mode: VimMode; run: () => void | Promise<void> }
+  | { type: "keys"; mode: VimMode; keys: readonly { key: string; allowRemap: boolean }[] }
+  | { type: "commands"; mode: VimMode; commands: readonly VimCommandMapping[] }
+  | { type: "sequence"; mode: VimMode; actions: readonly KeyAction[] };
 
-type QueuedRun<T> = {
-  /** Mode that should become visible before [run] is awaited. */
-  mode: HandlerMode;
-  run: (context: HandlerContext) => Promise<T>;
-};
-
-type HandlerEnv<T> = {
-  handler: Handler<T>;
+type HandlerEnv = {
+  handler: Handler;
   state: HandlerState;
 };
 
-type HandleResult<T> =
-  | { type: "run"; run: QueuedRun<T> }
-  | { type: "handler"; handlerEnv: HandlerEnv<T> }
-  | { type: "conflict"; accepted: QueuedRun<T>; pending: HandlerEnv<T>; replayKeys: readonly string[] }
+type HandleResult =
+  | { type: "run"; action: KeyAction }
+  | { type: "handler"; handlerEnvs: readonly HandlerEnv[] }
+  | { type: "conflict"; accepted: KeyAction; pending: readonly HandlerEnv[] }
   | { type: "unhandled" }
-  | { type: "invalid"; replayKeys?: readonly string[] };
+  | { type: "invalid" };
 
-interface Handler<T> {
-  readonly mode: HandlerMode;
-  handle(key: string, state: HandlerState, context: HandlerContext): HandleResult<T>;
-}
+type Handler = (key: string, state: HandlerState) => HandleResult;
 ```
 
-The exact representation may evolve. In particular, a pending ambiguity between multiple handlers may need a `CombinedHandler` that stores multiple branch-specific `HandlerEnv`s internally, because each branch may update its continuation state differently.
+Multiple pending handlers are a built-in result shape rather than a wrapper handler. The central executor/combinator combines branch results while preserving each branch's own `HandlerEnv`.
 
 ### Handler modes and Helix
 
@@ -97,11 +76,11 @@ The exact representation may evolve. In particular, a pending ambiguity between 
 
 Search and command remain shared prompt modes for now.
 
-## Queued runs and mode visibility
+## Key actions and mode visibility
 
-`QueuedRun.mode` is the target mode after the key is accepted, not an asynchronously computed result. `Vim.handleKey` should switch the visible mode/current default handler synchronously before enqueueing `QueuedRun.run`.
+`KeyAction.mode` is the target mode after the key is accepted, not an asynchronously computed result. The executor should switch the visible mode/current default handler synchronously before executing the action.
 
-The queued function should compute live editor-dependent values only when it runs. For example, `d` followed by a motion should queue a delete action whose closure computes the motion target/range after previous queued tasks have completed, then deletes it. This avoids computing ranges against stale selections while still making the next-key mode visible immediately.
+Only `effect` actions are queued. Key-sequence actions are synchronously re-dispatched through the executor, and command actions are handed to the integration layer. Effect actions should compute live editor-dependent values only when they run. For example, `d` followed by a motion should queue a delete action whose closure computes the motion target/range after previous queued tasks have completed, then deletes it. This avoids computing ranges against stale selections while still making the next-key mode visible immediately.
 
 This implies a split:
 
@@ -113,10 +92,10 @@ This implies a split:
 A conflict means a shorter action is accepted but a longer handler is also possible. The state needs at least:
 
 ```ts
-type Conflict<T> = {
-  accepted: QueuedRun<T>;
-  pending: HandlerEnv<T>;
-  replayKeys: string[];
+type Conflict = {
+  accepted: KeyAction;
+  pending: readonly HandlerEnv[];
+  replaySuffix: string[]; // executor-owned, not part of HandleResult.conflict
 };
 ```
 
@@ -126,8 +105,8 @@ If another key arrives first:
 
 1. Feed the key to `pending`.
 2. If it resolves to a run, discard `accepted` and run the longer action.
-3. If it stays pending, append the key to `replayKeys` and keep waiting.
-4. If it is invalid/unhandled, run `accepted`, reset to `accepted.mode`, then replay `replayKeys` through the new/default handler.
+3. If it stays pending, append the key to the executor-owned `replaySuffix` and keep waiting.
+4. If it is invalid/unhandled, run `accepted`, reset to `accepted.mode`, then replay `replaySuffix` through the new/default handler.
 
 This generalizes the existing `RemapResolver` `matchedWithReplay` behavior. A single replay key is insufficient; ambiguity must carry the buffered suffix.
 
@@ -135,18 +114,13 @@ This generalizes the existing `RemapResolver` `matchedWithReplay` behavior. A si
 
 `unhandled` means this handler did not claim the key. A surrounding/combined handler may try lower-priority handlers, or the controller may let VSCode handle the key.
 
-`invalid` means this handler did claim the pending context, but the key is not valid for it. The pending state should be cleared. Some invalid states may also request replay, matching remap behavior.
+`invalid` means this handler did claim the pending context, but the key is not valid for it. Without an accepted conflict, the pending state should be cleared. With an accepted conflict, the executor accepts the conflict and replays the invalidating key as part of the conflict suffix.
 
 A no-op Vim command should be represented as a `run` whose closure does nothing, or a `run` that only clears/upates parser state. It should not be represented as `unhandled` or `invalid`.
 
 ## Handler composition
 
-A priority combinator should preserve lower-priority pending branches when both handlers accept a prefix. The current draft's `CombinedHandler` returning only `result1` for two pending handlers is too lossy.
-
-A combined pending handler should either:
-
-- store all branch-specific `HandlerEnv`s internally, or
-- return a result shape that can carry multiple pending candidates.
+A priority combinator should preserve lower-priority pending branches when both handlers accept a prefix. `HandleResult` therefore carries `HandlerEnv[]` directly for pending branches. The central executor/combinator combines branch results, chooses the first completed run by priority, and keeps all still-pending branches until a later key disambiguates them.
 
 Priority applies when two branches both produce completed runs for the same key. It should not discard a lower-priority branch that only becomes distinguishable on a later key.
 
@@ -154,19 +128,38 @@ Priority applies when two branches both produce completed runs for the same key.
 
 Likely mappings:
 
-- `RemapResolver` becomes a handler with conflict/replay semantics.
+- `RemapHandler` is the first migrated handler: it implements the generic handler interface and represents shorter-vs-longer ambiguous remaps as `conflict` with replay metadata.
+- `motion_handler.ts` is the first typed non-void handler scaffold: it returns semantic `Motion` values instead of editor actions.
 - `VimKeymapResolver` becomes a finite-chord handler. Its current `pendingScopes` is evidence that combined handlers need to preserve multiple candidates.
 - `countBuffer` and `selectedRegister` move into `HandlerState`.
+- Count and register prefixes are shared handler wrappers in `prefix_handlers.ts`; they should eventually replace the current legacy Vim count-buffer/selected-register plumbing.
 - `VimOperatorStack` pending variants become typed continuation handlers over time.
 - `NormalMode`/`VisualMode` execution helpers become queued action builders and effect functions rather than key parsers.
 - `Vim.status` reads from the active handler/conflict state for chord, pending, pending depth, and operator/cursor shape.
+
+## Target `vim.ts` shape
+
+`vim.ts` should converge on being the owner of Vim state plus a small executor for the active key handler graph. It should not keep accumulating per-subsystem dispatch logic. The target flow is:
+
+```text
+key
+  -> current handler envs
+  -> combine handler results
+  -> executor updates mode / active handlers / status state synchronously
+  -> executor enqueues accepted runs
+  -> executor synchronously re-dispatches replay keys, if any
+```
+
+In that target shape, remaps, finite keymaps, operators, search/command input, insert digraph/literal/register input, and mode-specific fallbacks are handlers. `vim.ts` owns cross-cutting execution concerns only: key ownership/native passthrough, async queueing, clipboard transactions, mode/status synchronization, synchronously re-dispatching replay keys, and readonly collapse.
+
+`key_executor.ts` is the standalone scaffold for this target. It stores active `HandlerEnv`s, combines handler results, updates the synchronous mode/handler state when a run is accepted, preserves conflicts, accepts conflicts on timeout, enqueues accepted runs, and synchronously re-dispatches replay keys through the same executor. It never waits for an action to finish before replaying keys; actions are the only queued work. Runs have no return value; debugging hooks go through the executor's optional log interface. `prefix_handlers.ts` provides the common count/register prefix transformer that can wrap mode-specific handlers.
 
 ## Migration plan
 
 Each phase should keep `npm run build -- --noEmit` and `npm test -- --runInBand` green.
 
 1. **Introduce handler core types.**
-   Add shared types for handler state/context/results, conflict replay, and combinators. No behavior change.
+   Add shared types for handler state/results, conflict replay, and combinators. No behavior change.
 
 2. **Move count/register state behind the handler state shape.**
    Keep existing behavior, but stop threading count/register as separate `Vim` fields where possible.
@@ -175,7 +168,7 @@ Each phase should keep `npm run build -- --noEmit` and `npm test -- --runInBand`
    Wrap `VimKeymapResolver` in the new handler shape. Preserve `pendingScopes` and cancellation semantics.
 
 4. **Port remap resolution.**
-   Express ambiguous remaps as `conflict` with `replayKeys`. Preserve timeout behavior exactly.
+   Express ambiguous remaps as `conflict`; the key executor owns the replay suffix while the conflict is pending. Preserve timeout behavior exactly.
 
 5. **Port one operator path.**
    Start with `d` + motion. The handler should set normal mode synchronously and queue a delete whose closure computes the live motion target and applies `applyOperatorToTarget`.
@@ -191,7 +184,7 @@ Each phase should keep `npm run build -- --noEmit` and `npm test -- --runInBand`
 
 ## Open questions
 
-- Whether `HandlerState.repeat` should be multiplicative (`env.repeat`) or store the current count text separately for status and leading-zero rules.
+- How `HandlerState.repeat` should map onto Vim's legacy count-buffer while the old dispatcher is still in use. The typed prefix handler keeps its in-progress count text in the handler closure rather than in `HandlerState`.
 - Whether `operatorDepth` is enough for cursor shape, or whether status should ask handlers for a display depth/chord/operator label.
 - How much of macro/repeat recording belongs in parser handling vs queued effects. Current code records near `dispatchKey`; migration should preserve existing repeat/macro tests before moving that boundary.
-- Whether native actions returned by Vim should be queued through the same `QueuedRun` abstraction or remain direct host commands with special selection-sync handling.
+- How native/host command `KeyAction`s should handle selection synchronization once the executor is integrated into `vim.ts`.

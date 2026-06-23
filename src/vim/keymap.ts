@@ -110,6 +110,7 @@ export type VimKeymapContext = {
       per-operator `vim_operator` contexts). */
   operatorPendingKey: string | undefined;
   hasSelectedRegister: boolean;
+  expectsRegisterName: boolean;
   countText: string;
   repeatIsReplaying: boolean;
 };
@@ -117,6 +118,47 @@ export type VimKeymapContext = {
 /** Nothing is pending at all: no operator input and no selected register. */
 function nothingPending(context: VimKeymapContext): boolean {
   return context.operator === "none" && !context.hasSelectedRegister;
+}
+
+export function shouldResolveMotionModeAction(context: VimKeymapContext): boolean {
+  if (!isMotionMode(context.mode) || context.expectsRegisterName) return false;
+  if (context.mode === "normal") {
+    return context.operator === "none" || isRangeOperatorContext(context.operator);
+  }
+  return isVisualModeKind(context.mode) && context.operator === "none";
+}
+
+export function finiteKeymapPermissions(
+  key: string,
+  context: VimKeymapContext
+): { allowShared: boolean; allowNormal: boolean } {
+  return {
+    allowShared: shouldResolveSharedAction(key, context),
+    allowNormal: context.mode === "normal" && context.operator === "none",
+  };
+}
+
+function shouldResolveSharedAction(key: string, context: VimKeymapContext): boolean {
+  if (!isMotionMode(context.mode) || context.expectsRegisterName) return false;
+  if (context.mode !== "normal") return context.operator === "none";
+  switch (context.operator) {
+    case "none":
+      return true;
+    case "delete":
+    case "change":
+    case "yank":
+    case "convert":
+    case "indent":
+    case "surround":
+      return key === "g" || key === "]" || key === "[";
+    case "object":
+    case "other":
+      return false;
+  }
+}
+
+function isMotionMode(mode: VimMode): boolean {
+  return mode === "normal" || isVisualModeKind(mode);
 }
 
 export type FiniteKeymapScope = "shared" | "normal";
