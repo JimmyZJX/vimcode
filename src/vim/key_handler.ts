@@ -1,4 +1,5 @@
 import type { VimCommandMapping, WhenEvaluator } from "./config.js";
+import type { VimEditorCapabilities } from "./editor.js";
 import type { RegisterName } from "./registers.js";
 import type { VimMode } from "./state.js";
 
@@ -12,6 +13,7 @@ export type HandlerState = {
   operatorDepth: number;
   whenEvaluator: WhenEvaluator;
   remapKeys: readonly string[];
+  editor?: VimEditorCapabilities;
 };
 
 export const initialHandlerState: HandlerState = {

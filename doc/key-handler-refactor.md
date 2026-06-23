@@ -129,7 +129,7 @@ Priority applies when two branches both produce completed runs for the same key.
 Likely mappings:
 
 - `RemapHandler` is the first migrated handler: it implements the generic handler interface and represents shorter-vs-longer ambiguous remaps as `conflict` with replay metadata.
-- `motion_handler.ts` is the first typed non-void handler scaffold: it returns semantic `Motion` values instead of editor actions.
+- `motion_handler.ts` is the first typed non-void handler scaffold: it resolves motion keys to live `MotionResult` values instead of editor actions.
 - `VimKeymapResolver` becomes a finite-chord handler. Its current `pendingScopes` is evidence that combined handlers need to preserve multiple candidates.
 - `countBuffer` and `selectedRegister` move into `HandlerState`.
 - Count and register prefixes are shared handler wrappers in `prefix_handlers.ts`; they should eventually replace the current legacy Vim count-buffer/selected-register plumbing.
