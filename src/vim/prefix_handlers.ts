@@ -12,11 +12,16 @@ export function prefixHandler<T>(underlying: Handler<T>, countText = ""): Handle
   return (key, state) => {
     if (/^\d$/.test(key) && (key !== "0" || countText.length > 0)) {
       const nextCountText = `${countText}${key}`;
-      return handler([{ handler: prefixHandler(underlying, nextCountText), state: cloneHandlerState(state) }]);
+      return handler([
+        {
+          handler: prefixHandler(underlying, nextCountText),
+          state: countText.length === 0 ? incrementOperatorDepth(state) : cloneHandlerState(state),
+        },
+      ]);
     }
 
     if (key === '"' && state.register === undefined) {
-      return handler([waitingForRegisterEnv(underlying, state, countText)]);
+      return handler([waitingForRegisterEnv(underlying, incrementOperatorDepth(state), countText)]);
     }
 
     return underlying(key, stateWithAppliedCount(state, countText));
@@ -48,5 +53,12 @@ function stateWithAppliedCount(state: HandlerState, countText: string): HandlerS
   return {
     ...cloneHandlerState(state),
     repeat: state.repeat * Number(countText),
+  };
+}
+
+function incrementOperatorDepth(state: HandlerState): HandlerState {
+  return {
+    ...cloneHandlerState(state),
+    operatorDepth: state.operatorDepth + 1,
   };
 }

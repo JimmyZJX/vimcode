@@ -1,6 +1,6 @@
 import type { VimCommandMapping, WhenEvaluator } from "./config.js";
 import type { VimEditorCapabilities } from "./editor.js";
-import type { RegisterName } from "./registers.js";
+import type { RegisterName, Registers } from "./registers.js";
 import type { VimMode } from "./state.js";
 
 export type HandlerState = {
@@ -14,6 +14,7 @@ export type HandlerState = {
   whenEvaluator: WhenEvaluator;
   remapKeys: readonly string[];
   editor?: VimEditorCapabilities;
+  registers?: Registers;
 };
 
 export const initialHandlerState: HandlerState = {
@@ -59,35 +60,32 @@ export type HandleResult<T> =
   | { type: "unhandled" }
   | { type: "invalid" };
 
-export function mapAction<T, U>(
-  action: KeyAction<T>,
-  f: (value: T) => QueuedRunResult<U>
-): KeyAction<U> {
-  if (action.type !== "effect") {
-    throw new Error("mapAction expects an effect action");
-  }
-  return {
-    type: "effect",
-    mode: action.mode,
-    run: async () => f(await action.run()),
-  };
-}
-
 export function mapHandler<T, U>(
   underlying: Handler<T>,
-  f: (value: T) => QueuedRunResult<U>
+  f: (value: T, state: HandlerState) => QueuedRunResult<U>
 ): Handler<U> {
   return (key, state) => {
+    const mapAction = (action: KeyAction<T>): KeyAction<U> => {
+      if (action.type !== "effect") {
+        throw new Error("mapHandler expects effect actions");
+      }
+      return {
+        type: "effect",
+        mode: action.mode,
+        run: async () => f(await action.run(), state),
+      };
+    };
+
     const result = underlying(key, state);
     switch (result.type) {
       case "run":
-        return { type: "run", action: mapAction(result.action, f) };
+        return { type: "run", action: mapAction(result.action) };
       case "handler":
         return { type: "handler", handlerEnvs: result.handlerEnvs.map(env => mapHandlerEnv(env, f)) };
       case "conflict":
         return {
           type: "conflict",
-          accepted: mapAction(result.accepted, f),
+          accepted: mapAction(result.accepted),
           pending: result.pending.map(env => mapHandlerEnv(env, f)),
         };
       case "unhandled":
@@ -100,7 +98,7 @@ export function mapHandler<T, U>(
 
 function mapHandlerEnv<T, U>(
   env: HandlerEnv<T>,
-  f: (value: T) => QueuedRunResult<U>
+  f: (value: T, state: HandlerState) => QueuedRunResult<U>
 ): HandlerEnv<U> {
   return { handler: mapHandler(env.handler, f), state: env.state };
 }
@@ -144,8 +142,31 @@ export function run<T>(action: KeyAction<T>): HandleResult<T> {
   return { type: "run", action };
 }
 
+export function effect<T>(mode: VimMode, run: () => QueuedRunResult<T>): HandleResult<T> {
+  return { type: "run", action: { type: "effect", mode, run } };
+}
+
 export function handler<T>(handlerEnvs: readonly HandlerEnv<T>[]): HandleResult<T> {
   return { type: "handler", handlerEnvs };
+}
+
+export function prefixedHandler<T>(
+  prefix: string,
+  next: Handler<T>,
+  increaseDepth = true
+): Handler<T> {
+  return (key, state) => {
+    if (key !== prefix) return unhandled();
+    return handler([
+      {
+        handler: next,
+        state: {
+          ...cloneHandlerState(state),
+          operatorDepth: increaseDepth ? state.operatorDepth + 1 : state.operatorDepth,
+        },
+      },
+    ]);
+  };
 }
 
 export function unhandled<T>(): HandleResult<T> {

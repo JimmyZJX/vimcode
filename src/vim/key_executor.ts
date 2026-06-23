@@ -77,7 +77,12 @@ export class KeyExecutor {
   /** Clear pending handlers/conflicts and rebuild default handlers for [mode]. */
   reset(mode: VimMode = this.state.mode): void {
     this.clearConflict();
-    this.state = { ...cloneHandlerState(initialHandlerState), mode, editor: this.state.editor };
+    this.state = {
+      ...cloneHandlerState(initialHandlerState),
+      mode,
+      editor: this.state.editor,
+      registers: this.state.registers,
+    };
     this.handlerEnvs = this.options.handlersForState(this.state);
     this.logDebug(`reset mode=${mode}`);
   }

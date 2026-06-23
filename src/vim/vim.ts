@@ -152,6 +152,7 @@ export class Vim {
     this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.editor.setCursorStyle("block");
     this.handlerState.editor = editor;
+    this.handlerState.registers = this.globalState.registers;
     this.normalMode = new NormalMode(editor, this.globalState.registers, {
       get: () => this.handlerState.register,
       take: () => this.takeSelectedRegister(),
