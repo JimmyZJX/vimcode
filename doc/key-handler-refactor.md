@@ -1,6 +1,52 @@
 # Typed key-handler refactor
 
-Status: proposed; scaffolding in progress.
+Status: in progress. The `KeyExecutor` is now the live key-dispatch entrypoint
+(`Vim.dispatchTypedKey` -> `routeKeyThroughExecutor` -> `KeyExecutor.handle`).
+User remaps are fully migrated onto the executor (`Vim.remapRootHandler` +
+`remap.ts`). The bridge to the not-yet-migrated dispatcher lives entirely in
+`Vim`, not in `KeyExecutor`: `handle` returns a plain `boolean` (claimed or
+not), and when a key is unclaimed `Vim` runs the legacy `dispatchKey`. Keys the
+executor emits (remap expansions) or replays (ambiguous-conflict suffixes) are
+re-dispatched through `Vim.dispatchThroughPipeline` via the executor's generic
+`redispatch` hook, so they take the same executor-then-legacy path as typed
+keys. The executor has no knowledge of the legacy dispatcher. Remaining legacy
+subsystems (waiting input, finite keymap, easymotion, operators, motions,
+insert/replace, search, command, macros/repeat) are ported into
+`Vim.executorHandlers` slice by slice.
+
+## Migration progress
+
+- [x] Core handler types and combinators (`key_handler.ts`).
+- [x] Standalone executor with conflict/replay/queue (`key_executor.ts`).
+- [x] Executor plumbing: per-key `allowRemap`, generic `redispatch` hook for
+  emitted/replayed keys, `whenIdle`. `handle` returns `boolean`.
+- [x] Entrypoint hook: `dispatchTypedKey` routes through the executor; the
+  legacy bridge (`routeKeyThroughExecutor` + `dispatchThroughPipeline`) lives in
+  `Vim`.
+- [x] Remap layer migrated onto the executor; legacy remap mini-executor
+  (`dispatchRemapKey`, `pendingRemap*`, `applyKeyAction`, `acceptPendingRemap`)
+  removed. The host timeout still arrives as `RemapTimeoutKey` and is mapped to
+  `KeyExecutor.acceptConflict`. `remapIsPending()` reads
+  `KeyExecutor.pendingConflict()`.
+- [ ] Count/register prefixes (`prefix_handlers.ts`).
+- [ ] Finite keymap (`g`/`z`/`[`/`]`/`ctrl-w`).
+- [ ] Normal/visual movement and operators.
+- [ ] Char-input waiters (replace/digraph/surround/register/mark/search/command).
+
+### Notes for future slices
+
+- The executor caches `handlerEnvs` between keys and only rebuilds them on
+  construction, `reset`, and after an accepted action. The remap root handler
+  works around staleness by reading live `Vim` mode/when-evaluator on each key;
+  a continuation, once started, keeps the mode/evaluator captured when its chord
+  began (this matches the legacy behavior). As more handlers move in, prefer
+  syncing the executor's `HandlerState` from live `Vim` state at the start of an
+  idle dispatch over per-handler live reads.
+- `Vim.dispatchThroughPipeline` runs the legacy dispatcher synchronously. Once a
+  migrated handler queues an `effect` in the same physical keystroke as an
+  emitted key that falls through to legacy, the legacy fallback must also be
+  enqueued (so action ordering is preserved). `whenIdle()` exists for draining
+  the queue at the `KeyPlan.run()` boundary.
 
 ## Goal
 

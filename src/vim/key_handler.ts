@@ -12,6 +12,13 @@ export type HandlerState = {
   register: RegisterName | undefined;
   operatorDepth: number;
   whenEvaluator: WhenEvaluator;
+  // Whether the current key is allowed to trigger user remaps (the per-key
+  // "remappable" flag of remap typeahead, à la Vim's :noremap). This is a
+  // dispatch-scoped flag (like [whenEvaluator]) rather than long-lived parser
+  // state: the executor sets it per [handle] call and per re-dispatched emitted
+  // key so non-recursive remap expansions don't remap their own output. It is
+  // produced and consumed entirely within remap.ts (see [remapHandler]).
+  allowRemap: boolean;
   remapKeys: readonly string[];
   editor?: VimEditorCapabilities;
   registers?: Registers;
@@ -23,6 +30,7 @@ export const initialHandlerState: HandlerState = {
   register: undefined,
   operatorDepth: 0,
   whenEvaluator: () => true,
+  allowRemap: true,
   remapKeys: [],
 };
 

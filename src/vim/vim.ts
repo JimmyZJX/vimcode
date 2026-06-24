@@ -14,8 +14,9 @@ import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMu
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
-import { combineHandleResults, initialHandlerState } from "./key_handler.js";
-import type { HandlerEnv, HandlerState, KeyAction } from "./key_handler.js";
+import { initialHandlerState, unhandled } from "./key_handler.js";
+import type { Handler, HandlerEnv, HandlerState } from "./key_handler.js";
+import { KeyExecutor } from "./key_executor.js";
 import { finiteKeymapPermissions, resolveVimAction, shouldResolveMotionModeAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
@@ -108,9 +109,19 @@ export class Vim {
   private readonly showcmdKeys: string[] = [];
   private configuration: VimConfiguration = defaultVimConfiguration;
   private remaps: Remaps = createRemaps(this.configuration);
-  private pendingRemapEnvs: readonly HandlerEnv<void>[] = [];
-  private pendingRemapAccepted: KeyAction<void> | undefined;
-  private pendingRemapReplaySuffix: readonly string[] = [];
+  // The typed key-handler framework entrypoint. Handlers are ported into
+  // [executorHandlers] slice by slice; [redispatch] is the bridge that runs any
+  // key the executor does not claim through the legacy dispatcher. The executor
+  // itself has no knowledge of that fallback.
+  private readonly keyExecutor: KeyExecutor = new KeyExecutor({
+    handlersForState: state => this.executorHandlers(state),
+    redispatch: (key, allowRemap) => this.dispatchThroughPipeline(key, allowRemap),
+    executeCommand: command => this.executeMappedCommand(command),
+  });
+  // The when-evaluator for the in-flight top-level dispatch, read by the remap
+  // root handler (which resolves against the live Vim mode) and the executor's
+  // command callback.
+  private dispatchWhenEvaluator: WhenEvaluator = alwaysActiveWhenEvaluator;
   private searchOriginMode: VimMode | undefined;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
@@ -213,7 +224,7 @@ export class Vim {
       text,
       remapPending: this.remapIsPending(),
       remapTimeoutMs: this.configuration.timeout,
-      insertPendingText: mode === "insert" || mode === "replace" ? pendingRemapInsertText(this.pendingRemapEnvs) : undefined,
+      insertPendingText: mode === "insert" || mode === "replace" ? pendingRemapInsertText(this.pendingRemapEnvsForStatus()) : undefined,
       macroRecording,
       readonlyWarning: readonlyWarningRemainingMs !== undefined,
       readonlyWarningRemainingMs,
@@ -287,7 +298,7 @@ export class Vim {
 
   executeExternalRemap(mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] }): void {
     for (const key of mapping.after ?? []) {
-      this.dispatchKey(normalizeKey(key, this.configuration.leader), {
+      this.routeKeyThroughExecutor(normalizeKey(key, this.configuration.leader), {
         allowRemap: true,
         whenEvaluator: alwaysActiveWhenEvaluator,
       });
@@ -491,11 +502,86 @@ export class Vim {
     // showcmd, which displays the expanded typeahead. Macro and `.` replays
     // re-enter through [onKey] and do append: if a replay ends with a command
     // still pending, the chord shows the replayed keys that formed it.
+    if (key === RemapTimeoutKey) return this.handleRemapTimeout(whenEvaluator);
     if (!this.isPending()) this.showcmdKeys.length = 0;
     this.showcmdKeys.push(key);
-    const result = this.dispatchKey(key, { allowRemap, whenEvaluator });
+    const result = this.routeKeyThroughExecutor(key, { allowRemap, whenEvaluator });
     if (result === "native") this.showcmdKeys.pop();
     return result;
+  }
+
+  // The host fires [RemapTimeoutKey] after the timeout elapses while an
+  // ambiguous remap is pending; accept the shorter side and replay any buffered
+  // suffix. The when-evaluator is threaded so replayed keys resolve in context.
+  private handleRemapTimeout(whenEvaluator: WhenEvaluator): KeyDispatchResult {
+    if (!this.remapIsPending()) return "handled";
+    const previousWhenEvaluator = this.dispatchWhenEvaluator;
+    this.dispatchWhenEvaluator = whenEvaluator;
+    try {
+      this.keyExecutor.acceptConflict();
+    } finally {
+      this.dispatchWhenEvaluator = previousWhenEvaluator;
+    }
+    return "handled";
+  }
+
+  // Active typed handlers for the executor. Currently just the user-remap
+  // handler; everything it does not claim falls through to the legacy
+  // dispatcher via [onUnhandled]. Further handlers are ported in here.
+  private executorHandlers(state: HandlerState): readonly HandlerEnv<void>[] {
+    return [{ handler: this.remapRootHandler(), state }];
+  }
+
+  // Root remap handler for the start of a fresh chord. It reads the live Vim
+  // mode and when-evaluator on each key (continuations, once started, keep the
+  // mode/evaluator captured when the chord began, matching the legacy path).
+  private remapRootHandler(): Handler<void> {
+    return (key, state) => {
+      // [canStartRemap] is a Vim concern (no other pending subsystem); the
+      // [allowRemap] flag is honored inside [remapHandler] itself.
+      if (!this.canStartRemap()) return unhandled();
+      const liveState: HandlerState = {
+        ...state,
+        mode: this.modeState,
+        whenEvaluator: this.dispatchWhenEvaluator,
+      };
+      return remapHandler(this.remaps, this.currentRemapMode())(key, liveState);
+    };
+  }
+
+  // Whether a brand-new remap chord may begin. A remap already in progress is
+  // driven by the executor's pending continuations, so it does not consult
+  // this; only the fresh-start root handler does.
+  private canStartRemap(): boolean {
+    return (
+      !this.keymapResolver.isPending() &&
+      !this.easyMotion.isPending() &&
+      this.operatorStack.length === 0
+    );
+  }
+
+  // Run one top-level key through the typed executor; if no handler claims it,
+  // fall back to the legacy dispatcher and use its native/handled result. A key
+  // the executor claims is always [handled].
+  private routeKeyThroughExecutor(
+    key: string,
+    { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }
+  ): KeyDispatchResult {
+    const previousWhenEvaluator = this.dispatchWhenEvaluator;
+    this.dispatchWhenEvaluator = whenEvaluator;
+    try {
+      return this.keyExecutor.handle(key, allowRemap) ? "handled" : this.dispatchKey(key);
+    } finally {
+      this.dispatchWhenEvaluator = previousWhenEvaluator;
+    }
+  }
+
+  // The bridge between the typed executor and the not-yet-migrated dispatcher,
+  // used to re-dispatch keys the executor emits (remap expansions) or replays
+  // (ambiguous-conflict suffixes): try the executor first, then legacy. The
+  // when-evaluator is already established by the enclosing top-level dispatch.
+  private dispatchThroughPipeline(key: string, allowRemap: boolean): void {
+    if (!this.keyExecutor.handle(key, allowRemap)) this.dispatchKey(key);
   }
 
   private async refreshSystemClipboardRegisterForKey(key: string): Promise<void> {
@@ -517,7 +603,7 @@ export class Vim {
     return undefined;
   }
 
-  private dispatchKey(key: string, { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }): KeyDispatchResult {
+  private dispatchKey(key: string): KeyDispatchResult {
     // Cheap content stamp, not the document text: snapshotting/comparing the
     // whole document here made every keypress O(file size) on large files.
     const versionBefore = this.editor.documentVersion();
@@ -526,8 +612,9 @@ export class Vim {
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
 
-      const remapResult = this.dispatchRemapKey(key, { allowRemap, whenEvaluator });
-      if (remapResult !== undefined) return remapResult;
+      // Note: user-remap resolution happens earlier, in the typed [keyExecutor]
+      // (see [remapRootHandler]); the legacy dispatcher below only runs for keys
+      // the executor routes here via [onUnhandled], so it never remaps.
 
       // Zed: `vim_mode == waiting` contexts. One classification of what the
       // operator stack is waiting for, dispatched at one place; the precedence
@@ -607,49 +694,6 @@ export class Vim {
         }
       }
       this.ensureNormalModeForReadonlyDocument();
-    }
-  }
-
-  private dispatchRemapKey(key: string, { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }): KeyResult | undefined {
-    if (!(allowRemap && this.shouldResolveRemap())) return undefined;
-    if (key === RemapTimeoutKey && this.remapIsPending()) {
-      this.acceptPendingRemap(whenEvaluator, []);
-      return "handled";
-    }
-    const hadPendingRemap = this.remapIsPending();
-    const state = this.handlerStateForRemap(whenEvaluator);
-    const result = hadPendingRemap
-      ? combineHandleResults(this.pendingRemapEnvs.map(({ handler, state }) => handler(key, state)))
-      : remapHandler(this.remaps, this.currentRemapMode())(key, state);
-    switch (result.type) {
-      case "handler":
-        this.pendingRemapEnvs = result.handlerEnvs;
-        if (hadPendingRemap && this.pendingRemapAccepted !== undefined) {
-          this.pendingRemapReplaySuffix = [...this.pendingRemapReplaySuffix, key];
-        } else {
-          this.pendingRemapAccepted = undefined;
-          this.pendingRemapReplaySuffix = [];
-        }
-        return "handled";
-      case "conflict":
-        this.pendingRemapEnvs = result.pending;
-        this.pendingRemapAccepted = result.accepted;
-        this.pendingRemapReplaySuffix = [];
-        return "handled";
-      case "run":
-        this.clearPendingRemaps();
-        this.applyKeyAction(result.action, whenEvaluator);
-        return "handled";
-      case "invalid":
-        if (hadPendingRemap) this.acceptPendingRemap(whenEvaluator, [key]);
-        else this.clearPendingRemaps();
-        return "handled";
-      case "unhandled":
-        if (hadPendingRemap) {
-          this.acceptPendingRemap(whenEvaluator, [key]);
-          return "handled";
-        }
-        return undefined;
     }
   }
 
@@ -1428,56 +1472,22 @@ export class Vim {
     return "handled";
   }
 
-  private handlerStateForRemap(whenEvaluator: WhenEvaluator): HandlerState {
-    this.handlerState.mode = this.modeState;
-    this.handlerState.whenEvaluator = whenEvaluator;
-    return this.handlerState;
-  }
-
-  private applyKeyAction(action: KeyAction<void>, whenEvaluator: WhenEvaluator): void {
-    switch (action.type) {
-      case "effect": {
-        const result = action.run();
-        if (isPromiseLike(result)) void result;
-        break;
-      }
-      case "keys":
-        action.keys.forEach(({ key, allowRemap }) => {
-          this.dispatchKey(key, { allowRemap, whenEvaluator });
-        });
-        break;
-      case "commands":
-        action.commands.forEach(command => this.executeMappedCommand(command));
-        break;
-      case "sequence":
-        action.actions.forEach(nested => this.applyKeyAction(nested, whenEvaluator));
-        break;
-    }
-    this.ensureNormalModeForReadonlyDocument();
-  }
-
-  private acceptPendingRemap(whenEvaluator: WhenEvaluator, extraReplayKeys: readonly string[]): void {
-    const accepted = this.pendingRemapAccepted;
-    const replaySuffix = [...this.pendingRemapReplaySuffix, ...extraReplayKeys];
-    this.clearPendingRemaps();
-    if (accepted === undefined) return;
-    this.applyKeyAction(accepted, whenEvaluator);
-    replaySuffix.forEach(key => this.dispatchKey(key, { allowRemap: true, whenEvaluator }));
-  }
-
+  // A remap is pending precisely when the executor holds an ambiguous chord
+  // (shorter accepted but a longer mapping is still possible). Every pending
+  // remap chord goes through a conflict, so this is sufficient while the remap
+  // handler is the only thing the executor hosts.
   private remapIsPending(): boolean {
-    return this.pendingRemapEnvs.length > 0;
+    return this.keyExecutor.pendingConflict() !== undefined;
+  }
+
+  // Pending remap continuations, exposed only for the insert-mode chord preview
+  // ([pendingRemapInsertText]). Empty unless a remap chord is in flight.
+  private pendingRemapEnvsForStatus(): readonly HandlerEnv<void>[] {
+    return this.remapIsPending() ? this.keyExecutor.currentHandlers() : [];
   }
 
   private clearPendingRemaps(): void {
-    this.pendingRemapEnvs = [];
-    this.pendingRemapAccepted = undefined;
-    this.pendingRemapReplaySuffix = [];
-  }
-
-  private shouldResolveRemap(): boolean {
-    if (this.remapIsPending()) return true;
-    return !this.keymapResolver.isPending() && !this.easyMotion.isPending() && this.operatorStack.length === 0;
+    this.keyExecutor.reset(this.modeState);
   }
 
   private currentRemapMode() {
@@ -1938,10 +1948,6 @@ function isBuiltInCtrlKey(key: string): boolean {
     default:
       return false;
   }
-}
-
-function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
-  return typeof (value as Promise<T>).then === "function";
 }
 
 function commandArgs(command: { args?: unknown | unknown[] }): readonly unknown[] {

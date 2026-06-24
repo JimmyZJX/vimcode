@@ -26,6 +26,16 @@ export type KeyExecutorLog = {
 export type KeyExecutorOptions = {
   handlersForState: KeyExecutorHandlers;
   executeCommand?: (command: VimCommandMapping) => void;
+  /**
+   * How to dispatch a key emitted by an accepted action (a `keys` action) or
+   * replayed after an ambiguous conflict resolves. It represents the owner's
+   * full key pipeline, so emitted keys go through the same path as physically
+   * typed keys. Defaults to this executor's own [handle], which is enough for
+   * standalone use/tests; the integrating owner overrides it to also fall back
+   * to any not-yet-migrated dispatcher. The executor itself knows nothing about
+   * that fallback.
+   */
+  redispatch?: (key: string, allowRemap: boolean) => void;
   log?: KeyExecutorLog;
   timeoutMs?: number | (() => number);
   setTimeout?: (
@@ -87,16 +97,28 @@ export class KeyExecutor {
     this.logDebug(`reset mode=${mode}`);
   }
 
+  /** Promise that resolves once all currently-queued effect actions have run. */
+  whenIdle(): Promise<void> {
+    return this.runQueueTail;
+  }
+
   /**
    * Dispatch one key through the active handlers. Parser state is updated
    * immediately; accepted effect actions are enqueued and run later in order.
+   *
+   * Returns whether a handler claimed the key. [false] means no active handler
+   * recognized it (and there was no pending conflict to accept), so the owner
+   * is free to treat it as native/unowned. [allowRemap] is threaded into the
+   * handler state so the remap handler can decline to remap emitted keys.
    */
-  handle(key: string): boolean {
+  handle(key: string, allowRemap = true): boolean {
     const previousConflict = this.conflict;
     this.clearConflictTimer();
 
     const result = combineHandleResults(
-      this.handlerEnvs.map(({ handler, state }) => handler(key, state))
+      this.handlerEnvs.map(({ handler, state }) =>
+        handler(key, { ...state, allowRemap })
+      )
     );
 
     switch (result.type) {
@@ -187,7 +209,7 @@ export class KeyExecutor {
         this.enqueueEffect(action);
         break;
       case "keys":
-        for (const { key } of action.keys) this.handle(key);
+        for (const { key, allowRemap } of action.keys) this.redispatch(key, allowRemap);
         break;
       case "commands":
         for (const command of action.commands) this.options.executeCommand?.(command);
@@ -235,9 +257,19 @@ export class KeyExecutor {
     this.conflictTimer = undefined;
   }
 
-  /** Re-dispatch replayed keys synchronously through this executor. */
+  /** Re-dispatch replayed suffix keys synchronously through the owner pipeline. */
   private replayKeys(keys: readonly string[]): void {
-    for (const key of keys) this.handle(key);
+    for (const key of keys) this.redispatch(key, true);
+  }
+
+  /**
+   * Re-dispatch an emitted or replayed key. Delegates to the owner-provided
+   * pipeline when configured, otherwise re-enters this executor. The executor
+   * does not know what (if anything) the owner does beyond this executor.
+   */
+  private redispatch(key: string, allowRemap: boolean): void {
+    if (this.options.redispatch !== undefined) this.options.redispatch(key, allowRemap);
+    else this.handle(key, allowRemap);
   }
 
   private logDebug(message: string): void {

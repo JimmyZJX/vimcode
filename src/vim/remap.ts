@@ -50,7 +50,13 @@ export function debugRemapConflicts(remaps: Remaps): readonly DebugRemapConflict
 }
 
 export function remapHandler(remaps: Remaps, mode: VimRemapMode): Handler<void> {
-  return (key, state) => handleRemapKey(remaps, mode, key, state, { keys: [], ambiguousMapping: undefined });
+  return (key, state) => {
+    // A key flagged non-remappable (the output of a non-recursive mapping, or
+    // the lhs-prefix of a recursive one — see [keysAction]/[mappingAction])
+    // must not start a fresh remap; let it fall through unremapped.
+    if (!state.allowRemap) return { type: "unhandled" };
+    return handleRemapKey(remaps, mode, key, state, { keys: [], ambiguousMapping: undefined });
+  };
 }
 
 export function hasRemapStartingWith(
