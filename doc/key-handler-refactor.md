@@ -28,10 +28,48 @@ insert/replace, search, command, macros/repeat) are ported into
   removed. The host timeout still arrives as `RemapTimeoutKey` and is mapped to
   `KeyExecutor.acceptConflict`. `remapIsPending()` reads
   `KeyExecutor.pendingConflict()`.
-- [ ] Count/register prefixes (`prefix_handlers.ts`).
+- [x] Synchronous-until-async effect queue. `KeyExecutor` runs an effect inline
+  when it completes synchronously and only defers to a microtask once an effect
+  returns a promise; `mapHandler` preserves synchronicity the same way. This lets
+  the synchronous `onKey`/`runKeys`/macro-replay paths observe editor effects
+  immediately, while real (async) editor edits still serialize. `handleKey().run`
+  awaits `KeyExecutor.whenIdle()`.
+- [x] Normal-mode cursor movement (`normal_mode_handler.movementHandler`), wired
+  via `Vim.normalMovementRootHandler`. It only claims from a clean idle normal
+  state (`isExecutorMovementContext`) and only for keys in
+  `MIGRATED_MOVEMENT_KEYS`; counted/operator/`ctrl-o` cases still fall through to
+  legacy. `Vim.handleThroughExecutor` mirrors the legacy per-key bookkeeping
+  (`repeat.maybeFinish`, macro/dot-repeat recording) for the keys it claims.
+- [x] Phase 1 — count consolidated into `HandlerState.countText` (the shared
+  parser state), replacing the standalone `Vim.countBuffer`.
+- [x] Phase 2.1 — normal-mode **count** prefix migrated (`Vim.normalCountPrefix`).
+  A count digit appends to the shared `handlerState.countText` and resolves
+  immediately to idle (no executor-pending count state), so counts interoperate
+  with still-legacy operators across the boundary (`2c` works) without any
+  mirror/reset bridge. Movement now runs under the count prefix
+  (`Vim.normalRootHandler` → `normalCountPrefix` → `normalMotionGrammar`), gated
+  by `isExecutorNormalContext` (normal mode, no `temporaryNormal`, no legacy
+  subsystem pending). `handleThroughExecutor` records any key the framework
+  claims in normal context for macros/dot-repeat.
+- [ ] Remaining motions (`H`/`M`/`L`/`%`/`f`/`t`/`;`/`,`/`G`/`gg`/marks/...).
+- [ ] Operators (`d`/`c`/`y`/`>`/`<`/`=`/`gu`/`gU`/`g~`) + text objects.
+- [ ] Simple action table (`i`/`a`/`o`/`x`/`r`/`~`/`p`/`J`/...).
 - [ ] Finite keymap (`g`/`z`/`[`/`]`/`ctrl-w`).
-- [ ] Normal/visual movement and operators.
 - [ ] Char-input waiters (replace/digraph/surround/register/mark/search/command).
+
+### The idle-gate migration strategy
+
+Normal-mode grammar (counts, registers, operators, motions) is tightly coupled
+through legacy count/register state, so it cannot be split key-by-key cleanly: a
+count typed into one subsystem must pair with the operation that consumes it. The
+strategy is therefore: a migrated handler only claims a key from a **clean idle
+state** and only handles the simple (count=1, default register) case; anything
+counted or mid-chord falls through to the legacy dispatcher, which still owns the
+count/register/operator machinery. Each migrated op is duplicated (executor +
+legacy) during the transition. Counts/registers move into the executor last, once
+its coverage is broad enough to take over from a clean state. Until then,
+`handleThroughExecutor` mirrors the per-key bookkeeping that the legacy
+dispatcher would have done for any key the executor claims.
 
 ### Notes for future slices
 

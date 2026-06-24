@@ -14,13 +14,14 @@ import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMu
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
-import { initialHandlerState, unhandled } from "./key_handler.js";
-import type { Handler, HandlerEnv, HandlerState } from "./key_handler.js";
+import { effect, initialHandlerState, unhandled } from "./key_handler.js";
+import type { Handler, HandlerEnv, HandlerState, HandleResult } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { finiteKeymapPermissions, resolveVimAction, shouldResolveMotionModeAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
+import { movementHandler } from "./normal_mode_handler.js";
 import { VimOperatorStack, WaitingInput, convertTargetForPending, isSelfEscapingWaitingInput } from "./operator.js";
 import type { RangeOperator } from "./operator_target.js";
 import type {
@@ -87,6 +88,17 @@ export type EditorSyncResult = {
 export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promise<void> };
 
 const alwaysActiveWhenEvaluator: WhenEvaluator = () => true;
+
+// Normal-mode motion keys that have been migrated to the typed executor. Kept
+// deliberately small so the migration is bisectable; expanded as each motion is
+// verified against the legacy behavior.
+const MIGRATED_MOVEMENT_KEYS: ReadonlySet<string> = new Set([
+  "h", "l", "j", "k",
+  "left", "right", "up", "down",
+  "space", "backspace", "ctrl-left", "ctrl-right",
+  "0", "home", "^", "$", "end",
+  "w", "W", "e", "E", "b", "B",
+]);
 const readonlyWarningDurationMs = 2000;
 export { VimGlobalState, VimModelState };
 
@@ -100,7 +112,6 @@ export class Vim {
   private readonly operatorStack = new VimOperatorStack();
   private modelState: VimModelState;
   private handlerState: HandlerState = { ...initialHandlerState };
-  private countBuffer = "";
   // Vim 'showcmd': the literal keys typed for the in-flight pending command,
   // used only for the status chord display. The buffer is never cleared
   // eagerly when a command completes or aborts; instead it resets lazily when
@@ -169,7 +180,7 @@ export class Vim {
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
     }, {
-      get: () => this.countBuffer,
+      get: () => this.handlerState.countText,
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
@@ -179,7 +190,7 @@ export class Vim {
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
     }, {
-      get: () => this.countBuffer,
+      get: () => this.handlerState.countText,
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
@@ -256,18 +267,18 @@ export class Vim {
   private takeCount(defaultValue: number): number;
   private takeCount(defaultValue: undefined): number | undefined;
   private takeCount(defaultValue: number | undefined): number | undefined {
-    if (this.countBuffer.length === 0) return defaultValue;
-    const count = Number(this.countBuffer);
-    this.countBuffer = "";
+    if (this.handlerState.countText.length === 0) return defaultValue;
+    const count = Number(this.handlerState.countText);
+    this.handlerState.countText = "";
     return count;
   }
 
   private appendCountKey(key: string): void {
-    this.countBuffer += key;
+    this.handlerState.countText += key;
   }
 
   private clearCount(): void {
-    this.countBuffer = "";
+    this.handlerState.countText = "";
   }
 
   debugRemapConflicts(): readonly DebugRemapConflict[] {
@@ -291,6 +302,10 @@ export class Vim {
         await this.globalState.registers.withSystemClipboard(clipboard, async () => {
           await this.refreshSystemClipboardRegisterForKey(key);
           this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator });
+          // Drain any effect actions the executor queued. With a synchronous
+          // editor these have already run inline; this awaits the tail when an
+          // effect was genuinely asynchronous (e.g. real editor edits).
+          await this.keyExecutor.whenIdle();
         });
       },
     };
@@ -453,14 +468,14 @@ export class Vim {
     this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
     this.searchOriginMode = undefined;
     this.handlerState.register = undefined;
-    this.countBuffer = "";
+    this.handlerState.countText = "";
     if (closeSearchHighlights && pendingSearch !== undefined) this.editor.clearSearchHighlights();
     this.operatorStack.clear();
     this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.handlerState.register !== undefined || this.countBuffer.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapIsPending() || (this.modeState === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapIsPending() || (this.modeState === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -470,7 +485,7 @@ export class Vim {
   private pendingDepth(): number {
     return this.operatorStack.length
       + (this.handlerState.register !== undefined ? 1 : 0)
-      + (this.countBuffer.length > 0 ? 1 : 0)
+      + (this.handlerState.countText.length > 0 ? 1 : 0)
       + (this.keymapResolver.isPending() ? 1 : 0)
       + (this.easyMotion.isPending() ? 1 : 0)
       + (this.remapIsPending() ? 1 : 0);
@@ -525,11 +540,75 @@ export class Vim {
     return "handled";
   }
 
-  // Active typed handlers for the executor. Currently just the user-remap
-  // handler; everything it does not claim falls through to the legacy
-  // dispatcher via [onUnhandled]. Further handlers are ported in here.
+  // Active typed handlers for the executor. Handlers it does not claim fall
+  // through to the legacy dispatcher (see [dispatchThroughPipeline]). Ported
+  // handlers are added here; the remap handler has highest priority.
   private executorHandlers(state: HandlerState): readonly HandlerEnv<void>[] {
-    return [{ handler: this.remapRootHandler(), state }];
+    return [
+      { handler: this.remapRootHandler(), state },
+      { handler: this.normalRootHandler(), state },
+    ];
+  }
+
+  // Root of the migrated normal-mode grammar. It only begins a chord from a
+  // clean state (no legacy pending; see [isExecutorNormalContext]) and yields to
+  // a higher-priority remap. Live editor/registers are injected so the grammar
+  // can compute against the real editor.
+  private normalRootHandler(): Handler<void> {
+    return (key, state) => {
+      if (!this.isExecutorNormalContext()) return unhandled();
+      if (hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator)) {
+        return unhandled();
+      }
+      const liveState: HandlerState = {
+        ...state,
+        mode: "normal",
+        editor: this.editor,
+        registers: this.globalState.registers,
+      };
+      return this.normalCountPrefix(key, liveState);
+    };
+  }
+
+  // Count prefix for normal mode. Counts accumulate in the shared
+  // [handlerState.countText] and the key resolves immediately to idle, so there
+  // is no executor-pending count state to reconcile with the legacy dispatcher;
+  // counts therefore interoperate across the boundary (a count typed here is
+  // visible to a still-legacy operator). Register selection (`"`) is still
+  // handled by the legacy dispatcher and is ported with the other waiting-input
+  // handlers later.
+  private normalCountPrefix(key: string, state: HandlerState): HandleResult<void> {
+    if (/^[0-9]$/.test(key) && (key !== "0" || this.handlerState.countText.length > 0)) {
+      this.handlerState.countText += key;
+      return effect("normal", () => {});
+    }
+    const repeat = this.handlerState.countText.length > 0 ? Number(this.handlerState.countText) : 1;
+    const result = this.normalMotionGrammar(key, { ...state, repeat });
+    if (result.type !== "unhandled") this.handlerState.countText = "";
+    return result;
+  }
+
+  // The migrated portion of the normal-mode grammar after count/register. For
+  // now just cursor motions; operators, objects, and other actions are ported in
+  // here next. Unhandled keys fall through to the legacy dispatcher.
+  private normalMotionGrammar(key: string, state: HandlerState): HandleResult<void> {
+    if (!MIGRATED_MOVEMENT_KEYS.has(key)) return unhandled();
+    return movementHandler(key, state);
+  }
+
+  // Whether the executor may begin a normal-mode chord: normal mode, not a
+  // CTRL-O excursion, and no legacy subsystem mid-chord. Count/register are
+  // intentionally not checked here (the framework owns them), so a buffered
+  // count does not block the next key.
+  private isExecutorNormalContext(): boolean {
+    return (
+      this.modeState === "normal" &&
+      !this.temporaryNormal &&
+      this.operatorStack.length === 0 &&
+      !this.keymapResolver.isPending() &&
+      !this.easyMotion.isPending() &&
+      !this.normalMode.isPending()
+    );
   }
 
   // Root remap handler for the start of a fresh chord. It reads the live Vim
@@ -570,7 +649,7 @@ export class Vim {
     const previousWhenEvaluator = this.dispatchWhenEvaluator;
     this.dispatchWhenEvaluator = whenEvaluator;
     try {
-      return this.keyExecutor.handle(key, allowRemap) ? "handled" : this.dispatchKey(key);
+      return this.handleThroughExecutor(key, allowRemap) ? "handled" : this.dispatchKey(key);
     } finally {
       this.dispatchWhenEvaluator = previousWhenEvaluator;
     }
@@ -581,7 +660,31 @@ export class Vim {
   // (ambiguous-conflict suffixes): try the executor first, then legacy. The
   // when-evaluator is already established by the enclosing top-level dispatch.
   private dispatchThroughPipeline(key: string, allowRemap: boolean): void {
-    if (!this.keyExecutor.handle(key, allowRemap)) this.dispatchKey(key);
+    if (!this.handleThroughExecutor(key, allowRemap)) this.dispatchKey(key);
+  }
+
+  // Run a key through the executor and, when a migrated leaf handler claims it,
+  // record it for macros/dot-repeat. The legacy dispatcher does this recording
+  // for the keys it handles; a key the executor claims never reaches it, so the
+  // recording is mirrored here. Remap keys are excluded: their expansion is
+  // re-dispatched and recorded as it flows through this same path.
+  private handleThroughExecutor(key: string, allowRemap: boolean): boolean {
+    // A key the framework claims in normal context never reaches [dispatchKey],
+    // so mirror the per-key bookkeeping the legacy dispatcher would have done:
+    // finish an in-flight dot-repeat recording and record the key for
+    // macros/dot-repeat. Remapped keys are excluded (the remap handler claims
+    // them and its expansion is recorded as it flows through this path).
+    const normalContext =
+      this.isExecutorNormalContext() &&
+      !hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator);
+    const pendingBefore = this.isPending();
+    const claimed = this.keyExecutor.handle(key, allowRemap);
+    if (claimed && normalContext && !this.globalState.repeat.isReplaying()) {
+      this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: pendingBefore });
+      this.recordMacroKey(key);
+      this.recordRepeatableKey(key);
+    }
+    return claimed;
   }
 
   private async refreshSystemClipboardRegisterForKey(key: string): Promise<void> {
@@ -901,7 +1004,7 @@ export class Vim {
       operatorPendingKey: this.modeState === "normal" ? this.operatorStack.operatorPendingKey() : undefined,
       hasSelectedRegister: this.handlerState.register !== undefined,
       expectsRegisterName: this.modeIsExpectingRegisterName(),
-      countText: this.countBuffer,
+      countText: this.handlerState.countText,
       repeatIsReplaying: this.globalState.repeat.isReplaying(),
     };
   }
@@ -1523,7 +1626,7 @@ export class Vim {
     return this.isMotionMode()
       && !this.modeIsExpectingRegisterName()
       && this.operatorStack.operatorContext() === "none"
-      && this.countBuffer.length === 0
+      && this.handlerState.countText.length === 0
       && this.handlerState.register === undefined;
   }
 

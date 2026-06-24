@@ -2,6 +2,7 @@ import {
   HandlerEnv,
   HandlerState,
   KeyAction,
+  QueuedRunResult,
   cloneHandlerState,
   combineHandleResults,
   initialHandlerState,
@@ -53,11 +54,16 @@ export class KeyExecutor {
   /** Timer that accepts [conflict] if no disambiguating key arrives. */
   private conflictTimer: ReturnType<typeof setTimeout> | undefined;
   /**
-   * Tail of the queued action chain. Key handling updates parser state synchronously, but
-   * accepted effect actions run through this promise chain so async editor effects cannot
-   * complete out of order.
+   * Accepted effect actions waiting to run, in order. Key handling updates
+   * parser state synchronously; effects run through this queue so each observes
+   * the editor only after earlier effects have finished.
    */
-  private runQueueTail: Promise<void> = Promise.resolve();
+  private readonly effectQueue: Array<() => QueuedRunResult<void>> = [];
+  /** True while [drainEffects] owns the queue (including across an async wait). */
+  private draining = false;
+  /** Resolves when the queue drains; replaced whenever draining (re)starts. */
+  private idle: Promise<void> = Promise.resolve();
+  private resolveIdle: (() => void) | undefined;
   /** Shared parser environment visible to newly-created default handlers. */
   private state: HandlerState;
 
@@ -99,7 +105,7 @@ export class KeyExecutor {
 
   /** Promise that resolves once all currently-queued effect actions have run. */
   whenIdle(): Promise<void> {
-    return this.runQueueTail;
+    return this.idle;
   }
 
   /**
@@ -220,14 +226,53 @@ export class KeyExecutor {
     }
   }
 
-  /** Append [action] to the effect queue, preserving action completion order. */
+  /**
+   * Append [action] to the effect queue and drive it. Effects run synchronously
+   * and in order when each completes synchronously (so a synchronous editor sees
+   * the result immediately); the queue only defers to a microtask once an effect
+   * returns a promise, after which the rest waits for it. Use [whenIdle] to await
+   * the asynchronous tail.
+   */
   private enqueueEffect(action: Extract<KeyAction<void>, { type: "effect" }>): void {
-    const task = async () => {
-      await action.run();
-    };
-    const next = this.runQueueTail.then(task, task);
-    this.runQueueTail = next.then(undefined, () => undefined);
-    void next.catch((error) => this.logError("queued run failed", error));
+    this.effectQueue.push(() => action.run());
+    if (this.draining) return;
+    this.draining = true;
+    if (this.resolveIdle === undefined) {
+      this.idle = new Promise((resolve) => {
+        this.resolveIdle = resolve;
+      });
+    }
+    this.drainEffects();
+  }
+
+  /**
+   * Run queued effects in order. Stays synchronous until an effect returns a
+   * promise; then it resumes once that promise settles. [draining] stays true
+   * across the wait so concurrently-enqueued effects are appended, not run out
+   * of order.
+   */
+  private drainEffects(): void {
+    while (this.effectQueue.length > 0) {
+      const run = this.effectQueue.shift();
+      if (run === undefined) break;
+      let result: QueuedRunResult<void>;
+      try {
+        result = run();
+      } catch (error) {
+        this.logError("queued run failed", error);
+        continue;
+      }
+      if (isPromiseLike(result)) {
+        void Promise.resolve(result)
+          .catch((error) => this.logError("queued run failed", error))
+          .then(() => this.drainEffects());
+        return;
+      }
+    }
+    this.draining = false;
+    const resolveIdle = this.resolveIdle;
+    this.resolveIdle = undefined;
+    resolveIdle?.();
   }
 
   private setConflict(conflict: KeyExecutorConflict): void {
@@ -279,4 +324,12 @@ export class KeyExecutor {
   private logError(message: string, error: unknown): void {
     this.options.log?.error?.(message, error);
   }
+}
+
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as PromiseLike<T>).then === "function"
+  );
 }

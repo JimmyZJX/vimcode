@@ -49,7 +49,7 @@ export function normalModeMovementHandler(): Handler<void> {
   };
 }
 
-function movementHandler(key: string, state: HandlerState): HandleResult<void> {
+export function movementHandler(key: string, state: HandlerState): HandleResult<void> {
   return mapHandler(
     motionHandler((state) => {
       const selections = state.editor?.getSelections() ?? [];

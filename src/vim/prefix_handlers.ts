@@ -8,38 +8,44 @@ import {
 } from "./key_handler.js";
 import { parseRegisterName } from "./registers.js";
 
-export function prefixHandler<T>(underlying: Handler<T>, countText = ""): Handler<T> {
+// Count/register prefix transformer. It accumulates the in-progress count in
+// the env's [HandlerState.countText] (so it is observable on the active handler
+// env, e.g. for status and for mirroring to the legacy dispatcher) and the
+// selected register in [HandlerState.register]. On the first non-prefix key it
+// applies the count to [repeat], clears [countText], and delegates to
+// [underlying].
+export function prefixHandler<T>(underlying: Handler<T>): Handler<T> {
   return (key, state) => {
-    if (/^\d$/.test(key) && (key !== "0" || countText.length > 0)) {
-      const nextCountText = `${countText}${key}`;
+    if (/^\d$/.test(key) && (key !== "0" || state.countText.length > 0)) {
+      const startingCount = state.countText.length === 0;
       return handler([
         {
-          handler: prefixHandler(underlying, nextCountText),
-          state: countText.length === 0 ? incrementOperatorDepth(state) : cloneHandlerState(state),
+          handler: prefixHandler(underlying),
+          state: {
+            ...cloneHandlerState(state),
+            countText: `${state.countText}${key}`,
+            operatorDepth: startingCount ? state.operatorDepth + 1 : state.operatorDepth,
+          },
         },
       ]);
     }
 
     if (key === '"' && state.register === undefined) {
-      return handler([waitingForRegisterEnv(underlying, incrementOperatorDepth(state), countText)]);
+      return handler([waitingForRegisterEnv(underlying, incrementOperatorDepth(state))]);
     }
 
-    return underlying(key, stateWithAppliedCount(state, countText));
+    return underlying(key, stateWithAppliedCount(state));
   };
 }
 
-function waitingForRegisterEnv<T>(
-  underlying: Handler<T>,
-  state: HandlerState,
-  countText: string
-): HandlerEnv<T> {
+function waitingForRegisterEnv<T>(underlying: Handler<T>, state: HandlerState): HandlerEnv<T> {
   return {
     handler: (key, registerState) => {
       const register = parseRegisterName(key);
       if (register === undefined) return invalid();
       return handler([
         {
-          handler: prefixHandler(underlying, countText),
+          handler: prefixHandler(underlying),
           state: { ...cloneHandlerState(registerState), register },
         },
       ]);
@@ -48,11 +54,12 @@ function waitingForRegisterEnv<T>(
   };
 }
 
-function stateWithAppliedCount(state: HandlerState, countText: string): HandlerState {
-  if (countText.length === 0) return state;
+function stateWithAppliedCount(state: HandlerState): HandlerState {
+  if (state.countText.length === 0) return state;
   return {
     ...cloneHandlerState(state),
-    repeat: state.repeat * Number(countText),
+    repeat: state.repeat * Number(state.countText),
+    countText: "",
   };
 }
 

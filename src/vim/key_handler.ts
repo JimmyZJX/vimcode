@@ -9,6 +9,10 @@ export type HandlerState = {
   // live in Vim's shared environment. It stays here for now to preserve the
   // existing leading-zero and status-display behavior during migration.
   repeat: number;
+  // In-progress count digits as typed (e.g. "2", "23"), before being applied as
+  // a numeric [repeat]. This is the canonical count buffer shared between the
+  // legacy dispatcher and the typed framework during the normal-mode migration.
+  countText: string;
   register: RegisterName | undefined;
   operatorDepth: number;
   whenEvaluator: WhenEvaluator;
@@ -27,6 +31,7 @@ export type HandlerState = {
 export const initialHandlerState: HandlerState = {
   mode: "normal",
   repeat: 1,
+  countText: "",
   register: undefined,
   operatorDepth: 0,
   whenEvaluator: () => true,
@@ -80,7 +85,15 @@ export function mapHandler<T, U>(
       return {
         type: "effect",
         mode: action.mode,
-        run: async () => f(await action.run(), state),
+        // Preserve synchronicity: only return a promise when the underlying run
+        // is itself async. Forcing this async would defer otherwise-synchronous
+        // editor effects to a microtask, which synchronous callers would miss.
+        run: () => {
+          const inner = action.run();
+          return isPromiseLike(inner)
+            ? Promise.resolve(inner).then(value => f(value, state))
+            : f(inner, state);
+        },
       };
     };
 
@@ -183,4 +196,12 @@ export function unhandled<T>(): HandleResult<T> {
 
 export function invalid<T>(): HandleResult<T> {
   return { type: "invalid" };
+}
+
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as PromiseLike<T>).then === "function"
+  );
 }
