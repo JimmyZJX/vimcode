@@ -46,11 +46,13 @@ function waitingForRegisterEnv<T>(underlying: Handler<T>, state: HandlerState): 
       return handler([
         {
           handler: prefixHandler(underlying),
-          state: { ...cloneHandlerState(registerState), register },
+          state: { ...cloneHandlerState(registerState), register, awaitingCharInput: false },
         },
       ]);
     },
-    state: cloneHandlerState(state),
+    // The register name is a char input: flag it so the owner records it for
+    // macros only, not dot-repeat's maybeStart.
+    state: { ...cloneHandlerState(state), awaitingCharInput: true },
   };
 }
 
@@ -60,6 +62,7 @@ function stateWithAppliedCount(state: HandlerState): HandlerState {
     ...cloneHandlerState(state),
     repeat: state.repeat * Number(state.countText),
     countText: "",
+    hasCount: true,
   };
 }
 

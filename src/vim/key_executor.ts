@@ -51,6 +51,12 @@ export class KeyExecutor {
   private handlerEnvs: readonly HandlerEnv<void>[];
   /** Accepted shorter action plus pending longer branches for ambiguous chords. */
   private conflict: KeyExecutorConflict | undefined;
+  /** True while a chord is mid-flight (the last key left a pending continuation). */
+  private pending = false;
+
+  // Whether the most recent [handle] aborted an in-flight chord via an invalid
+  // key (no pending conflict). Read by the owner to discard partial recordings.
+  private lastWasCancel = false;
   /** Timer that accepts [conflict] if no disambiguating key arrives. */
   private conflictTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -93,6 +99,7 @@ export class KeyExecutor {
   /** Clear pending handlers/conflicts and rebuild default handlers for [mode]. */
   reset(mode: VimMode = this.state.mode): void {
     this.clearConflict();
+    this.pending = false;
     this.state = {
       ...cloneHandlerState(initialHandlerState),
       mode,
@@ -101,6 +108,27 @@ export class KeyExecutor {
     };
     this.handlerEnvs = this.options.handlersForState(this.state);
     this.logDebug(`reset mode=${mode}`);
+  }
+
+  /** Whether a chord is mid-flight (the last key left a pending continuation). */
+  isPending(): boolean {
+    return this.pending;
+  }
+
+  /** Whether the most recent [handle] aborted an in-flight chord (invalid key,
+      no pending conflict), e.g. `d` followed by a non-motion. */
+  wasCancelled(): boolean {
+    return this.lastWasCancel;
+  }
+
+  /**
+   * The parser state the next key will see: the active continuation's state when
+   * mid-chord, otherwise the default state. Exposed so the owner can read
+   * parser-visible flags (e.g. whether a char input is awaited) for the upcoming
+   * key.
+   */
+  currentParserState(): HandlerState {
+    return this.handlerEnvs[0]?.state ?? this.state;
   }
 
   /** Promise that resolves once all currently-queued effect actions have run. */
@@ -119,6 +147,7 @@ export class KeyExecutor {
    */
   handle(key: string, allowRemap = true): boolean {
     const previousConflict = this.conflict;
+    this.lastWasCancel = false;
     this.clearConflictTimer();
 
     const result = combineHandleResults(
@@ -135,6 +164,7 @@ export class KeyExecutor {
         return true;
       case "handler":
         this.handlerEnvs = result.handlerEnvs;
+        this.pending = true;
         if (previousConflict !== undefined) {
           this.setConflict({
             ...previousConflict,
@@ -149,6 +179,7 @@ export class KeyExecutor {
         return true;
       case "conflict":
         this.handlerEnvs = result.pending;
+        this.pending = true;
         this.setConflict({ accepted: result.accepted, replaySuffix: [] });
         this.logDebug(
           `key=[${key}] conflict pending=${this.handlerEnvs.length}`
@@ -161,6 +192,10 @@ export class KeyExecutor {
             key,
           ]);
         } else {
+          // An invalid key aborts the in-flight chord (e.g. `d` then a
+          // non-motion). The owner needs to know so it can discard any
+          // partial dot-repeat recording.
+          this.lastWasCancel = true;
           this.reset(this.state.mode);
         }
         this.logDebug(`key=[${key}] invalid`);
@@ -174,6 +209,7 @@ export class KeyExecutor {
           this.logDebug(`key=[${key}] unhandled; accepted conflict`);
           return true;
         }
+        this.pending = false;
         this.logDebug(`key=[${key}] unhandled`);
         return false;
     }
@@ -203,6 +239,7 @@ export class KeyExecutor {
     replayKeys: readonly string[] = []
   ): void {
     this.conflict = undefined;
+    this.pending = false;
     this.state = { ...cloneHandlerState(this.state), mode: action.mode };
     this.handlerEnvs = this.options.handlersForState(this.state);
     this.runAction(action);
@@ -221,7 +258,13 @@ export class KeyExecutor {
         for (const command of action.commands) this.options.executeCommand?.(command);
         break;
       case "sequence":
-        for (const nested of action.actions) this.executeAction(nested);
+        // Run nested actions without re-resetting per action: the enclosing
+        // [executeAction] already reset once, and a nested action may leave the
+        // executor pending (e.g. a remap expanding to `d`, which becomes a
+        // pending operator). Re-running [executeAction] here would clear that
+        // pending state when a later nested action (e.g. an empty `commands`)
+        // resets it.
+        for (const nested of action.actions) this.runAction(nested);
         break;
     }
   }

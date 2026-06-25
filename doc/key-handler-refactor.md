@@ -51,11 +51,103 @@ insert/replace, search, command, macros/repeat) are ported into
   by `isExecutorNormalContext` (normal mode, no `temporaryNormal`, no legacy
   subsystem pending). `handleThroughExecutor` records any key the framework
   claims in normal context for macros/dot-repeat.
-- [ ] Remaining motions (`H`/`M`/`L`/`%`/`f`/`t`/`;`/`,`/`G`/`gg`/marks/...).
-- [ ] Operators (`d`/`c`/`y`/`>`/`<`/`=`/`gu`/`gU`/`g~`) + text objects.
+- [x] Phase 2.2a — all single-key cursor motions migrated. `normalMotionGrammar`
+  delegates to `movementHandler`, which claims any key `motionForKey` recognizes
+  (`h`/`j`/`k`/`l`/`w`/`W`/`e`/`E`/`b`/`B`/`0`/`^`/`$`/`%`/`H`/`M`/`L`/`(`/`)`/`{`/`}`/
+  arrows/...). The bisecting whitelist is gone.
+- [x] Executor pending tracking — `KeyExecutor.isPending()` plus `Vim.isPending`/
+  `pendingDepth` reading it, so framework-pending chords (remap conflicts and
+  future register/find/operator waits) surface correctly in status. This is a
+  prerequisite for any executor-pending normal handler.
+- [x] Role-aware recording bridge. `handleThroughExecutor` records every claimed
+  key for macros (`recordMacroKey`), but only feeds **command** keys to
+  dot-repeat (`maybeFinish` + `recordRepeatableKey`/`maybeStart`). A char-input
+  continuation sets `Vim.executorInputKey` while it consumes its key, so the key
+  is recorded for macros only and never reaches `maybeStart` (which would
+  otherwise misread the register name `a` as `append`). This mirrors legacy,
+  where waiting-input keys are recorded in `dispatchWaitingInput` via
+  `recordMacroKey` (+ `recordRepeatKey` for change-extending chars like the
+  `f`/`t`/jump target) and never via `recordRepeatableKey`.
+- [x] Register prefix (`"`) migrated, in the shared `prefixHandler`
+  (`prefix_handlers.ts`): an executor-pending continuation that writes
+  `HandlerState.register` (the executor's env state). Bridged to legacy on yield
+  (see the bridge section above).
+- [~] Char-input motions (find `f`/`t`/`F`/`T`, find-repeat `;`/`,`, marks
+  `` ` ``/`'`) were migrated in the earlier `NormalModeDeps` version but were
+  **dropped in the pure-grammar redo**; they currently fall back to legacy. To
+  re-port.
+- [ ] Count-dependent motions: `%` is claimed by `movementHandler` as
+  match-pair but a count makes it go-to-percentage (`20%`). The pure grammar
+  needs count-aware motion resolution, or `%`/`G`/`gg` must stay on the legacy
+  path until then.
+- [ ] Line motions `G`/`gg`: `G` resolves via a line move that is not a `Motion`
+  (and is also a linewise operator target), and `gg` needs the `g`-chord from
+  the finite-keymap phase. Both still work via the legacy fallback.
+- [x] Range operators (`d`/`c`/`y`/`>`/`<`/`=`) + operands, in
+  `normal_mode_handler.ts` (`operatorRootHandler` → `operandHandler`). Operands:
+  doubled-key linewise (`dd`/`>>`), text objects (`diw`/`dap`/...), forced
+  motions (`dvj`/`dVj`, counted), char-input find (`dfx`/`dtx`), marks
+  (`` d`a ``/`d'a`), line targets (`G`/`gg`), `g`-chord motions
+  (`gM`/`g_`/`ge`/...), `]`/`[` bracket motions, and all single-key motions
+  (incl. count-sensitive `%`). Counts multiply across operator/operand
+  (`2d3w`); registers thread through; `change` enters insert via
+  `VimGrammarActions.enterInsert`; dot-repeat records the whole chord (with the
+  framework count/register seeded via `normalPendingChordForRepeat`), and an
+  invalid operand cancels cleanly (`KeyExecutor.wasCancelled`). Pending-depth is
+  computed from the executor's `operatorDepth`. Convert operators
+  (`gu`/`gU`/`g~`) remain on the legacy path (the top-level `g`-chord is not
+  claimed by the framework) and work via the count/register bridge.
+- [ ] Search operands not migrated: `d/`, `gn`/`cgn`/`dgn` (need the search
+  subsystem — last pattern, search input). Currently failing (`d`/`c` claim the
+  operator, the search operand is not yet framework-handled).
+- [ ] Count + recursive remap: a buffered framework count is a *pending*
+  continuation, so a remapped key typed after a count (`y`→`2x`, `x`→`"_x`)
+  bypasses the remap handler (which only runs at the executor root). The count
+  needs to either re-offer the post-count key to the root handlers (preserving
+  the count) or resolve to idle as the pre-redo `normalCountPrefix` did.
 - [ ] Simple action table (`i`/`a`/`o`/`x`/`r`/`~`/`p`/`J`/...).
 - [ ] Finite keymap (`g`/`z`/`[`/`]`/`ctrl-w`).
-- [ ] Char-input waiters (replace/digraph/surround/register/mark/search/command).
+- [ ] Remaining char-input waiters (digraph/surround/mark/search/command).
+
+### Where the normal-mode grammar lives
+
+The normal-mode key grammar lives in `normal_mode_handler.ts` as
+`normalModeHandler()`, a **pure** handler graph: every handler is
+`(key, state) => HandleResult` with no injected dependencies. The live editor
+and registers travel in `HandlerState` (`state.editor` / `state.registers`),
+injected by `Vim.normalRootHandler`; count and register are owned by the shared
+`prefixHandler` (`prefix_handlers.ts`) and live in the executor's env state
+(`HandlerState.countText` / `HandlerState.register`), not on `Vim`. `vim.ts`
+applies the entry gate (`isExecutorNormalContext` + remap precedence) in
+`normalRootHandler` and owns the macro/dot-repeat recording bridge. New
+normal-mode grammar should be added in `normal_mode_handler.ts`.
+
+This pure grammar was redone from the earlier `NormalModeDeps`-based version
+(now removed). The redo currently covers only the count/register prefix, single
+cursor motions (`movementHandler`), and a first delete slice (`dd` plus
+`d{single-motion}`). Find (`f`/`t`/`;`/`,`), marks (`` ` ``/`'`), `G`/`gg`, and
+count-dependent motions (e.g. `%` as go-to-percentage) are **not** in the pure
+grammar yet and fall back to the legacy dispatcher.
+
+### Temporary count/register bridge (`Vim.bridgePendingPrefixToLegacy`)
+
+The framework owns the count/register prefix, accumulating them in the
+executor's pending env state rather than the shared `Vim.handlerState`. Legacy
+operations still read count/register from `Vim.handlerState`. When a key after a
+framework-owned prefix is an operation that has not been migrated (e.g. `2cw`,
+`"add`), it falls through to legacy, which would otherwise see an empty count /
+no register. `bridgePendingPrefixToLegacy` copies the executor's pending
+count/register into `Vim.handlerState` just before yielding (only non-empty
+values, so a count typed directly into legacy via `d2w` is never clobbered).
+
+This is a **temporary migration bridge**, to be deleted once the remaining
+normal-mode commands are migrated (at which point counted/registered operations
+never fall through). Reads that happen *before* the yield (the system-clipboard
+register refresh in `handleKey.run`, the dot-repeat seed in
+`normalPendingChordForRepeat`) consult `Vim.effectiveRegister` /
+`KeyExecutor.currentParserState`, so a framework-pending register/count is
+visible to them; `pendingDepth`/`isPending` still read `handlerState` directly so
+the framework state is not double-counted with the executor's own pending flag.
 
 ### The idle-gate migration strategy
 

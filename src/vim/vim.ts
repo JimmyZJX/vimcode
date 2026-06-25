@@ -14,14 +14,14 @@ import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMu
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
-import { effect, initialHandlerState, unhandled } from "./key_handler.js";
-import type { Handler, HandlerEnv, HandlerState, HandleResult } from "./key_handler.js";
+import { initialHandlerState, unhandled } from "./key_handler.js";
+import type { Handler, HandlerEnv, HandlerState, VimGrammarActions } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { finiteKeymapPermissions, resolveVimAction, shouldResolveMotionModeAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
-import { movementHandler } from "./normal_mode_handler.js";
+import { normalModeHandler } from "./normal_mode_handler.js";
 import { VimOperatorStack, WaitingInput, convertTargetForPending, isSelfEscapingWaitingInput } from "./operator.js";
 import type { RangeOperator } from "./operator_target.js";
 import type {
@@ -89,16 +89,9 @@ export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promi
 
 const alwaysActiveWhenEvaluator: WhenEvaluator = () => true;
 
-// Normal-mode motion keys that have been migrated to the typed executor. Kept
-// deliberately small so the migration is bisectable; expanded as each motion is
-// verified against the legacy behavior.
-const MIGRATED_MOVEMENT_KEYS: ReadonlySet<string> = new Set([
-  "h", "l", "j", "k",
-  "left", "right", "up", "down",
-  "space", "backspace", "ctrl-left", "ctrl-right",
-  "0", "home", "^", "$", "end",
-  "w", "W", "e", "E", "b", "B",
-]);
+
+
+;
 const readonlyWarningDurationMs = 2000;
 export { VimGlobalState, VimModelState };
 
@@ -176,7 +169,7 @@ export class Vim {
     this.handlerState.editor = editor;
     this.handlerState.registers = this.globalState.registers;
     this.normalMode = new NormalMode(editor, this.globalState.registers, {
-      get: () => this.handlerState.register,
+      get: () => this.effectiveRegister(),
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
     }, {
@@ -186,7 +179,7 @@ export class Vim {
       clear: () => this.clearCount(),
     }, this.operatorStack);
     this.visualMode = new VisualMode(editor, this.globalState.registers, {
-      get: () => this.handlerState.register,
+      get: () => this.effectiveRegister(),
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
     }, {
@@ -393,7 +386,7 @@ export class Vim {
       || this.operatorStack.length > 0
       || this.keymapResolver.isPending()
       || this.easyMotion.isPending()
-      || this.remapIsPending()
+      || this.keyExecutor.isPending()
       || this.normalMode.isPending();
   }
 
@@ -475,7 +468,7 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapIsPending() || (this.modeState === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.keyExecutor.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -483,12 +476,20 @@ export class Vim {
   // and a pending remap are one level each regardless of how many keystrokes
   // produced them (`2` and `21` are the same depth).
   private pendingDepth(): number {
+    // The framework tracks its own pending entries (count, register, operator,
+    // object, ...) as [HandlerState.operatorDepth] on the active continuation,
+    // with a leading count folding into the operator it precedes. When the
+    // executor is pending, that depth is the framework's contribution; the
+    // legacy terms below are zero (and vice versa).
+    const executorDepth = this.keyExecutor.isPending()
+      ? this.keyExecutor.currentParserState().operatorDepth
+      : 0;
     return this.operatorStack.length
       + (this.handlerState.register !== undefined ? 1 : 0)
       + (this.handlerState.countText.length > 0 ? 1 : 0)
       + (this.keymapResolver.isPending() ? 1 : 0)
       + (this.easyMotion.isPending() ? 1 : 0)
-      + (this.remapIsPending() ? 1 : 0);
+      + executorDepth;
   }
 
   private pendingChord(): string {
@@ -550,10 +551,26 @@ export class Vim {
     ];
   }
 
+  // The migrated normal-mode grammar (count/register prefix + motions +
+  // operators), defined in [normalModeHandler]. It is a pure handler graph;
+  // the live editor/registers are injected into the handler state by
+  // [normalRootHandler].
+  private readonly normalGrammar: Handler<void> = normalModeHandler();
+
+  // Vim-level effects the pure normal-mode grammar cannot perform with only the
+  // editor/registers capabilities. Injected into the handler state by
+  // [normalRootHandler] (see [VimGrammarActions]).
+  private readonly grammarActions: VimGrammarActions = {
+    enterInsert: ({ count = 1, separator = "" }) =>
+      this.enterInsertMode({ origin: "normal", count, separator }),
+    markMotion: (key, { line }) => this.modelState.marks.jumpMotion(this.editor, key, { line }),
+  };
+
   // Root of the migrated normal-mode grammar. It only begins a chord from a
-  // clean state (no legacy pending; see [isExecutorNormalContext]) and yields to
-  // a higher-priority remap. Live editor/registers are injected so the grammar
-  // can compute against the real editor.
+  // clean state (no legacy subsystem pending; see [isExecutorNormalContext]) and
+  // yields to a higher-priority remap. The live editor/registers travel in the
+  // handler state so the grammar stays pure; count and register are owned by the
+  // grammar's prefix handler (in the executor's env state).
   private normalRootHandler(): Handler<void> {
     return (key, state) => {
       if (!this.isExecutorNormalContext()) return unhandled();
@@ -565,35 +582,10 @@ export class Vim {
         mode: "normal",
         editor: this.editor,
         registers: this.globalState.registers,
+        actions: this.grammarActions,
       };
-      return this.normalCountPrefix(key, liveState);
+      return this.normalGrammar(key, liveState);
     };
-  }
-
-  // Count prefix for normal mode. Counts accumulate in the shared
-  // [handlerState.countText] and the key resolves immediately to idle, so there
-  // is no executor-pending count state to reconcile with the legacy dispatcher;
-  // counts therefore interoperate across the boundary (a count typed here is
-  // visible to a still-legacy operator). Register selection (`"`) is still
-  // handled by the legacy dispatcher and is ported with the other waiting-input
-  // handlers later.
-  private normalCountPrefix(key: string, state: HandlerState): HandleResult<void> {
-    if (/^[0-9]$/.test(key) && (key !== "0" || this.handlerState.countText.length > 0)) {
-      this.handlerState.countText += key;
-      return effect("normal", () => {});
-    }
-    const repeat = this.handlerState.countText.length > 0 ? Number(this.handlerState.countText) : 1;
-    const result = this.normalMotionGrammar(key, { ...state, repeat });
-    if (result.type !== "unhandled") this.handlerState.countText = "";
-    return result;
-  }
-
-  // The migrated portion of the normal-mode grammar after count/register. For
-  // now just cursor motions; operators, objects, and other actions are ported in
-  // here next. Unhandled keys fall through to the legacy dispatcher.
-  private normalMotionGrammar(key: string, state: HandlerState): HandleResult<void> {
-    if (!MIGRATED_MOVEMENT_KEYS.has(key)) return unhandled();
-    return movementHandler(key, state);
   }
 
   // Whether the executor may begin a normal-mode chord: normal mode, not a
@@ -601,13 +593,16 @@ export class Vim {
   // intentionally not checked here (the framework owns them), so a buffered
   // count does not block the next key.
   private isExecutorNormalContext(): boolean {
+    // Note: [normalMode.isPending()] is intentionally not consulted — it is
+    // [operatorStack.length > 0 || count present], and the count is now
+    // framework-owned (a buffered count must not block the next framework key).
+    // The operator-pending part is covered by the [operatorStack] check.
     return (
       this.modeState === "normal" &&
       !this.temporaryNormal &&
       this.operatorStack.length === 0 &&
       !this.keymapResolver.isPending() &&
-      !this.easyMotion.isPending() &&
-      !this.normalMode.isPending()
+      !this.easyMotion.isPending()
     );
   }
 
@@ -649,10 +644,42 @@ export class Vim {
     const previousWhenEvaluator = this.dispatchWhenEvaluator;
     this.dispatchWhenEvaluator = whenEvaluator;
     try {
-      return this.handleThroughExecutor(key, allowRemap) ? "handled" : this.dispatchKey(key);
+      if (this.handleThroughExecutor(key, allowRemap)) return "handled";
+      // The key fell through to legacy while the executor was mid-chord (e.g. a
+      // buffered count/register from `2`/`"a`). Carry that pending count and
+      // register into the legacy [handlerState] so the legacy operation can
+      // consume them (e.g. `2cw`, `"add`). See [bridgePendingPrefixToLegacy].
+      this.bridgePendingPrefixToLegacy();
+      // Clear the executor's now-stale continuation *before* running the legacy
+      // dispatcher: a legacy key can re-enter the executor (e.g. `.` replays its
+      // recorded keys through [onKey]), which would otherwise be misrouted into
+      // the leftover continuation.
+      this.keyExecutor.reset(this.modeState);
+      return this.dispatchKey(key);
     } finally {
       this.dispatchWhenEvaluator = previousWhenEvaluator;
     }
+  }
+
+  // TEMPORARY MIGRATION BRIDGE. Delete once operators and the simple-action
+  // table are migrated onto the framework (at which point counted operations
+  // like `2cw` are handled entirely by the executor and never fall through).
+  //
+  // The framework owns the normal-mode count/register prefix
+  // ([prefixHandler]): a `2` or `"a` typed from a clean state is claimed by the
+  // executor and accumulated in its pending parser state, not in the legacy
+  // [handlerState]. When the following key is an operation that has not yet been
+  // migrated (e.g. `c`), it falls through to the legacy dispatcher, which reads
+  // the count/register from [handlerState]. Without this bridge that count and
+  // register would be lost. Copy the executor's pending prefix into
+  // [handlerState] just before yielding so legacy [takeCount]/register reads see
+  // it. Only non-empty values are copied, so a count accumulated directly by the
+  // legacy dispatcher (e.g. `d2w`, where `2` is typed with an operator already
+  // pending and the executor is idle) is never clobbered.
+  private bridgePendingPrefixToLegacy(): void {
+    const pending = this.keyExecutor.currentParserState();
+    if (pending.countText.length > 0) this.handlerState.countText = pending.countText;
+    if (pending.register !== undefined) this.handlerState.register = pending.register;
   }
 
   // The bridge between the typed executor and the not-yet-migrated dispatcher,
@@ -660,7 +687,11 @@ export class Vim {
   // (ambiguous-conflict suffixes): try the executor first, then legacy. The
   // when-evaluator is already established by the enclosing top-level dispatch.
   private dispatchThroughPipeline(key: string, allowRemap: boolean): void {
-    if (!this.handleThroughExecutor(key, allowRemap)) this.dispatchKey(key);
+    if (this.handleThroughExecutor(key, allowRemap)) return;
+    // See [bridgePendingPrefixToLegacy]: carry any framework-pending count/
+    // register to legacy before yielding (temporary migration bridge).
+    this.bridgePendingPrefixToLegacy();
+    this.dispatchKey(key);
   }
 
   // Run a key through the executor and, when a migrated leaf handler claims it,
@@ -670,19 +701,45 @@ export class Vim {
   // re-dispatched and recorded as it flows through this same path.
   private handleThroughExecutor(key: string, allowRemap: boolean): boolean {
     // A key the framework claims in normal context never reaches [dispatchKey],
-    // so mirror the per-key bookkeeping the legacy dispatcher would have done:
-    // finish an in-flight dot-repeat recording and record the key for
-    // macros/dot-repeat. Remapped keys are excluded (the remap handler claims
-    // them and its expansion is recorded as it flows through this path).
+    // so mirror the per-key recording the legacy dispatcher would have done.
+    // Remapped keys are excluded (the remap handler claims them and its
+    // expansion is recorded as it flows through this path).
     const normalContext =
       this.isExecutorNormalContext() &&
       !hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator);
+    const modeBefore = this.modeState;
     const pendingBefore = this.isPending();
+    // Whether this key is consumed by a char-input continuation (e.g. the
+    // register name after `"`, or the target char after `f`), read from the
+    // pending state before dispatch.
+    const awaitingCharInput = this.keyExecutor.currentParserState().awaitingCharInput === true;
+    // Mirror legacy [dispatchKey], which finishes any in-flight dot-repeat
+    // recording before handling the next key. For framework-claimed keys
+    // [dispatchKey] never runs, so do it here (using the pre-handle mode/pending
+    // state). [maybeFinish] commits the recording only once the command returns
+    // to idle normal mode, so a multi-key chord (`dfo`) stays open until done.
+    if (normalContext && !this.globalState.repeat.isReplaying()) {
+      this.globalState.repeat.maybeFinish({ mode: modeBefore, isPending: pendingBefore });
+    }
     const claimed = this.keyExecutor.handle(key, allowRemap);
     if (claimed && normalContext && !this.globalState.repeat.isReplaying()) {
-      this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: pendingBefore });
+      // Macros record every claimed key.
       this.recordMacroKey(key);
-      this.recordRepeatableKey(key);
+      if (this.keyExecutor.wasCancelled()) {
+        // The key aborted an in-flight chord (e.g. `d` then a non-motion).
+        // Discard the partial dot-repeat recording so the cancel key does not
+        // corrupt the last repeatable command.
+        this.globalState.repeat.cancelCurrent();
+      } else if (awaitingCharInput) {
+        // A char-input continuation (find/till target char, mark name) extends
+        // the current command's recording but must not [maybeStart] a new one —
+        // that would misread the input char (e.g. register name `a`, find
+        // target `o`) as a command of the same name.
+        this.recordRepeatKey(key);
+      } else {
+        // Command keys start/extend a repeatable recording.
+        this.recordRepeatableKey(key);
+      }
     }
     return claimed;
   }
@@ -989,7 +1046,28 @@ export class Vim {
 
   private normalPendingChordForRepeat(): string {
     const chord = this.normalMode.pendingChord();
-    return this.handlerState.register === undefined ? chord : `${chord}\"${this.handlerState.register}`;
+    const register = this.effectiveRegister();
+    const base = register === undefined ? chord : `${chord}\"${register}`;
+    // The dot-repeat seed must include a framework-owned count typed before the
+    // command (e.g. the `3` of `3d3l`). The framework folds that count into
+    // [repeat] on the active continuation, so reconstruct the digits from it;
+    // the legacy count (in [normalMode.pendingChord]) is empty for framework
+    // chords, so there is no double-counting.
+    const parser = this.keyExecutor.currentParserState();
+    const countPrefix = this.keyExecutor.isPending() && parser.hasCount === true ? String(parser.repeat) : "";
+    return `${countPrefix}${base}`;
+  }
+
+  // The selected register, whether owned by the legacy dispatcher
+  // ([handlerState.register]) or pending in the typed framework (the executor's
+  // env state, e.g. after `"a` while the operator is still being typed). Reads
+  // that happen before a key yields to legacy (the system-clipboard register
+  // refresh, the dot-repeat seed) consult this so a framework-pending register
+  // is visible. [pendingDepth]/[isPending] still read [handlerState.register]
+  // directly so a framework-pending register is not double-counted with the
+  // executor's own pending flag.
+  private effectiveRegister(): RegisterName | undefined {
+    return this.handlerState.register ?? this.keyExecutor.currentParserState().register;
   }
 
   private resolveKeymapAction(key: string, phase: VimKeymapPhase): VimAction | undefined {

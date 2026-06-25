@@ -1,7 +1,20 @@
 import type { VimCommandMapping, WhenEvaluator } from "./config.js";
 import type { VimEditorCapabilities } from "./editor.js";
+import type { Motion } from "./motion.js";
 import type { RegisterName, Registers } from "./registers.js";
 import type { VimMode } from "./state.js";
+
+// Vim-level effects the pure normal-mode grammar cannot perform with only the
+// editor/registers capabilities (mode transitions, mark lookup). Injected into
+// [HandlerState] like [editor]/[registers] so handlers stay pure functions of
+// `(key, state)`. Implemented by [Vim].
+export type VimGrammarActions = {
+  // Enter insert mode after a change operator (`cw`, `cc`, ...).
+  enterInsert: (opts: { count?: number; separator?: string }) => void;
+  // Resolve a mark key (`` `a ``/`'a`) to a jump motion, or undefined if the
+  // mark is unset. [line] selects linewise (`'`) vs charwise (`` ` ``) jumps.
+  markMotion: (key: string, opts: { line: boolean }) => Motion | undefined;
+};
 
 export type HandlerState = {
   mode: VimMode;
@@ -23,9 +36,20 @@ export type HandlerState = {
   // key so non-recursive remap expansions don't remap their own output. It is
   // produced and consumed entirely within remap.ts (see [remapHandler]).
   allowRemap: boolean;
+  // True while a handler is waiting for a char input (e.g. the register name
+  // after `"`). Such a key is recorded for macros but must not reach dot-repeat's
+  // maybeStart, which would misread an input char (e.g. the register name `a`)
+  // as the command of the same name. Set on the waiting continuation's state.
+  awaitingCharInput?: boolean;
+  // Whether an explicit count was typed for the current command. Some keys are
+  // count-sensitive (`%` is match-pair without a count, go-to-percentage with
+  // one; `G`/`gg` go to the last/first line without a count, to line N with
+  // one). Set by [prefixHandler] when it applies a count into [repeat].
+  hasCount?: boolean;
   remapKeys: readonly string[];
   editor?: VimEditorCapabilities;
   registers?: Registers;
+  actions?: VimGrammarActions;
 };
 
 export const initialHandlerState: HandlerState = {
