@@ -7,7 +7,7 @@
 
 import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
 import { lineRange, linewiseCursorAfterDelete } from "../motion.js";
-import type { CharwiseTarget, OperatorTarget, RowRange } from "../operator_target.js";
+import type { CharwiseTarget, ResolvedTarget, RowRange } from "../operator_target.js";
 import { RegisterName, Registers } from "../registers.js";
 import {
   TextEdit,
@@ -23,7 +23,7 @@ export function applyDelete(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): void {
   switch (target.kind) {
     case "charwise":

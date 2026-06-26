@@ -14,7 +14,7 @@ import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { deleteCharacters, deleteCharactersBefore } from "./normal/delete.js";
 import { paste } from "./normal/paste.js";
-import { OperatorTarget, RangeOperator, applyOperatorToTarget, lineOperatorTarget, operatorTarget, rowOperatorTarget, textObjectOperatorTarget } from "./operator_target.js";
+import { ResolvedTarget, RangeOperator, applyOperatorToTarget, lineOperatorTarget, operatorTarget, rowOperatorTarget, textObjectOperatorTarget } from "./operator_target.js";
 import { RegisterName, Registers, isSystemClipboardRegister } from "./registers.js";
 import { replaceCharacters } from "./replace.js";
 import { toggleCaseCharacters } from "./normal/convert.js";
@@ -307,7 +307,7 @@ export class NormalMode {
 
   private substituteCharacters(): NormalKeyResult {
     const count = this.takeCount(1);
-    const target: OperatorTarget = {
+    const target: ResolvedTarget = {
       kind: "charwise",
       targets: this.editor.getSelections().map(selection => {
         const head = selectionHead(selection);
@@ -583,7 +583,7 @@ export class NormalMode {
 // Lower an `OperatorTarget` to the surround capture shape: charwise targets
 // wrap in place, linewise targets wrap whole lines with the pair on its own
 // lines (vim-surround `yS`-style placement).
-function surroundRangesForTarget(editor: VimEditorCapabilities, target: OperatorTarget): PendingSurroundTarget {
+function surroundRangesForTarget(editor: VimEditorCapabilities, target: ResolvedTarget): PendingSurroundTarget {
   switch (target.kind) {
     case "charwise":
       return { ranges: target.targets.map(({ range }) => range), linewise: false };

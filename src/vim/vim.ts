@@ -23,7 +23,7 @@ import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
 import { normalModeHandler } from "./normal_mode_handler.js";
 import { VimOperatorStack, WaitingInput, convertTargetForPending, isSelfEscapingWaitingInput } from "./operator.js";
-import type { RangeOperator } from "./operator_target.js";
+import { RangeOperator } from "./operator_target.js";
 import type {
   PendingFindOperator,
   PendingLiteralOperator,
@@ -121,6 +121,13 @@ export class Vim {
     handlersForState: state => this.executorHandlers(state),
     redispatch: (key, allowRemap) => this.dispatchThroughPipeline(key, allowRemap),
     executeCommand: command => this.executeMappedCommand(command),
+    onEnterMode: mode => this.enterModeFromExecutor(mode),
+    onCancel: () => {
+      // A pending framework command (e.g. `d` then a non-motion key) was
+      // cancelled: discard its partial dot-repeat recording so a following
+      // [maybeFinish] cannot commit it over the real last change.
+      if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.cancelCurrent();
+    },
   });
   // The when-evaluator for the in-flight top-level dispatch, read by the remap
   // root handler (which resolves against the live Vim mode) and the executor's
@@ -557,14 +564,25 @@ export class Vim {
   // [normalRootHandler].
   private readonly normalGrammar: Handler<void> = normalModeHandler();
 
-  // Vim-level effects the pure normal-mode grammar cannot perform with only the
+  // Vim-level lookups the pure normal-mode grammar cannot perform with only the
   // editor/registers capabilities. Injected into the handler state by
-  // [normalRootHandler] (see [VimGrammarActions]).
+  // [normalRootHandler] (see [VimGrammarActions]). Mode transitions are not
+  // here; they flow out via the action [mode] and [enterModeFromExecutor].
   private readonly grammarActions: VimGrammarActions = {
-    enterInsert: ({ count = 1, separator = "" }) =>
-      this.enterInsertMode({ origin: "normal", count, separator }),
     markMotion: (key, { line }) => this.modelState.marks.jumpMotion(this.editor, key, { line }),
   };
+
+  // Apply the target mode the executor reports after running a framework action
+  // (see [KeyExecutor.onEnterMode]). Only forward transitions the framework can
+  // produce are wired: a `change` action targeting insert mode starts an insert
+  // session. A target equal to the current mode is a no-op (e.g. motions target
+  // normal mode); returning to normal happens via escape/explicit handling, not
+  // here.
+  private enterModeFromExecutor(mode: VimMode): void {
+    if (mode === "insert" && this.modeState !== "insert") {
+      this.enterInsertMode({ origin: "normal" });
+    }
+  }
 
   // Root of the migrated normal-mode grammar. It only begins a chord from a
   // clean state (no legacy subsystem pending; see [isExecutorNormalContext]) and
@@ -643,8 +661,18 @@ export class Vim {
   ): KeyDispatchResult {
     const previousWhenEvaluator = this.dispatchWhenEvaluator;
     this.dispatchWhenEvaluator = whenEvaluator;
+    const versionBefore = this.editor.documentVersion();
+    const modeBefore = this.modeState;
     try {
-      if (this.handleThroughExecutor(key, allowRemap)) return "handled";
+      if (this.handleThroughExecutor(key, allowRemap)) {
+        // A framework command that edited the buffer must update the change list
+        // (`g;`/`g,`), mirroring the legacy [dispatchKey] bookkeeping — framework
+        // commands never reach [dispatchKey].
+        if (this.editor.documentVersion() !== versionBefore) {
+          this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
+        }
+        return "handled";
+      }
       // The key fell through to legacy while the executor was mid-chord (e.g. a
       // buffered count/register from `2`/`"a`). Carry that pending count and
       // register into the legacy [handlerState] so the legacy operation can
@@ -701,45 +729,42 @@ export class Vim {
   // re-dispatched and recorded as it flows through this same path.
   private handleThroughExecutor(key: string, allowRemap: boolean): boolean {
     // A key the framework claims in normal context never reaches [dispatchKey],
-    // so mirror the per-key recording the legacy dispatcher would have done.
-    // Remapped keys are excluded (the remap handler claims them and its
-    // expansion is recorded as it flows through this path).
+    // so the per-key recording the legacy dispatcher does (macro + dot-repeat)
+    // is mirrored here. Both dot-repeat and macros are keystroke-based: the
+    // recorded keys are replayed back through [onKey]. Remapped keys are
+    // excluded — the remap handler claims them and the expansion is recorded as
+    // it flows through this path.
     const normalContext =
       this.isExecutorNormalContext() &&
       !hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator);
-    const modeBefore = this.modeState;
-    const pendingBefore = this.isPending();
-    // Whether this key is consumed by a char-input continuation (e.g. the
-    // register name after `"`, or the target char after `f`), read from the
-    // pending state before dispatch.
-    const awaitingCharInput = this.keyExecutor.currentParserState().awaitingCharInput === true;
-    // Mirror legacy [dispatchKey], which finishes any in-flight dot-repeat
-    // recording before handling the next key. For framework-claimed keys
-    // [dispatchKey] never runs, so do it here (using the pre-handle mode/pending
-    // state). [maybeFinish] commits the recording only once the command returns
-    // to idle normal mode, so a multi-key chord (`dfo`) stays open until done.
-    if (normalContext && !this.globalState.repeat.isReplaying()) {
-      this.globalState.repeat.maybeFinish({ mode: modeBefore, isPending: pendingBefore });
+    const recordable = normalContext && !this.globalState.repeat.isReplaying();
+    // Commit any in-flight dot-repeat recording before this framework key,
+    // mirroring legacy [dispatchKey]. A framework key never reaches
+    // [dispatchKey], so without this a following command (e.g. `99<C-a>` then
+    // `111<C-x>`) would extend the previous command's recording instead of
+    // starting fresh.
+    if (recordable) {
+      this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
     }
+    // Capture the dot-repeat seed (count/register) before the executor consumes
+    // the chord: [maybeStart] seeds from the *pending* count, which the executor
+    // folds away once the command completes. Recording itself happens after
+    // [handle] (so we only record keys the framework actually claims), but with
+    // this pre-handle seed.
+    const repeatSeed = recordable
+      ? { mode: this.modeState, pendingChord: this.normalPendingChordForRepeat() }
+      : undefined;
+    // A char-input operand (register name in `"a`, `r`'s char, find target) must
+    // not *start* a dot-repeat recording even though some such chars (`a`) are
+    // also repeatable start keys — Vim excludes the register from the recorded
+    // change. It is still appended to an already-open recording (e.g. `dfx`) and
+    // always recorded for macros.
+    const awaitingCharInput = recordable && this.keyExecutor.currentParserState().awaitingCharInput === true;
     const claimed = this.keyExecutor.handle(key, allowRemap);
-    if (claimed && normalContext && !this.globalState.repeat.isReplaying()) {
-      // Macros record every claimed key.
+    if (claimed && recordable && repeatSeed !== undefined) {
+      if (!awaitingCharInput) this.globalState.repeat.maybeStart(key, repeatSeed);
+      this.globalState.repeat.recordKey(key);
       this.recordMacroKey(key);
-      if (this.keyExecutor.wasCancelled()) {
-        // The key aborted an in-flight chord (e.g. `d` then a non-motion).
-        // Discard the partial dot-repeat recording so the cancel key does not
-        // corrupt the last repeatable command.
-        this.globalState.repeat.cancelCurrent();
-      } else if (awaitingCharInput) {
-        // A char-input continuation (find/till target char, mark name) extends
-        // the current command's recording but must not [maybeStart] a new one —
-        // that would misread the input char (e.g. register name `a`, find
-        // target `o`) as a command of the same name.
-        this.recordRepeatKey(key);
-      } else {
-        // Command keys start/extend a repeatable recording.
-        this.recordRepeatableKey(key);
-      }
     }
     return claimed;
   }
@@ -941,7 +966,9 @@ export class Vim {
         const pending = this.operatorStack.popTopLevel("replayRegister");
         if (pending === undefined) return "handled";
         this.recordMacroKey(key);
-        this.replayMacro(() => this.globalState.macro.replayRegisterKey(key, pending.count, key => this.onKey(key)));
+        this.replayMacro(() =>
+          this.globalState.macro.replayRegisterKey(key, pending.count, replayKey => this.onKey(replayKey))
+        );
         return "handled";
       }
       case "register":
@@ -1049,12 +1076,20 @@ export class Vim {
     const register = this.effectiveRegister();
     const base = register === undefined ? chord : `${chord}\"${register}`;
     // The dot-repeat seed must include a framework-owned count typed before the
-    // command (e.g. the `3` of `3d3l`). The framework folds that count into
-    // [repeat] on the active continuation, so reconstruct the digits from it;
-    // the legacy count (in [normalMode.pendingChord]) is empty for framework
-    // chords, so there is no double-counting.
+    // command (e.g. the `3` of `3d3l`). The seed is captured *before* the command
+    // key is handled, so the count is usually still the in-progress digits in
+    // [countText] (not yet folded into [repeat]); fall back to the applied
+    // [repeat] for the already-delegated case. The legacy count (in
+    // [normalMode.pendingChord]) is empty for framework chords, so there is no
+    // double-counting.
     const parser = this.keyExecutor.currentParserState();
-    const countPrefix = this.keyExecutor.isPending() && parser.hasCount === true ? String(parser.repeat) : "";
+    const countPrefix = !this.keyExecutor.isPending()
+      ? ""
+      : parser.countText.length > 0
+        ? parser.countText
+        : parser.hasCount === true
+          ? String(parser.repeat)
+          : "";
     return `${countPrefix}${base}`;
   }
 
@@ -1377,7 +1412,9 @@ export class Vim {
 
     if (key === "Q") {
       this.recordMacroKey(key);
-      this.replayMacro(() => this.globalState.macro.replayLast(this.normalMode.takeCountForMotion(1), key => this.onKey(key)));
+      this.replayMacro(() =>
+        this.globalState.macro.replayLast(this.normalMode.takeCountForMotion(1), replayKey => this.onKey(replayKey))
+      );
       return "handled";
     }
 
@@ -1597,6 +1634,10 @@ export class Vim {
       this.globalState.repeat.recordVisualAction(pendingVisualRepeatChange.selection, { type: "change", insertedText: this.insertRepeatText });
     }
     this.pendingVisualRepeatChange = undefined;
+    // The keys typed during the insert session were already logged into the
+    // dot-repeat and macro buffers as they flowed through [dispatchKey]; the
+    // terminating `<escape>` is logged by [recordEscapeKey]. So `.`/macro replay
+    // re-runs `cwhello<escape>` verbatim — no separate insert-text recording.
     if (this.insertRepeatCount <= 1 || this.insertRepeatText.length === 0) {
       this.clearInsertOrReplaceSession();
       return;

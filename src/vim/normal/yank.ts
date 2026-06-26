@@ -5,7 +5,7 @@
 // - intentional differences: this first slice writes only an unnamed clipboard string.
 
 import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
-import type { CharwiseTarget, OperatorTarget, RowRange } from "../operator_target.js";
+import type { CharwiseTarget, ResolvedTarget, RowRange } from "../operator_target.js";
 import { RegisterName, Registers } from "../registers.js";
 import { charwiseSelection, comparePositions } from "../state.js";
 
@@ -15,7 +15,7 @@ export function applyYank(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): void {
   switch (target.kind) {
     case "charwise":

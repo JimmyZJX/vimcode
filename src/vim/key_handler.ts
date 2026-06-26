@@ -4,13 +4,12 @@ import type { Motion } from "./motion.js";
 import type { RegisterName, Registers } from "./registers.js";
 import type { VimMode } from "./state.js";
 
-// Vim-level effects the pure normal-mode grammar cannot perform with only the
-// editor/registers capabilities (mode transitions, mark lookup). Injected into
-// [HandlerState] like [editor]/[registers] so handlers stay pure functions of
-// `(key, state)`. Implemented by [Vim].
+// Vim-level lookups the pure normal-mode grammar cannot perform with only the
+// editor/registers capabilities. Injected into [HandlerState] like
+// [editor]/[registers] so handlers stay pure functions of `(key, state)`.
+// Implemented by [Vim]. Mode transitions are NOT here: they travel out via the
+// action/effect [mode] and the executor's [onEnterMode] hook.
 export type VimGrammarActions = {
-  // Enter insert mode after a change operator (`cw`, `cc`, ...).
-  enterInsert: (opts: { count?: number; separator?: string }) => void;
   // Resolve a mark key (`` `a ``/`'a`) to a jump motion, or undefined if the
   // mark is unset. [line] selects linewise (`'`) vs charwise (`` ` ``) jumps.
   markMotion: (key: string, opts: { line: boolean }) => Motion | undefined;
@@ -74,7 +73,11 @@ export type KeyToDispatch = {
 
 export type QueuedRunResult<T> = T | Promise<T>;
 
-export type EffectAction<T> = { type: "effect"; mode: VimMode; run: () => QueuedRunResult<T> };
+export type EffectAction<T> = {
+  type: "effect";
+  mode: VimMode;
+  run: () => QueuedRunResult<T>;
+};
 
 type VoidKeyAction =
   | { type: "keys"; mode: VimMode; keys: readonly KeyToDispatch[] }
@@ -187,7 +190,10 @@ export function run<T>(action: KeyAction<T>): HandleResult<T> {
   return { type: "run", action };
 }
 
-export function effect<T>(mode: VimMode, run: () => QueuedRunResult<T>): HandleResult<T> {
+export function effect<T>(
+  mode: VimMode,
+  run: () => QueuedRunResult<T>
+): HandleResult<T> {
   return { type: "run", action: { type: "effect", mode, run } };
 }
 

@@ -58,13 +58,34 @@ export type CharwiseTarget = {
   cancelled?: boolean;
 };
 
-// Zed: `MotionKind` survives into operator application; locally inclusivity is
-// resolved into concrete range extents at target production, so only
-// charwise/linewise remain. A blockwise variant is reserved for the visual-block
-// fold-in.
-export type OperatorTarget =
+// A *resolved* operator target: concrete model-coordinate ranges/rows, ready to
+// hand to an application module. Zed: `MotionKind` survives into operator
+// application; locally inclusivity is resolved into concrete range extents at
+// resolution, so only charwise/linewise remain. A blockwise variant is reserved
+// for the visual-block fold-in.
+export type ResolvedTarget =
   | { kind: "charwise"; targets: readonly CharwiseTarget[] }
   | { kind: "linewise"; rows: readonly RowRange[] };
+
+// A *lazy* operator target: a description of what an operator should act on,
+// resolved to concrete ranges only at execution time via [resolveTarget] — the
+// same value/resolution split as [Motion]/[applyMotion]. This is what the
+// normal-mode grammar builds and what a repeatable command stores, so a replay
+// (`.`) re-resolves the range against the cursor at replay time rather than
+// reusing positions captured when the command was first typed. Visual-mode
+// operators do not use this: their range is the live selection, already a
+// [ResolvedTarget].
+export type OperatorTarget =
+  // A motion (`dw`, `d}`, `d%`, `dvj` with a forced motion, `dgg` via
+  // [startOfDocument]); [count] is the motion repeat.
+  | { kind: "motion"; motion: Motion; forced?: ForcedMotion }
+  // A text object (`diw`, `dap`); [around] selects `a`/`i`, [count] the object
+  // count.
+  | { kind: "object"; object: TextObject; around: boolean }
+  // The doubled operator key (`dd`/`cc`/`yy`/`>>`): [count] whole lines.
+  | { kind: "line" }
+  // `G`: linewise to the last line, or to line [count] when a count was given.
+  | { kind: "lastLine" };
 
 // Zed: `state::Operator`, restricted to the operators that consume a
 // motion/object/line/visual-derived range.
@@ -106,7 +127,7 @@ export function operatorTarget(
   motion: Motion,
   count: number,
   { forcedMotion, forChange = false }: { forcedMotion?: ForcedMotion; forChange?: boolean } = {}
-): OperatorTarget {
+): ResolvedTarget {
   const selections = editor.getSelections();
   const heads = selections.map(selectionHead);
 
@@ -243,7 +264,7 @@ export function textObjectOperatorTarget(
   editor: VimEditorCapabilities,
   object: TextObject,
   { around, count, forChange = false }: { around: boolean; count: number; forChange?: boolean }
-): OperatorTarget {
+): ResolvedTarget {
   const selections = editor.getSelections();
 
   // Vim: paragraph text objects operate linewise after an operator (`:h ap`),
@@ -304,7 +325,7 @@ export function textObjectOperatorTarget(
 
 // Zed: `dd`/`cc`/`yy` are operator + `motion::Motion::CurrentLine`. Doubling
 // the pending operator's final key targets [count] whole lines from the cursor.
-export function lineOperatorTarget(editor: VimEditorCapabilities, count: number): OperatorTarget {
+export function lineOperatorTarget(editor: VimEditorCapabilities, count: number): ResolvedTarget {
   return {
     kind: "linewise",
     rows: editor.getSelections().map(selection => {
@@ -321,7 +342,7 @@ export function lineOperatorTarget(editor: VimEditorCapabilities, count: number)
 // Vim: `dG`/`d{count}G` and friends operate linewise between the cursor row
 // and an absolute target row (`:h G`: "not a motion character" semantics are
 // resolved by the caller; the target row arrives precomputed).
-export function rowOperatorTarget(editor: VimEditorCapabilities, targetRow: number): OperatorTarget {
+export function rowOperatorTarget(editor: VimEditorCapabilities, targetRow: number): ResolvedTarget {
   const clampedRow = Math.max(0, Math.min(targetRow, editor.lineCount() - 1));
   return {
     kind: "linewise",
@@ -332,6 +353,31 @@ export function rowOperatorTarget(editor: VimEditorCapabilities, targetRow: numb
   };
 }
 
+// Resolve a lazy [OperatorTarget] descriptor to concrete ranges against the
+// current editor — the operator analog of [applyMotion] for [Motion]. Called at
+// execution time (including each `.` replay), so the ranges always reflect the
+// cursor as it is now, not as it was when the command was first typed. [count]
+// is the combined operator/operand count; [hasCount] distinguishes `G`
+// (last line) from `{count}G` (line N); [forChange] applies the change-specific
+// adjustments (`cw`-as-`ce`, object cancellation).
+export function resolveTarget(
+  editor: VimEditorCapabilities,
+  target: OperatorTarget,
+  count: number,
+  { hasCount = false, forChange = false }: { hasCount?: boolean; forChange?: boolean } = {}
+): ResolvedTarget {
+  switch (target.kind) {
+    case "motion":
+      return operatorTarget(editor, target.motion, count, { forcedMotion: target.forced, forChange });
+    case "object":
+      return textObjectOperatorTarget(editor, target.object, { around: target.around, count, forChange });
+    case "line":
+      return lineOperatorTarget(editor, count);
+    case "lastLine":
+      return rowOperatorTarget(editor, hasCount ? Math.max(0, count - 1) : editor.lineCount() - 1);
+  }
+}
+
 // Zed: `normal::Vim::normal_motion` / `normal_object`. The only switch over
 // operators; application modules are each total over target kinds, so a new
 // targeting source cannot stub an operator silently.
@@ -340,7 +386,7 @@ export function applyOperatorToTarget(
   registers: Registers,
   registerName: RegisterName | undefined,
   operator: RangeOperator,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): OperatorOutcome {
   switch (operator.type) {
     case "delete":

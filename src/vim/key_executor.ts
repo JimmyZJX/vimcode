@@ -1,3 +1,4 @@
+import type { VimCommandMapping } from "./config.js";
 import {
   HandlerEnv,
   HandlerState,
@@ -7,7 +8,6 @@ import {
   combineHandleResults,
   initialHandlerState,
 } from "./key_handler.js";
-import type { VimCommandMapping } from "./config.js";
 import type { VimMode } from "./state.js";
 
 export type KeyExecutorHandlers = (
@@ -37,6 +37,25 @@ export type KeyExecutorOptions = {
    * that fallback.
    */
   redispatch?: (key: string, allowRemap: boolean) => void;
+  // CR jimzhao: decide whether `onEnterMode` and `onCancel` are really needed
+  /**
+   * Apply the Vim mode an accepted action targets (the [mode] on the action /
+   * effect). The executor owns mode transitions: after running an action it
+   * reports the target mode here so the owner can transition (e.g. a `change`
+   * action targets insert mode). Called synchronously after the action runs, not
+   * inside its (possibly async) effect callback — keys are dispatched
+   * synchronously, so the transition must be observable immediately. The owner
+   * decides what an entry means (e.g. entering insert starts an insert session);
+   * a target mode equal to the current mode is a no-op.
+   */
+  onEnterMode?: (mode: VimMode) => void;
+  /**
+   * Called when a pending chord is abandoned without running a command (the
+   * `invalid` reset branch — e.g. an operator gets a non-motion key like `.`).
+   * Lets the owner discard the in-flight dot-repeat recording for the cancelled
+   * command. Not called on command completion or on external [reset].
+   */
+  onCancel?: () => void;
   log?: KeyExecutorLog;
   timeoutMs?: number | (() => number);
   setTimeout?: (
@@ -54,9 +73,6 @@ export class KeyExecutor {
   /** True while a chord is mid-flight (the last key left a pending continuation). */
   private pending = false;
 
-  // Whether the most recent [handle] aborted an in-flight chord via an invalid
-  // key (no pending conflict). Read by the owner to discard partial recordings.
-  private lastWasCancel = false;
   /** Timer that accepts [conflict] if no disambiguating key arrives. */
   private conflictTimer: ReturnType<typeof setTimeout> | undefined;
   /**
@@ -115,12 +131,6 @@ export class KeyExecutor {
     return this.pending;
   }
 
-  /** Whether the most recent [handle] aborted an in-flight chord (invalid key,
-      no pending conflict), e.g. `d` followed by a non-motion. */
-  wasCancelled(): boolean {
-    return this.lastWasCancel;
-  }
-
   /**
    * The parser state the next key will see: the active continuation's state when
    * mid-chord, otherwise the default state. Exposed so the owner can read
@@ -147,7 +157,6 @@ export class KeyExecutor {
    */
   handle(key: string, allowRemap = true): boolean {
     const previousConflict = this.conflict;
-    this.lastWasCancel = false;
     this.clearConflictTimer();
 
     const result = combineHandleResults(
@@ -192,11 +201,8 @@ export class KeyExecutor {
             key,
           ]);
         } else {
-          // An invalid key aborts the in-flight chord (e.g. `d` then a
-          // non-motion). The owner needs to know so it can discard any
-          // partial dot-repeat recording.
-          this.lastWasCancel = true;
           this.reset(this.state.mode);
+          this.options.onCancel?.();
         }
         this.logDebug(`key=[${key}] invalid`);
         return true;
@@ -243,6 +249,18 @@ export class KeyExecutor {
     this.state = { ...cloneHandlerState(this.state), mode: action.mode };
     this.handlerEnvs = this.options.handlersForState(this.state);
     this.runAction(action);
+    // The executor owns the mode transition: report the action's target mode so
+    // the owner can transition (e.g. `change` -> insert). Done synchronously
+    // after [runAction] (so a synchronous editor edit has already applied),
+    // never inside the effect callback. Only [effect] actions carry a meaningful
+    // target mode set by the handler; [keys]/[sequence]/[commands] actions
+    // (remap expansions) take their mode from the leaf effects they redispatch,
+    // which fire [onEnterMode] themselves — reporting the capture-time mode here
+    // would clobber a transition those leaves just made (e.g. an insert-mode
+    // remap expanding to `<Esc>` would be forced back into insert).
+    if (action.type === "effect") {
+      this.options.onEnterMode?.(action.mode);
+    }
     this.replayKeys(replayKeys);
   }
 
@@ -252,10 +270,12 @@ export class KeyExecutor {
         this.enqueueEffect(action);
         break;
       case "keys":
-        for (const { key, allowRemap } of action.keys) this.redispatch(key, allowRemap);
+        for (const { key, allowRemap } of action.keys)
+          this.redispatch(key, allowRemap);
         break;
       case "commands":
-        for (const command of action.commands) this.options.executeCommand?.(command);
+        for (const command of action.commands)
+          this.options.executeCommand?.(command);
         break;
       case "sequence":
         // Run nested actions without re-resetting per action: the enclosing
@@ -276,7 +296,9 @@ export class KeyExecutor {
    * returns a promise, after which the rest waits for it. Use [whenIdle] to await
    * the asynchronous tail.
    */
-  private enqueueEffect(action: Extract<KeyAction<void>, { type: "effect" }>): void {
+  private enqueueEffect(
+    action: Extract<KeyAction<void>, { type: "effect" }>
+  ): void {
     this.effectQueue.push(() => action.run());
     if (this.draining) return;
     this.draining = true;
@@ -356,7 +378,8 @@ export class KeyExecutor {
    * does not know what (if anything) the owner does beyond this executor.
    */
   private redispatch(key: string, allowRemap: boolean): void {
-    if (this.options.redispatch !== undefined) this.options.redispatch(key, allowRemap);
+    if (this.options.redispatch !== undefined)
+      this.options.redispatch(key, allowRemap);
     else this.handle(key, allowRemap);
   }
 

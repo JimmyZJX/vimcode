@@ -6,7 +6,7 @@
 //   normal-mode conversion; motion/object/visual conversions remain future work.
 
 import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
-import type { OperatorTarget } from "../operator_target.js";
+import type { ResolvedTarget } from "../operator_target.js";
 import { TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from "../state.js";
 
 export type ConvertTarget = "lower" | "upper" | "toggle" | "rot13";
@@ -16,7 +16,7 @@ export type ConvertTarget = "lower" | "upper" | "toggle" | "rot13";
 export function applyConvert(
   editor: VimEditorCapabilities,
   target: ConvertTarget,
-  operatorTarget: OperatorTarget
+  operatorTarget: ResolvedTarget
 ): void {
   switch (operatorTarget.kind) {
     case "charwise":

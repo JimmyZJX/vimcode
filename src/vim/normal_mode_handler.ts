@@ -26,13 +26,13 @@ import { prefixHandler } from "./prefix_handlers.js";
 import {
   OperatorTarget,
   RangeOperator,
+  ResolvedTarget,
   applyOperatorToTarget,
-  lineOperatorTarget,
-  operatorTarget,
-  rowOperatorTarget,
-  textObjectOperatorTarget,
+  resolveTarget,
 } from "./operator_target.js";
+import { lookupDigraph } from "./digraph.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
+import { SimpleAction, applySimpleAction, simpleActionForKey } from "./normal/simple_action.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
 import { TextRange, charwiseSelection, selectionHead } from "./state.js";
 
@@ -46,8 +46,50 @@ function rawNormalModeHandler(): Handler<void> {
   return (key, state) =>
     combineHandleResults([
       operatorRootHandler(key, state),
+      simpleActionHandler(key, state),
       movementHandler(key, state),
     ]);
+}
+
+// Leaf normal-mode actions that take no motion/object operand: the single-key
+// `x`/`X`/`~`/`J`, and the char-input `r{char}`. Each applies immediately and
+// records a dot/macro-repeatable command.
+function simpleActionHandler(key: string, state: HandlerState): HandleResult<void> {
+  // `r`: replace the char(s) under the cursor with the next typed char (or a
+  // `ctrl-k` digraph).
+  if (key === "r") {
+    return handler([{ handler: replaceCharWaiter, state: { ...deeper(state), awaitingCharInput: true } }]);
+  }
+  const action = simpleActionForKey(key);
+  if (action === undefined) return unhandled();
+  return applySimpleActionEffect(state, action);
+}
+
+// The char after `r`: a literal replacement, or `ctrl-k` to begin a digraph.
+function replaceCharWaiter(char: string, state: HandlerState): HandleResult<void> {
+  if (char === "ctrl-k") {
+    return handler([{ handler: digraphWaiter(undefined), state: { ...deeper(state), awaitingCharInput: true } }]);
+  }
+  return applySimpleActionEffect(state, { type: "replaceChar", char: keyForInput(char) });
+}
+
+// The two chars of a `r ctrl-k` digraph replacement.
+function digraphWaiter(first: string | undefined): Handler<void> {
+  return (char, state) => {
+    if (first === undefined) {
+      return handler([{ handler: digraphWaiter(keyForInput(char)), state: { ...deeper(state), awaitingCharInput: true } }]);
+    }
+    return applySimpleActionEffect(state, { type: "replaceChar", char: lookupDigraph(first, keyForInput(char)) });
+  };
+}
+
+function applySimpleActionEffect(state: HandlerState, action: SimpleAction): HandleResult<void> {
+  const editor = state.editor;
+  const registers = state.registers;
+  if (editor === undefined || registers === undefined) return invalid();
+  const register = state.register;
+  const count = state.repeat;
+  return effect(state.mode, () => applySimpleAction(editor, registers, register, count, action));
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +113,7 @@ function resolveMotion(key: string, state: HandlerState): Motion | undefined {
 export function movementHandler(key: string, state: HandlerState): HandleResult<void> {
   const motion = resolveMotion(key, state);
   if (motion === undefined) return unhandled();
-  return mapHandler(
+  const result = mapHandler(
     motionHandlerForMotion(motion),
     (results, state) => {
       const editor = state.editor;
@@ -79,6 +121,8 @@ export function movementHandler(key: string, state: HandlerState): HandleResult<
       applyMotionResults(editor, results);
     }
   )(key, state);
+  // Motions are not dot-repeatable; macros replay them via their recorded keys.
+  return result;
 }
 
 // Wrap a resolved [Motion] in a [motionHandler]-style effect over the live
@@ -177,7 +221,7 @@ function operandHandler(spec: OperatorSpec): Handler<void> {
 
     // Doubled operator key: linewise on [repeat] lines (`dd`/`cc`/`yy`/`>>`).
     if (key === spec.key) {
-      return applyOperator(spec, state, lineOperatorTarget(editor, state.repeat));
+      return applyOperator(spec, state, { kind: "line" });
     }
 
     // Text objects: `i`/`a` then the object key.
@@ -200,11 +244,11 @@ function operandHandler(spec: OperatorSpec): Handler<void> {
       ]);
     }
 
-    // `G`: linewise to the last line (or line N with a count). It is a row
-    // target rather than a `Motion`, so it is handled here, not in the motion
-    // grammar.
+    // `G`: linewise to the last line (or line N with a count). It is a line
+    // target rather than a `Motion`, so it is its own descriptor kind, not part
+    // of the motion grammar; [resolveTarget] reads [hasCount].
     if (key === "G") {
-      return applyOperator(spec, state, rowOperatorTarget(editor, lineTargetRow(state)));
+      return applyOperator(spec, state, { kind: "lastLine" });
     }
 
     // Everything else is a motion: single keys (incl. `%`), char-input find
@@ -216,30 +260,18 @@ function operandHandler(spec: OperatorSpec): Handler<void> {
 
 function objectHandler(spec: OperatorSpec, around: boolean): Handler<void> {
   return (key, state) => {
-    const editor = state.editor;
-    if (editor === undefined) return invalid();
     const object = textObjectForKey(key);
     if (object === undefined) return invalid();
-    return applyOperator(
-      spec,
-      state,
-      textObjectOperatorTarget(editor, object, { around, count: state.repeat, forChange: spec.forChange })
-    );
+    return applyOperator(spec, state, { kind: "object", object, around });
   };
 }
 
-// Operand motion grammar for an operator, applying the operator to the resolved
-// motion's target. [forced] applies a forced-motion override (`dvj`/`dVj`).
+// Operand motion grammar for an operator, applying the operator to the motion's
+// target. [forced] applies a forced-motion override (`dvj`/`dVj`).
 function motionOperand(spec: OperatorSpec, forced: "charwise" | "linewise" | undefined): Handler<void> {
-  return motionChordHandler((motion, state) => {
-    const editor = state.editor;
-    if (editor === undefined) return invalid();
-    return applyOperator(
-      spec,
-      state,
-      operatorTarget(editor, motion, state.repeat, { forcedMotion: forced, forChange: spec.forChange })
-    );
-  });
+  return motionChordHandler((motion, state) =>
+    applyOperator(spec, state, { kind: "motion", motion, forced })
+  );
 }
 
 // Parses one motion — single key, char-input find, mark, `g`-chord, or `]`/`[`
@@ -344,27 +376,38 @@ function bracketMotion(bracket: string, key: string): Motion | undefined {
   return undefined;
 }
 
-// Apply an operator to a computed target. For `change`, enter insert mode when
-// the change was not cancelled (e.g. `ci"` with no quotes does nothing and stays
-// in normal mode).
+// Apply an operator to a lazy [OperatorTarget] descriptor. The descriptor is
+// resolved against the current editor here (via [resolveTarget]); a future
+// repeatable-command replay re-resolves the same descriptor against the cursor
+// as it is then. The effect's target mode drives the post-action transition
+// (the executor's [onEnterMode]): `change` targets insert mode, unless the
+// change is a no-op (e.g. `ci"` with no quotes), in which case it stays in
+// normal mode. That condition is checked synchronously from the resolved target;
+// keys dispatch synchronously, so the mode must be known before the effect runs.
 function applyOperator(spec: OperatorSpec, state: HandlerState, target: OperatorTarget): HandleResult<void> {
   const editor = state.editor;
   const registers = state.registers;
   if (editor === undefined || registers === undefined) return invalid();
   const register = state.register;
-  const actions = state.actions;
-  return effect(state.mode, () => {
-    const outcome = applyOperatorToTarget(editor, registers, register, spec.operator, target);
-    if (outcome.enterInsert) actions?.enterInsert({});
+  const hasCount = state.hasCount === true;
+  const resolved = resolveTarget(editor, target, state.repeat, { hasCount, forChange: spec.forChange });
+  const mode = spec.forChange && changeEntersInsert(resolved) ? "insert" : state.mode;
+  return effect(mode, () => {
+    applyOperatorToTarget(editor, registers, register, spec.operator, resolved);
   });
 }
 
-// `G`/`gg` target row: line N-1 with a count, else the last/first line. (The
-// last-line vs first-line distinction is in the caller; this handles `G`.)
-function lineTargetRow(state: HandlerState): number {
-  const editor = state.editor;
-  const lastRow = editor === undefined ? 0 : editor.lineCount() - 1;
-  return state.hasCount === true ? Math.max(0, state.repeat - 1) : lastRow;
+// Whether a `change` against [resolved] will enter insert mode, mirroring
+// [applyChange]: a charwise change enters insert unless every target is
+// cancelled (a failed motion / `cap` on a trailing blank line); a linewise
+// change enters insert when it has any rows.
+function changeEntersInsert(resolved: ResolvedTarget): boolean {
+  switch (resolved.kind) {
+    case "charwise":
+      return resolved.targets.some(({ cancelled }) => cancelled !== true);
+    case "linewise":
+      return resolved.rows.length > 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +457,10 @@ function addSurroundRangeHandler(): Handler<void> {
     // `ysw` etc.: motion range.
     const motion = resolveMotion(key, state);
     if (motion !== undefined) {
-      const ranges = surroundRangesForTarget(editor, operatorTarget(editor, motion, state.repeat));
+      const ranges = surroundRangesForTarget(
+        editor,
+        resolveTarget(editor, { kind: "motion", motion }, state.repeat)
+      );
       return surroundPairWaiter(state, ranges);
     }
     return invalid();
@@ -475,7 +521,7 @@ function changeSurroundHandler(fromKey: string | undefined): Handler<void> {
   };
 }
 
-function surroundRangesForTarget(editor: VimEditorCapabilities, target: OperatorTarget): SurroundTarget {
+function surroundRangesForTarget(editor: VimEditorCapabilities, target: ResolvedTarget): SurroundTarget {
   switch (target.kind) {
     case "charwise":
       return { ranges: target.targets.map(({ range }) => range), linewise: false };

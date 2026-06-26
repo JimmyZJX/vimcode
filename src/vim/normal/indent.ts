@@ -6,7 +6,7 @@
 //   preserving existing indentation; language-aware indentation belongs in the host.
 
 import { VimEditorCapabilities } from "../editor.js";
-import type { OperatorTarget } from "../operator_target.js";
+import type { ResolvedTarget } from "../operator_target.js";
 import { TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from "../state.js";
 
 export type IndentDirection = "in" | "out" | "auto";
@@ -18,7 +18,7 @@ export type IndentDirection = "in" | "out" | "auto";
 export function applyIndent(
   editor: VimEditorCapabilities,
   direction: IndentDirection,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): void {
   switch (target.kind) {
     case "charwise":

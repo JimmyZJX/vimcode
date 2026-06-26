@@ -1,10 +1,12 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - source: crates/vim/src/normal/repeat.rs and repeat/macro state in `state::VimGlobals`
-// - translated concepts: record and replay the last repeatable action, including a first
-//   `RecordedSelection`-style visual action shape, plus first named macro replay
-// - intentional differences: key-based actions are still stored as small key sequences;
-//   visual actions are modeled explicitly only for the actions currently implemented.
+// - translated concepts: record and replay the last change for `.`, including a
+//   `RecordedSelection`-style visual action shape, plus named macro record/replay
+// - intentional differences: dot-repeat and macros are both key-based — the
+//   recorded keys are replayed back through the dispatcher (Vim's redo/record
+//   buffers are likewise char buffers). Visual actions are modeled explicitly
+//   only for the actions currently implemented.
 
 import { RegisterName } from "../registers.js";
 import { IndentDirection } from "./indent.js";
@@ -74,7 +76,11 @@ export class RepeatState {
 
   replay(
     count: number | undefined,
-    { runKey, runVisualAction, registerName }: { runKey: (key: string) => void; runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => void; registerName?: RegisterName }
+    { runKey, runVisualAction, registerName }: {
+      runKey: (key: string) => void;
+      runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => void;
+      registerName?: RegisterName;
+    }
   ): void {
     if (this.last === undefined) return;
     this.replaying = true;
@@ -107,9 +113,15 @@ export type MacroRecordingStatus = {
   keys: readonly string[];
 };
 
+// Named macros (`q{reg}…q`, `@{reg}`, `@@`, `Q`). Like Vim's record buffer, a
+// recording register accumulates every key typed while it is active and stores
+// them as a key sequence; replay feeds those keys back through the dispatcher
+// (the owner's [runKey], i.e. [onKey]) — the same mechanism `.` uses. Unlike
+// dot-repeat, a macro is a verbatim transcript (counts, motions, mistakes), so
+// keys are recorded directly rather than seeded from the pending chord.
 export class MacroState {
   private recordingRegister: string | undefined;
-  private current: string[] = [];
+  private currentKeys: string[] = [];
   private readonly recorded = new Map<string, readonly string[]>();
   private lastRecordedRegister: string | undefined;
   private lastReplayRegister: string | undefined;
@@ -126,25 +138,25 @@ export class MacroState {
   recordingStatus(): MacroRecordingStatus | undefined {
     return this.recordingRegister === undefined
       ? undefined
-      : { register: this.recordingRegister, keys: [...this.current] };
+      : { register: this.recordingRegister, keys: [...this.currentKeys] };
   }
 
   startRecording(key: string): void {
     this.recordingRegister = key;
-    this.current = [];
+    this.currentKeys = [];
   }
 
   recordKey(key: string): void {
-    if (this.recordingRegister !== undefined && !this.replaying) this.current.push(key);
+    if (this.recordingRegister !== undefined && !this.replaying) this.currentKeys.push(key);
   }
 
   stopRecording(): boolean {
     const register = this.recordingRegister;
     if (register === undefined) return false;
     this.recordingRegister = undefined;
-    this.recorded.set(register, this.current);
+    this.recorded.set(register, this.currentKeys);
     this.lastRecordedRegister = register;
-    this.current = [];
+    this.currentKeys = [];
     return true;
   }
 

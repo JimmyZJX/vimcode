@@ -60,14 +60,16 @@ insert/replace, search, command, macros/repeat) are ported into
   future register/find/operator waits) surface correctly in status. This is a
   prerequisite for any executor-pending normal handler.
 - [x] Role-aware recording bridge. `handleThroughExecutor` records every claimed
-  key for macros (`recordMacroKey`), but only feeds **command** keys to
-  dot-repeat (`maybeFinish` + `recordRepeatableKey`/`maybeStart`). A char-input
-  continuation sets `Vim.executorInputKey` while it consumes its key, so the key
-  is recorded for macros only and never reaches `maybeStart` (which would
-  otherwise misread the register name `a` as `append`). This mirrors legacy,
-  where waiting-input keys are recorded in `dispatchWaitingInput` via
-  `recordMacroKey` (+ `recordRepeatKey` for change-extending chars like the
-  `f`/`t`/jump target) and never via `recordRepeatableKey`.
+  key for macros (`recordMacroKey`) and feeds command keys to dot-repeat
+  (`maybeFinish` + `maybeStart`/`recordKey`, with the count/register seed captured
+  before `KeyExecutor.handle`). A char-input continuation is detected via
+  `awaitingCharInput` on the parser state, so it is recorded for macros and
+  appended to an open recording but never reaches `maybeStart` (which would
+  otherwise misread the register name `a` as `append`). A cancelled pending
+  command discards its partial dot recording via the executor's `onCancel` hook.
+  This mirrors legacy, where waiting-input keys are recorded in
+  `dispatchWaitingInput` via `recordMacroKey` (+ `recordRepeatKey` for
+  change-extending chars like the `f`/`t`/jump target) and never via `maybeStart`.
 - [x] Register prefix (`"`) migrated, in the shared `prefixHandler`
   (`prefix_handlers.ts`): an executor-pending continuation that writes
   `HandlerState.register` (the executor's env state). Bridged to legacy on yield
@@ -90,10 +92,11 @@ insert/replace, search, command, macros/repeat) are ported into
   (`` d`a ``/`d'a`), line targets (`G`/`gg`), `g`-chord motions
   (`gM`/`g_`/`ge`/...), `]`/`[` bracket motions, and all single-key motions
   (incl. count-sensitive `%`). Counts multiply across operator/operand
-  (`2d3w`); registers thread through; `change` enters insert via
-  `VimGrammarActions.enterInsert`; dot-repeat records the whole chord (with the
-  framework count/register seeded via `normalPendingChordForRepeat`), and an
-  invalid operand cancels cleanly (`KeyExecutor.wasCancelled`). Pending-depth is
+  (`2d3w`); registers thread through; `change` targets insert mode via the
+  effect's `mode` (see "Mode transitions" below); dot-repeat records the whole
+  chord (with the framework count/register seeded via
+  `normalPendingChordForRepeat`), and an invalid operand cancels cleanly (the
+  executor's `onCancel` hook discards the partial recording). Pending-depth is
   computed from the executor's `operatorDepth`. Convert operators
   (`gu`/`gU`/`g~`) remain on the legacy path (the top-level `g`-chord is not
   claimed by the framework) and work via the count/register bridge.
@@ -105,7 +108,13 @@ insert/replace, search, command, macros/repeat) are ported into
   bypasses the remap handler (which only runs at the executor root). The count
   needs to either re-offer the post-count key to the root handlers (preserving
   the count) or resolve to idle as the pre-redo `normalCountPrefix` did.
-- [ ] Simple action table (`i`/`a`/`o`/`x`/`r`/`~`/`p`/`J`/...).
+- [~] Simple action table (`normal/simple_action.ts`, `SimpleAction` +
+  `applySimpleAction`, wired via `simpleActionHandler`). Migrated: `x`/`X`
+  (delete chars), `~` (toggle case), `J` (join), `r{char}` (replace, incl.
+  `ctrl-k` digraph). Each is dot/macro-repeatable via its recorded keys.
+  Remaining: `i`/`a`/`o`/`O`/`I`/`A` (insert entry), `p`/`P` (paste),
+  `ctrl-a`/`ctrl-x` (increment), `s`/`S`/`C`/`D`. Framework edits now also update
+  the change list (`g;`/`g,`) — see `routeKeyThroughExecutor`.
 - [ ] Finite keymap (`g`/`z`/`[`/`]`/`ctrl-w`).
 - [ ] Remaining char-input waiters (digraph/surround/mark/search/command).
 
@@ -123,11 +132,103 @@ applies the entry gate (`isExecutorNormalContext` + remap precedence) in
 normal-mode grammar should be added in `normal_mode_handler.ts`.
 
 This pure grammar was redone from the earlier `NormalModeDeps`-based version
-(now removed). The redo currently covers only the count/register prefix, single
-cursor motions (`movementHandler`), and a first delete slice (`dd` plus
-`d{single-motion}`). Find (`f`/`t`/`;`/`,`), marks (`` ` ``/`'`), `G`/`gg`, and
-count-dependent motions (e.g. `%` as go-to-percentage) are **not** in the pure
-grammar yet and fall back to the legacy dispatcher.
+(now removed). It now covers the count/register prefix, single cursor motions
+(`movementHandler`, incl. count-sensitive `%`), and the full range-operator
+grammar (see the migration checklist). Not yet in the pure grammar: the simple
+action table (`i`/`a`/`o`/`x`/`r`/`~`/`p`/`J`/...), the finite keymap
+(`g`/`z`/...), the convert operators (`gu`/`gU`/`g~`), and search operands —
+these fall back to the legacy dispatcher.
+
+### Lazy operator targets (`OperatorTarget` descriptor → `resolveTarget`)
+
+`OperatorTarget` is now a **lazy descriptor** (`{kind:"motion"|"object"|"line"|"lastLine"}`),
+the operator analog of `Motion`. The concrete ranges are the separate
+`ResolvedTarget` (charwise/linewise), produced only at execution time by
+`resolveTarget(editor, target, count, {hasCount, forChange})`. The normal-mode
+grammar builds descriptors; `applyOperator` resolves them just before applying
+(and re-resolves the same descriptor on every `.` replay, so ranges track the
+current cursor rather than positions captured when the command was first typed).
+`applyOperatorToTarget` and the application modules still take the resolved
+`ResolvedTarget`; visual mode lowers its live selection straight to a
+`ResolvedTarget` (no descriptor). Lazy targets also mean a key-based `.`/macro
+replay re-resolves the range against the cursor at replay time, for free.
+
+### Mode transitions (executor-owned)
+
+The executor owns Vim mode transitions. An accepted action carries a target
+`mode` (the `mode` on `effect`/`KeyAction`); after running the action the
+executor reports it via the `onEnterMode` option, which `Vim` implements
+(`enterModeFromExecutor`) to start an insert session for a `change`, etc. Key
+points:
+
+- Only **`effect`** actions report their mode. `keys`/`sequence`/`commands`
+  actions (remap expansions) take their mode from the leaf effects they
+  redispatch; reporting their capture-time mode would clobber a transition a
+  leaf just made (an insert-mode remap expanding to `<Esc>` must end in normal).
+- The transition is applied **synchronously** right after the action runs, never
+  inside the (possibly async) effect callback — keys dispatch synchronously, so
+  the new mode must be observable immediately. The target mode is therefore
+  decided synchronously by the handler from the computed target (e.g.
+  `changeEntersInsert` mirrors `applyChange`: a no-op change like `ci"` with no
+  quotes stays in normal mode). This can in principle disagree with the actual
+  async edit result, but is accepted as fine in practice.
+- `enterModeFromExecutor` only wires forward transitions the framework produces
+  (entering insert from normal). Returning to normal stays with escape/explicit
+  handling. `VimGrammarActions` consequently only carries `markMotion`.
+
+### Dot-repeat (`.`) and macros — both key-based
+
+Both `.` and named macros record **keystrokes** and replay them back through
+`onKey`. This mirrors Vim, where the two are distinct char buffers (`redobuff`
+for `.`, `recordbuff` for `q`) that are both replayed by feeding their chars into
+the input stream. An earlier iteration recorded dot-repeat as a re-runnable
+`RepeatableCommand` action; that was removed in favor of the simpler key-based
+path, which works uniformly for migrated and not-yet-migrated commands and avoids
+duplicating dispatch logic between live execution and replay.
+
+The two buffers differ in *what* they record, exactly as in Vim:
+
+- **Macros** (`MacroState`) are a verbatim transcript. While a register is
+  recording, every key is appended to `currentKeys` (`recordKey`), stored on
+  `stopRecording`, and replayed via `runKey = onKey`, `count` times. Counts,
+  motions, and mistakes are all captured as typed.
+- **Dot-repeat** (`RepeatState`) records only the last *change* — a curated
+  command, like Vim's `prep_redo`. `maybeStart` opens a recording on a
+  change-initiating key (`isRepeatableStartKey`), seeding it with the pending
+  count/register chord (so `3d3l` / `"add` record their prefix); `recordKey`
+  appends through the insert tail and terminating `<escape>`; `maybeFinish`
+  commits when the chord returns to a non-pending normal state. Replay feeds the
+  recorded keys through `onKey` (the `keys` `RepeatAction` variant). Count/register
+  overrides (`3.` / `"a.`) and the numbered-paste auto-advance (`"1p` → `.` →
+  `"2p`) are applied by rewriting the recorded key list
+  (`keysWith{Count,Register}Override`, `advanceNumberedPasteRepeat`) and persisting
+  the result back into `last`. Visual-mode changes keep a separate structured
+  `visual` `RepeatAction` variant (`recordVisualAction` / `replayVisualAction`).
+
+Recording is wired uniformly in `Vim` regardless of which subsystem owns a key:
+
+- The legacy dispatcher (`dispatchKey`) records each key it handles via
+  `recordRepeatableKey` (`maybeStart` + `recordKey`) and `recordMacroKey`.
+- `handleThroughExecutor` mirrors this for keys the **framework** claims, since
+  they never reach `dispatchKey`. The dot-repeat seed (count/register) is captured
+  *before* `KeyExecutor.handle` (the executor folds the pending count away once a
+  command completes; `normalPendingChordForRepeat` reads it from `countText` or
+  the applied `repeat`). A char-input operand (register name in `"a`, `r`'s char,
+  a find target) is marked by `awaitingCharInput` on the parser state: it is
+  appended to an open recording and recorded for macros, but never reaches
+  `maybeStart` — otherwise the register name `a` would be misread as the
+  `append` start key.
+- When a pending framework command is cancelled (an operator gets a non-motion
+  key like `.`), the executor's `invalid` branch fires the `onCancel` hook, which
+  calls `RepeatState.cancelCurrent` so the partial recording is discarded instead
+  of being committed over the real last change (`d.`, `2d.`).
+
+**Replay serialization.** Replay re-dispatches keys through `onKey`. The editor
+contract is synchronous (`applyEdits`/`setSelections`/`editText` return `void`;
+only the clipboard is async, pre-loaded by the `withSystemClipboard` wrapper
+around the whole `.` dispatch), and the synchronous-until-async effect queue runs
+each key's effect inline, so a `.`/macro replay completes each key before the
+next without a deferred replayer.
 
 ### Temporary count/register bridge (`Vim.bridgePendingPrefixToLegacy`)
 

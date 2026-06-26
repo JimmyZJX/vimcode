@@ -20,7 +20,7 @@ import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
 import { VimOperatorStack } from "./operator.js";
-import { OperatorTarget, applyOperatorToTarget } from "./operator_target.js";
+import { ResolvedTarget, applyOperatorToTarget } from "./operator_target.js";
 import { canonicalVimSelection, canonicalizationChangesMeaning, characterCellEnd, lowerCharwiseGeometry, raiseCharwiseSelection } from "./selection_geometry.js";
 import { addSurrounds } from "./surrounds.js";
 import {
@@ -1282,7 +1282,7 @@ function visualSurroundRanges(editor: VimEditorCapabilities, state: VisualState)
 
 // Zed: the visual fold-in — visual state lowers to an `OperatorTarget` so
 // normal and visual mode apply operators through the same `apply*` modules.
-function visualCharwiseTarget(editor: VimEditorCapabilities, state: CharwiseVisualState): OperatorTarget {
+function visualCharwiseTarget(editor: VimEditorCapabilities, state: CharwiseVisualState): ResolvedTarget {
   return {
     kind: "charwise",
     targets: currentCharwiseVisualRanges(editor, state).map(range => ({ range, head: range.start })),
@@ -1292,7 +1292,7 @@ function visualCharwiseTarget(editor: VimEditorCapabilities, state: CharwiseVisu
 function visualLinewiseTarget(
   state: LinewiseVisualState,
   { column, cursor }: { column: number; cursor?: Position }
-): OperatorTarget {
+): ResolvedTarget {
   const { startLine, endLine } = lineBounds(state);
   return { kind: "linewise", rows: [{ startRow: startLine, endRow: endLine, column, cursor }] };
 }
