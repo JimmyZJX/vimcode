@@ -60,15 +60,13 @@ insert/replace, search, command, macros/repeat) are ported into
   future register/find/operator waits) surface correctly in status. This is a
   prerequisite for any executor-pending normal handler.
 - [x] Role-aware recording bridge. `handleThroughExecutor` records every claimed
-  key for macros (`recordMacroKey`) and feeds command keys to dot-repeat
-  (`maybeFinish` + `maybeStart`/`recordKey`, with the count/register seed captured
-  before `KeyExecutor.handle`). A char-input continuation is detected via
-  `awaitingCharInput` on the parser state, so it is recorded for macros and
-  appended to an open recording but never reaches `maybeStart` (which would
-  otherwise misread the register name `a` as `append`). A cancelled pending
-  command discards its partial dot recording via the executor's `onCancel` hook.
-  This mirrors legacy, where waiting-input keys are recorded in
-  `dispatchWaitingInput` via `recordMacroKey` (+ `recordRepeatKey` for
+  key for macros (`recordMacroKey`) and, for dot-repeat, opens a recording on the
+  first key of the chord (`beginRecording`) and records keys literally. The
+  command declares dot-repeatability via its effect (`lastEffectDotRepeatable`);
+  a non-repeatable command, a cancelled chord (`lastHandleWasCancel`), or a
+  fall-through to legacy discards the recording. See "Dot-repeat (`.`) and macros"
+  below for the full rules. This mirrors legacy, where waiting-input keys are
+  recorded in `dispatchWaitingInput` via `recordMacroKey` (+ `recordRepeatKey` for
   change-extending chars like the `f`/`t`/jump target) and never via `maybeStart`.
 - [x] Register prefix (`"`) migrated, in the shared `prefixHandler`
   (`prefix_handlers.ts`): an executor-pending continuation that writes
@@ -94,10 +92,9 @@ insert/replace, search, command, macros/repeat) are ported into
   (incl. count-sensitive `%`). Counts multiply across operator/operand
   (`2d3w`); registers thread through; `change` targets insert mode via the
   effect's `mode` (see "Mode transitions" below); dot-repeat records the whole
-  chord (with the framework count/register seeded via
-  `normalPendingChordForRepeat`), and an invalid operand cancels cleanly (the
-  executor's `onCancel` hook discards the partial recording). Pending-depth is
-  computed from the executor's `operatorDepth`. Convert operators
+  chord literally (the operator effect declares `dotRepeatable`), and an invalid
+  operand cancels cleanly (`lastHandleWasCancel` discards the partial recording).
+  Pending-depth is computed from the executor's `operatorDepth`. Convert operators
   (`gu`/`gU`/`g~`) remain on the legacy path (the top-level `g`-chord is not
   claimed by the framework) and work via the count/register bridge.
 - [ ] Search operands not migrated: `d/`, `gn`/`cgn`/`dgn` (need the search
@@ -108,15 +105,31 @@ insert/replace, search, command, macros/repeat) are ported into
   bypasses the remap handler (which only runs at the executor root). The count
   needs to either re-offer the post-count key to the root handlers (preserving
   the count) or resolve to idle as the pre-redo `normalCountPrefix` did.
-- [~] Simple action table (`normal/simple_action.ts`, `SimpleAction` +
-  `applySimpleAction`, wired via `simpleActionHandler`). Migrated: `x`/`X`
-  (delete chars), `~` (toggle case), `J` (join), `r{char}` (replace, incl.
-  `ctrl-k` digraph). Each is dot/macro-repeatable via its recorded keys.
-  Remaining: `i`/`a`/`o`/`O`/`I`/`A` (insert entry), `p`/`P` (paste),
-  `ctrl-a`/`ctrl-x` (increment), `s`/`S`/`C`/`D`. Framework edits now also update
-  the change list (`g;`/`g,`) — see `routeKeyThroughExecutor`.
+- [x] Simple action table (`normal/simple_action.ts`, `SimpleAction` +
+  `applySimpleAction`, wired via `simpleActionHandler`): `x`/`X` (delete chars),
+  `~` (toggle case), `J` (join), `r{char}` (replace, incl. `ctrl-k` digraph),
+  `ctrl-a`/`ctrl-x` (increment), `p`/`P` (paste). Each is dot/macro-repeatable via
+  its recorded keys. Framework edits also update the change list (`g;`/`g,`) — see
+  `routeKeyThroughExecutor`.
+- [x] Insert-entry commands `i`/`a`/`I`/`A`/`o`/`O` (`insertEntryHandler` →
+  injected `enterInsert` action; [Vim] owns the insert session and the
+  count/separator). A readonly document reverts via
+  `ensureNormalModeForReadonlyDocument` in `routeKeyThroughExecutor`.
+- [x] Operator+operand aliases `s`=`cl`, `S`=`cc`, `C`=`c$`, `D`=`d$`
+  (`changeDeleteShortcutHandler`, reusing the operator machinery with a fixed
+  target).
+- [x] Marks `m{char}` (`markHandler`) and mark jumps (`` `a ``/`'a`), via the
+  `MarkState` injected into `HandlerState` (like `editor`/`registers`) — no
+  per-operation action callbacks.
+- [ ] Cumulative increment `g ctrl-a`/`g ctrl-x` (waits on the finite-keymap
+  `g`-chord slice).
+- [ ] Count + recursive remap: a buffered framework count is a *pending*
+  continuation, so a remapped key typed after a count (`y`→`2x`, `x`→`"_x`)
+  bypasses the remap handler (which only runs at the executor root). The count
+  needs to either re-offer the post-count key to the root handlers (preserving
+  the count) or resolve to idle as the pre-redo `normalCountPrefix` did.
 - [ ] Finite keymap (`g`/`z`/`[`/`]`/`ctrl-w`).
-- [ ] Remaining char-input waiters (digraph/surround/mark/search/command).
+- [ ] Remaining char-input waiters (digraph/surround/search/command).
 
 ### Where the normal-mode grammar lives
 
@@ -192,36 +205,45 @@ The two buffers differ in *what* they record, exactly as in Vim:
   recording, every key is appended to `currentKeys` (`recordKey`), stored on
   `stopRecording`, and replayed via `runKey = onKey`, `count` times. Counts,
   motions, and mistakes are all captured as typed.
-- **Dot-repeat** (`RepeatState`) records only the last *change* — a curated
-  command, like Vim's `prep_redo`. `maybeStart` opens a recording on a
-  change-initiating key (`isRepeatableStartKey`), seeding it with the pending
-  count/register chord (so `3d3l` / `"add` record their prefix); `recordKey`
-  appends through the insert tail and terminating `<escape>`; `maybeFinish`
-  commits when the chord returns to a non-pending normal state. Replay feeds the
-  recorded keys through `onKey` (the `keys` `RepeatAction` variant). Count/register
-  overrides (`3.` / `"a.`) and the numbered-paste auto-advance (`"1p` → `.` →
-  `"2p`) are applied by rewriting the recorded key list
-  (`keysWith{Count,Register}Override`, `advanceNumberedPasteRepeat`) and persisting
-  the result back into `last`. Visual-mode changes keep a separate structured
-  `visual` `RepeatAction` variant (`recordVisualAction` / `replayVisualAction`).
+- **Dot-repeat** (`RepeatState`) records only the last *change*. The **command
+  declares** whether it is dot-repeatable, like Vim's `prep_redo` — not a key
+  list. A leaf effect sets `dotRepeatable` in its `EffectMeta` (operators: every
+  type but yank; simple actions and insert-entry: true; motions/marks: false),
+  which `KeyExecutor` exposes after running it (`lastEffectDotRepeatable()`:
+  `true`/`false`, or `undefined` when the key only left a pending chord).
+  `recordKey` appends through the insert tail and terminating `<escape>`;
+  `maybeFinish` commits when the chord returns to a non-pending normal state.
+  Replay feeds the recorded keys through `onKey` (the `keys` `RepeatAction`
+  variant). Count/register overrides (`3.` / `"a.`) and the numbered-paste
+  auto-advance (`"1p` → `.` → `"2p`) are applied by rewriting the recorded key
+  list (`keysWith{Count,Register}Override`, `advanceNumberedPasteRepeat`) and
+  persisting the result back into `last`. Visual-mode changes keep a separate
+  structured `visual` `RepeatAction` variant (`recordVisualAction` /
+  `replayVisualAction`).
 
-Recording is wired uniformly in `Vim` regardless of which subsystem owns a key:
+Recording is wired in `Vim`:
 
-- The legacy dispatcher (`dispatchKey`) records each key it handles via
-  `recordRepeatableKey` (`maybeStart` + `recordKey`) and `recordMacroKey`.
-- `handleThroughExecutor` mirrors this for keys the **framework** claims, since
-  they never reach `dispatchKey`. The dot-repeat seed (count/register) is captured
-  *before* `KeyExecutor.handle` (the executor folds the pending count away once a
-  command completes; `normalPendingChordForRepeat` reads it from `countText` or
-  the applied `repeat`). A char-input operand (register name in `"a`, `r`'s char,
-  a find target) is marked by `awaitingCharInput` on the parser state: it is
-  appended to an open recording and recorded for macros, but never reaches
-  `maybeStart` — otherwise the register name `a` would be misread as the
-  `append` start key.
-- When a pending framework command is cancelled (an operator gets a non-motion
-  key like `.`), the executor's `invalid` branch fires the `onCancel` hook, which
-  calls `RepeatState.cancelCurrent` so the partial recording is discarded instead
-  of being committed over the real last change (`d.`, `2d.`).
+- `handleThroughExecutor` (framework path) opens a recording on the **first key**
+  of any normal chord via `beginRecording` — no start-key gate. Count/register
+  keys are recorded literally as typed (no seed needed), so the prefix is
+  captured even for char-input operands like the register name `a`. After
+  `KeyExecutor.handle`:
+  - if the key **cancelled** a pending chord (`lastHandleWasCancel()`, the
+    executor's `invalid` reset — e.g. `d.`), discard the recording and skip
+    recording the cancelling key for dot-repeat (it is still recorded for macros);
+  - else record the key, then discard the recording if the completed command was
+    **not** dot-repeatable (`lastEffectDotRepeatable() === false`, e.g. a
+    motion/yank/mark);
+  - if the key instead **fell through** to legacy in normal context (an abandoned
+    prefix like the `3` of `3gu`/`3.`), discard the recording — the legacy
+    dispatcher restarts it from the bridged count. Insert-session keys also fall
+    through but are not `recordable` (mode is insert), so the open recording
+    survives.
+- The legacy dispatcher (`dispatchKey`) still uses `recordRepeatableKey`
+  (`maybeStart` + a `normalPendingChordForRepeat` seed) gated by
+  `isRepeatableStartKey`, now trimmed to only the keys legacy still owns (`R`,
+  `g`-chords, visual-entry). It shrinks to nothing as commands migrate and
+  disappears with `dispatchKey`.
 
 **Replay serialization.** Replay re-dispatches keys through `onKey`. The editor
 contract is synchronous (`applyEdits`/`setSelections`/`editText` return `void`;

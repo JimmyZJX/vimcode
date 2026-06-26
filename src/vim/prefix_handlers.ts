@@ -46,13 +46,11 @@ function waitingForRegisterEnv<T>(underlying: Handler<T>, state: HandlerState): 
       return handler([
         {
           handler: prefixHandler(underlying),
-          state: { ...cloneHandlerState(registerState), register, awaitingCharInput: false },
+          state: { ...cloneHandlerState(registerState), register },
         },
       ]);
     },
-    // The register name is a char input: flag it so the owner records it for
-    // macros only, not dot-repeat's maybeStart.
-    state: { ...cloneHandlerState(state), awaitingCharInput: true },
+    state: cloneHandlerState(state),
   };
 }
 

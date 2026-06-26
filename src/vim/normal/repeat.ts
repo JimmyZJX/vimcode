@@ -43,9 +43,20 @@ export class RepeatState {
     if (this.replaying) this.abortRequested = true;
   }
 
+  // Legacy (still-`dispatchKey`-owned) path: gate the start on a hardcoded set of
+  // change-initiating keys, seeded with the pending count/register chord.
   maybeStart(key: string, { mode, pendingChord }: { mode: string; pendingChord: string }): void {
     if (this.current !== undefined || mode !== "normal") return;
     if (isRepeatableStartKey(key)) this.current = [...pendingChord];
+  }
+
+  // Framework path: open a recording for any normal-mode chord. There is no
+  // start-key list — the command declares dot-repeatability via its effect, and
+  // [cancelCurrent] discards the recording when it turns out non-repeatable. The
+  // count/register keys are recorded literally as typed, so no seed is needed.
+  beginRecording(mode: string): void {
+    if (this.current !== undefined || mode !== "normal") return;
+    this.current = [];
   }
 
   recordKey(key: string): void {
@@ -187,24 +198,15 @@ export class MacroState {
   }
 }
 
+// Change-initiating keys for the *legacy* `dispatchKey` path only (the framework
+// path uses [beginRecording] + command-declared `dotRepeatable`). This shrinks
+// as commands migrate and disappears with `dispatchKey`. `x`/`d`/`c`/`s`/`S`/`C`/
+// `D`/`r`/`~`/`p`/`P`/`ctrl-a`/`ctrl-x`/`i`/`a`/`I`/`A`/`o`/`O` are all on the
+// framework now; what remains is replace mode (`R`), the `g`-chords (`gu`/`gU`/
+// `g~`/`gJ`/`gp`/`gP`), and the visual-entry keys.
 function isRepeatableStartKey(key: string): boolean {
-  return key === "x"
-    || key === "p"
-    || key === "P"
-    || key === "d"
-    || key === "c"
-    || key === "r"
-    || key === "R"
-    || key === "~"
+  return key === "R"
     || key === "g"
-    || key === "ctrl-a"
-    || key === "ctrl-x"
-    || key === "o"
-    || key === "O"
-    || key === "i"
-    || key === "a"
-    || key === "I"
-    || key === "A"
     || key === "v"
     || key === "V"
     || key === "ctrl-v";

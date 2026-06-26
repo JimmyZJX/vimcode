@@ -15,7 +15,7 @@ import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
 import { initialHandlerState, unhandled } from "./key_handler.js";
-import type { Handler, HandlerEnv, HandlerState, VimGrammarActions } from "./key_handler.js";
+import type { Handler, HandlerEnv, HandlerState } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { finiteKeymapPermissions, resolveVimAction, shouldResolveMotionModeAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
 import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
@@ -121,13 +121,7 @@ export class Vim {
     handlersForState: state => this.executorHandlers(state),
     redispatch: (key, allowRemap) => this.dispatchThroughPipeline(key, allowRemap),
     executeCommand: command => this.executeMappedCommand(command),
-    onEnterMode: mode => this.enterModeFromExecutor(mode),
-    onCancel: () => {
-      // A pending framework command (e.g. `d` then a non-motion key) was
-      // cancelled: discard its partial dot-repeat recording so a following
-      // [maybeFinish] cannot commit it over the real last change.
-      if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.cancelCurrent();
-    },
+    onEnterMode: (mode, opts) => this.enterModeFromExecutor(mode, opts),
   });
   // The when-evaluator for the in-flight top-level dispatch, read by the remap
   // root handler (which resolves against the live Vim mode) and the executor's
@@ -564,23 +558,22 @@ export class Vim {
   // [normalRootHandler].
   private readonly normalGrammar: Handler<void> = normalModeHandler();
 
-  // Vim-level lookups the pure normal-mode grammar cannot perform with only the
-  // editor/registers capabilities. Injected into the handler state by
-  // [normalRootHandler] (see [VimGrammarActions]). Mode transitions are not
-  // here; they flow out via the action [mode] and [enterModeFromExecutor].
-  private readonly grammarActions: VimGrammarActions = {
-    markMotion: (key, { line }) => this.modelState.marks.jumpMotion(this.editor, key, { line }),
-  };
-
   // Apply the target mode the executor reports after running a framework action
   // (see [KeyExecutor.onEnterMode]). Only forward transitions the framework can
   // produce are wired: a `change` action targeting insert mode starts an insert
   // session. A target equal to the current mode is a no-op (e.g. motions target
   // normal mode); returning to normal happens via escape/explicit handling, not
   // here.
-  private enterModeFromExecutor(mode: VimMode): void {
+  private enterModeFromExecutor(
+    mode: VimMode,
+    opts?: { enterInsert?: { count: number; separator: string } }
+  ): void {
     if (mode === "insert" && this.modeState !== "insert") {
-      this.enterInsertMode({ origin: "normal" });
+      this.enterInsertMode({
+        origin: "normal",
+        count: opts?.enterInsert?.count ?? 1,
+        separator: opts?.enterInsert?.separator ?? "",
+      });
     }
   }
 
@@ -600,7 +593,7 @@ export class Vim {
         mode: "normal",
         editor: this.editor,
         registers: this.globalState.registers,
-        actions: this.grammarActions,
+        marks: this.modelState.marks,
       };
       return this.normalGrammar(key, liveState);
     };
@@ -671,6 +664,10 @@ export class Vim {
         if (this.editor.documentVersion() !== versionBefore) {
           this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
         }
+        // A framework insert-entry command (`i`/`o`/...) into a readonly document
+        // must revert to normal with a warning, like the legacy [dispatchKey]
+        // finally.
+        this.ensureNormalModeForReadonlyDocument();
         return "handled";
       }
       // The key fell through to legacy while the executor was mid-chord (e.g. a
@@ -746,25 +743,33 @@ export class Vim {
     if (recordable) {
       this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
     }
-    // Capture the dot-repeat seed (count/register) before the executor consumes
-    // the chord: [maybeStart] seeds from the *pending* count, which the executor
-    // folds away once the command completes. Recording itself happens after
-    // [handle] (so we only record keys the framework actually claims), but with
-    // this pre-handle seed.
-    const repeatSeed = recordable
-      ? { mode: this.modeState, pendingChord: this.normalPendingChordForRepeat() }
-      : undefined;
-    // A char-input operand (register name in `"a`, `r`'s char, find target) must
-    // not *start* a dot-repeat recording even though some such chars (`a`) are
-    // also repeatable start keys — Vim excludes the register from the recorded
-    // change. It is still appended to an already-open recording (e.g. `dfx`) and
-    // always recorded for macros.
-    const awaitingCharInput = recordable && this.keyExecutor.currentParserState().awaitingCharInput === true;
+    const modeBefore = this.modeState;
     const claimed = this.keyExecutor.handle(key, allowRemap);
-    if (claimed && recordable && repeatSeed !== undefined) {
-      if (!awaitingCharInput) this.globalState.repeat.maybeStart(key, repeatSeed);
-      this.globalState.repeat.recordKey(key);
+    if (claimed && recordable) {
+      // Macros are a verbatim transcript: record every claimed key, including a
+      // chord-cancelling key (`d` then `.`).
       this.recordMacroKey(key);
+      if (this.keyExecutor.lastHandleWasCancel()) {
+        // The key cancelled a pending chord (e.g. `d.`): discard its partial
+        // recording and do not record the cancelling key for dot-repeat, so the
+        // real last change survives.
+        this.globalState.repeat.cancelCurrent();
+      } else {
+        // Open a recording on the first key of the chord; count/register/command
+        // keys are recorded literally. The command declares whether it is a
+        // dot-repeatable change via its effect — discard when it is not
+        // (motion/yank/mark), so it is never committed over the last change.
+        this.globalState.repeat.beginRecording(modeBefore);
+        this.globalState.repeat.recordKey(key);
+        if (this.keyExecutor.lastEffectDotRepeatable() === false) this.globalState.repeat.cancelCurrent();
+      }
+    } else if (!claimed && recordable) {
+      // A normal-context key fell through to legacy: the chord is not a framework
+      // command, so discard any recording opened for an abandoned prefix (the
+      // `3` of `3gu` or `3.`). The legacy dispatcher restarts it from the bridged
+      // count via [maybeStart]'s seed. Insert-session keys fall through too but
+      // are not [recordable] (mode is insert), so the open recording survives.
+      this.globalState.repeat.cancelCurrent();
     }
     return claimed;
   }
@@ -783,7 +788,17 @@ export class Vim {
       return { registerName: "+" };
     }
 
-    if (this.modeState === "normal") return this.normalMode.systemClipboardRegisterToReadForKey(key);
+    if (this.modeState === "normal") {
+      // Paste reads its register; refresh the OS clipboard first when it targets
+      // `+`/`*`. The register is framework-owned now (the executor's prefix), so
+      // read it via [effectiveRegister] rather than the legacy [normalMode]
+      // state, which is empty for a framework-typed `"+p`.
+      if (key === "p" || key === "P") {
+        const registerName = this.effectiveRegister();
+        return registerName === undefined || isSystemClipboardRegister(registerName) ? { registerName } : undefined;
+      }
+      return this.normalMode.systemClipboardRegisterToReadForKey(key);
+    }
     if (this.isVisualMode()) return this.visualMode.systemClipboardRegisterToReadForKey(key);
     return undefined;
   }

@@ -37,7 +37,9 @@ export type KeyExecutorOptions = {
    * that fallback.
    */
   redispatch?: (key: string, allowRemap: boolean) => void;
-  // CR jimzhao: decide whether `onEnterMode` and `onCancel` are really needed
+  // CR jimzhao: decide whether `onEnterMode` is really needed. (`onCancel` was
+  // removed in favor of [lastHandleCancelled]; `onEnterMode` is still used for
+  // the insert-mode transition + session params.)
   /**
    * Apply the Vim mode an accepted action targets (the [mode] on the action /
    * effect). The executor owns mode transitions: after running an action it
@@ -48,14 +50,7 @@ export type KeyExecutorOptions = {
    * decides what an entry means (e.g. entering insert starts an insert session);
    * a target mode equal to the current mode is a no-op.
    */
-  onEnterMode?: (mode: VimMode) => void;
-  /**
-   * Called when a pending chord is abandoned without running a command (the
-   * `invalid` reset branch — e.g. an operator gets a non-motion key like `.`).
-   * Lets the owner discard the in-flight dot-repeat recording for the cancelled
-   * command. Not called on command completion or on external [reset].
-   */
-  onCancel?: () => void;
+  onEnterMode?: (mode: VimMode, opts?: { enterInsert?: { count: number; separator: string } }) => void;
   log?: KeyExecutorLog;
   timeoutMs?: number | (() => number);
   setTimeout?: (
@@ -72,6 +67,12 @@ export class KeyExecutor {
   private conflict: KeyExecutorConflict | undefined;
   /** True while a chord is mid-flight (the last key left a pending continuation). */
   private pending = false;
+
+  /** [dotRepeatable] of the effect run during the current/last [handle]. */
+  private lastDotRepeatable: boolean | undefined;
+
+  /** True when the last [handle] abandoned a pending chord (invalid/cancel). */
+  private lastHandleCancelled = false;
 
   /** Timer that accepts [conflict] if no disambiguating key arrives. */
   private conflictTimer: ReturnType<typeof setTimeout> | undefined;
@@ -131,6 +132,20 @@ export class KeyExecutor {
     return this.pending;
   }
 
+  /** [dotRepeatable] of the effect run during the most recent [handle]: [true]
+      for a dot-repeatable change, [false] for a non-repeatable command (motion,
+      yank, mark), [undefined] when the key only left a pending chord. */
+  lastEffectDotRepeatable(): boolean | undefined {
+    return this.lastDotRepeatable;
+  }
+
+  /** Whether the most recent [handle] abandoned a pending chord without running
+      a command (an operator got a non-motion key like `.`). The cancelling key
+      is not part of any command and should not be recorded for dot-repeat. */
+  lastHandleWasCancel(): boolean {
+    return this.lastHandleCancelled;
+  }
+
   /**
    * The parser state the next key will see: the active continuation's state when
    * mid-chord, otherwise the default state. Exposed so the owner can read
@@ -158,6 +173,11 @@ export class KeyExecutor {
   handle(key: string, allowRemap = true): boolean {
     const previousConflict = this.conflict;
     this.clearConflictTimer();
+    // Reset before running: stays [undefined] if this key only left a pending
+    // chord (no command completed), so the owner can tell "mid-chord" from a
+    // completed dot-repeatable / non-repeatable command.
+    this.lastDotRepeatable = undefined;
+    this.lastHandleCancelled = false;
 
     const result = combineHandleResults(
       this.handlerEnvs.map(({ handler, state }) =>
@@ -202,7 +222,7 @@ export class KeyExecutor {
           ]);
         } else {
           this.reset(this.state.mode);
-          this.options.onCancel?.();
+          this.lastHandleCancelled = true;
         }
         this.logDebug(`key=[${key}] invalid`);
         return true;
@@ -259,7 +279,8 @@ export class KeyExecutor {
     // would clobber a transition those leaves just made (e.g. an insert-mode
     // remap expanding to `<Esc>` would be forced back into insert).
     if (action.type === "effect") {
-      this.options.onEnterMode?.(action.mode);
+      this.lastDotRepeatable = action.dotRepeatable === true;
+      this.options.onEnterMode?.(action.mode, { enterInsert: action.enterInsert });
     }
     this.replayKeys(replayKeys);
   }

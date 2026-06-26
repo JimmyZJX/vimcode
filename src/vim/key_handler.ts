@@ -1,19 +1,12 @@
 import type { VimCommandMapping, WhenEvaluator } from "./config.js";
 import type { VimEditorCapabilities } from "./editor.js";
-import type { Motion } from "./motion.js";
+import type { MarkState } from "./normal/mark.js";
 import type { RegisterName, Registers } from "./registers.js";
 import type { VimMode } from "./state.js";
 
-// Vim-level lookups the pure normal-mode grammar cannot perform with only the
-// editor/registers capabilities. Injected into [HandlerState] like
-// [editor]/[registers] so handlers stay pure functions of `(key, state)`.
-// Implemented by [Vim]. Mode transitions are NOT here: they travel out via the
-// action/effect [mode] and the executor's [onEnterMode] hook.
-export type VimGrammarActions = {
-  // Resolve a mark key (`` `a ``/`'a`) to a jump motion, or undefined if the
-  // mark is unset. [line] selects linewise (`'`) vs charwise (`` ` ``) jumps.
-  markMotion: (key: string, opts: { line: boolean }) => Motion | undefined;
-};
+// The normal-mode insert-entry commands, which position the cursor and switch to
+// insert mode: `i`/`a`/`I`/`A` and `o`/`O` (open line below/above).
+export type InsertEntryKind = "i" | "a" | "I" | "A" | "o" | "O";
 
 export type HandlerState = {
   mode: VimMode;
@@ -35,11 +28,6 @@ export type HandlerState = {
   // key so non-recursive remap expansions don't remap their own output. It is
   // produced and consumed entirely within remap.ts (see [remapHandler]).
   allowRemap: boolean;
-  // True while a handler is waiting for a char input (e.g. the register name
-  // after `"`). Such a key is recorded for macros but must not reach dot-repeat's
-  // maybeStart, which would misread an input char (e.g. the register name `a`)
-  // as the command of the same name. Set on the waiting continuation's state.
-  awaitingCharInput?: boolean;
   // Whether an explicit count was typed for the current command. Some keys are
   // count-sensitive (`%` is match-pair without a count, go-to-percentage with
   // one; `G`/`gg` go to the last/first line without a count, to line N with
@@ -48,7 +36,7 @@ export type HandlerState = {
   remapKeys: readonly string[];
   editor?: VimEditorCapabilities;
   registers?: Registers;
-  actions?: VimGrammarActions;
+  marks?: MarkState;
 };
 
 export const initialHandlerState: HandlerState = {
@@ -73,11 +61,27 @@ export type KeyToDispatch = {
 
 export type QueuedRunResult<T> = T | Promise<T>;
 
+// Optional, declarative metadata a leaf effect attaches for the executor/owner
+// to act on after the effect runs. Kept as plain data (not callbacks) so the
+// grammar stays pure.
+export type EffectMeta = {
+  // Insert-session parameters for a command whose target [mode] is "insert"
+  // (`3i`, `2o`): the typed text is repeated [count] times on exit, [separator]
+  // joins the repeats (`\n` for `o`/`O`). Consumed by the owner's mode
+  // transition; [mode] already says *that* we enter insert, this says *how*.
+  enterInsert?: { count: number; separator: string };
+  // Whether this command is a buffer-modifying change that `.` should repeat
+  // (Vim's per-command `prep_redo` decision). The command declares it here
+  // instead of a separate key list; motions/yank/marks leave it false. Defaults
+  // to false when omitted.
+  dotRepeatable?: boolean;
+};
+
 export type EffectAction<T> = {
   type: "effect";
   mode: VimMode;
   run: () => QueuedRunResult<T>;
-};
+} & EffectMeta;
 
 type VoidKeyAction =
   | { type: "keys"; mode: VimMode; keys: readonly KeyToDispatch[] }
@@ -110,8 +114,7 @@ export function mapHandler<T, U>(
         throw new Error("mapHandler expects effect actions");
       }
       return {
-        type: "effect",
-        mode: action.mode,
+        ...action,
         // Preserve synchronicity: only return a promise when the underlying run
         // is itself async. Forcing this async would defer otherwise-synchronous
         // editor effects to a microtask, which synchronous callers would miss.
@@ -192,9 +195,10 @@ export function run<T>(action: KeyAction<T>): HandleResult<T> {
 
 export function effect<T>(
   mode: VimMode,
-  run: () => QueuedRunResult<T>
+  run: () => QueuedRunResult<T>,
+  meta: EffectMeta = {}
 ): HandleResult<T> {
-  return { type: "run", action: { type: "effect", mode, run } };
+  return { type: "run", action: { type: "effect", mode, run, ...meta } };
 }
 
 export function handler<T>(handlerEnvs: readonly HandlerEnv<T>[]): HandleResult<T> {

@@ -7,8 +7,9 @@
 //   [HandlerState], so handlers stay pure `(key, state) => result` with no
 //   injected dependencies.
 
-import type { VimEditorCapabilities } from "./editor.js";
-import type { HandleResult, HandlerState } from "./key_handler.js";
+import { VimEditorCapabilities, keepUndoTransactionOpen } from "./editor.js";
+import { enterInsertAtSelections, firstNonWhitespace, openLine } from "./insert.js";
+import type { HandleResult, HandlerState, InsertEntryKind } from "./key_handler.js";
 import {
   Handler,
   cloneHandlerState,
@@ -47,18 +48,114 @@ function rawNormalModeHandler(): Handler<void> {
     combineHandleResults([
       operatorRootHandler(key, state),
       simpleActionHandler(key, state),
+      markHandler(key, state),
+      insertEntryHandler(key, state),
+      changeDeleteShortcutHandler(key, state),
       movementHandler(key, state),
     ]);
 }
 
+// Single-key operator+operand aliases: `s`=`cl`, `S`=`cc`, `C`=`c$`, `D`=`d$`.
+// `s`/`S`/`C` are changes (enter insert); `D` deletes. They reuse the operator
+// machinery with a fixed target, so counts and dot-repeat behave like the
+// spelled-out forms.
+function changeDeleteShortcutHandler(key: string, state: HandlerState): HandleResult<void> {
+  switch (key) {
+    case "s":
+      return applyOperator(CHANGE_OPERATOR, state, { kind: "motion", motion: { type: "right" } });
+    case "S":
+      return applyOperator(CHANGE_OPERATOR, state, { kind: "line" });
+    case "C":
+      return applyOperator(CHANGE_OPERATOR, state, { kind: "motion", motion: { type: "endOfLine" } });
+    case "D":
+      return applyOperator(DELETE_OPERATOR, state, { kind: "motion", motion: { type: "endOfLine" } });
+    default:
+      return unhandled();
+  }
+}
+
+// Insert-entry commands (`i`/`a`/`I`/`A`/`o`/`O`): position the cursor (pure
+// editor work) and target insert mode. The session params (count for `3i`,
+// `\n` separator for `o`/`O`) ride out on the effect's [enterInsert] meta, which
+// the executor-owned mode transition consumes; [Vim] still owns the session
+// itself. Dot-repeat/macros replay the recorded keys (typed text + `<escape>`).
+function insertEntryHandler(key: string, state: HandlerState): HandleResult<void> {
+  const kind = insertEntryKindForKey(key);
+  if (kind === undefined) return unhandled();
+  const editor = state.editor;
+  if (editor === undefined) return invalid();
+  const separator = kind === "o" || kind === "O" ? "\n" : "";
+  return effect("insert", () => positionForInsertEntry(editor, kind), {
+    enterInsert: { count: state.repeat, separator },
+    dotRepeatable: true,
+  });
+}
+
+function positionForInsertEntry(editor: VimEditorCapabilities, kind: InsertEntryKind): void {
+  switch (kind) {
+    case "i":
+      enterInsertAtSelections(editor, pos => pos);
+      return;
+    case "a":
+      enterInsertAtSelections(editor, pos => ({
+        row: pos.row,
+        column: Math.min(pos.column + 1, editor.lineLength(pos.row)),
+      }));
+      return;
+    case "I":
+      enterInsertAtSelections(editor, pos => firstNonWhitespace(editor.line(pos.row), pos.row));
+      return;
+    case "A":
+      enterInsertAtSelections(editor, pos => ({ row: pos.row, column: editor.lineLength(pos.row) }));
+      return;
+    case "o":
+      openLine(editor, { above: false }, keepUndoTransactionOpen());
+      return;
+    case "O":
+      openLine(editor, { above: true }, keepUndoTransactionOpen());
+      return;
+  }
+}
+
+function insertEntryKindForKey(key: string): InsertEntryKind | undefined {
+  switch (key) {
+    case "i":
+    case "a":
+    case "I":
+    case "A":
+    case "o":
+    case "O":
+      return key;
+    default:
+      return undefined;
+  }
+}
+
+// `m{char}`: set the named mark to the current cursor. The injected [marks]
+// store is reached straight from the handler state. Not a buffer edit and not
+// dot-repeatable; macros replay it via the recorded `m`+name keys.
+function markHandler(key: string, state: HandlerState): HandleResult<void> {
+  if (key !== "m") return unhandled();
+  return handler([
+    {
+      handler: (name, markState) =>
+        effect(markState.mode, () => {
+          const editor = markState.editor;
+          if (editor !== undefined) markState.marks?.createMark(editor, name);
+        }),
+      state: deeper(state),
+    },
+  ]);
+}
+
 // Leaf normal-mode actions that take no motion/object operand: the single-key
-// `x`/`X`/`~`/`J`, and the char-input `r{char}`. Each applies immediately and
-// records a dot/macro-repeatable command.
+// `x`/`X`/`~`/`J`/`ctrl-a`/`ctrl-x`/`p`/`P`, and the char-input `r{char}`. Each
+// applies immediately; dot-repeat/macros replay the recorded keys.
 function simpleActionHandler(key: string, state: HandlerState): HandleResult<void> {
   // `r`: replace the char(s) under the cursor with the next typed char (or a
   // `ctrl-k` digraph).
   if (key === "r") {
-    return handler([{ handler: replaceCharWaiter, state: { ...deeper(state), awaitingCharInput: true } }]);
+    return handler([{ handler: replaceCharWaiter, state: deeper(state) }]);
   }
   const action = simpleActionForKey(key);
   if (action === undefined) return unhandled();
@@ -68,7 +165,7 @@ function simpleActionHandler(key: string, state: HandlerState): HandleResult<voi
 // The char after `r`: a literal replacement, or `ctrl-k` to begin a digraph.
 function replaceCharWaiter(char: string, state: HandlerState): HandleResult<void> {
   if (char === "ctrl-k") {
-    return handler([{ handler: digraphWaiter(undefined), state: { ...deeper(state), awaitingCharInput: true } }]);
+    return handler([{ handler: digraphWaiter(undefined), state: deeper(state) }]);
   }
   return applySimpleActionEffect(state, { type: "replaceChar", char: keyForInput(char) });
 }
@@ -77,7 +174,7 @@ function replaceCharWaiter(char: string, state: HandlerState): HandleResult<void
 function digraphWaiter(first: string | undefined): Handler<void> {
   return (char, state) => {
     if (first === undefined) {
-      return handler([{ handler: digraphWaiter(keyForInput(char)), state: { ...deeper(state), awaitingCharInput: true } }]);
+      return handler([{ handler: digraphWaiter(keyForInput(char)), state: deeper(state) }]);
     }
     return applySimpleActionEffect(state, { type: "replaceChar", char: lookupDigraph(first, keyForInput(char)) });
   };
@@ -89,7 +186,9 @@ function applySimpleActionEffect(state: HandlerState, action: SimpleAction): Han
   if (editor === undefined || registers === undefined) return invalid();
   const register = state.register;
   const count = state.repeat;
-  return effect(state.mode, () => applySimpleAction(editor, registers, register, count, action));
+  return effect(state.mode, () => applySimpleAction(editor, registers, register, count, action), {
+    dotRepeatable: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -173,12 +272,17 @@ type OperatorSpec = {
   forChange: boolean;
 };
 
+// Shared so the single-key aliases (`s`/`S`/`C`/`D`) reuse the exact same specs
+// as the spelled-out `c`/`d` operators.
+const CHANGE_OPERATOR: OperatorSpec = { key: "c", operator: { type: "change" }, forChange: true };
+const DELETE_OPERATOR: OperatorSpec = { key: "d", operator: { type: "delete" }, forChange: false };
+
 function operatorForKey(key: string): OperatorSpec | undefined {
   switch (key) {
     case "d":
-      return { key, operator: { type: "delete" }, forChange: false };
+      return DELETE_OPERATOR;
     case "c":
-      return { key, operator: { type: "change" }, forChange: true };
+      return CHANGE_OPERATOR;
     case "y":
       return { key, operator: { type: "yank" }, forChange: false };
     case ">":
@@ -290,7 +394,7 @@ function motionChordHandler(
         {
           handler: (char, charState) =>
             char.length === 1 ? apply(findMotionForChar(findKind, char), charState) : invalid(),
-          state: { ...deeper(state), awaitingCharInput: true },
+          state: deeper(state),
         },
       ]);
     }
@@ -301,10 +405,11 @@ function motionChordHandler(
       return handler([
         {
           handler: (name, markState) => {
-            const motion = markState.actions?.markMotion(name, { line });
+            const editor = markState.editor;
+            const motion = editor === undefined ? undefined : markState.marks?.jumpMotion(editor, name, { line });
             return motion === undefined ? invalid() : apply(motion, markState);
           },
-          state: { ...deeper(state), awaitingCharInput: true },
+          state: deeper(state),
         },
       ]);
     }
@@ -392,9 +497,15 @@ function applyOperator(spec: OperatorSpec, state: HandlerState, target: Operator
   const hasCount = state.hasCount === true;
   const resolved = resolveTarget(editor, target, state.repeat, { hasCount, forChange: spec.forChange });
   const mode = spec.forChange && changeEntersInsert(resolved) ? "insert" : state.mode;
-  return effect(mode, () => {
-    applyOperatorToTarget(editor, registers, register, spec.operator, resolved);
-  });
+  // Every operator but yank modifies the buffer, so only yank is not
+  // dot-repeatable (`.` repeats the last *change*).
+  return effect(
+    mode,
+    () => {
+      applyOperatorToTarget(editor, registers, register, spec.operator, resolved);
+    },
+    { dotRepeatable: spec.operator.type !== "yank" }
+  );
 }
 
 // Whether a `change` against [resolved] will enter insert mode, mirroring
@@ -425,12 +536,12 @@ function startSurround(spec: OperatorSpec, state: HandlerState): HandleResult<vo
     case "delete":
       // `ds{char}`: delete the surrounding pair named by the next char.
       return handler([
-        { handler: deleteSurroundHandler(), state: { ...deeper(state), awaitingCharInput: true } },
+        { handler: deleteSurroundHandler(), state: deeper(state) },
       ]);
     case "change":
       // `cs{from}{to}`: change the `from` pair to the `to` pair.
       return handler([
-        { handler: changeSurroundHandler(undefined), state: { ...deeper(state), awaitingCharInput: true } },
+        { handler: changeSurroundHandler(undefined), state: deeper(state) },
       ]);
     default:
       return invalid();
@@ -491,7 +602,7 @@ function surroundPairWaiter(state: HandlerState, target: SurroundTarget): Handle
           addSurrounds(editor, target.ranges, keyForInput(key), { linewise: target.linewise })
         );
       },
-      state: { ...deeper(state), awaitingCharInput: true },
+      state: deeper(state),
     },
   ]);
 }
@@ -512,7 +623,7 @@ function changeSurroundHandler(fromKey: string | undefined): Handler<void> {
       return handler([
         {
           handler: changeSurroundHandler(keyForInput(key)),
-          state: { ...deeper(state), awaitingCharInput: true },
+          state: deeper(state),
         },
       ]);
     }
