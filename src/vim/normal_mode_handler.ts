@@ -51,8 +51,58 @@ function rawNormalModeHandler(): Handler<void> {
       markHandler(key, state),
       insertEntryHandler(key, state),
       changeDeleteShortcutHandler(key, state),
+      findHandler(key, state),
+      repeatFindHandler(key, state),
       movementHandler(key, state),
     ]);
+}
+
+// Bare find motions `f`/`t`/`F`/`T` then the target char: move the cursor and
+// remember the find so `;`/`,` can repeat it. As an operator operand (`dfx`),
+// find is handled in [operandHandler]; this is the root (plain motion) form.
+function findHandler(key: string, state: HandlerState): HandleResult<void> {
+  const kind = findKindForKey(key);
+  if (kind === undefined) return unhandled();
+  const findChar = (char: string, charState: HandlerState): HandleResult<void> => {
+    const motion = findMotionForChar(kind, char);
+    return applyResolvedMotion(charState, motion, motion);
+  };
+  return handler([
+    {
+      handler: (char, charState) => {
+        if (char === "ctrl-k") {
+          return handler([{ handler: digraphWaiter(findChar), state: deeper(charState) }]);
+        }
+        const input = keyForInput(char);
+        if (input.length !== 1) return invalid();
+        return findChar(input, charState);
+      },
+      state: deeper(state),
+    },
+  ]);
+}
+
+// `;` repeats the last find, `,` repeats it reversed.
+function repeatFindHandler(key: string, state: HandlerState): HandleResult<void> {
+  if (key !== ";" && key !== ",") return unhandled();
+  const motion = state.find?.repeat(key === ",");
+  if (motion === undefined) return effect(state.mode, () => {});
+  return applyResolvedMotion(state, motion);
+}
+
+// Apply an already-resolved motion to the live selections — the root-motion
+// counterpart of [movementHandler] for motions the grammar resolves itself
+// (char-input find). [recordFind], when given, stores the motion for `;`/`,`.
+function applyResolvedMotion(state: HandlerState, motion: Motion, recordFind?: FindMotion): HandleResult<void> {
+  const editor = state.editor;
+  if (editor === undefined) return invalid();
+  return effect(state.mode, () => {
+    const results: MotionResult[] = editor.getSelections().map(selection => ({
+      position: applyMotion(editor, selectionHead(selection), motion, state.repeat),
+    }));
+    applyMotionResults(editor, results);
+    if (recordFind !== undefined) state.find?.record(recordFind);
+  });
 }
 
 // Single-key operator+operand aliases: `s`=`cl`, `S`=`cc`, `C`=`c$`, `D`=`d$`.
@@ -165,18 +215,26 @@ function simpleActionHandler(key: string, state: HandlerState): HandleResult<voi
 // The char after `r`: a literal replacement, or `ctrl-k` to begin a digraph.
 function replaceCharWaiter(char: string, state: HandlerState): HandleResult<void> {
   if (char === "ctrl-k") {
-    return handler([{ handler: digraphWaiter(undefined), state: deeper(state) }]);
+    return handler([{ handler: digraphWaiter(replaceWith), state: deeper(state) }]);
   }
-  return applySimpleActionEffect(state, { type: "replaceChar", char: keyForInput(char) });
+  return replaceWith(keyForInput(char), state);
 }
 
-// The two chars of a `r ctrl-k` digraph replacement.
-function digraphWaiter(first: string | undefined): Handler<void> {
+function replaceWith(char: string, state: HandlerState): HandleResult<void> {
+  return applySimpleActionEffect(state, { type: "replaceChar", char });
+}
+
+// Collect the two chars of a `ctrl-k` digraph and resolve the target char into
+// [onResolved]. Shared by `r ctrl-k` (replace) and `f`/`t` `ctrl-k` (find).
+function digraphWaiter(
+  onResolved: (char: string, state: HandlerState) => HandleResult<void>,
+  first?: string
+): Handler<void> {
   return (char, state) => {
     if (first === undefined) {
-      return handler([{ handler: digraphWaiter(keyForInput(char)), state: deeper(state) }]);
+      return handler([{ handler: digraphWaiter(onResolved, keyForInput(char)), state: deeper(state) }]);
     }
-    return applySimpleActionEffect(state, { type: "replaceChar", char: lookupDigraph(first, keyForInput(char)) });
+    return onResolved(lookupDigraph(first, keyForInput(char)), state);
   };
 }
 

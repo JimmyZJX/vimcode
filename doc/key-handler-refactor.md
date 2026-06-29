@@ -72,10 +72,15 @@ insert/replace, search, command, macros/repeat) are ported into
   (`prefix_handlers.ts`): an executor-pending continuation that writes
   `HandlerState.register` (the executor's env state). Bridged to legacy on yield
   (see the bridge section above).
-- [~] Char-input motions (find `f`/`t`/`F`/`T`, find-repeat `;`/`,`, marks
-  `` ` ``/`'`) were migrated in the earlier `NormalModeDeps` version but were
-  **dropped in the pure-grammar redo**; they currently fall back to legacy. To
-  re-port.
+- [x] Bare find motions `f`/`t`/`F`/`T` + target char (incl. `ctrl-k` digraph
+  target via the shared `digraphWaiter`) and find-repeat `;`/`,`
+  (`findHandler`/`repeatFindHandler`). The last find lives in an injected
+  `FindState` (`HandlerState.find`, like `marks`); `applyResolvedMotion` is the
+  root-motion counterpart of `movementHandler` for grammar-resolved motions, so
+  behavior matches legacy (same `motion.ts` application). Marks `` ` ``/`'` (jump)
+  are handled as operands; bare mark jumps still fall to legacy. Follow-up: the
+  operator-operand find (`dfx`) does not yet record `lastFind` or support
+  `ctrl-k`/space targets (pre-existing gap in `operandHandler`).
 - [ ] Count-dependent motions: `%` is claimed by `movementHandler` as
   match-pair but a count makes it go-to-percentage (`20%`). The pure grammar
   needs count-aware motion resolution, or `%`/`G`/`gg` must stay on the legacy

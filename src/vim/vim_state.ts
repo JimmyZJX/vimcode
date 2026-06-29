@@ -7,7 +7,7 @@
 //   lifecycle, where an editor can temporarily have no attached text model while tabs
 //   are switching.
 
-import { FindMotion } from "./motion.js";
+import { FindState } from "./normal/find.js";
 import { ChangeListState } from "./normal/change_list.js";
 import { MarkState } from "./normal/mark.js";
 import { MacroState, RepeatState } from "./normal/repeat.js";
@@ -20,7 +20,7 @@ export class VimGlobalState {
   readonly search = new SearchState();
   readonly repeat = new RepeatState();
   readonly macro = new MacroState();
-  lastFind: FindMotion | undefined;
+  readonly find = new FindState();
   /** Ex options toggled with `:set`; only options that change core command
       semantics live here (`:h gdefault`). */
   readonly exOptions = { gdefault: false };

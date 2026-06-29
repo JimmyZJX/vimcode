@@ -1,5 +1,6 @@
 import type { VimCommandMapping, WhenEvaluator } from "./config.js";
 import type { VimEditorCapabilities } from "./editor.js";
+import type { FindState } from "./normal/find.js";
 import type { MarkState } from "./normal/mark.js";
 import type { RegisterName, Registers } from "./registers.js";
 import type { VimMode } from "./state.js";
@@ -37,6 +38,7 @@ export type HandlerState = {
   editor?: VimEditorCapabilities;
   registers?: Registers;
   marks?: MarkState;
+  find?: FindState;
 };
 
 export const initialHandlerState: HandlerState = {

@@ -18,7 +18,7 @@ import { initialHandlerState, unhandled } from "./key_handler.js";
 import type { Handler, HandlerEnv, HandlerState } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { finiteKeymapPermissions, resolveVimAction, shouldResolveMotionModeAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
-import { FindMotion, Motion, reverseFindMotion } from "./motion.js";
+import { FindMotion, Motion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
 import { normalModeHandler } from "./normal_mode_handler.js";
@@ -594,6 +594,7 @@ export class Vim {
         editor: this.editor,
         registers: this.globalState.registers,
         marks: this.modelState.marks,
+        find: this.globalState.find,
       };
       return this.normalGrammar(key, liveState);
     };
@@ -1800,13 +1801,14 @@ export class Vim {
     const motion: FindMotion = pending.type === "findForward"
       ? { type: "findForward", before: pending.before, char }
       : { type: "findBackward", after: pending.after, char };
-    this.globalState.lastFind = motion;
+    this.globalState.find.record(motion);
     this.applyMotion(motion, pending.count);
   }
 
   private repeatFind({ reversed }: { reversed: boolean }): void {
-    if (this.globalState.lastFind === undefined) return;
-    this.applyMotion(reversed ? reverseFindMotion(this.globalState.lastFind) : this.globalState.lastFind, this.takeCountForMotion(1));
+    const motion = this.globalState.find.repeat(reversed);
+    if (motion === undefined) return;
+    this.applyMotion(motion, this.takeCountForMotion(1));
   }
 
   private handlePendingDigraphKey(key: string): void {
