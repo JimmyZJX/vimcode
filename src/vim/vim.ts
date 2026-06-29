@@ -122,6 +122,7 @@ export class Vim {
     redispatch: (key, allowRemap) => this.dispatchThroughPipeline(key, allowRemap),
     executeCommand: command => this.executeMappedCommand(command),
     onEnterMode: (mode, opts) => this.enterModeFromExecutor(mode, opts),
+    dispatchToLegacyKeymap: (keys, count) => this.dispatchToLegacyKeymap(keys, count),
   });
   // The when-evaluator for the in-flight top-level dispatch, read by the remap
   // root handler (which resolves against the live Vim mode) and the executor's
@@ -577,6 +578,18 @@ export class Vim {
     }
   }
 
+  // Feed a finite-keymap chord the framework grammar did not migrate (the
+  // visual/search `g`-chords `gv`/`gn`/`gN`) to the legacy keymap resolver. This
+  // bypasses [dispatchKey]'s recording (the framework already recorded these
+  // keys for macros), and once the resolver goes pending any follow-up keys
+  // route to legacy via the usual executor/legacy coexistence
+  // ([isExecutorNormalContext]). The framework-owned [count] is handed to the
+  // legacy count state, which the resolved action reads via [takeCount].
+  private dispatchToLegacyKeymap(keys: readonly string[], count: number | undefined): void {
+    if (count !== undefined) this.handlerState.countText = String(count);
+    for (const key of keys) this.handleFiniteKeymapKey(key);
+  }
+
   // Root of the migrated normal-mode grammar. It only begins a chord from a
   // clean state (no legacy subsystem pending; see [isExecutorNormalContext]) and
   // yields to a higher-priority remap. The live editor/registers travel in the
@@ -595,6 +608,8 @@ export class Vim {
         registers: this.globalState.registers,
         marks: this.modelState.marks,
         find: this.globalState.find,
+        changeList: this.modelState.changeList,
+        lastInsertPosition: this.modelState.lastInsertPosition,
       };
       return this.normalGrammar(key, liveState);
     };
@@ -665,6 +680,10 @@ export class Vim {
         if (this.editor.documentVersion() !== versionBefore) {
           this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
         }
+        // A framework native command (`gd`/`gh`/...) that may have moved the
+        // cursor or switched editors asks for the same post-command reconcile
+        // the legacy `native` action did via [syncFromEditorState].
+        if (this.keyExecutor.lastEffectSyncAfter()) this.syncFromEditorState();
         // A framework insert-entry command (`i`/`o`/...) into a readonly document
         // must revert to normal with a warning, like the legacy [dispatchKey]
         // finally.

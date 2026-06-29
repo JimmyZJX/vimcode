@@ -126,14 +126,39 @@ insert/replace, search, command, macros/repeat) are ported into
 - [x] Marks `m{char}` (`markHandler`) and mark jumps (`` `a ``/`'a`), via the
   `MarkState` injected into `HandlerState` (like `editor`/`registers`) — no
   per-operation action callbacks.
-- [ ] Cumulative increment `g ctrl-a`/`g ctrl-x` (waits on the finite-keymap
-  `g`-chord slice).
+- [x] `g`-chords (`gChordHandler`). The framework owns `g`-chord parsing for
+  every chord that does not depend on the (not-yet-migrated) visual-mode and
+  search subsystems:
+  - motions `gg`/`gj`/`gk`/`g_`/`gM`/`ge`/`gE` (count-aware, via
+    `applyResolvedMotion`);
+  - convert operators `gu`/`gU`/`g~`/`g?` (g-prefixed operators reusing the
+    operand grammar, incl. the `guu`/`gugu` doubling and `dotRepeatable`);
+  - cumulative increment `g ctrl-a`/`g ctrl-x` and `gJ` (simple actions);
+  - native editor/LSP commands `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[` and the
+    `g r` chord (`g r r`/`g r n`/`g r a`), as `effect`s that call
+    `editor.executeNativeCommand` and declare `syncAfter` (the executor reports
+    it via `lastEffectSyncAfter`, and `routeKeyThroughExecutor` runs the
+    post-command `syncFromEditorState`, mirroring the legacy `native` action);
+  - multicursor `gl`/`gL`/`g>`/`g<`/`ga` (count repeats of the VSCode command,
+    which reconciles via `syncSelectionAfter`);
+  - editor tabs `gt`/`gT` (count-aware: `2gt` jumps to a tab index);
+  - change list `g;`/`g,` (via the injected `state.changeList`); and
+  - `gi` (re-enter insert at `state.lastInsertPosition`, an insert-entry effect).
+
+  `state.changeList` (the `ChangeListState`) and `state.lastInsertPosition` are
+  injected into the live handler state by `normalRootHandler`, like
+  `editor`/`registers`/`marks`/`find`. All non-editing native chords declare
+  `dotRepeatable: false`. Only `gv` (restore visual selection) and `gn`/`gN`
+  (search-selection) remain on the legacy keymap resolver via the `legacyKeymap`
+  action + `dispatchToLegacyKeymap` hook; they will migrate with the visual-mode
+  and search slices, after which `legacyKeymap` can be deleted entirely.
 - [ ] Count + recursive remap: a buffered framework count is a *pending*
   continuation, so a remapped key typed after a count (`y`→`2x`, `x`→`"_x`)
   bypasses the remap handler (which only runs at the executor root). The count
   needs to either re-offer the post-count key to the root handlers (preserving
   the count) or resolve to idle as the pre-redo `normalCountPrefix` did.
-- [ ] Finite keymap (`g`/`z`/`[`/`]`/`ctrl-w`).
+- [ ] Finite keymap `z`/`[`/`]`/`ctrl-w` chords (the `g`-chords are done; the
+  same `legacyKeymap` delegation pattern applies to the rest).
 - [ ] Remaining char-input waiters (digraph/surround/search/command).
 
 ### Where the normal-mode grammar lives

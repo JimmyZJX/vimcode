@@ -25,7 +25,7 @@ export type SimpleAction =
   | { type: "toggleCaseChars" } // ~
   | { type: "joinLines"; withSpace: boolean } // J (true) / gJ (false)
   | { type: "replaceChar"; char: string } // r{char}
-  | { type: "increment"; direction: "increment" | "decrement" } // ctrl-a / ctrl-x
+  | { type: "increment"; direction: "increment" | "decrement"; cumulative: boolean } // ctrl-a / ctrl-x (g-prefixed = cumulative)
   | { type: "paste"; before: boolean }; // p (after) / P (before)
 
 export function simpleActionForKey(key: string): SimpleAction | undefined {
@@ -40,9 +40,9 @@ export function simpleActionForKey(key: string): SimpleAction | undefined {
     case "J":
       return { type: "joinLines", withSpace: true };
     case "ctrl-a":
-      return { type: "increment", direction: "increment" };
+      return { type: "increment", direction: "increment", cumulative: false };
     case "ctrl-x":
-      return { type: "increment", direction: "decrement" };
+      return { type: "increment", direction: "decrement", cumulative: false };
     case "p":
       return { type: "paste", before: false };
     case "P":
@@ -81,11 +81,13 @@ export function applySimpleAction(
     case "replaceChar":
       replaceCharacters(editor, action.char, count);
       return;
-    case "increment":
+    case "increment": {
       // Vim: `{count}ctrl-a` adds count; `ctrl-x` subtracts. The cumulative
-      // (`g ctrl-a`) step variant stays on the finite-keymap path for now.
-      incrementNumbers(editor, (action.direction === "increment" ? 1 : -1) * count);
+      // (`g ctrl-a`) variant adds an increasing step across multiple targets.
+      const delta = (action.direction === "increment" ? 1 : -1) * count;
+      incrementNumbers(editor, delta, action.cumulative ? delta : 0);
       return;
+    }
     case "paste":
       paste(editor, registers, register, { before: action.before, count });
       return;

@@ -51,6 +51,12 @@ export type KeyExecutorOptions = {
    * a target mode equal to the current mode is a no-op.
    */
   onEnterMode?: (mode: VimMode, opts?: { enterInsert?: { count: number; separator: string } }) => void;
+  /**
+   * Feed a finite-keymap chord (e.g. a not-yet-migrated `g`-chord) to the legacy
+   * keymap resolver. The owner resolves/dispatches the chord; the executor stays
+   * agnostic to what the chord does. Used by the `legacyKeymap` action.
+   */
+  dispatchToLegacyKeymap?: (keys: readonly string[], count: number | undefined) => void;
   log?: KeyExecutorLog;
   timeoutMs?: number | (() => number);
   setTimeout?: (
@@ -70,6 +76,9 @@ export class KeyExecutor {
 
   /** [dotRepeatable] of the effect run during the current/last [handle]. */
   private lastDotRepeatable: boolean | undefined;
+
+  /** [syncAfter] of the effect run during the current/last [handle]. */
+  private lastSyncAfter = false;
 
   /** True when the last [handle] abandoned a pending chord (invalid/cancel). */
   private lastHandleCancelled = false;
@@ -139,6 +148,13 @@ export class KeyExecutor {
     return this.lastDotRepeatable;
   }
 
+  /** Whether the effect run during the most recent [handle] asked the owner to
+      reconcile Vim state from the editor afterward (the legacy
+      `syncFromEditorState`). [false] when no such effect ran. */
+  lastEffectSyncAfter(): boolean {
+    return this.lastSyncAfter;
+  }
+
   /** Whether the most recent [handle] abandoned a pending chord without running
       a command (an operator got a non-motion key like `.`). The cancelling key
       is not part of any command and should not be recorded for dot-repeat. */
@@ -177,6 +193,7 @@ export class KeyExecutor {
     // chord (no command completed), so the owner can tell "mid-chord" from a
     // completed dot-repeatable / non-repeatable command.
     this.lastDotRepeatable = undefined;
+    this.lastSyncAfter = false;
     this.lastHandleCancelled = false;
 
     const result = combineHandleResults(
@@ -280,8 +297,13 @@ export class KeyExecutor {
     // remap expanding to `<Esc>` would be forced back into insert).
     if (action.type === "effect") {
       this.lastDotRepeatable = action.dotRepeatable === true;
+      this.lastSyncAfter = action.syncAfter === true;
       this.options.onEnterMode?.(action.mode, { enterInsert: action.enterInsert });
     }
+    // A chord handed to legacy is never a dot-repeatable change (the legacy side
+    // owns whatever repeat semantics it has), so the framework must discard the
+    // recording it opened for the chord rather than commit it as the last change.
+    if (action.type === "legacyKeymap") this.lastDotRepeatable = false;
     this.replayKeys(replayKeys);
   }
 
@@ -297,6 +319,9 @@ export class KeyExecutor {
       case "commands":
         for (const command of action.commands)
           this.options.executeCommand?.(command);
+        break;
+      case "legacyKeymap":
+        this.options.dispatchToLegacyKeymap?.(action.keys, action.count);
         break;
       case "sequence":
         // Run nested actions without re-resetting per action: the enclosing

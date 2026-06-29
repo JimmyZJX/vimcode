@@ -978,6 +978,38 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
+  it("runs native LSP/diagnostic g-chords as VSCode commands", () => {
+    const editor = new InMemoryVimEditor("one");
+    const vim = new Vim(editor);
+
+    runKeys(vim, [
+      "g", "d",
+      "g", "D",
+      "g", "y",
+      "g", "I",
+      "g", "x",
+      "g", "]",
+      "g", "[",
+      "g", "r", "r",
+      "g", "r", "n",
+      "g", "r", "a",
+    ]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.nativeCommands).toEqual([
+      { command: "editor.action.revealDefinition", args: [] },
+      { command: "editor.action.goToDeclaration", args: [] },
+      { command: "editor.action.goToTypeDefinition", args: [] },
+      { command: "editor.action.goToImplementation", args: [] },
+      { command: "editor.action.openLink", args: [] },
+      { command: "editor.action.marker.next", args: [] },
+      { command: "editor.action.marker.prev", args: [] },
+      { command: "editor.action.referenceSearch.trigger", args: [] },
+      { command: "editor.action.rename", args: [] },
+      { command: "editor.action.quickFix", args: [] },
+    ]);
+  });
+
   it("supports write ex commands", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor);

@@ -18,8 +18,11 @@ import {
   handler,
   invalid,
   mapHandler,
+  run,
   unhandled,
 } from "./key_handler.js";
+import type { ChangeListDirection } from "./normal/change_list.js";
+import type { ConvertTarget } from "./normal/convert.js";
 import type { FindMotion, Motion, MotionResult } from "./motion.js";
 import { applyMotion, lineRange, motionForKey } from "./motion.js";
 import { motionHandler } from "./motion_handler.js";
@@ -53,8 +56,231 @@ function rawNormalModeHandler(): Handler<void> {
       changeDeleteShortcutHandler(key, state),
       findHandler(key, state),
       repeatFindHandler(key, state),
+      gChordHandler(key, state),
       movementHandler(key, state),
     ]);
+}
+
+// The `g`-chord prefix. The framework owns parsing of the `g`-chords that do not
+// depend on the (not-yet-migrated) visual-mode and search subsystems: motions,
+// convert operators, increment/join, native editor/LSP commands, multicursor,
+// tabs, the change list, and `gi`. Only `gv`/`gn`/`gN` (visual/search) are still
+// handed to the legacy keymap resolver via [legacyKeymap].
+function gChordHandler(key: string, state: HandlerState): HandleResult<void> {
+  if (key !== "g") return unhandled();
+  // The `g` prefix claims one pending-depth level (a count typed before it folds
+  // in, like an operator). The convert operand reuses this level.
+  const operatorDepth = state.hasCount === true ? state.operatorDepth : state.operatorDepth + 1;
+  return handler([{ handler: gContinuation, state: { ...cloneHandlerState(state), operatorDepth } }]);
+}
+
+function gContinuation(key: string, state: HandlerState): HandleResult<void> {
+  // Motions: `gg`/`gj`/`gk`/`g_`/`gM`/`ge`/`gE`.
+  const motion = gChordMotion(key);
+  if (motion !== undefined) return applyResolvedMotion(state, motion);
+
+  // Convert operators `gu`/`gU`/`g~`/`g?`: g-prefixed operators that take an
+  // operand (`guiw`, `gUU`, `gugu`). They reuse the operator machinery; the `g`
+  // already claimed the depth level, so use [operandGrammar] directly.
+  const convertTarget = convertTargetForKey(key);
+  if (convertTarget !== undefined) {
+    return operandGrammar({ key, operator: { type: "convert", target: convertTarget }, forChange: false, gPrefixed: true }, state);
+  }
+
+  // Cumulative increment `g ctrl-a`/`g ctrl-x` and `gJ` (join without a space).
+  if (key === "ctrl-a") return applySimpleActionEffect(state, { type: "increment", direction: "increment", cumulative: true });
+  if (key === "ctrl-x") return applySimpleActionEffect(state, { type: "increment", direction: "decrement", cumulative: true });
+  if (key === "J") return applySimpleActionEffect(state, { type: "joinLines", withSpace: false });
+
+  // `g r` chord: reference search / rename / quick fix (`g r r`/`g r n`/`g r a`).
+  if (key === "r") return handler([{ handler: gReplaceChord, state: deeper(state) }]);
+
+  // Native editor/LSP commands `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[`.
+  const nativeCommand = gChordNativeCommand(key);
+  if (nativeCommand !== undefined) return nativeCommandEffect(state, nativeCommand);
+
+  // Multicursor `gl`/`gL`/`g>`/`g<`/`ga`.
+  const multiCursorCommand = gChordMultiCursorCommand(key);
+  if (multiCursorCommand !== undefined) return multiCursorEffect(state, multiCursorCommand);
+
+  // Editor tabs `gt` (next) / `gT` (previous).
+  if (key === "t") return editorTabEffect(state, "next");
+  if (key === "T") return editorTabEffect(state, "previous");
+
+  // Change list `g;` (older) / `g,` (newer).
+  if (key === ";") return changeListEffect(state, "older");
+  if (key === ",") return changeListEffect(state, "newer");
+
+  // `gi`: re-enter insert mode at the previous insert position.
+  if (key === "i") return insertAtPreviousEffect(state);
+
+  // `gv` (restore visual selection) and `gn`/`gN` (search-selection) depend on
+  // the visual-mode and search subsystems, which are not migrated yet; hand them
+  // to the legacy keymap resolver until those slices land.
+  return run({ type: "legacyKeymap", mode: state.mode, keys: ["g", key], count: state.hasCount === true ? state.repeat : undefined });
+}
+
+// The key after `g r`: `g r r` (find references), `g r n` (rename), `g r a`
+// (quick fix). All are native commands; an unrecognized key cancels the chord.
+function gReplaceChord(key: string, state: HandlerState): HandleResult<void> {
+  switch (key) {
+    case "r":
+      return nativeCommandEffect(state, "editor.action.referenceSearch.trigger");
+    case "n":
+      return nativeCommandEffect(state, "editor.action.rename");
+    case "a":
+      return nativeCommandEffect(state, "editor.action.quickFix");
+    default:
+      return invalid();
+  }
+}
+
+// `g`-chords that run a single native editor/LSP command.
+function gChordNativeCommand(key: string): string | undefined {
+  switch (key) {
+    case "d":
+      return "editor.action.revealDefinition";
+    case "D":
+      return "editor.action.goToDeclaration";
+    case "y":
+      return "editor.action.goToTypeDefinition";
+    case "I":
+      return "editor.action.goToImplementation";
+    case "h":
+      return "editor.action.showHover";
+    case "x":
+      return "editor.action.openLink";
+    case "]":
+      return "editor.action.marker.next";
+    case "[":
+      return "editor.action.marker.prev";
+    default:
+      return undefined;
+  }
+}
+
+// `g`-chords that drive VSCode multicursor/selection commands.
+function gChordMultiCursorCommand(key: string): string | undefined {
+  switch (key) {
+    case "l":
+      return "editor.action.addSelectionToNextFindMatch";
+    case "L":
+      return "editor.action.addSelectionToPreviousFindMatch";
+    case ">":
+      return "editor.action.moveSelectionToNextFindMatch";
+    case "<":
+      return "editor.action.moveSelectionToPreviousFindMatch";
+    case "a":
+      return "editor.action.selectHighlights";
+    default:
+      return undefined;
+  }
+}
+
+// A native editor/LSP command run from a `g`-chord (`gd`/`gh`/…). Like the
+// legacy `native` action it asks for a post-command [syncFromEditorState] and is
+// never a buffer change (so not dot-repeatable).
+function nativeCommandEffect(state: HandlerState, command: string): HandleResult<void> {
+  const editor = state.editor;
+  if (editor === undefined) return invalid();
+  return effect("normal", () => editor.executeNativeCommand(command), {
+    dotRepeatable: false,
+    syncAfter: true,
+  });
+}
+
+// A multicursor `g`-chord (`gl`/`ga`/…): run the VSCode command [count] times.
+// The editor reconciles its own selections via [syncSelectionAfter], so no
+// [syncAfter] is needed. Not a buffer change.
+function multiCursorEffect(state: HandlerState, command: string): HandleResult<void> {
+  const editor = state.editor;
+  if (editor === undefined) return invalid();
+  const count = state.repeat;
+  return effect(
+    "normal",
+    () => {
+      for (let index = 0; index < count; index++) {
+        editor.executeNativeCommand(command, [], { syncSelectionAfter: true });
+      }
+    },
+    { dotRepeatable: false }
+  );
+}
+
+// Editor-tab navigation (`gt`/`gT`). A count means an absolute tab index for
+// `gt` (`2gt` -> the 2nd tab) and a repeat for `gT`, matching VSCodeVim.
+function editorTabEffect(state: HandlerState, direction: "next" | "previous"): HandleResult<void> {
+  const editor = state.editor;
+  if (editor === undefined) return invalid();
+  const count = state.hasCount === true ? state.repeat : undefined;
+  return effect("normal", () => switchEditorTab(editor, direction, count), { dotRepeatable: false });
+}
+
+function switchEditorTab(
+  editor: VimEditorCapabilities,
+  direction: "next" | "previous",
+  count: number | undefined
+): void {
+  if (count !== undefined && count <= 0) return;
+  if (direction === "next" && count !== undefined) {
+    // `{count}gt` jumps to the one-based tab index instead of repeating.
+    editor.executeNativeCommand("workbench.action.openEditorAtIndex", [count - 1], { syncSelectionAfter: true });
+    return;
+  }
+  const command =
+    direction === "next" ? "workbench.action.nextEditorInGroup" : "workbench.action.previousEditorInGroup";
+  for (let index = 0; index < (count ?? 1); index++) {
+    editor.executeNativeCommand(command, [], { syncSelectionAfter: true });
+  }
+}
+
+// Change-list navigation (`g;` older / `g,` newer): move [count] entries and put
+// the cursor at the resulting position. Not a buffer change.
+function changeListEffect(state: HandlerState, direction: ChangeListDirection): HandleResult<void> {
+  const editor = state.editor;
+  const changeList = state.changeList;
+  if (editor === undefined || changeList === undefined) return invalid();
+  const count = state.repeat;
+  return effect(
+    "normal",
+    () => {
+      const position = changeList.move(count, direction);
+      if (position !== undefined) editor.setSelections([charwiseSelection(position)]);
+    },
+    { dotRepeatable: false }
+  );
+}
+
+// `gi`: re-enter insert mode where insert was last left. Like the spelled-out
+// insert-entry commands, positioning happens in the effect and the insert
+// session (count) rides on [enterInsert].
+function insertAtPreviousEffect(state: HandlerState): HandleResult<void> {
+  const editor = state.editor;
+  if (editor === undefined) return invalid();
+  const position = state.lastInsertPosition;
+  return effect(
+    "insert",
+    () => {
+      if (position !== undefined) editor.setSelections([charwiseSelection(position)]);
+      editor.setCursorStyle("line");
+    },
+    { enterInsert: { count: state.repeat, separator: "" }, dotRepeatable: true }
+  );
+}
+
+function convertTargetForKey(key: string): ConvertTarget | undefined {
+  switch (key) {
+    case "u":
+      return "lower";
+    case "U":
+      return "upper";
+    case "~":
+      return "toggle";
+    case "?":
+      return "rot13";
+    default:
+      return undefined;
+  }
 }
 
 // Bare find motions `f`/`t`/`F`/`T` then the target char: move the cursor and
@@ -328,6 +554,10 @@ type OperatorSpec = {
   // `c`: expand `cw` to `ce`, and (with text objects) use change-specific
   // cancellation; also enters insert mode after applying.
   forChange: boolean;
+  // `gu`/`gU`/`g~`/`g?`: a `g`-prefixed operator. The whole-line doubling is the
+  // full chord repeated (`gugu`), not just [key] (`guu`); [operandHandler]
+  // recognizes the extra `g`-form.
+  gPrefixed?: boolean;
 };
 
 // Shared so the single-key aliases (`s`/`S`/`C`/`D`) reuse the exact same specs
@@ -359,16 +589,25 @@ function operatorForKey(key: string): OperatorSpec | undefined {
 function operatorRootHandler(key: string, state: HandlerState): HandleResult<void> {
   const spec = operatorForKey(key);
   if (spec === undefined) return unhandled();
+  return operandContinuation(spec, state);
+}
+
+// Begin an operator's operand grammar (motion/object/doubled-key/...) at the
+// current pending depth. The caller is responsible for having claimed the
+// operator's depth level.
+function operandGrammar(spec: OperatorSpec, state: HandlerState): HandleResult<void> {
+  return handler([{ handler: prefixHandler(operandHandler(spec)), state: cloneHandlerState(state) }]);
+}
+
+// Claim a depth level for a root operator (`d`/`c`/`y`/`>`/...) and begin its
+// operand grammar. The g-prefixed convert operators claim their level at the
+// `g` prefix instead (see [gChordHandler]), so they call [operandGrammar].
+function operandContinuation(spec: OperatorSpec, state: HandlerState): HandleResult<void> {
   // Pending-depth: the operator's own count (typed before it) folds into the
   // operator entry rather than adding a level (`2d` is one entry). A fresh
   // operand count typed after the operator is its own entry.
   const operatorDepth = state.hasCount === true ? state.operatorDepth : state.operatorDepth + 1;
-  return handler([
-    {
-      handler: prefixHandler(operandHandler(spec)),
-      state: { ...cloneHandlerState(state), operatorDepth },
-    },
-  ]);
+  return operandGrammar(spec, { ...cloneHandlerState(state), operatorDepth });
 }
 
 // The operand grammar after an operator: doubled key (linewise), text objects
@@ -381,9 +620,25 @@ function operandHandler(spec: OperatorSpec): Handler<void> {
     const registers = state.registers;
     if (editor === undefined || registers === undefined) return invalid();
 
-    // Doubled operator key: linewise on [repeat] lines (`dd`/`cc`/`yy`/`>>`).
+    // Doubled operator key: linewise on [repeat] lines (`dd`/`cc`/`yy`/`>>`,
+    // and `guu`/`gUU`/... where [key] is the convert key).
     if (key === spec.key) {
       return applyOperator(spec, state, { kind: "line" });
+    }
+
+    // A g-prefixed operator (`gu`/`gU`/`g~`/`g?`) also doubles via its full
+    // chord (`gugu`); other `g`-operands stay motions (`gugg`, `gug_`).
+    if (spec.gPrefixed === true && key === "g") {
+      return handler([
+        {
+          handler: (key2, gState) => {
+            if (key2 === spec.key) return applyOperator(spec, gState, { kind: "line" });
+            const motion = gChordMotion(key2);
+            return motion === undefined ? invalid() : applyOperator(spec, gState, { kind: "motion", motion });
+          },
+          state: deeper(state),
+        },
+      ]);
     }
 
     // Text objects: `i`/`a` then the object key.

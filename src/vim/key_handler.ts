@@ -1,9 +1,10 @@
 import type { VimCommandMapping, WhenEvaluator } from "./config.js";
 import type { VimEditorCapabilities } from "./editor.js";
+import type { ChangeListState } from "./normal/change_list.js";
 import type { FindState } from "./normal/find.js";
 import type { MarkState } from "./normal/mark.js";
 import type { RegisterName, Registers } from "./registers.js";
-import type { VimMode } from "./state.js";
+import type { Position, VimMode } from "./state.js";
 
 // The normal-mode insert-entry commands, which position the cursor and switch to
 // insert mode: `i`/`a`/`I`/`A` and `o`/`O` (open line below/above).
@@ -39,6 +40,11 @@ export type HandlerState = {
   registers?: Registers;
   marks?: MarkState;
   find?: FindState;
+  changeList?: ChangeListState;
+  // The cursor position when insert mode was last left, for `gi` (insert at the
+  // previous insert position). Injected live like [marks]/[find]; undefined
+  // until the first insert session ends.
+  lastInsertPosition?: Position;
 };
 
 export const initialHandlerState: HandlerState = {
@@ -77,6 +83,12 @@ export type EffectMeta = {
   // instead of a separate key list; motions/yank/marks leave it false. Defaults
   // to false when omitted.
   dotRepeatable?: boolean;
+  // Whether the owner should reconcile Vim state from the editor after the
+  // effect runs (the legacy `syncFromEditorState`). Native commands that move
+  // the cursor/open a different editor (`gd`, `gh`, …) set this; the
+  // editor-internal sync option (`syncSelectionAfter`) covers the rest. Defaults
+  // to false when omitted.
+  syncAfter?: boolean;
 };
 
 export type EffectAction<T> = {
@@ -88,6 +100,15 @@ export type EffectAction<T> = {
 type VoidKeyAction =
   | { type: "keys"; mode: VimMode; keys: readonly KeyToDispatch[] }
   | { type: "commands"; mode: VimMode; commands: readonly VimCommandMapping[] }
+  // Hand a finite-keymap chord the framework grammar has not migrated (the
+  // visual/search `g`-chords `gv`/`gn`/`gN`) to the legacy keymap resolver. The
+  // keys feed the resolver directly (not the recording-and-re-dispatch path), so
+  // they are not double-recorded; once the resolver goes pending, follow-up keys
+  // route to legacy via the normal executor/legacy coexistence. [count] carries
+  // the framework-owned count over to the legacy side, which reads it from its
+  // own count state.
+  // Never a buffer change, so never dot-repeatable.
+  | { type: "legacyKeymap"; mode: VimMode; keys: readonly string[]; count: number | undefined }
   | { type: "sequence"; mode: VimMode; actions: readonly KeyAction<void>[] };
 
 export type KeyAction<T> = EffectAction<T> | (T extends void ? VoidKeyAction : never);
