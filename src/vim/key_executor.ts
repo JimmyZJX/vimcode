@@ -50,7 +50,10 @@ export type KeyExecutorOptions = {
    * decides what an entry means (e.g. entering insert starts an insert session);
    * a target mode equal to the current mode is a no-op.
    */
-  onEnterMode?: (mode: VimMode, opts?: { enterInsert?: { count: number; separator: string } }) => void;
+  onEnterMode?: (
+    mode: VimMode,
+    opts?: { enterInsert?: { count: number; separator: string }; search?: { backwards: boolean } }
+  ) => void;
   /**
    * Feed a finite-keymap chord (e.g. a not-yet-migrated `g`-chord) to the legacy
    * keymap resolver. The owner resolves/dispatches the chord; the executor stays
@@ -120,6 +123,15 @@ export class KeyExecutor {
   /** Current ambiguous chord, if any. */
   pendingConflict(): KeyExecutorConflict | undefined {
     return this.conflict;
+  }
+
+  /** Sync the executor to an owner-driven mode change (e.g. a legacy path or
+      escape that changed the Vim mode without going through an executor action).
+      Rebuilds the default handlers for [mode]; a no-op when already in [mode], so
+      it never clobbers an in-flight framework chord that just entered the mode. */
+  syncMode(mode: VimMode): void {
+    if (this.state.mode === mode) return;
+    this.reset(mode);
   }
 
   /** Clear pending handlers/conflicts and rebuild default handlers for [mode]. */
@@ -298,7 +310,7 @@ export class KeyExecutor {
     if (action.type === "effect") {
       this.lastDotRepeatable = action.dotRepeatable === true;
       this.lastSyncAfter = action.syncAfter === true;
-      this.options.onEnterMode?.(action.mode, { enterInsert: action.enterInsert });
+      this.options.onEnterMode?.(action.mode, { enterInsert: action.enterInsert, search: action.search });
     }
     // A chord handed to legacy is never a dot-repeatable change (the legacy side
     // owns whatever repeat semantics it has), so the framework must discard the

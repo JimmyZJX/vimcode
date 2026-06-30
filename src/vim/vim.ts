@@ -22,6 +22,8 @@ import { FindMotion, Motion } from "./motion.js";
 import { NormalMode } from "./normal.js";
 import type { NormalKeyResult } from "./normal.js";
 import { normalModeHandler } from "./normal_mode_handler.js";
+import { searchModeHandler } from "./search_handler.js";
+import { visualModeHandler } from "./visual_handler.js";
 import { VimOperatorStack, WaitingInput, convertTargetForPending, isSelfEscapingWaitingInput } from "./operator.js";
 import { RangeOperator } from "./operator_target.js";
 import type {
@@ -32,6 +34,7 @@ import type {
 import { MacroRecordingStatus, RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { incrementNumbers } from "./normal/increment.js";
 import { isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
+import type { PendingSearch } from "./normal/search.js";
 import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
 import { DebugRemapConflict, createRemaps, debugRemapConflicts, handleKeyOverride as remapKeyOverride, hasRemapStartingWith, pendingRemapInsertText, remapHandler } from "./remap.js";
 import type { Remaps } from "./remap.js";
@@ -89,6 +92,13 @@ export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promi
 
 const alwaysActiveWhenEvaluator: WhenEvaluator = () => true;
 
+// Modes the typed executor owns handlers for besides `normal`: the `search`
+// prompt and the visual kinds. Mode transitions touching these resync the
+// executor (see [Vim.setMode]).
+function isExecutorOwnedNonNormalMode(mode: VimMode): boolean {
+  return mode === "search" || isVisualModeKind(mode);
+}
+
 
 
 ;
@@ -129,6 +139,10 @@ export class Vim {
   // command callback.
   private dispatchWhenEvaluator: WhenEvaluator = alwaysActiveWhenEvaluator;
   private searchOriginMode: VimMode | undefined;
+  // The framework `/`?` prompt's editable query while in `search` mode. Created
+  // by the executor mode transition ([enterModeFromExecutor]) and cleared on
+  // exit; injected into the search-mode grammar via [searchRootHandler].
+  private activeSearch: PendingSearch | undefined;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
   // Zed: `Vim::replacements` — what replace mode overwrote, for backspace.
@@ -138,7 +152,6 @@ export class Vim {
   // Vim `i_CTRL-O` (Zed: `Vim::temp_mode`): one normal-mode command from
   // insert mode, then back to insert.
   private temporaryNormal = false;
-  private pendingVisualRepeatChange: { selection: RecordedSelection } | undefined;
   private readonlyWarningUntil = 0;
   private readonly insertKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
     ["ctrl-k", () => this.startInsertDigraph()],
@@ -326,6 +339,10 @@ export class Vim {
     const handleOverride = this.handleKeyOverride(key);
     if (handleOverride !== undefined) return handleOverride;
 
+    // The framework `/`?` prompt owns search-input keys (and escape, to cancel);
+    // anything else (e.g. `ctrl-a`) is left to the host, like the legacy prompt.
+    if (this.activeSearch !== undefined) return isSearchInputKey(key);
+
     const pendingSearch = this.operatorStack.activeTopLevel("search");
     if (pendingSearch !== undefined) return isSearchInputKey(key);
 
@@ -461,16 +478,25 @@ export class Vim {
     this.easyMotion.clear(this.editor);
     this.clearPendingRemaps();
     this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
+    // The framework `/`?` prompt keeps its query in [activeSearch] (not the
+    // operator stack); tear it down on the same path.
+    const frameworkSearch = this.activeSearch;
+    if (frameworkSearch !== undefined) {
+      this.globalState.search.clearPending(this.editor, frameworkSearch, { restoreViewport: closeSearchHighlights });
+      this.activeSearch = undefined;
+    }
     this.searchOriginMode = undefined;
     this.handlerState.register = undefined;
     this.handlerState.countText = "";
-    if (closeSearchHighlights && pendingSearch !== undefined) this.editor.clearSearchHighlights();
+    if (closeSearchHighlights && (pendingSearch !== undefined || frameworkSearch !== undefined)) {
+      this.editor.clearSearchHighlights();
+    }
     this.operatorStack.clear();
     this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.keyExecutor.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.activeSearch !== undefined || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.keyExecutor.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -499,6 +525,7 @@ export class Vim {
     // support cursor movement and backspace, which a key log cannot show).
     // Everything else renders the showcmd buffer: the literal keys typed for
     // the command in flight.
+    if (this.activeSearch !== undefined) return this.globalState.search.pendingChord(this.activeSearch);
     const pendingOperator = this.operatorStack.top();
     if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
     if (pendingOperator?.type === "command") return `:${pendingOperator.input}`;
@@ -547,10 +574,73 @@ export class Vim {
   // through to the legacy dispatcher (see [dispatchThroughPipeline]). Ported
   // handlers are added here; the remap handler has highest priority.
   private executorHandlers(state: HandlerState): readonly HandlerEnv<void>[] {
+    // Per-mode root handlers. `search` is the first non-normal mode the executor
+    // owns; it has no remap layer (a `/`?` query is literal input). Modes the
+    // framework does not own yet (insert/replace/visual) fall through the normal
+    // handlers, which decline outside normal context.
+    if (state.mode === "search" && this.activeSearch !== undefined) {
+      return [{ handler: this.searchRootHandler(), state }];
+    }
+    if (isVisualModeKind(state.mode)) {
+      return [
+        { handler: this.remapRootHandler(), state },
+        { handler: this.visualRootHandler(), state },
+      ];
+    }
     return [
       { handler: this.remapRootHandler(), state },
       { handler: this.normalRootHandler(), state },
     ];
+  }
+
+  // The migrated visual-mode grammar ([visualModeHandler]); pure, with the live
+  // editor/registers and the [VisualMode] selection state injected by
+  // [visualRootHandler].
+  private readonly visualGrammar: Handler<void> = visualModeHandler();
+
+  // Root of the visual-mode grammar. It only claims from a clean visual context
+  // (no legacy visual subsystem mid-chord; see [isExecutorVisualContext]); other
+  // keys fall through to the legacy dispatcher during the migration.
+  private visualRootHandler(): Handler<void> {
+    return (key, state) => {
+      if (!this.isExecutorVisualContext()) return unhandled();
+      const liveState: HandlerState = {
+        ...state,
+        mode: this.modeState,
+        editor: this.editor,
+        registers: this.globalState.registers,
+        visual: this.visualMode,
+        repeatState: this.globalState.repeat,
+      };
+      return this.visualGrammar(key, liveState);
+    };
+  }
+
+  // Whether the executor may handle a visual-mode key: a visual mode with no
+  // legacy subsystem mid-chord. Mirrors [isExecutorNormalContext].
+  private isExecutorVisualContext(): boolean {
+    return (
+      this.isVisualMode() &&
+      this.operatorStack.length === 0 &&
+      !this.keymapResolver.isPending() &&
+      !this.easyMotion.isPending()
+    );
+  }
+
+  // Root of the `search` mode grammar ([searchModeHandler]). The live editor and
+  // the in-flight query travel in the handler state, like [normalRootHandler].
+  private searchRootHandler(): Handler<void> {
+    return (key, state) => {
+      const liveState: HandlerState = {
+        ...state,
+        mode: "search",
+        editor: this.editor,
+        registers: this.globalState.registers,
+        search: this.globalState.search,
+        activeSearch: this.activeSearch,
+      };
+      return searchModeHandler(key, liveState);
+    };
   }
 
   // The migrated normal-mode grammar (count/register prefix + motions +
@@ -567,14 +657,51 @@ export class Vim {
   // here.
   private enterModeFromExecutor(
     mode: VimMode,
-    opts?: { enterInsert?: { count: number; separator: string } }
+    opts?: { enterInsert?: { count: number; separator: string }; search?: { backwards: boolean } }
   ): void {
     if (mode === "insert" && this.modeState !== "insert") {
+      // The origin is the mode the insert session began from: "normal" for
+      // normal-mode change/insert-entry, the visual kind for a visual change
+      // (`v…c`). The visual origin matters on escape — a `visualBlock` change
+      // collapses cursors and replicates the typed text over the block.
       this.enterInsertMode({
-        origin: "normal",
+        origin: isVisualModeKind(this.modeState) ? this.modeState : "normal",
         count: opts?.enterInsert?.count ?? 1,
         separator: opts?.enterInsert?.separator ?? "",
       });
+    }
+    if (mode === "search" && this.modeState !== "search") {
+      // Start the incremental prompt; the search-mode grammar drives it from here.
+      this.searchOriginMode = this.modeState;
+      this.activeSearch = this.globalState.search.start(opts?.search?.backwards ?? false, this.editor);
+      this.setMode("search");
+      // Rebuild the executor handlers now that [activeSearch] exists so the next
+      // key routes to [searchRootHandler] (which [executorHandlers] gates on it).
+      this.keyExecutor.reset("search");
+    }
+    // Leaving `search` for normal (the `enter` completion; the motion was already
+    // applied by the effect): tear down the prompt session.
+    if (mode === "normal" && this.modeState === "search") {
+      this.activeSearch = undefined;
+      this.searchOriginMode = undefined;
+      this.setMode("normal");
+    }
+    // Visual mode transitions (the framework targets only these three kinds):
+    if (mode === "visual" || mode === "visualLine" || mode === "visualBlock") {
+      if (!isVisualModeKind(this.modeState)) {
+        // Entering visual from normal (`v`/`V`/`ctrl-v`, later `gv`/`gn`): start
+        // the selection. The entry effect itself is a no-op.
+        this.enterVisualMode(mode);
+      } else {
+        // Already visual: a motion (same kind) or a toggle to another kind. The
+        // effect already changed the [VisualMode] selection state; just record
+        // the (possibly unchanged) mode.
+        this.setMode(mode);
+      }
+    } else if (mode === "normal" && isVisualModeKind(this.modeState)) {
+      // Leaving visual for normal (toggle-exit / operator). The effect already
+      // did the visual state cleanup (toggleMode/handleCommand/exit).
+      this.setMode("normal");
     }
   }
 
@@ -610,6 +737,7 @@ export class Vim {
         find: this.globalState.find,
         changeList: this.modelState.changeList,
         lastInsertPosition: this.modelState.lastInsertPosition,
+        search: this.globalState.search,
       };
       return this.normalGrammar(key, liveState);
     };
@@ -690,6 +818,11 @@ export class Vim {
         this.ensureNormalModeForReadonlyDocument();
         return "handled";
       }
+      // Framework `/`?` prompt: a key the search grammar declined that is not
+      // escape (e.g. `ctrl-a`, function keys) is not ours — let the host handle
+      // it without disturbing the prompt or recording it. Escape falls through to
+      // the legacy escape handling below, which cancels the prompt.
+      if (this.activeSearch !== undefined && !this.isEscape(key)) return "native";
       // The key fell through to legacy while the executor was mid-chord (e.g. a
       // buffered count/register from `2`/`"a`). Carry that pending count and
       // register into the legacy [handlerState] so the legacy operation can
@@ -765,6 +898,13 @@ export class Vim {
     }
     const modeBefore = this.modeState;
     const claimed = this.keyExecutor.handle(key, allowRemap);
+    // Keys the framework claims in a non-normal mode it owns (search-prompt
+    // input, visual-mode keys) are macro-recorded too, like the legacy
+    // waiting-input/visual paths, so a recorded `/foo<CR>` or `v3ls...` replays.
+    // Dot-repeat recording (below) is normal-context only.
+    if (claimed && isExecutorOwnedNonNormalMode(modeBefore) && !this.globalState.repeat.isReplaying()) {
+      this.recordMacroKey(key);
+    }
     if (claimed && recordable) {
       // Macros are a verbatim transcript: record every claimed key, including a
       // chord-cancelling key (`d` then `.`).
@@ -1521,7 +1661,7 @@ export class Vim {
       this.globalState.repeat.recordVisualAction(result.repeatAction.selection, result.repeatAction.action);
     }
     if (result.pendingRepeatChange !== undefined && !this.globalState.repeat.isReplaying()) {
-      this.pendingVisualRepeatChange = result.pendingRepeatChange;
+      this.globalState.repeat.setPendingVisualChange(result.pendingRepeatChange.selection);
     }
     if (result.enterInsert) {
       this.enterInsertMode({ origin: modeBefore });
@@ -1579,7 +1719,7 @@ export class Vim {
     this.readonlyWarningUntil = Date.now() + readonlyWarningDurationMs;
     this.clearPendingGrammar({ closeSearchHighlights: true });
     if (this.isVisualMode()) this.visualMode.clearState();
-    this.pendingVisualRepeatChange = undefined;
+    this.globalState.repeat.clearPendingVisualChange();
     this.clearInsertOrReplaceSession();
     this.replaceModeReplacements = [];
     this.insertOrigin = undefined;
@@ -1645,7 +1785,17 @@ export class Vim {
   }
 
   private setMode(mode: VimMode): void {
+    const previous = this.modeState;
     this.modeState = mode;
+    // Keep the executor in sync across transitions to/from the framework-owned
+    // non-normal modes (`search`, visual kinds), so it builds the right per-mode
+    // handlers. Owner-side paths (legacy entry like `gv`/mouse, escape, the
+    // legacy visual-search exit) change the mode without an executor action;
+    // framework actions already set the executor's mode, so [syncMode] no-ops for
+    // them (entering `search` rebuilds explicitly once the prompt exists).
+    if (isExecutorOwnedNonNormalMode(previous) || isExecutorOwnedNonNormalMode(mode)) {
+      this.keyExecutor.syncMode(mode);
+    }
   }
 
   private enterInsertAtPrevious(): void {
@@ -1664,11 +1814,10 @@ export class Vim {
   private finishInsertOrReplaceSession(mode: "insert" | "replace"): void {
     this.modelState.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
     this.modelState.marks.setBuiltinMark("^", this.modelState.lastInsertPosition);
-    const pendingVisualRepeatChange = this.pendingVisualRepeatChange;
-    if (pendingVisualRepeatChange !== undefined && !this.globalState.repeat.isReplaying()) {
-      this.globalState.repeat.recordVisualAction(pendingVisualRepeatChange.selection, { type: "change", insertedText: this.insertRepeatText });
+    const pendingVisualChange = this.globalState.repeat.takePendingVisualChange();
+    if (pendingVisualChange !== undefined && !this.globalState.repeat.isReplaying()) {
+      this.globalState.repeat.recordVisualAction(pendingVisualChange, { type: "change", insertedText: this.insertRepeatText });
     }
-    this.pendingVisualRepeatChange = undefined;
     // The keys typed during the insert session were already logged into the
     // dot-repeat and macro buffers as they flowed through [dispatchKey]; the
     // terminating `<escape>` is logged by [recordEscapeKey]. So `.`/macro replay

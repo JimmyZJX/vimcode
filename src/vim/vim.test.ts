@@ -3043,6 +3043,25 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(upperCaseSearchEditor)).toEqual({ row: 0, column: 8 });
   });
 
+  it("uses search as an operator motion (d/, c/) and dot-repeats", () => {
+    const deleteEditor = new InMemoryVimEditor("a.c. abcd a.c. abcd");
+    const deleteVim = new Vim(deleteEditor);
+
+    runKeys(deleteVim, ["d", "/", "c", "d", "enter"]);
+    expect(deleteEditor.getText()).toBe("cd a.c. abcd");
+    expect(deleteVim.modeName).toBe("vim:normal");
+
+    runKeys(deleteVim, ["."]);
+    expect(deleteEditor.getText()).toBe("cd");
+
+    const changeEditor = new InMemoryVimEditor("hello world");
+    const changeVim = new Vim(changeEditor);
+
+    runKeys(changeVim, ["c", "/", "w", "enter"]);
+    expect(changeVim.modeName).toBe("vim:insert");
+    expect(changeEditor.getText()).toBe("world");
+  });
+
   it("treats Vim search queries as regexes", () => {
     const editor = new InMemoryVimEditor("foo axc abc");
     const vim = new Vim(editor);

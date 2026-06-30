@@ -3,8 +3,11 @@ import type { VimEditorCapabilities } from "./editor.js";
 import type { ChangeListState } from "./normal/change_list.js";
 import type { FindState } from "./normal/find.js";
 import type { MarkState } from "./normal/mark.js";
+import type { RepeatState } from "./normal/repeat.js";
+import type { PendingSearch, SearchState } from "./normal/search.js";
 import type { RegisterName, Registers } from "./registers.js";
 import type { Position, VimMode } from "./state.js";
+import type { VisualMode } from "./visual.js";
 
 // The normal-mode insert-entry commands, which position the cursor and switch to
 // insert mode: `i`/`a`/`I`/`A` and `o`/`O` (open line below/above).
@@ -45,6 +48,22 @@ export type HandlerState = {
   // previous insert position). Injected live like [marks]/[find]; undefined
   // until the first insert session ends.
   lastInsertPosition?: Position;
+  // The shared search state (last pattern + incremental prompt UI), for the
+  // search motions `n`/`N`/`*`/`#` and the `/`?` prompt. Injected live like
+  // [marks]/[find].
+  search?: SearchState;
+  // The in-flight `/`?` prompt's editable query, while in `search` mode. Owned
+  // by [Vim] (mode-entry creates it) and injected live so the pure search-mode
+  // grammar can drive it.
+  activeSearch?: PendingSearch;
+  // The visual-mode selection state + edit helpers, injected live (like
+  // [marks]/[search]) so the pure visual grammar can drive the selection and
+  // apply visual operators while in a visual mode.
+  visual?: VisualMode;
+  // The dot-repeat state, injected so visual operators can record their
+  // (same-size) visual repeat action — visual `.` reapplies to an
+  // equivalently-shaped selection rather than replaying keys.
+  repeatState?: RepeatState;
 };
 
 export const initialHandlerState: HandlerState = {
@@ -78,6 +97,10 @@ export type EffectMeta = {
   // joins the repeats (`\n` for `o`/`O`). Consumed by the owner's mode
   // transition; [mode] already says *that* we enter insert, this says *how*.
   enterInsert?: { count: number; separator: string };
+  // Search-prompt parameters for a command whose target [mode] is "search"
+  // (`/` forward, `?` backward): the owner's mode transition starts the
+  // incremental prompt in this direction.
+  search?: { backwards: boolean };
   // Whether this command is a buffer-modifying change that `.` should repeat
   // (Vim's per-command `prep_redo` decision). The command declares it here
   // instead of a separate key list; motions/yank/marks leave it false. Defaults

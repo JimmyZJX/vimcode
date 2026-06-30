@@ -31,6 +31,12 @@ export class RepeatState {
   private last: RepeatAction | undefined;
   private replaying = false;
   private abortRequested = false;
+  // A visual change (`v…c`) cannot record its dot-repeat action until the
+  // inserted text is known (on insert-exit). The selection geometry is captured
+  // at change time and stashed here; [takePendingVisualChange] retrieves it when
+  // the insert session ends to build the `change` visual action. Callers guard
+  // on [isReplaying] before setting, like [recordVisualAction].
+  private pendingVisualChange: RecordedSelection | undefined;
 
   isReplaying(): boolean {
     return this.replaying;
@@ -75,6 +81,20 @@ export class RepeatState {
   recordVisualAction(selection: RecordedSelection, action: VisualRepeatAction): void {
     this.current = undefined;
     this.last = { type: "visual", selection, action };
+  }
+
+  setPendingVisualChange(selection: RecordedSelection): void {
+    this.pendingVisualChange = selection;
+  }
+
+  takePendingVisualChange(): RecordedSelection | undefined {
+    const selection = this.pendingVisualChange;
+    this.pendingVisualChange = undefined;
+    return selection;
+  }
+
+  clearPendingVisualChange(): void {
+    this.pendingVisualChange = undefined;
   }
 
   maybeFinish({ mode, isPending }: { mode: string; isPending: boolean }): void {

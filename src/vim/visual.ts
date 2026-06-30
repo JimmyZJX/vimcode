@@ -190,6 +190,21 @@ export class VisualMode {
     this.countState.clear();
   }
 
+  // The active visual kind as a [VimMode], or undefined when not in visual mode.
+  // Used by the framework visual grammar to compute the target mode of a
+  // mode-toggling key (`v`/`V`/`ctrl-v`).
+  currentMode(): RestoredVisualMode | undefined {
+    if (this.state === undefined) return undefined;
+    switch (this.state.kind) {
+      case "charwise":
+        return "visual";
+      case "linewise":
+        return "visualLine";
+      case "blockwise":
+        return "visualBlock";
+    }
+  }
+
   exit(): void {
     const state = this.state;
     if (state !== undefined) this.rememberState(state);
@@ -224,7 +239,11 @@ export class VisualMode {
     }
   }
 
-  handleCommand(command: VisualCommand): VisualKeyResult {
+  // [registerOverride] lets the framework visual grammar supply the selected
+  // register directly (its `"a` prefix lives in the executor, not the legacy
+  // [registerSelection]). When omitted, the register is taken from
+  // [registerSelection] as before.
+  handleCommand(command: VisualCommand, registerOverride?: RegisterName): VisualKeyResult {
     const state = this.state;
     if (state === undefined) return handled({ exitVisual: true });
     switch (command.type) {
@@ -244,20 +263,20 @@ export class VisualMode {
       case "otherEnd":
         return this.otherEnd(state, { rowAware: command.rowAware });
       case "yankLinewise":
-        return this.yankLinewiseKey(state);
+        return this.yankLinewiseKey(state, registerOverride);
       case "yank":
-        return this.yankKey(state);
+        return this.yankKey(state, registerOverride);
       case "deleteToLineEnd":
-        return this.deleteToLineEndKey(state);
+        return this.deleteToLineEndKey(state, registerOverride);
       case "delete":
-        return this.deleteKey(state);
+        return this.deleteKey(state, registerOverride);
       case "change":
-        return this.changeKey(state);
+        return this.changeKey(state, registerOverride);
       case "changeLines":
         // Vim `v_R`: the change always operates on whole lines.
-        return this.changeKey(state.kind === "linewise" ? state : stateToLinewise(state));
+        return this.changeKey(state.kind === "linewise" ? state : stateToLinewise(state), registerOverride);
       case "paste":
-        return this.pasteKey(state);
+        return this.pasteKey(state, registerOverride);
       case "percentOrMatching":
         return this.percentKey(state) ?? handled();
     }
@@ -362,8 +381,8 @@ export class VisualMode {
     return handled();
   }
 
-  private yankLinewiseKey(state: VisualState): VisualKeyResult {
-    const cursor = this.yankLinewise(state, this.takeSelectedRegister());
+  private yankLinewiseKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
+    const cursor = this.yankLinewise(state, this.takeSelectedRegister(registerOverride));
     if (cursor !== undefined) this.rememberState(state);
     this.state = undefined;
     this.editor.setCursorStyle("block");
@@ -371,8 +390,8 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private yankKey(state: VisualState): VisualKeyResult {
-    this.yank(state, this.takeSelectedRegister());
+  private yankKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
+    this.yank(state, this.takeSelectedRegister(registerOverride));
     if (state.kind === "blockwise") {
       this.finishNormalAtVisualStarts(state);
     } else {
@@ -385,34 +404,34 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private deleteToLineEndKey(state: VisualState): VisualKeyResult {
+  private deleteToLineEndKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
     this.rememberState(state);
-    this.deleteToLineEnd(state, this.takeSelectedRegister());
+    this.deleteToLineEnd(state, this.takeSelectedRegister(registerOverride));
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private deleteKey(state: VisualState): VisualKeyResult {
+  private deleteKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
     const selection = visualRepeatSelectionForState(this.editor, state);
     this.rememberState(state);
-    this.delete(state, this.takeSelectedRegister());
+    this.delete(state, this.takeSelectedRegister(registerOverride));
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal", repeatAction: { selection, action: { type: "delete" } } });
   }
 
-  private changeKey(state: VisualState): VisualKeyResult {
+  private changeKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
     const selection = visualRepeatSelectionForState(this.editor, state);
     this.rememberState(state);
-    this.change(state, this.takeSelectedRegister());
+    this.change(state, this.takeSelectedRegister(registerOverride));
     this.state = undefined;
     this.editor.setCursorStyle("line");
     return handled({ exitVisual: true, enterInsert: true, nextMode: "insert", pendingRepeatChange: { selection } });
   }
 
-  private pasteKey(state: VisualState): VisualKeyResult {
-    const pastedState = this.paste(state, this.takeSelectedRegister());
+  private pasteKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
+    const pastedState = this.paste(state, this.takeSelectedRegister(registerOverride));
     this.rememberState(pastedState ?? state);
     this.state = undefined;
     this.editor.setCursorStyle("block");
@@ -829,7 +848,8 @@ export class VisualMode {
     this.editor.setSelections(selections);
   }
 
-  private takeSelectedRegister(): RegisterName | undefined {
+  private takeSelectedRegister(registerOverride?: RegisterName): RegisterName | undefined {
+    if (registerOverride !== undefined) return registerOverride;
     return this.registerSelection.take();
   }
 

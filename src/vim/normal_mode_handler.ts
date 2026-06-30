@@ -25,7 +25,8 @@ import type { ChangeListDirection } from "./normal/change_list.js";
 import type { ConvertTarget } from "./normal/convert.js";
 import type { FindMotion, Motion, MotionResult } from "./motion.js";
 import { applyMotion, lineRange, motionForKey } from "./motion.js";
-import { motionHandler } from "./motion_handler.js";
+import { applyMotionResults, motionHandler } from "./motion_handler.js";
+import { searchActionHandler, searchOperandHandler, searchPromptHandler } from "./search_handler.js";
 import { prefixHandler } from "./prefix_handlers.js";
 import {
   OperatorTarget,
@@ -56,9 +57,30 @@ function rawNormalModeHandler(): Handler<void> {
       changeDeleteShortcutHandler(key, state),
       findHandler(key, state),
       repeatFindHandler(key, state),
+      searchActionHandler(key, state),
+      searchPromptHandler(key, state),
+      visualEntryHandler(key, state),
       gChordHandler(key, state),
       movementHandler(key, state),
     ]);
+}
+
+// `v`/`V`/`ctrl-v` from normal mode: enter the corresponding visual mode. The
+// effect just targets the mode; the owner's transition ([enterModeFromExecutor])
+// starts the selection (`VisualMode.enter`). In operator-pending context `v`/`V`
+// are forced-motion operands instead, handled in [operandHandler] (this runs at
+// the root, where no operator is pending).
+function visualEntryHandler(key: string, state: HandlerState): HandleResult<void> {
+  switch (key) {
+    case "v":
+      return effect("visual", () => {}, { dotRepeatable: false });
+    case "V":
+      return effect("visualLine", () => {}, { dotRepeatable: false });
+    case "ctrl-v":
+      return effect("visualBlock", () => {}, { dotRepeatable: false });
+    default:
+      return unhandled();
+  }
 }
 
 // The `g`-chord prefix. The framework owns parsing of the `g`-chords that do not
@@ -482,7 +504,7 @@ function applySimpleActionEffect(state: HandlerState, action: SimpleAction): Han
 // Key -> motion, including the count-sensitive `%` (match-pair without a count,
 // go-to-percentage with one). Char-input motions (`f`/`t`), line targets
 // (`G`/`gg`), and marks are resolved by their own grammar arms, not here.
-function resolveMotion(key: string, state: HandlerState): Motion | undefined {
+export function resolveMotion(key: string, state: HandlerState): Motion | undefined {
   if (key === "%") {
     return state.hasCount === true
       ? { type: "goToPercentage", percent: state.repeat }
@@ -533,15 +555,6 @@ function motionHandlerForMotion(motion: Motion): Handler<readonly MotionResult[]
       goal: selections[0]?.goal,
     };
   });
-}
-
-function applyMotionResults(editor: VimEditorCapabilities, results: readonly MotionResult[]): void {
-  editor.setSelections(
-    results.map(({ position, goal }) => {
-      const selection = charwiseSelection(position);
-      return goal === undefined ? selection : { ...selection, goal };
-    })
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +712,13 @@ function motionChordHandler(
 ): Handler<void> {
   return (key, state) => {
     if (state.editor === undefined) return invalid();
+
+    // Search as a motion operand (`d/`/`c/`/`y/`): the incremental prompt yields
+    // a search [Motion], applied via [apply]. It is an in-graph waiter so the
+    // pending operator survives (see [searchOperandHandler]).
+    if (key === "/" || key === "?") {
+      return searchOperandHandler(state, key === "?", apply);
+    }
 
     // Char-input find motions (`f`/`t`/`F`/`T`) then the target char.
     const findKind = findKindForKey(key);
