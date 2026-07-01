@@ -17,6 +17,28 @@ export type SearchOptions = {
 };
 export type SearchMatch = TextRange;
 
+// Vim `search-offset`: an offset typed after the closing separator of a search
+// (`/pat/e`, `?pat?s-1`) moves the cursor relative to the match rather than to
+// its start. `end` targets the last character of the match, `start` (Vim `s` or
+// `b`) its first, each shifted by an optional `+N`/`-N` character delta. Line
+// offsets (`/pat/2`) are not yet supported.
+export type SearchOffset =
+  | { type: "end"; delta: number }
+  | { type: "start"; delta: number };
+
+const searchOffsetPattern = /^([esb])([+-]\d+)?$/;
+
+// Parse the offset token that follows a search separator (the part after the
+// `/` in `/pat/e+2`). Returns undefined when the text is not a recognized
+// character offset, so callers can treat an unrecognized trailing segment as
+// part of the pattern instead (e.g. a literal `a/b` search).
+export function parseSearchOffset(text: string): SearchOffset | undefined {
+  const match = searchOffsetPattern.exec(text);
+  if (match === null) return undefined;
+  const delta = match[2] === undefined ? 0 : Number.parseInt(match[2], 10);
+  return match[1] === "e" ? { type: "end", delta } : { type: "start", delta };
+}
+
 export function searchOptionsForQuery(query: string, options: SearchOptions = {}): SearchOptions {
   return {
     ...options,

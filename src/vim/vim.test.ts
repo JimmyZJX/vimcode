@@ -358,6 +358,73 @@ describe("Zed-inspired Vim core smoke tests", () => {
     ]);
   });
 
+  it("replaces the whole selection with `v_r{char}` and exits to normal", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    // `v l` selects `ab`; `r x` replaces every selected character with `x`
+    // (Vim `v_r`) and collapses to normal at the selection start.
+    runKeys(vim, ["v", "l", "r", "x"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("xxcdef");
+  });
+
+  it("records `v_r{char}` for macros (replaying replaces the same-size selection)", () => {
+    const editor = new InMemoryVimEditor("abc\nabc");
+    const vim = new Vim(editor);
+
+    // Recording `v l r x` must capture both `r` and its char so replaying the
+    // macro reproduces the same visual replace on the next line.
+    runKeys(vim, ["q", "a", "v", "l", "r", "x", "q"]);
+    expect(editor.getText()).toBe("xxc\nabc");
+
+    runKeys(vim, ["j", "0", "@", "a"]);
+    expect(editor.getText()).toBe("xxc\nxxc");
+  });
+
+  it("replaces across lines with charwise `v_r`, preserving line breaks", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor);
+
+    // Selection spans `abc\nde`; each line's own characters are replaced, so the
+    // newline between them survives.
+    runKeys(vim, ["v", "j", "l", "r", "x"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("xxx\nxxf");
+  });
+
+  it("replaces whole lines with linewise `v_r`", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["V", "j", "r", "x"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("xxx\nxxx");
+  });
+
+  it("replaces the block with blockwise `v_r`", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["ctrl-v", "j", "l", "r", "x"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("xxc\nxxf");
+  });
+
+  it("cancels `v_r` on escape, keeping the selection in visual mode", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["v", "l", "r", "escape"]);
+
+    expect(vim.modeName).toBe("vim:visual");
+    expect(editor.getText()).toBe("abcdef");
+  });
+
   it("delegates basic VSCodeVim ctrl-w window commands to VSCode actions", () => {
     const editor = new InMemoryVimEditor("one two");
     const vim = new Vim(editor);
@@ -652,6 +719,24 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getSelections()).toEqual([
       { type: "charwise", anchor: { row: 0, column: 3 }, head: { row: 0, column: 3 } },
     ]);
+  });
+
+  it("syncs the typed executor to visual when adopting an external selection", () => {
+    // Adopting an external (mouse/multicursor) selection must go through
+    // [setMode] so the executor's mode tracks visual; otherwise its handlers
+    // decline every key and the legacy dispatcher takes over. Pin the invariant
+    // directly (a behavior test would pass either way, since the shared
+    // [VisualMode] produces the same result on both paths).
+    const editor = new InMemoryVimEditor("one two\none two");
+    const vim = new Vim(editor);
+    editor.setSelections([
+      { type: "charwise", anchor: { row: 0, column: 0 }, head: { row: 0, column: 3 } },
+    ]);
+    vim.syncFromEditorState();
+    const executorMode = (
+      vim as unknown as { keyExecutor: { currentParserState(): { mode: string } } }
+    ).keyExecutor.currentParserState().mode;
+    expect(executorMode).toBe("visual");
   });
 
   it("deletes all synced visual multicursor selections", () => {

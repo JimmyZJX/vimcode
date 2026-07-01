@@ -79,8 +79,6 @@ export type PendingInsertRegisterOperator = { type: "insertRegister" };
 export type PendingMarkOperator = { type: "mark" };
 export type PendingJumpOperator = { type: "jump"; line: boolean };
 export type PendingRegisterOperator = { type: "register" };
-export type PendingRecordRegisterOperator = { type: "recordRegister" };
-export type PendingReplayRegisterOperator = { type: "replayRegister"; count: number };
 export type PendingCommandOperator = { type: "command"; input: string };
 
 export type TopLevelPendingOperator =
@@ -92,8 +90,6 @@ export type TopLevelPendingOperator =
   | PendingMarkOperator
   | PendingJumpOperator
   | PendingRegisterOperator
-  | PendingRecordRegisterOperator
-  | PendingReplayRegisterOperator
   | PendingCommandOperator;
 
 export type VimOperator = TopLevelPendingOperator | NormalPendingOperator | VisualPendingOperator;
@@ -174,8 +170,6 @@ export type WaitingInput =
   | { type: "literal" }
   | { type: "insertRegister" }
   // Other top-level waiting inputs (mode-gated where Vim requires it).
-  | { type: "recordRegister" }
-  | { type: "replayRegister" }
   | { type: "register" }
   | { type: "command" }
   | { type: "search" }
@@ -296,8 +290,6 @@ export class VimOperatorStack {
     if (this.activeTopLevel("insertDigraph") !== undefined) return { type: "insertDigraph" };
     if (this.activeTopLevel("literal") !== undefined) return { type: "literal" };
     if (this.activeTopLevel("insertRegister") !== undefined) return { type: "insertRegister" };
-    if ((mode === "normal" || mode === "helixNormal") && this.activeTopLevel("recordRegister") !== undefined) return { type: "recordRegister" };
-    if ((mode === "normal" || mode === "helixNormal") && this.activeTopLevel("replayRegister") !== undefined) return { type: "replayRegister" };
     if (this.activeTopLevel("register") !== undefined) return { type: "register" };
     if (this.activeTopLevel("command") !== undefined) return { type: "command" };
     if (this.activeTopLevel("search") !== undefined) return { type: "search" };
@@ -588,8 +580,6 @@ export function isTopLevelPendingOperator(operator: VimOperator | undefined): op
     case "mark":
     case "jump":
     case "register":
-    case "recordRegister":
-    case "replayRegister":
     case "command":
       return true;
     case undefined:

@@ -10,6 +10,48 @@
 import { VimEditorCapabilities } from "./editor.js";
 import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
+// The in-flight `:` command-line input, held while in `command` mode. A small
+// string accumulator (append typed keys, `backspace` removes the last char,
+// `space` inserts a space), mirroring the legacy command line; unlike the search
+// prompt it has no cursor navigation. Owned by [Vim] (mode entry constructs it,
+// prefilling `'<,'>` from a visual selection) and injected live into the pure
+// command-mode grammar.
+export class CommandLine {
+  private text: string;
+
+  constructor(initial = "") {
+    this.text = initial;
+  }
+
+  value(): string {
+    return this.text;
+  }
+
+  append(key: string): void {
+    this.text += key === "space" ? " " : key;
+  }
+
+  backspace(): void {
+    this.text = this.text.slice(0, -1);
+  }
+}
+
+// Keys the `:` command line consumes: printable characters, space, enter,
+// backspace, and escape (which cancels via the central escape handling). Used by
+// [Vim.ownsKey] so VSCode does not intercept them while the prompt is open, and
+// by the command-mode grammar to bound the keys it accepts.
+export function isCommandInputKey(key: string): boolean {
+  return (
+    key.length === 1 ||
+    key === "space" ||
+    key === "enter" ||
+    key === "backspace" ||
+    key === "<escape>" ||
+    key === "escape" ||
+    key === "ctrl-["
+  );
+}
+
 export type CommandOptions = {
   runNormalKeys?: (keys: readonly string[], range: LineRange | undefined) => void;
   exOptions?: { gdefault: boolean };

@@ -34,6 +34,43 @@ insert/replace, search, command, macros/repeat) are ported into
   the synchronous `onKey`/`runKeys`/macro-replay paths observe editor effects
   immediately, while real (async) editor edits still serialize. `handleKey().run`
   awaits `KeyExecutor.whenIdle()`.
+- [x] Pending continuations can carry a deferred effect. `HandleResult`'s
+  `handler`/`conflict` variants carry an optional `PendingEffect` (a side-effect
+  thunk), enqueued by `KeyExecutor` when it accepts the continuation. This lets a
+  handler that both advances an interactive prompt and stays pending keep its
+  body pure — used by the `d/`/`c/`/`y/` incremental-search operand, which now
+  defers its incsearch preview (and resolves the pattern via the pure
+  `SearchState.resolveMotion`, committing the search side effects in an effect).
+  With this every handler body is pure (buffer changes and prompt updates are
+  deferred effects).
+- [x] Named macros (`q`/`@`/`Q`) migrated onto the framework (`macro_handler.ts`).
+  A macro is a recorded key sequence in `MacroState` (register → keys + recording
+  register + `replaying` flag); the normal-mode handlers toggle recording (`q`,
+  with a register-name waiter) and request replay (`@{reg}`/`@@`/`Q`). Two
+  framework additions support this: (1) `preservesDotRepeat` on effect/handler
+  results, so the macro-control keys are transparent to dot-repeat — they never
+  enter the dot register, and `@`/`Q`'s replayed keys keep the dot-repeat they
+  set (the legacy path got this from dispatch ordering); and (2) a `startedRecording`
+  guard in `handleThroughExecutor` so `q{reg}`'s register key isn't recorded as
+  the macro's first key. **Replay runs outside the executor's effect drain**:
+  `@`/`Q` only *request* a replay (`requestMacroReplay`), which `Vim` runs in
+  `routeKeyThroughExecutor` after the drain — feeding each key back through
+  `onKey` so it fully applies (mode transitions + edits) before the next, wrapped
+  in one undo transaction. Running it inside an effect would defer the framework
+  effects while legacy insert-mode text runs immediately, scrambling a replay
+  that passes through insert. Legacy `handleMacroControlKey`, the
+  `recordRegister`/`replayRegister` waiting-inputs, and their `VimOperatorStack`
+  machinery are removed.
+- [x] `KeyExecutor.handle` split into `parse` + `commit`. `parse` evaluates the
+  key against the current handlers with no side effects — no parser-state
+  advance, no queued effect — and returns the grammar `result` and whether it
+  `claimed` the key; `commit` advances parser state and runs/enqueues the
+  effects. `handle` is `parse` then `commit`, so existing callers are unchanged.
+  This exposes the synchronous ownership decision (from `parse`) separately from
+  the effects (in `commit`), the prerequisite for driving key ownership off the
+  real grammar across the host's `preventDefault` boundary and retiring
+  `Vim.ownsKey`. Single evaluation: `parse` computes the result once and `commit`
+  consumes it (no re-run, no separate predicate).
 - [x] Normal-mode cursor movement (`normal_mode_handler.movementHandler`), wired
   via `Vim.normalMovementRootHandler`. It only claims from a clean idle normal
   state (`isExecutorMovementContext`) and only for keys in
@@ -81,13 +118,25 @@ insert/replace, search, command, macros/repeat) are ported into
   are handled as operands; bare mark jumps still fall to legacy. Follow-up: the
   operator-operand find (`dfx`) does not yet record `lastFind` or support
   `ctrl-k`/space targets (pre-existing gap in `operandHandler`).
-- [ ] Count-dependent motions: `%` is claimed by `movementHandler` as
-  match-pair but a count makes it go-to-percentage (`20%`). The pure grammar
-  needs count-aware motion resolution, or `%`/`G`/`gg` must stay on the legacy
-  path until then.
-- [ ] Line motions `G`/`gg`: `G` resolves via a line move that is not a `Motion`
-  (and is also a linewise operator target), and `gg` needs the `g`-chord from
-  the finite-keymap phase. Both still work via the legacy fallback.
+- [x] Count-dependent motions: `%` is claimed by `movementHandler` as
+  match-pair, or go-to-percentage with a count (`20%`), via count-aware
+  resolution in `resolveMotion` (which reads `state.hasCount`).
+- [x] Line motions `G`/`gg`/`+`/`-`/`<CR>` and column motion `|`: `gg` is a
+  `g`-chord motion (`gChordMotion` → `startOfDocument`); the linewise standalone
+  `G`/`+`/`-`/`<CR>` are migrated in `lineMotionForKey` (kept *out* of
+  `resolveMotion` so the operator grammar, which resolves `G` via its own
+  `{kind:"lastLine"}` target and would otherwise treat `+`/`-`/`<CR>` as
+  charwise, is unaffected). `G` is count-aware (line N, else the last line,
+  keeping the column, matching `gg`/'nostartofline'); `+`/`-`/`<CR>` move count
+  lines to the first non-blank (new `goToLine`/`firstNonBlankLine` motions in
+  `motion.ts`). The dedicated handlers move the cursor in normal mode
+  (`lineMotionHandler`) and extend the selection in visual mode
+  (`visualLineMotionHandler`); `dG` stays linewise. `|` (go-to-column) is
+  charwise, so — like `%` — it lives in `resolveMotion` (with the column baked in
+  from the count, so it is idempotent through the count-repeating visual path,
+  and the `motionHandlerForMotion` special case), giving cursor / visual-extend /
+  operator (`d|`) uniformly. (`|` was previously unimplemented, not on the legacy
+  path.)
 - [x] Range operators (`d`/`c`/`y`/`>`/`<`/`=`) + operands, in
   `normal_mode_handler.ts` (`operatorRootHandler` → `operandHandler`). Operands:
   doubled-key linewise (`dd`/`>>`), text objects (`diw`/`dap`/...), forced
@@ -102,9 +151,9 @@ insert/replace, search, command, macros/repeat) are ported into
   Pending-depth is computed from the executor's `operatorDepth`. Convert operators
   (`gu`/`gU`/`g~`) remain on the legacy path (the top-level `g`-chord is not
   claimed by the framework) and work via the count/register bridge.
-- [~] Search operands: `/`?` prompt, `n`/`N`/`*`/`#`, and `d/` (operator motion
-  operand) are migrated (see the search slices below). `gn`/`cgn`/`dgn` still
-  need visual mode; `test_gn`/`cgn`/`dgn` fail until then.
+- [x] Search operands: `/`?` prompt, `n`/`N`/`*`/`#`, `d/` (operator motion
+  operand), and `gn`/`gN`/`cgn`/`dgn` (search-selection) are all migrated (see
+  the search/visual slices below).
 - [ ] Count + recursive remap: a buffered framework count is a *pending*
   continuation, so a remapped key typed after a count (`y`→`2x`, `x`→`"_x`)
   bypasses the remap handler (which only runs at the executor root). The count
@@ -148,17 +197,29 @@ insert/replace, search, command, macros/repeat) are ported into
   `state.changeList` (the `ChangeListState`) and `state.lastInsertPosition` are
   injected into the live handler state by `normalRootHandler`, like
   `editor`/`registers`/`marks`/`find`. All non-editing native chords declare
-  `dotRepeatable: false`. Only `gv` (restore visual selection) and `gn`/`gN`
-  (search-selection) remain on the legacy keymap resolver via the `legacyKeymap`
-  action + `dispatchToLegacyKeymap` hook; they will migrate with the visual-mode
-  and search slices, after which `legacyKeymap` can be deleted entirely.
+  `dotRepeatable: false`. `gv` (restore visual selection,
+  `restoreVisualSelectionHandler`) and `gn`/`gN` (search-selection,
+  `searchSelectionHandler`) are now migrated too, so **every** `g`-chord is
+  handled in the framework — the `legacyKeymap` action + `dispatchToLegacyKeymap`
+  hook have been deleted. The editor-level `g`-chords are shared with visual mode
+  via `editorGChordHandler` (the leaf effects target `state.mode`, so they keep
+  the current mode).
 - [ ] Count + recursive remap: a buffered framework count is a *pending*
   continuation, so a remapped key typed after a count (`y`→`2x`, `x`→`"_x`)
   bypasses the remap handler (which only runs at the executor root). The count
   needs to either re-offer the post-count key to the root handlers (preserving
   the count) or resolve to idle as the pre-redo `normalCountPrefix` did.
-- [ ] Finite keymap `z`/`[`/`]`/`ctrl-w` chords (the `g`-chords are done; the
-  same `legacyKeymap` delegation pattern applies to the rest).
+- [x] Finite keymap chords migrated into the framework (`finite_chord_handlers.ts`,
+  shared by the normal and visual grammars): pages (`ctrl-d`/`u`/`f`/`b`,
+  `pagedown`/`up`) + scroll (`ctrl-y`/`ctrl-e`) extend the selection in visual;
+  `z`-chords (reveal `zz`/`zt`/`zb` shared, folds `za`/… normal-only); `ctrl-w`
+  window chords; unmatched-bracket motions `]}`/`[{` (normal move / visual extend;
+  operands already worked) and `] space`/`[ space` insert-blank-lines; and the
+  single-key native/host chords `K`, `ctrl-n`, `ctrl-pagedown`/`up`, `ctrl-o`/
+  `ctrl-i`, `u`/`ctrl-r`. The shared leaf effects (`nativeCommandEffect`,
+  `multiCursorEffect`, `editorTabEffect`) live in `finite_chord_handlers.ts` and
+  `bracketMotion` in `motion.ts`, so both grammars reuse them without an import
+  cycle.
 - [x] Search navigation `n`/`N` (repeat) and `*`/`#` (word under cursor):
   framework motions from the injected `SearchState` (`searchActionHandler`),
   applied to the cursor; `*`/`#` clear the match highlights like the legacy path.
@@ -171,17 +232,20 @@ insert/replace, search, command, macros/repeat) are ported into
   (`SearchState.start`, the editable query stored Vim-side in `activeSearch`,
   injected live into the pure `searchModeHandler`). Each query key updates the
   incsearch preview and stays in `search` mode; `enter` resolves the search
-  `Motion`, moves the cursor, and targets normal mode. Escape cancels via the
+  `Motion`, moves the cursor, and targets normal mode. `/`?` is also wired into
+  the visual grammar: entering `search` from a visual kind records the origin, and
+  on `enter` the selection is extended and the origin visual kind restored (see
+  the visual-mode slice). Escape cancels via the
   legacy escape path (now framework-aware: `clearPendingGrammar` tears down
   `activeSearch`). Unknown non-input keys (`ctrl-a`) and escape are declined by
   the grammar; `ownsKey`/`routeKeyThroughExecutor` let non-escape declined keys
   go to the host without disturbing the prompt (so the native find widget keeps
   its chords). Macros record the query keys (search-mode keys are macro-recorded
   in `handleThroughExecutor`). The executor mode is resynced when *leaving*
-  `search` (`setMode`), so legacy visual/command search (still on legacy) is
-  untouched. This is the pattern visual mode will reuse. All search key bindings
-  live in `search_handler.ts`; the shared `applyMotionResults`
-  lower-to-selections helper moved to `motion_handler.ts`.
+  `search` (`setMode`). All search key bindings live in `search_handler.ts`; the
+  shared `applyMotionResults` lower-to-selections helper moved to
+  `motion_handler.ts`. `command` mode later reused this exact pattern (see the
+  visual-mode slice and `command_handler.ts`).
 - [x] `d/` (and `c/`/`y/`): search as an operator motion operand
   (`searchOperandHandler`). Rather than entering the standalone `search` mode
   (which would rebuild the executor root handlers and discard the pending
@@ -190,8 +254,18 @@ insert/replace, search, command, macros/repeat) are ported into
   resolved search `Motion` to the operator's `apply` (then clears the match
   preview). Escape / empty / no-match `enter` aborts the operator without
   editing. Dot-repeat works (the operator effect declares `dotRepeatable`).
-- [ ] Search operands still pending: `gn`/`cgn`/`dgn` (need visual mode — `gn`
-  selects the match into a visual selection).
+- [x] `gn`/`gN`/`cgn`/`dgn` (search-selection): `gn`/`gN` select the next/prev
+  match into a charwise visual selection (from normal) or extend it (from
+  visual) via the shared `searchSelectionHandler` (`search.matchRangeForSelection`
+  + `VisualMode.adoptSelection`; the dynamic mode goes to `visual` on a match).
+  Wired into both `gContinuation` (normal) and `visualGContinuation` (visual);
+  `enterVisualMode` keeps a pre-built selection instead of resetting to a single
+  cell. As an operator operand (`dgn`/`cgn`) it is `searchSelectionOperand` in
+  the operand grammar's `g`-arm: the match range becomes a `searchMatch` motion
+  applied to the operator (dot-repeat re-finds the match via key replay). With no
+  match the operator aborts without editing, and during a `.`-replay it calls
+  `RepeatState.abortCurrentReplay` so a `cgn`'s recorded insert text is not run as
+  normal keys.
 - [~] Visual mode (second non-normal executor mode, same per-mode pattern as
   `search`). `VisualMode` is injected into `HandlerState` (`state.visual`) like
   `marks`/`search`; the pure dispatch lives in `visual_handler.ts`
@@ -199,45 +273,148 @@ insert/replace, search, command, macros/repeat) are ported into
   `executorHandlers` returns `[remap, visualRoot]` for the visual kinds; the
   executor resyncs on transitions to/from a framework-owned non-normal mode
   (`isExecutorOwnedNonNormalMode`); macros record visual-mode keys (generalized
-  in `handleThroughExecutor`). Done so far (slice 3a):
-  - entry `v`/`V`/`ctrl-v` from normal (`visualEntryHandler` → effect targeting
-    the visual kind; `enterModeFromExecutor` starts the selection);
-  - toggle `v`/`V`/`ctrl-v` within visual (`visualToggleHandler`, target mode
-    computed from `VisualMode.currentMode()`);
-  - count/register prefix and cursor motions that extend the selection
-    (`visualMotionHandler` → `VisualMode.applyMotion`; `%` excluded — it is the
-    `percentOrMatching` command, left to legacy);
-  - (slice 3b) the `→normal` operators `d`/`x` (delete), `D` (delete to line
-    end), `y`/`Y` (yank/linewise), `u`/`U`/`~` (convert), `>`/`<`/`=` (indent)
-    via `visualOperatorHandler` → `VisualMode.handleCommand` (static target
-    normal). Visual dot-repeat is the *same-size* `repeatAction` (not key-replay,
-    which would re-run the motion and pick a different-size selection); it is
-    recorded via the injected `RepeatState` (`state.repeatState`). The selected
-    register (`"a`/`"_`) is threaded through `handleCommand`'s new
-    `registerOverride` param, since the framework register lives in the executor,
-    not the legacy `registerSelection`.
-  - (slice 3b) visual change `c`/`s` (change the selection) and `R`
-    (`changeLines`, whole lines) via `visualChangeHandler` → `VisualMode.handleCommand`
-    (static target `insert`). The owner's mode transition (`enterModeFromExecutor`)
-    starts the insert session with the *visual origin* (`isVisualModeKind(modeState)
-    ? modeState : "normal"`) so a `visualBlock` change collapses cursors and
-    replicates the typed text on escape. Visual-change dot-repeat is *deferred*:
-    the inserted text is unknown until insert exits, so `changeKey` returns a
-    `pendingRepeatChange` selection which the effect stashes on `RepeatState`
-    (`setPendingVisualChange`); on insert-exit `finishInsertOrReplaceSession`
-    pairs it with the typed text via `recordVisualAction({type:"change", ...})`.
-    The pending change moved off the `Vim.pendingVisualRepeatChange` field onto
-    `RepeatState` (`setPendingVisualChange`/`takePendingVisualChange`/
-    `clearPendingVisualChange`) so both the framework effect and the legacy
-    `applyVisualResult` (still used by the not-yet-migrated block-insert
-    `I`/`A`) share one home.
+  in `handleThroughExecutor`).
 
-  Still on the legacy dispatcher (next slices): visual text objects, `o`/`O`,
-  `p`/`P`, join, surround, `I`/`A`, `%`, and `g`-chords; then `gn`/`gN`/`gv` and
-  deleting `legacyKeymap`. Visual unhandled keys currently fall to legacy; the
-  final fallback (quit visual + run the normal binding) lands once the visual
-  grammar is complete.
-- [ ] Remaining char-input waiters (digraph/surround/command).
+  **Dynamic target mode.** A visual command's resulting mode often is not known
+  until the side effect runs (a text object becomes `visualLine` for a paragraph
+  but stays charwise otherwise; `I`/`A` enters insert only in some configs; a
+  toggle may exit). So the framework grew `dynamicModeEffect(mode, run,
+  resolveMode, meta)` (`key_handler.ts`): the static `mode` is the executor's
+  best-guess parser mode while `run` executes (not load-bearing among visual
+  kinds, which share handlers), and `resolveMode()` — evaluated by the executor
+  after `run` — is the true mode reported to `onEnterMode`. `visual_handler.ts`'s
+  `visualResultEffect(state, run)` wraps this: it runs a `VisualMode` op,
+  records the dot-repeat consequence (`recordVisualRepeat`: same-size
+  `repeatAction` for operators/indents, deferred `pendingRepeatChange` for
+  changes), and derives the target mode from the `VisualKeyResult`
+  (`visualResultMode`: insert / explicit `nextMode` / exit-to-normal / else the
+  post-run `VisualMode.currentMode()`).
+
+  Migrated grammar:
+  - entry `v`/`V`/`ctrl-v` from normal (`visualEntryHandler`); toggle within
+    visual (`visualToggleHandler` → `toggleMode`); count/register prefix; cursor
+    motions that extend the selection (`visualMotionHandler` →
+    `VisualMode.applyMotion`).
+  - single-key commands through `VisualMode.handleCommand` (`visualCommandHandler`
+    + `visualCommandForKey`): operators `d`/`x`/`D`/`y`/`Y`, convert `u`/`U`/`~`,
+    indent `>`/`<`/`=`, change `c`/`s`/`R` (→insert with the *visual origin*, so a
+    `visualBlock` change collapses cursors on escape), swap-ends `o`/`O`, paste
+    `p`/`P`, and selection-insert `I`/`A` (block / VSCodeVim multiline insert).
+    The selected register (`"a`/`"_`) is threaded via `handleCommand`'s
+    `registerOverride` (the framework register lives in the executor, not the
+    legacy `registerSelection`). Visual-change dot-repeat is deferred: the
+    inserted text is unknown until insert exits, so the `pendingRepeatChange`
+    selection is stashed on `RepeatState` (`setPendingVisualChange` /
+    `takePendingVisualChange` / `clearPendingVisualChange`) and finalized by
+    `finishInsertOrReplaceSession` via `recordVisualAction({type:"change", …})`.
+  - `%` (`visualPercentHandler`): count-sensitive like normal mode, threading the
+    framework count into `VisualMode.percentOrMatching(count)` (keeps the legacy
+    `percentKey` cursor logic rather than the general motion path).
+  - text objects `i`/`a` (`visualTextObjectHandler`) and surround `S`
+    (`visualSurroundHandler`): two-key chords as **pure continuations** (no
+    operator stack) — `VisualMode.applyTextObject(around, key, count)` and
+    `VisualMode.addSurround(pairKey)` read the live selection directly; the legacy
+    `handlePending*Key` methods now delegate to them.
+  - join `J`/`gJ` (`VisualMode.joinSelections`), increment `ctrl-a`/`ctrl-x` and
+    `g ctrl-a`/`g ctrl-x` (`VisualMode.increment`), and a dedicated visual
+    `g`-chord continuation (`visualGChordHandler`) reusing the shared
+    `gChordMotion` / `convertTargetForKey` leaves: g-motions extend the
+    selection, `gu`/`gU`/`g~`/`g?` convert it (→normal), `gv` swaps to the last
+    selection (`restoreVisualSelectionHandler`), `gn`/`gN` extend to a search
+    match (`searchSelectionHandler`). The mode-agnostic editor g-chords
+    (`gd`/`gh`/…, `gl`/…, `gt`/`gT`, `g;`/`g,`, `g r`) are shared with normal mode
+    via `editorGChordHandler` (the leaf effects target `state.mode`, so they keep
+    the visual selection). `gn`/`gN` and `cgn`/`dgn` are also migrated. The
+    `legacyKeymap` action + `dispatchToLegacyKeymap` hook are **deleted**.
+
+  - find motions `f`/`t`/`F`/`T` + char (incl. `ctrl-k` digraph) and `;`/`,`
+    repeat extend the selection: the chord/digraph parsing is shared with normal
+    mode ([findHandler]/[repeatFindHandler], now parameterized by a `FindApplier`)
+    and the visual applier swaps the cursor move for [VisualMode.applyMotion],
+    recording a fresh find for `;`/`,`. `find` is injected into the visual handler
+    state like normal mode.
+  - search nav `n`/`N` (`visualSearchNavHandler`) repeats the last search and
+    extends the selection (`SearchState.repeat` → [VisualMode.applyMotion]).
+  - search-under-selection `*`/`#` (`visualSearchUnderCursorHandler`, in
+    `search_handler.ts`) searches the literal selection text, leaves visual mode,
+    and jumps to the match. It mirrors the legacy `applySearchUnderCursor` visual
+    branch — clear the visual state and restore the block cursor (not
+    [VisualMode.exit], so the selection is not remembered for `gv`), then a
+    normal-mode motion from the selection head — via a dynamic target mode
+    (`normal` once a search runs, otherwise the unchanged visual mode for an empty
+    selection).
+  - `ctrl-c` is an alias of `y` (visual yank → normal) in the framework
+    `visualCommandForKey`; [Vim.ownsKey] still special-cases it so VSCode does not
+    intercept the key in visual mode.
+  - the `/`?` search prompt from visual (`searchPromptHandler`, shared with normal
+    mode) is now origin-aware. Entering `search` from a visual kind records the
+    visual origin (`Vim.searchOriginMode`, injected into the search-mode handler
+    state as [searchOrigin] alongside [visual]); on `enter` [searchModeHandler]
+    extends the live selection ([VisualMode.applyMotion]) and returns to the
+    visual origin instead of moving the cursor to normal, and
+    [enterModeFromExecutor] tears down the prompt and re-enters the origin visual
+    kind (preserving the selection via [enterVisualMode]). Empty `enter` repeats
+    the last search; escape cancels to normal, matching the legacy path.
+
+  `:` command mode is migrated too (`command_handler.ts`), following the same
+  prompt-mode pattern as `search`: `commandPromptHandler` (`:`, wired into the
+  normal and visual grammars) targets `command` mode; [enterModeFromExecutor]
+  creates the editable [CommandLine] (prefilling `'<,'>` and setting the
+  `'<`/`'>` marks from a visual selection, then leaving visual — the old
+  `startCommand`); `commandModeHandler` accumulates input (`backspace`/append)
+  and, on `enter`, targets normal. The accumulated command is **executed
+  owner-side in [enterModeFromExecutor] on the command → normal transition**, not
+  in the handler's effect: a `:normal`/`:g` command re-enters [onKey], and
+  running it there (after the executor's effect queue has drained, `draining ===
+  false`) keeps those keys synchronous, whereas running it inside the effect
+  would queue them behind the in-flight effect. Escape cancels through the
+  central escape handling ([clearPendingGrammar] drops `activeCommand`), which
+  never reaches the execute path.
+
+  Both clean (`v`/`V`/`ctrl-v`-entered) and **externally-adopted** visual
+  contexts (mouse/`Put`-restored selections, multicursor) now route through the
+  framework: `syncFromEditorState` adopts an external selection with
+  `setMode("visual")` (not a direct `modeState` write), so the executor is synced
+  to visual and its handlers run. Multicursor adoption works unchanged because
+  the multi-selection geometry/edits live in the shared `VisualMode` (called by
+  both the framework and the old legacy dispatch), so only the *dispatch* moved.
+  (The shared finite chords — pages/scroll/`z`/`ctrl-w`/`K`/brackets — are also in
+  the framework; see `finite_chord_handlers.ts`.)
+
+  **No quit-visual-on-normal-key fallback.** Vim does not drop to normal mode for
+  a key with no visual binding — it rings the bell (a no-op) and keeps the
+  selection. So the valuable normal-mode commands are registered directly in the
+  visual grammar rather than reached via a drop-to-normal fallback. `v_r`
+  (`visualReplaceHandler` → `VisualMode.replaceSelection`, the last key that
+  relied on the old fallback) replaces every selected character; a probe showed
+  it was the only key reaching the fallback across the whole suite. A key the
+  visual grammar declines is owned (so the host does not type it into the buffer)
+  and no-ops: `dispatchModeFallbackKey`'s visual branch returns `"handled"`
+  without changing state. (`macro control` `q`/`@`/`Q` is still normal-only via
+  `handleMacroControlKey`; it is a candidate for a future visual registration,
+  not a drop-to-normal.)
+
+  With that, the framework owns the entire visual-mode key path in every clean or
+  externally-adopted context. The legacy dispatcher is only reached in visual
+  from the easyMotion-pending edge.
+
+  Next: the legacy dispatcher (`dispatchKey`) is now unused in clean/adopted
+  normal + visual. Retiring it fully needs the remaining subsystems migrated:
+  easyMotion, insert/replace mode, and the char-input waiters (digraph/surround).
+- [x] `:` command mode migrated (`command_handler.ts`): `commandPromptHandler` +
+  `commandModeHandler`, the [CommandLine] input injected into the handler state
+  like [activeSearch], and execution owner-side on the command → normal
+  transition (so re-entrant `:normal`/`:g` keys run synchronously after the
+  effect queue drains). Framework-owned from normal and from any visual context
+  (clean or externally-adopted, since `syncFromEditorState` now syncs the
+  executor to visual).
+- [x] Externally-adopted / multicursor visual contexts: `syncFromEditorState`
+  adopts an external selection via `setMode("visual")` so the executor syncs to
+  visual and the framework grammar handles the keys (previously a direct
+  `modeState` write left the executor stale, forcing every adopted-visual key to
+  the legacy dispatcher). The multi-selection work is unchanged (shared
+  `VisualMode`).
+- [ ] Remaining char-input waiters (digraph/surround).
 
 ### Where the normal-mode grammar lives
 

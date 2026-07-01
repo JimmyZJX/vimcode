@@ -147,6 +147,92 @@ describe("KeyExecutor", () => {
     expect(log).toEqual(["GG"]);
   });
 
+  describe("parse / commit split", () => {
+    it("parse reports the claim and result without advancing state or running effects", async () => {
+      const log: string[] = [];
+      const executor = new KeyExecutor(
+        singleHandlerOptions(chordHandler([{ chord: ["x"], label: "X" }], log))
+      );
+
+      const parsed = executor.parse("x");
+      expect(parsed.claimed).toBe(true);
+      expect(parsed.result.type).toBe("run");
+      // No side effects: nothing pending, no effect ran.
+      expect(executor.isPending()).toBe(false);
+      await flush();
+      expect(log).toEqual([]);
+
+      // Commit applies the parsed result, running the effect.
+      expect(executor.commit("x", parsed.result)).toBe(true);
+      await flush();
+      expect(log).toEqual(["X"]);
+    });
+
+    it("parse reports an unclaimed key without side effects", () => {
+      const log: string[] = [];
+      const executor = new KeyExecutor(
+        singleHandlerOptions(chordHandler([{ chord: ["x"], label: "X" }], log))
+      );
+
+      const parsed = executor.parse("z");
+      expect(parsed.claimed).toBe(false);
+      expect(parsed.result.type).toBe("unhandled");
+      expect(executor.isPending()).toBe(false);
+    });
+
+    it("commit advances the pending chord; parse alone does not", async () => {
+      const log: string[] = [];
+      const executor = new KeyExecutor(
+        singleHandlerOptions(chordHandler([{ chord: ["g", "g"], label: "GG" }], log))
+      );
+
+      const first = executor.parse("g");
+      expect(first.claimed).toBe(true);
+      expect(first.result.type).toBe("handler");
+      // Parse did not enter the chord.
+      expect(executor.isPending()).toBe(false);
+
+      expect(executor.commit("g", first.result)).toBe(true);
+      expect(executor.isPending()).toBe(true);
+
+      // Mid-chord, the next key parses against the advanced state.
+      const second = executor.parse("g");
+      expect(second.result.type).toBe("run");
+      expect(executor.commit("g", second.result)).toBe(true);
+      await flush();
+      expect(log).toEqual(["GG"]);
+    });
+
+    it("runs the pending continuation's deferred effect on commit, not parse", async () => {
+      const log: string[] = [];
+      const waiter: Handler<void> = key => {
+        log.push(`waiter:${key}`);
+        return { type: "unhandled" };
+      };
+      const rootHandler: Handler<void> = (key, state) => {
+        if (key !== "s") return { type: "unhandled" };
+        return {
+          type: "handler",
+          handlerEnvs: [{ handler: waiter, state }],
+          effect: () => {
+            log.push("preview");
+          },
+        };
+      };
+      const executor = new KeyExecutor(singleHandlerOptions(rootHandler));
+
+      const parsed = executor.parse("s");
+      expect(parsed.claimed).toBe(true);
+      // The pending effect has not run yet.
+      expect(log).toEqual([]);
+
+      executor.commit("s", parsed.result);
+      await flush();
+      expect(log).toEqual(["preview"]);
+      expect(executor.isPending()).toBe(true);
+    });
+  });
+
   describe("ambiguous chords", () => {
     const bindings: readonly Binding[] = [
       { chord: ["g"], label: "G" },

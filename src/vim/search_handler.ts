@@ -10,6 +10,7 @@ import type { VimEditorCapabilities } from "./editor.js";
 import type { HandleResult, Handler, HandlerState } from "./key_handler.js";
 import {
   cloneHandlerState,
+  dynamicModeEffect,
   effect,
   handler,
   invalid,
@@ -21,7 +22,8 @@ import { applyMotionResults } from "./motion_handler.js";
 import type { PendingSearch, SearchState } from "./normal/search.js";
 import { isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
 import type { Registers } from "./registers.js";
-import { selectionHead } from "./state.js";
+import { isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
+import type { VimMode } from "./state.js";
 
 // `/` and `?`: enter `search` mode. The effect targets the mode; the owner's
 // mode transition starts the incremental prompt (it owns the editable query),
@@ -61,6 +63,18 @@ export function searchModeHandler(
   // Escape cancels via the owner's escape handling; unknown keys go to the host.
   if (!isSearchInputKey(key) || isSearchEscape(key)) return unhandled();
   if (key === "enter") {
+    // A `/`?` started from visual mode extends the live selection to the match
+    // and returns to that visual kind; from normal mode it moves the cursor and
+    // returns to normal. Either way, `enter` resolves and ends the prompt.
+    const origin = state.searchOrigin;
+    if (origin !== undefined && isVisualModeKind(origin)) {
+      const visual = state.visual;
+      return effect(origin, () => {
+        const motion = search.handleKey(pending, "enter", registers, editor);
+        if (motion !== undefined) visual?.applyMotion(motion, 1);
+        editor.clearSearchHighlights();
+      });
+    }
     return effect("normal", () => {
       const motion = search.handleKey(pending, "enter", registers, editor);
       if (motion === undefined) return;
@@ -98,16 +112,21 @@ export function searchOperandHandler(
   const editor = state.editor;
   const search = state.search;
   if (editor === undefined || search === undefined) return invalid();
-  const pending = search.start(backwards, editor);
-  return handler([
-    {
-      handler: searchOperandWaiter(pending, apply),
-      state: {
-        ...cloneHandlerState(state),
-        operatorDepth: state.operatorDepth + 1,
+  // Build the pending prompt purely; the preview (a side effect) is deferred to
+  // the pending continuation's effect so this handler body stays pure.
+  const pending = search.createPending(backwards);
+  return handler(
+    [
+      {
+        handler: searchOperandWaiter(pending, apply),
+        state: {
+          ...cloneHandlerState(state),
+          operatorDepth: state.operatorDepth + 1,
+        },
       },
-    },
-  ]);
+    ],
+    { effect: () => search.beginPreview(pending, editor) }
+  );
 }
 
 function searchOperandWaiter(
@@ -127,19 +146,62 @@ function searchOperandWaiter(
       );
     }
     if (!isSearchInputKey(key)) return invalid();
-    const motion = search.handleKey(pending, key, registers, editor);
     if (key !== "enter") {
-      return handler([
+      // A query edit: update the incsearch preview as a deferred effect and keep
+      // waiting for the next key. The body stays pure.
+      return handler(
+        [
+          {
+            handler: searchOperandWaiter(pending, apply),
+            state: cloneHandlerState(state),
+          },
+        ],
         {
-          handler: searchOperandWaiter(pending, apply),
-          state: cloneHandlerState(state),
-        },
-      ]);
+          effect: () => {
+            search.handleKey(pending, key, registers, editor);
+          },
+        }
+      );
     }
-    // `enter`: an empty query / no match aborts the operator (the prompt preview
-    // was already ended by [handleKey]); otherwise apply the operator.
-    if (motion === undefined) return effect("normal", () => {});
-    return withClearHighlights(apply(motion, state), editor);
+    // `enter`: resolve the pattern to a [Motion] purely, then apply the operator.
+    // An empty / no-pattern input aborts the operator (still ending the preview).
+    // The search's own side effects (preview teardown, [last]/register/highlight
+    // update) and the operator edit are deferred into the effect below.
+    const motion = search.resolveMotion(pending);
+    if (motion === undefined) {
+      return effect("normal", () =>
+        search.clearPending(editor, pending, { restoreViewport: false })
+      );
+    }
+    return withClearHighlights(
+      withSearchCommit(apply(motion, state), () =>
+        search.commitMotion(motion, registers, editor)
+      ),
+      editor
+    );
+  };
+}
+
+// Run [commit] (the deferred search side effects: preview teardown, [last] +
+// register + highlight update) just before the operator's own effect, matching
+// the original order where the search completed before the operator ran. The
+// operator's mode/dot-repeatability are preserved by wrapping only its [run].
+function withSearchCommit(
+  result: HandleResult<void>,
+  commit: () => void
+): HandleResult<void> {
+  if (result.type !== "run" || result.action.type !== "effect") return result;
+  const action = result.action;
+  const innerRun = action.run;
+  return {
+    type: "run",
+    action: {
+      ...action,
+      run: () => {
+        commit();
+        return innerRun();
+      },
+    },
   };
 }
 
@@ -164,6 +226,96 @@ function withClearHighlights(
       },
     },
   };
+}
+
+// `gn`/`gN` (standalone): select the next/previous search match as a charwise
+// visual selection. From normal mode the current match counts (`includeStart`)
+// and a fresh selection is created; from visual mode the selection extends to the
+// match. Shared by the normal-mode `g`-chord ([gContinuation]) and the
+// visual-mode `g`-chord ([visualGContinuation]). The target mode is dynamic:
+// `visual` when a match is selected, otherwise unchanged (no match → stay put).
+export function searchSelectionHandler(state: HandlerState, reversed: boolean): HandleResult<void> {
+  const editor = state.editor;
+  const search = state.search;
+  const visual = state.visual;
+  if (editor === undefined || search === undefined || visual === undefined) return invalid();
+  const count = state.repeat;
+  let target: VimMode = state.mode;
+  return dynamicModeEffect(
+    state.mode,
+    () => {
+      const fromVisual = isVisualModeKind(state.mode);
+      const range = search.matchRangeForSelection(editor, { reversed, count, includeStart: !fromVisual });
+      if (range === undefined) return;
+      const current = editor.getSelections()[0];
+      if (fromVisual && current?.type === "charwise") {
+        // Extend the live selection to the next match (anchor fixed).
+        const currentRange = rangeOfSelection(current);
+        editor.setSelections([
+          reversed
+            ? { type: "charwise", anchor: currentRange.end, head: range.start }
+            : { type: "charwise", anchor: currentRange.start, head: range.end },
+        ]);
+      } else {
+        editor.setSelections([
+          reversed
+            ? { type: "charwise", anchor: range.end, head: range.start }
+            : { type: "charwise", anchor: range.start, head: range.end },
+        ]);
+      }
+      if (visual.adoptSelection(editor.getSelections()[0])) target = "visual";
+    },
+    () => target,
+    { dotRepeatable: false }
+  );
+}
+
+// Visual `*`/`#`: search for the selected text (forward / backward), leave visual
+// mode, and jump to the match — the visual analogue of the normal-mode
+// search-under-cursor. The query is the literal selection text (not whole-word,
+// unlike `*`/`#` over the word under the cursor); an empty selection does nothing
+// and stays in visual mode. Mirrors the legacy `applySearchUnderCursor` visual
+// branch: clear the visual state and restore the block cursor (rather than
+// [VisualMode.exit], so the selection is not remembered for `gv`), then run a
+// normal-mode motion from the selection head. The target mode is dynamic:
+// `normal` once a search runs, otherwise the (unchanged) visual mode.
+export function visualSearchUnderCursorHandler(
+  key: string,
+  state: HandlerState
+): HandleResult<void> {
+  if (key !== "*" && key !== "#") return unhandled();
+  const editor = state.editor;
+  const search = state.search;
+  const registers = state.registers;
+  const visual = state.visual;
+  if (editor === undefined || search === undefined || registers === undefined || visual === undefined) {
+    return invalid();
+  }
+  const backwards = key === "#";
+  const count = state.repeat;
+  let target: VimMode = state.mode;
+  return dynamicModeEffect(
+    state.mode,
+    () => {
+      const selection = editor.getSelections()[0];
+      if (selection === undefined) return;
+      const query = editor.getText(rangeOfSelection(selection));
+      if (query.length === 0) return;
+      const motion = search.setLast(query, backwards, registers, editor, { regex: false });
+      visual.clearState();
+      editor.setCursorStyle("block");
+      target = "normal";
+      applyMotionResults(
+        editor,
+        editor.getSelections().map((selection) => ({
+          position: applyMotion(editor, selectionHead(selection), motion, count),
+        }))
+      );
+      editor.clearSearchHighlights();
+    },
+    () => target,
+    { dotRepeatable: false }
+  );
 }
 
 // Search navigation: `n`/`N` repeat the last search (forward/reversed), `*`/`#`

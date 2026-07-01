@@ -9,7 +9,7 @@
 import { VimEditorCapabilities } from "../editor.js";
 import { Motion } from "../motion.js";
 import { Registers } from "../registers.js";
-import { SearchOptions, searchOptionsForQuery } from "../search.js";
+import { SearchOffset, SearchOptions, parseSearchOffset, searchOptionsForQuery } from "../search.js";
 import {
   SingleLineEditor,
   SingleLineEditorKey,
@@ -48,9 +48,43 @@ export function isSearchInputKey(key: string): boolean {
     || singleLineEditorKey(key) !== undefined;
 }
 
+// Split a typed search input into its pattern and (optional) offset. The offset
+// follows the first unescaped separator (`/` for a forward search, `?` for a
+// backward one) and is only recognized when the trailing text parses as a
+// character offset — so a literal `a/b` search (offset `b` = begin) matches Vim,
+// while `path/to/file` (no valid offset) stays a plain pattern. `\<sep>` in the
+// pattern is not treated as a separator.
+function splitSearchOffset(
+  input: string,
+  separator: string
+): { pattern: string; offset: SearchOffset | undefined } {
+  for (let index = 0; index < input.length; index++) {
+    const char = input[index];
+    if (char === "\\") {
+      index++;
+      continue;
+    }
+    if (char === separator) {
+      const offset = parseSearchOffset(input.slice(index + 1));
+      if (offset !== undefined) return { pattern: input.slice(0, index), offset };
+      return { pattern: input, offset: undefined };
+    }
+  }
+  return { pattern: input, offset: undefined };
+}
+
+function searchMotion(
+  backwards: boolean,
+  query: string,
+  options: SearchOptions,
+  offset: SearchOffset | undefined
+): Motion {
+  return { type: backwards ? "searchBackward" : "searchForward", query, options, offset };
+}
+
 export class SearchState {
   private last:
-    | { query: string; backwards: boolean; options: SearchOptions }
+    | { query: string; backwards: boolean; options: SearchOptions; offset: SearchOffset | undefined }
     | undefined;
 
   pendingChord(pending: PendingSearch): string {
@@ -62,11 +96,55 @@ export class SearchState {
     )}|${value.slice(cursor)}`;
   }
 
-  start(backwards: boolean, editor: VimEditorCapabilities): PendingSearch {
+  // Create an empty pending prompt with no side effects, so a handler can build
+  // its continuation purely and defer the preview (via [beginPreview]) to an
+  // effect. [start] is [createPending] + [beginPreview] for callers that open
+  // the prompt eagerly.
+  createPending(backwards: boolean): PendingSearch {
+    return { type: "search" as const, backwards, input: new SingleLineEditor("") };
+  }
+
+  beginPreview(pending: PendingSearch, editor: VimEditorCapabilities): void {
     editor.beginSearchPreview();
-    const pending = { type: "search" as const, backwards, input: new SingleLineEditor("") };
     this.updatePendingSearchUi(pending, editor);
+  }
+
+  start(backwards: boolean, editor: VimEditorCapabilities): PendingSearch {
+    const pending = this.createPending(backwards);
+    this.beginPreview(pending, editor);
     return pending;
+  }
+
+  // Pure: the search [Motion] the pending input resolves to (an empty input
+  // reuses the last pattern in this prompt's direction), or [undefined] when
+  // there is no pattern to search. Unlike [handleKey]'s `enter` branch this
+  // performs no side effects — the caller commits the preview teardown, [last],
+  // and register/highlight update in a deferred effect via [commitMotion].
+  resolveMotion(pending: PendingSearch): Motion | undefined {
+    const rawInput = pending.input.value();
+    const backwards = pending.backwards;
+    if (rawInput.length === 0) {
+      if (this.last === undefined) return undefined;
+      return searchMotion(backwards, this.last.query, this.last.options, this.last.offset);
+    }
+    const { pattern, offset } = splitSearchOffset(rawInput, backwards ? "?" : "/");
+    const query = pattern.length > 0 ? pattern : this.last?.query;
+    if (query === undefined || query.length === 0) return undefined;
+    const options =
+      pattern.length > 0
+        ? searchOptionsForQuery(query)
+        : this.last?.options ?? searchOptionsForQuery(query);
+    return searchMotion(backwards, query, searchOptionsForQuery(query, options), offset);
+  }
+
+  // The side effects of completing a search resolved by [resolveMotion]: end the
+  // incsearch preview, then record it as the last search + write the register +
+  // set the persistent highlight (via [setLast]). Deferred by callers into an
+  // effect so the resolving handler body stays pure.
+  commitMotion(motion: Motion, registers: Registers, editor: VimEditorCapabilities): void {
+    if (motion.type !== "searchForward" && motion.type !== "searchBackward") return;
+    editor.endSearchPreview({ restoreViewport: false });
+    this.setLast(motion.query, motion.type === "searchBackward", registers, editor, motion.options, motion.offset);
   }
 
   clearPending(editor: VimEditorCapabilities | undefined, pending: PendingSearch | undefined, { restoreViewport = false }: { restoreViewport?: boolean } = {}): void {
@@ -93,20 +171,26 @@ export class SearchState {
     }
 
     if (key === "enter") {
-      const pendingQuery = pending.input.value();
-      const query = pendingQuery.length > 0 ? pendingQuery : this.last?.query;
-      // Vim: an empty query repeats the last pattern in the direction of THIS
-      // prompt (`?<CR>` searches backward even after a forward search).
+      const rawInput = pending.input.value();
+      // Vim: an empty query repeats the last pattern (and its offset) in the
+      // direction of THIS prompt (`?<CR>` searches backward even after a forward
+      // search).
       const backwards = pending.backwards;
-      const options =
-        pendingQuery.length > 0
-          ? searchOptionsForQuery(query ?? "")
-          : this.last?.options ?? searchOptionsForQuery(query ?? "");
       editor.endSearchPreview({ restoreViewport: false });
-      if (query !== undefined && query.length > 0) {
-        return this.setLast(query, backwards, registers, editor, options);
+      if (rawInput.length === 0) {
+        if (this.last === undefined) return undefined;
+        return this.setLast(this.last.query, backwards, registers, editor, this.last.options, this.last.offset);
       }
-      return undefined;
+      // Split off a trailing `search-offset` (`/pat/e`, `?pat?s-1`). An
+      // offset-only input (`/e`, i.e. empty pattern) reuses the last pattern.
+      const { pattern, offset } = splitSearchOffset(rawInput, backwards ? "?" : "/");
+      const query = pattern.length > 0 ? pattern : this.last?.query;
+      if (query === undefined || query.length === 0) return undefined;
+      const options =
+        pattern.length > 0
+          ? searchOptionsForQuery(query)
+          : this.last?.options ?? searchOptionsForQuery(query);
+      return this.setLast(query, backwards, registers, editor, options, offset);
     }
 
     const editorKey = singleLineEditorKey(key);
@@ -120,7 +204,9 @@ export class SearchState {
   }
 
   private updatePendingSearchUi(pending: PendingSearch, editor: VimEditorCapabilities): void {
-    const pendingQuery = pending.input.value();
+    // Preview the pattern only: a trailing `search-offset` (`/pat/e`) is not part
+    // of the highlighted/searched text.
+    const pendingQuery = splitSearchOffset(pending.input.value(), pending.backwards ? "?" : "/").pattern;
     const typed = pendingQuery.length > 0;
     const query = typed ? pendingQuery : this.last?.query ?? "";
     const options = typed
@@ -146,10 +232,11 @@ export class SearchState {
     backwards: boolean,
     registers: Registers,
     editor: VimEditorCapabilities,
-    options: SearchOptions = searchOptionsForQuery(query)
+    options: SearchOptions = searchOptionsForQuery(query),
+    offset?: SearchOffset
   ): Motion {
     const normalizedOptions = searchOptionsForQuery(query, options);
-    this.last = { query, backwards, options: normalizedOptions };
+    this.last = { query, backwards, options: normalizedOptions, offset };
     registers.writeSearch(query);
     editor.updateSearch(query, backwards ? "backward" : "forward", {
       ...normalizedOptions,
@@ -159,6 +246,7 @@ export class SearchState {
       type: backwards ? "searchBackward" : "searchForward",
       query,
       options: normalizedOptions,
+      offset,
     };
   }
 
@@ -169,6 +257,7 @@ export class SearchState {
       type: backwards ? "searchBackward" : "searchForward",
       query: this.last.query,
       options: this.last.options,
+      offset: this.last.offset,
     };
   }
 

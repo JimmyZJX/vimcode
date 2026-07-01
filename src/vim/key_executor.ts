@@ -1,5 +1,6 @@
 import type { VimCommandMapping } from "./config.js";
 import {
+  HandleResult,
   HandlerEnv,
   HandlerState,
   KeyAction,
@@ -9,6 +10,14 @@ import {
   initialHandlerState,
 } from "./key_handler.js";
 import type { VimMode } from "./state.js";
+
+// A [setTimeout] handle. Aliased so the field, options, and global fallback stay
+// consistent whether the ambient `setTimeout` returns `number` (DOM lib) or a
+// handle object (Node lib). They differ under the mixed-lib setup of the VSCode
+// build, where `this.options.setTimeout ?? setTimeout` would otherwise infer a
+// `number | TimeoutHandle` union that is not assignable to the handle field. The
+// handle is opaque: it is only ever passed back to the matching `clearTimeout`.
+type TimerHandle = ReturnType<typeof setTimeout>;
 
 export type KeyExecutorHandlers = (
   state: HandlerState
@@ -54,19 +63,10 @@ export type KeyExecutorOptions = {
     mode: VimMode,
     opts?: { enterInsert?: { count: number; separator: string }; search?: { backwards: boolean } }
   ) => void;
-  /**
-   * Feed a finite-keymap chord (e.g. a not-yet-migrated `g`-chord) to the legacy
-   * keymap resolver. The owner resolves/dispatches the chord; the executor stays
-   * agnostic to what the chord does. Used by the `legacyKeymap` action.
-   */
-  dispatchToLegacyKeymap?: (keys: readonly string[], count: number | undefined) => void;
   log?: KeyExecutorLog;
   timeoutMs?: number | (() => number);
-  setTimeout?: (
-    callback: () => void,
-    ms: number
-  ) => ReturnType<typeof setTimeout>;
-  clearTimeout?: (timer: ReturnType<typeof setTimeout>) => void;
+  setTimeout?: (callback: () => void, ms: number) => TimerHandle;
+  clearTimeout?: (timer: TimerHandle) => void;
 };
 
 export class KeyExecutor {
@@ -83,11 +83,15 @@ export class KeyExecutor {
   /** [syncAfter] of the effect run during the current/last [handle]. */
   private lastSyncAfter = false;
 
+  /** [preservesDotRepeat] of the effect run — or of the pending continuation
+      entered — during the current/last [handle]. */
+  private lastPreservesDotRepeat = false;
+
   /** True when the last [handle] abandoned a pending chord (invalid/cancel). */
   private lastHandleCancelled = false;
 
   /** Timer that accepts [conflict] if no disambiguating key arrives. */
-  private conflictTimer: ReturnType<typeof setTimeout> | undefined;
+  private conflictTimer: TimerHandle | undefined;
   /**
    * Accepted effect actions waiting to run, in order. Key handling updates
    * parser state synchronously; effects run through this queue so each observes
@@ -167,6 +171,13 @@ export class KeyExecutor {
     return this.lastSyncAfter;
   }
 
+  /** Whether the most recent [handle] was transparent to dot-repeat (its effect
+      or entered pending continuation set [preservesDotRepeat]): the owner should
+      leave the dot-repeat recording untouched for this key. */
+  lastEffectPreservesDotRepeat(): boolean {
+    return this.lastPreservesDotRepeat;
+  }
+
   /** Whether the most recent [handle] abandoned a pending chord without running
       a command (an operator got a non-motion key like `.`). The cancelling key
       is not part of any command and should not be recorded for dot-repeat. */
@@ -197,8 +208,43 @@ export class KeyExecutor {
    * recognized it (and there was no pending conflict to accept), so the owner
    * is free to treat it as native/unowned. [allowRemap] is threaded into the
    * handler state so the remap handler can decline to remap emitted keys.
+   *
+   * [handle] is [parse] immediately followed by [commit]. They are split so the
+   * owner can decide ownership synchronously (from [parse]) — before, e.g., an
+   * asynchronous system-clipboard read — and apply the effects afterward (via
+   * [commit]), across the host's synchronous `preventDefault` boundary.
    */
   handle(key: string, allowRemap = true): boolean {
+    return this.commit(key, this.parse(key, allowRemap).result);
+  }
+
+  /**
+   * Evaluate [key] against the current handlers *without side effects*: no parser
+   * state is advanced and no effect is queued. Returns the grammar [result] and
+   * whether it [claimed] the key (the value [handle]/[commit] returns). Every
+   * root handler is pure — buffer changes are deferred as [effect] actions and
+   * interactive prompt updates as pending [PendingEffect]s — so this is safe to
+   * call for the ownership decision alone; pass [result] to [commit] to apply it.
+   */
+  parse(key: string, allowRemap = true): { result: HandleResult<void>; claimed: boolean } {
+    const result = combineHandleResults(
+      this.handlerEnvs.map(({ handler, state }) =>
+        handler(key, { ...state, allowRemap })
+      )
+    );
+    // Mirrors [commit]'s return: every outcome is claimed except an [unhandled]
+    // key with no pending conflict to accept.
+    const claimed = result.type !== "unhandled" || this.conflict !== undefined;
+    return { result, claimed };
+  }
+
+  /**
+   * Apply a [result] from [parse]: advance parser state and run/enqueue its
+   * effects, returning whether the key was claimed. Must be called with the same
+   * parser state [parse] saw (no intervening [handle]/[reset]); the owner
+   * serializes keys so this holds across the `preventDefault` boundary.
+   */
+  commit(key: string, result: HandleResult<void>): boolean {
     const previousConflict = this.conflict;
     this.clearConflictTimer();
     // Reset before running: stays [undefined] if this key only left a pending
@@ -207,12 +253,7 @@ export class KeyExecutor {
     this.lastDotRepeatable = undefined;
     this.lastSyncAfter = false;
     this.lastHandleCancelled = false;
-
-    const result = combineHandleResults(
-      this.handlerEnvs.map(({ handler, state }) =>
-        handler(key, { ...state, allowRemap })
-      )
-    );
+    this.lastPreservesDotRepeat = false;
 
     switch (result.type) {
       case "run":
@@ -223,6 +264,7 @@ export class KeyExecutor {
       case "handler":
         this.handlerEnvs = result.handlerEnvs;
         this.pending = true;
+        this.lastPreservesDotRepeat = result.preservesDotRepeat === true;
         if (previousConflict !== undefined) {
           this.setConflict({
             ...previousConflict,
@@ -231,6 +273,11 @@ export class KeyExecutor {
         } else {
           this.clearConflict();
         }
+        // A pending continuation may carry a side effect to run when its chord
+        // key is accepted (e.g. update the `d/` incsearch preview, then keep
+        // waiting). It is a plain side effect — no mode transition — so it goes
+        // straight onto the effect queue and does not touch [lastDotRepeatable].
+        if (result.effect !== undefined) this.enqueueRun(result.effect);
         this.logDebug(
           `key=[${key}] pending handlers=${this.handlerEnvs.length}`
         );
@@ -238,7 +285,9 @@ export class KeyExecutor {
       case "conflict":
         this.handlerEnvs = result.pending;
         this.pending = true;
+        this.lastPreservesDotRepeat = result.preservesDotRepeat === true;
         this.setConflict({ accepted: result.accepted, replaySuffix: [] });
+        if (result.effect !== undefined) this.enqueueRun(result.effect);
         this.logDebug(
           `key=[${key}] conflict pending=${this.handlerEnvs.length}`
         );
@@ -310,12 +359,13 @@ export class KeyExecutor {
     if (action.type === "effect") {
       this.lastDotRepeatable = action.dotRepeatable === true;
       this.lastSyncAfter = action.syncAfter === true;
-      this.options.onEnterMode?.(action.mode, { enterInsert: action.enterInsert, search: action.search });
+      this.lastPreservesDotRepeat = action.preservesDotRepeat === true;
+      // [resolveMode], when present, computes the true target mode after [run]
+      // has executed (e.g. a visual command whose resulting kind depends on the
+      // selection); the static [mode] is the best-guess parser mode used above.
+      const targetMode = action.resolveMode !== undefined ? action.resolveMode() : action.mode;
+      this.options.onEnterMode?.(targetMode, { enterInsert: action.enterInsert, search: action.search });
     }
-    // A chord handed to legacy is never a dot-repeatable change (the legacy side
-    // owns whatever repeat semantics it has), so the framework must discard the
-    // recording it opened for the chord rather than commit it as the last change.
-    if (action.type === "legacyKeymap") this.lastDotRepeatable = false;
     this.replayKeys(replayKeys);
   }
 
@@ -331,9 +381,6 @@ export class KeyExecutor {
       case "commands":
         for (const command of action.commands)
           this.options.executeCommand?.(command);
-        break;
-      case "legacyKeymap":
-        this.options.dispatchToLegacyKeymap?.(action.keys, action.count);
         break;
       case "sequence":
         // Run nested actions without re-resetting per action: the enclosing
@@ -357,7 +404,16 @@ export class KeyExecutor {
   private enqueueEffect(
     action: Extract<KeyAction<void>, { type: "effect" }>
   ): void {
-    this.effectQueue.push(() => action.run());
+    this.enqueueRun(() => action.run());
+  }
+
+  /**
+   * Append a side-effect thunk to the effect queue and drive it, with the same
+   * synchronous-until-async draining as [enqueueEffect]. Used both for command
+   * effect actions and for a pending continuation's [PendingEffect].
+   */
+  private enqueueRun(run: () => QueuedRunResult<void>): void {
+    this.effectQueue.push(run);
     if (this.draining) return;
     this.draining = true;
     if (this.resolveIdle === undefined) {
@@ -406,7 +462,11 @@ export class KeyExecutor {
         ? this.options.timeoutMs()
         : this.options.timeoutMs;
     if (timeoutMs === undefined) return;
-    const setTimer = this.options.setTimeout ?? setTimeout;
+    // Cast the ambient fallback to the option's signature so its [TimerHandle]
+    // return type is used (see [TimerHandle]); the raw global's return type is
+    // environment-dependent.
+    const setTimer =
+      this.options.setTimeout ?? (setTimeout as unknown as NonNullable<KeyExecutorOptions["setTimeout"]>);
     this.conflictTimer = setTimer(() => {
       this.conflictTimer = undefined;
       this.acceptConflict();
@@ -420,7 +480,8 @@ export class KeyExecutor {
 
   private clearConflictTimer(): void {
     if (this.conflictTimer === undefined) return;
-    const clearTimer = this.options.clearTimeout ?? clearTimeout;
+    const clearTimer =
+      this.options.clearTimeout ?? (clearTimeout as unknown as NonNullable<KeyExecutorOptions["clearTimeout"]>);
     clearTimer(this.conflictTimer);
     this.conflictTimer = undefined;
   }

@@ -14,19 +14,22 @@ import {
   Handler,
   cloneHandlerState,
   combineHandleResults,
+  dynamicModeEffect,
   effect,
   handler,
   invalid,
   mapHandler,
-  run,
   unhandled,
 } from "./key_handler.js";
 import type { ChangeListDirection } from "./normal/change_list.js";
 import type { ConvertTarget } from "./normal/convert.js";
 import type { FindMotion, Motion, MotionResult } from "./motion.js";
-import { applyMotion, lineRange, motionForKey } from "./motion.js";
+import { applyMotion, bracketMotion, lineRange, motionForKey } from "./motion.js";
 import { applyMotionResults, motionHandler } from "./motion_handler.js";
-import { searchActionHandler, searchOperandHandler, searchPromptHandler } from "./search_handler.js";
+import { bracketChordHandler, ctrlWHandler, editorTabEffect, multiCursorEffect, nativeCommandEffect, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
+import { commandPromptHandler } from "./command_handler.js";
+import { macroControlHandler } from "./macro_handler.js";
+import { searchActionHandler, searchOperandHandler, searchPromptHandler, searchSelectionHandler } from "./search_handler.js";
 import { prefixHandler } from "./prefix_handlers.js";
 import {
   OperatorTarget,
@@ -39,7 +42,7 @@ import { lookupDigraph } from "./digraph.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { SimpleAction, applySimpleAction, simpleActionForKey } from "./normal/simple_action.js";
 import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
-import { TextRange, charwiseSelection, selectionHead } from "./state.js";
+import { TextRange, VimMode, charwiseSelection, selectionHead } from "./state.js";
 
 // The full normal-mode grammar: the count/register prefix wrapping the raw
 // grammar (operators + motions).
@@ -59,8 +62,17 @@ function rawNormalModeHandler(): Handler<void> {
       repeatFindHandler(key, state),
       searchActionHandler(key, state),
       searchPromptHandler(key, state),
+      commandPromptHandler(key, state),
+      macroControlHandler(key, state),
       visualEntryHandler(key, state),
       gChordHandler(key, state),
+      zChordHandler(key, state),
+      ctrlWHandler(key, state),
+      bracketChordHandler(key, state),
+      nativeKeyHandler(key, state),
+      pageHandler(key, state),
+      scrollHandler(key, state),
+      lineMotionHandler(key, state),
       movementHandler(key, state),
     ]);
 }
@@ -86,8 +98,9 @@ function visualEntryHandler(key: string, state: HandlerState): HandleResult<void
 // The `g`-chord prefix. The framework owns parsing of the `g`-chords that do not
 // depend on the (not-yet-migrated) visual-mode and search subsystems: motions,
 // convert operators, increment/join, native editor/LSP commands, multicursor,
-// tabs, the change list, and `gi`. Only `gv`/`gn`/`gN` (visual/search) are still
-// handed to the legacy keymap resolver via [legacyKeymap].
+// tabs, the change list, `gi`, `gv` (restore visual selection), and `gn`/`gN`
+// (search-selection). All `g`-chords are handled in the framework now (no legacy
+// keymap delegation remains).
 function gChordHandler(key: string, state: HandlerState): HandleResult<void> {
   if (key !== "g") return unhandled();
   // The `g` prefix claims one pending-depth level (a count typed before it folds
@@ -114,32 +127,62 @@ function gContinuation(key: string, state: HandlerState): HandleResult<void> {
   if (key === "ctrl-x") return applySimpleActionEffect(state, { type: "increment", direction: "decrement", cumulative: true });
   if (key === "J") return applySimpleActionEffect(state, { type: "joinLines", withSpace: false });
 
-  // `g r` chord: reference search / rename / quick fix (`g r r`/`g r n`/`g r a`).
-  if (key === "r") return handler([{ handler: gReplaceChord, state: deeper(state) }]);
-
-  // Native editor/LSP commands `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[`.
-  const nativeCommand = gChordNativeCommand(key);
-  if (nativeCommand !== undefined) return nativeCommandEffect(state, nativeCommand);
-
-  // Multicursor `gl`/`gL`/`g>`/`g<`/`ga`.
-  const multiCursorCommand = gChordMultiCursorCommand(key);
-  if (multiCursorCommand !== undefined) return multiCursorEffect(state, multiCursorCommand);
-
-  // Editor tabs `gt` (next) / `gT` (previous).
-  if (key === "t") return editorTabEffect(state, "next");
-  if (key === "T") return editorTabEffect(state, "previous");
-
-  // Change list `g;` (older) / `g,` (newer).
-  if (key === ";") return changeListEffect(state, "older");
-  if (key === ",") return changeListEffect(state, "newer");
+  // Editor-level `g`-chords shared with visual mode: `g r` (refs/rename/quick
+  // fix), native `gd`/`gh`/…, multicursor `gl`/…, tabs `gt`/`gT`, change list
+  // `g;`/`g,`.
+  const editorGChord = editorGChordHandler(key, state);
+  if (editorGChord !== undefined) return editorGChord;
 
   // `gi`: re-enter insert mode at the previous insert position.
   if (key === "i") return insertAtPreviousEffect(state);
 
-  // `gv` (restore visual selection) and `gn`/`gN` (search-selection) depend on
-  // the visual-mode and search subsystems, which are not migrated yet; hand them
-  // to the legacy keymap resolver until those slices land.
-  return run({ type: "legacyKeymap", mode: state.mode, keys: ["g", key], count: state.hasCount === true ? state.repeat : undefined });
+  // `gn`/`gN`: select the next/previous search match into a visual selection.
+  if (key === "n" || key === "N") return searchSelectionHandler(state, key === "N");
+
+  // `gv`: restore the last visual selection.
+  if (key === "v") return restoreVisualSelectionHandler(state);
+
+  // Any other `g`-chord is unrecognized; cancel the chord.
+  return invalid();
+}
+
+// Editor-level `g`-chords that behave identically in normal and visual mode:
+// they run editor/LSP commands and keep the current Vim mode (the leaf effects
+// target [state.mode]). `g r` (references/rename/quick fix), native
+// `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[`, multicursor `gl`/`gL`/`g>`/`g<`/`ga`,
+// tabs `gt`/`gT`, change list `g;`/`g,`. Returns undefined for keys that are not
+// editor `g`-chords, so the caller can try its mode-specific chords. Shared by
+// [gContinuation] and the visual `g`-chord continuation.
+export function editorGChordHandler(key: string, state: HandlerState): HandleResult<void> | undefined {
+  if (key === "r") return handler([{ handler: gReplaceChord, state: deeper(state) }]);
+  const nativeCommand = gChordNativeCommand(key);
+  if (nativeCommand !== undefined) return nativeCommandEffect(state, nativeCommand);
+  const multiCursorCommand = gChordMultiCursorCommand(key);
+  if (multiCursorCommand !== undefined) return multiCursorEffect(state, multiCursorCommand);
+  if (key === "t") return editorTabEffect(state, "next");
+  if (key === "T") return editorTabEffect(state, "previous");
+  if (key === ";") return changeListEffect(state, "older");
+  if (key === ",") return changeListEffect(state, "newer");
+  return undefined;
+}
+
+// `gv`: restore the last visual selection — re-enter visual from normal, or swap
+// the current and last selections from visual. [VisualMode.restoreLastSelection]
+// sets the selection and returns the restored kind; the dynamic target mode
+// follows it (and stays put when there is no remembered selection).
+export function restoreVisualSelectionHandler(state: HandlerState): HandleResult<void> {
+  const visual = state.visual;
+  if (visual === undefined) return invalid();
+  let target: VimMode = state.mode;
+  return dynamicModeEffect(
+    state.mode,
+    () => {
+      const restored = visual.restoreLastSelection();
+      if (restored !== undefined) target = restored;
+    },
+    () => target,
+    { dotRepeatable: false }
+  );
 }
 
 // The key after `g r`: `g r r` (find references), `g r n` (rename), `g r a`
@@ -199,63 +242,6 @@ function gChordMultiCursorCommand(key: string): string | undefined {
   }
 }
 
-// A native editor/LSP command run from a `g`-chord (`gd`/`gh`/…). Like the
-// legacy `native` action it asks for a post-command [syncFromEditorState] and is
-// never a buffer change (so not dot-repeatable).
-function nativeCommandEffect(state: HandlerState, command: string): HandleResult<void> {
-  const editor = state.editor;
-  if (editor === undefined) return invalid();
-  return effect("normal", () => editor.executeNativeCommand(command), {
-    dotRepeatable: false,
-    syncAfter: true,
-  });
-}
-
-// A multicursor `g`-chord (`gl`/`ga`/…): run the VSCode command [count] times.
-// The editor reconciles its own selections via [syncSelectionAfter], so no
-// [syncAfter] is needed. Not a buffer change.
-function multiCursorEffect(state: HandlerState, command: string): HandleResult<void> {
-  const editor = state.editor;
-  if (editor === undefined) return invalid();
-  const count = state.repeat;
-  return effect(
-    "normal",
-    () => {
-      for (let index = 0; index < count; index++) {
-        editor.executeNativeCommand(command, [], { syncSelectionAfter: true });
-      }
-    },
-    { dotRepeatable: false }
-  );
-}
-
-// Editor-tab navigation (`gt`/`gT`). A count means an absolute tab index for
-// `gt` (`2gt` -> the 2nd tab) and a repeat for `gT`, matching VSCodeVim.
-function editorTabEffect(state: HandlerState, direction: "next" | "previous"): HandleResult<void> {
-  const editor = state.editor;
-  if (editor === undefined) return invalid();
-  const count = state.hasCount === true ? state.repeat : undefined;
-  return effect("normal", () => switchEditorTab(editor, direction, count), { dotRepeatable: false });
-}
-
-function switchEditorTab(
-  editor: VimEditorCapabilities,
-  direction: "next" | "previous",
-  count: number | undefined
-): void {
-  if (count !== undefined && count <= 0) return;
-  if (direction === "next" && count !== undefined) {
-    // `{count}gt` jumps to the one-based tab index instead of repeating.
-    editor.executeNativeCommand("workbench.action.openEditorAtIndex", [count - 1], { syncSelectionAfter: true });
-    return;
-  }
-  const command =
-    direction === "next" ? "workbench.action.nextEditorInGroup" : "workbench.action.previousEditorInGroup";
-  for (let index = 0; index < (count ?? 1); index++) {
-    editor.executeNativeCommand(command, [], { syncSelectionAfter: true });
-  }
-}
-
 // Change-list navigation (`g;` older / `g,` newer): move [count] entries and put
 // the cursor at the resulting position. Not a buffer change.
 function changeListEffect(state: HandlerState, direction: ChangeListDirection): HandleResult<void> {
@@ -264,7 +250,7 @@ function changeListEffect(state: HandlerState, direction: ChangeListDirection): 
   if (editor === undefined || changeList === undefined) return invalid();
   const count = state.repeat;
   return effect(
-    "normal",
+    state.mode,
     () => {
       const position = changeList.move(count, direction);
       if (position !== undefined) editor.setSelections([charwiseSelection(position)]);
@@ -290,7 +276,7 @@ function insertAtPreviousEffect(state: HandlerState): HandleResult<void> {
   );
 }
 
-function convertTargetForKey(key: string): ConvertTarget | undefined {
+export function convertTargetForKey(key: string): ConvertTarget | undefined {
   switch (key) {
     case "u":
       return "lower";
@@ -305,16 +291,35 @@ function convertTargetForKey(key: string): ConvertTarget | undefined {
   }
 }
 
-// Bare find motions `f`/`t`/`F`/`T` then the target char: move the cursor and
-// remember the find so `;`/`,` can repeat it. As an operator operand (`dfx`),
-// find is handled in [operandHandler]; this is the root (plain motion) form.
-function findHandler(key: string, state: HandlerState): HandleResult<void> {
+// How to apply a resolved find motion. Normal mode moves the cursor
+// ([applyFindToCursor]); visual mode extends the live selection (see
+// `visual_handler.ts`). [record] is set for a fresh `f`/`t` (so `;`/`,` can
+// repeat it) and cleared for a `;`/`,` repeat.
+export type FindApplier = (
+  state: HandlerState,
+  motion: FindMotion,
+  opts: { record: boolean }
+) => HandleResult<void>;
+
+// Default find applier: move the cursor (normal-mode find), recording the motion
+// for `;`/`,` when requested.
+const applyFindToCursor: FindApplier = (state, motion, { record }) =>
+  applyResolvedMotion(state, motion, record ? motion : undefined);
+
+// Bare find motions `f`/`t`/`F`/`T` then the target char: apply the find (move
+// the cursor in normal mode, extend the selection in visual mode) and remember
+// it so `;`/`,` can repeat it. As an operator operand (`dfx`), find is handled in
+// [operandHandler]; this is the root (plain motion) form. [apply] selects the
+// normal vs visual application so both grammars share the chord/digraph logic.
+export function findHandler(
+  key: string,
+  state: HandlerState,
+  apply: FindApplier = applyFindToCursor
+): HandleResult<void> {
   const kind = findKindForKey(key);
   if (kind === undefined) return unhandled();
-  const findChar = (char: string, charState: HandlerState): HandleResult<void> => {
-    const motion = findMotionForChar(kind, char);
-    return applyResolvedMotion(charState, motion, motion);
-  };
+  const findChar = (char: string, charState: HandlerState): HandleResult<void> =>
+    apply(charState, findMotionForChar(kind, char), { record: true });
   return handler([
     {
       handler: (char, charState) => {
@@ -330,12 +335,17 @@ function findHandler(key: string, state: HandlerState): HandleResult<void> {
   ]);
 }
 
-// `;` repeats the last find, `,` repeats it reversed.
-function repeatFindHandler(key: string, state: HandlerState): HandleResult<void> {
+// `;` repeats the last find, `,` repeats it reversed. [apply] selects the normal
+// vs visual application, like [findHandler].
+export function repeatFindHandler(
+  key: string,
+  state: HandlerState,
+  apply: FindApplier = applyFindToCursor
+): HandleResult<void> {
   if (key !== ";" && key !== ",") return unhandled();
   const motion = state.find?.repeat(key === ",");
   if (motion === undefined) return effect(state.mode, () => {});
-  return applyResolvedMotion(state, motion);
+  return apply(state, motion, { record: false });
 }
 
 // Apply an already-resolved motion to the live selections — the root-motion
@@ -473,8 +483,9 @@ function replaceWith(char: string, state: HandlerState): HandleResult<void> {
 }
 
 // Collect the two chars of a `ctrl-k` digraph and resolve the target char into
-// [onResolved]. Shared by `r ctrl-k` (replace) and `f`/`t` `ctrl-k` (find).
-function digraphWaiter(
+// [onResolved]. Shared by `r ctrl-k` (replace, normal + visual) and `f`/`t`
+// `ctrl-k` (find).
+export function digraphWaiter(
   onResolved: (char: string, state: HandlerState) => HandleResult<void>,
   first?: string
 ): Handler<void> {
@@ -510,7 +521,45 @@ export function resolveMotion(key: string, state: HandlerState): Motion | undefi
       ? { type: "goToPercentage", percent: state.repeat }
       : { type: "matching" };
   }
+  // `|`: go to the (1-based) column given by the count (default 1). Like `%`, the
+  // count is baked into the motion (idempotent) rather than applied as a repeat,
+  // so it moves/extends correctly through the count-repeating visual path.
+  if (key === "|") return { type: "goToColumn", column: state.repeat };
   return motionForKey(key);
+}
+
+// Linewise motions that are kept out of [resolveMotion] (so the operator
+// grammar, which resolves `G` via its own `{kind:"lastLine"}` arm and would
+// otherwise treat `+`/`-`/`<CR>` as charwise, is unaffected): standalone `G`
+// (count-aware: line N, else the last line — keeping the column, Vim
+// 'nostartofline'), and `+`/`-`/`<CR>` (count lines down/up to the first
+// non-blank; `<CR>` is `+`). Shared by the normal-mode [lineMotionHandler] and
+// the visual-mode `visualLineMotionHandler`. (`|` go-to-column is charwise, so it
+// lives in [resolveMotion] like `%`.)
+export function lineMotionForKey(key: string, state: HandlerState): Motion | undefined {
+  switch (key) {
+    case "G": {
+      const lastLine = state.editor?.lineCount() ?? 1;
+      return { type: "goToLine", line: state.hasCount === true ? state.repeat : lastLine };
+    }
+    case "+":
+    case "enter":
+      // `<CR>` is `+`: [count] lines down to the first non-blank.
+      return { type: "firstNonBlankLine", direction: "down" };
+    case "-":
+      return { type: "firstNonBlankLine", direction: "up" };
+    default:
+      return undefined;
+  }
+}
+
+// Standalone line motions (`G`/`+`/`-`) moving the cursor. As operator targets
+// (`dG`) they are resolved by the operand grammar's own line-target arm, so this
+// only runs at the root (plain movement).
+function lineMotionHandler(key: string, state: HandlerState): HandleResult<void> {
+  const motion = lineMotionForKey(key, state);
+  if (motion === undefined) return unhandled();
+  return applyResolvedMotion(state, motion);
 }
 
 // A bare cursor-motion handler, exported for reuse. Returns unhandled for any
@@ -534,10 +583,10 @@ export function movementHandler(key: string, state: HandlerState): HandleResult<
 // selections. Unlike [motionHandler] (which re-resolves the key), this uses the
 // already-resolved motion so count-sensitive keys (`%`) move correctly.
 function motionHandlerForMotion(motion: Motion): Handler<readonly MotionResult[]> {
-  // [motionHandler] resolves the key itself via [motionForKey]; for `%` with a
-  // count we need go-to-percentage instead, so resolve through the effect with
-  // the motion we already computed.
-  if (motion.type === "goToPercentage") {
+  // [motionHandler] resolves the key itself via [motionForKey]; for the
+  // count-baked motions (`%` go-to-percentage, `|` go-to-column) that key
+  // resolution would drop the count, so apply the motion we already computed.
+  if (motion.type === "goToPercentage" || motion.type === "goToColumn") {
     return (_key, state) =>
       effect(state.mode, () => {
         const editor = state.editor;
@@ -747,11 +796,14 @@ function motionChordHandler(
       ]);
     }
 
-    // `g`-chord motions (`gg`/`g_`/`gM`/`ge`/`gE`/`gj`/`gk`).
+    // `g`-chord motions (`gg`/`g_`/`gM`/`ge`/`gE`/`gj`/`gk`) and the
+    // search-selection operands `gn`/`gN` (`dgn`/`cgn`: operate on the next/prev
+    // search match).
     if (key === "g") {
       return handler([
         {
           handler: (key2, gState) => {
+            if (key2 === "n" || key2 === "N") return searchSelectionOperand(gState, key2 === "N", apply);
             const motion = gChordMotion(key2);
             return motion === undefined ? invalid() : apply(motion, gState);
           },
@@ -781,9 +833,32 @@ function motionChordHandler(
   };
 }
 
+// `gn`/`gN` as an operator operand (`dgn`/`cgn`): the next/previous search match
+// becomes the operator's target range. With no match the operator aborts without
+// editing — and during a dot-repeat replay it also stops the replay so any
+// recorded insert text (`cgn…<esc>`) is not run as normal-mode keys (Vim's
+// behavior for a `.`-replayed `cgn` that finds nothing).
+function searchSelectionOperand(
+  state: HandlerState,
+  reversed: boolean,
+  apply: (motion: Motion, state: HandlerState) => HandleResult<void>
+): HandleResult<void> {
+  const editor = state.editor;
+  const search = state.search;
+  if (editor === undefined || search === undefined) return invalid();
+  // Operator operands run in normal mode, so the current match counts
+  // (`includeStart`), matching the legacy `applySearchSelection`.
+  const range = search.matchRangeForSelection(editor, { reversed, count: state.repeat, includeStart: true });
+  if (range === undefined) {
+    const repeatState = state.repeatState;
+    return effect("normal", () => repeatState?.abortCurrentReplay(), { dotRepeatable: false });
+  }
+  return apply({ type: "searchMatch", range }, state);
+}
+
 // `g`-chord motions usable as operator operands. Non-motion `g`-chords (convert,
 // tabs, ...) are not operands and resolve to undefined (cancel).
-function gChordMotion(key: string): Motion | undefined {
+export function gChordMotion(key: string): Motion | undefined {
   switch (key) {
     case "g":
       // `gg`: go to the first line (or line N with a count); [operatorTarget]
@@ -804,14 +879,6 @@ function gChordMotion(key: string): Motion | undefined {
     default:
       return undefined;
   }
-}
-
-function bracketMotion(bracket: string, key: string): Motion | undefined {
-  if (bracket === "]" && key === "}") return { type: "unmatchedForward", char: "}" };
-  if (bracket === "]" && key === ")") return { type: "unmatchedForward", char: ")" };
-  if (bracket === "[" && key === "{") return { type: "unmatchedBackward", char: "{" };
-  if (bracket === "[" && key === "(") return { type: "unmatchedBackward", char: "(" };
-  return undefined;
 }
 
 // Apply an operator to a lazy [OperatorTarget] descriptor. The descriptor is
@@ -990,7 +1057,7 @@ function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: num
   return { start: { row, column: first }, end: { row, column: last } };
 }
 
-function keyForInput(key: string): string {
+export function keyForInput(key: string): string {
   return key === "space" ? " " : key;
 }
 

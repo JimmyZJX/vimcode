@@ -221,7 +221,7 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 	},
 	'vim.visualMultilineInsert': {
 		type: 'boolean',
-		default: false,
+		default: true,
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.visualMultilineInsert', "Use VSCodeVim-compatible multi-cursor insertion for I/A in Visual and Visual Line modes."),
 	},

@@ -5,7 +5,8 @@
 // - intentional differences: GPUI action registration is replaced by direct key dispatch
 //   from the VSCode patch / tests.
 
-import { LineRange, executeCommand } from "./command.js";
+import { CommandLine, LineRange, executeCommand, isCommandInputKey } from "./command.js";
+import { commandModeHandler } from "./command_handler.js";
 import { RemapTimeoutKey, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
 import type { NormalizedRemapping, WhenEvaluator, VimCommandMapping, VimConfiguration } from "./config.js";
 import { lookupDigraph } from "./digraph.js";
@@ -96,7 +97,7 @@ const alwaysActiveWhenEvaluator: WhenEvaluator = () => true;
 // prompt and the visual kinds. Mode transitions touching these resync the
 // executor (see [Vim.setMode]).
 function isExecutorOwnedNonNormalMode(mode: VimMode): boolean {
-  return mode === "search" || isVisualModeKind(mode);
+  return mode === "search" || mode === "command" || isVisualModeKind(mode);
 }
 
 
@@ -132,7 +133,6 @@ export class Vim {
     redispatch: (key, allowRemap) => this.dispatchThroughPipeline(key, allowRemap),
     executeCommand: command => this.executeMappedCommand(command),
     onEnterMode: (mode, opts) => this.enterModeFromExecutor(mode, opts),
-    dispatchToLegacyKeymap: (keys, count) => this.dispatchToLegacyKeymap(keys, count),
   });
   // The when-evaluator for the in-flight top-level dispatch, read by the remap
   // root handler (which resolves against the live Vim mode) and the executor's
@@ -143,6 +143,10 @@ export class Vim {
   // by the executor mode transition ([enterModeFromExecutor]) and cleared on
   // exit; injected into the search-mode grammar via [searchRootHandler].
   private activeSearch: PendingSearch | undefined;
+  // The framework `:` prompt's editable command line while in `command` mode.
+  // Created by the executor mode transition ([enterModeFromExecutor]) and cleared
+  // on exit; injected into the command-mode grammar via [commandRootHandler].
+  private activeCommand: CommandLine | undefined;
   private insertRepeatCount = 1;
   private insertRepeatText = "";
   // Zed: `Vim::replacements` — what replace mode overwrote, for backspace.
@@ -343,6 +347,10 @@ export class Vim {
     // anything else (e.g. `ctrl-a`) is left to the host, like the legacy prompt.
     if (this.activeSearch !== undefined) return isSearchInputKey(key);
 
+    // The framework `:` prompt owns command-line-input keys (and escape, to
+    // cancel); anything else is left to the host.
+    if (this.activeCommand !== undefined) return isCommandInputKey(key);
+
     const pendingSearch = this.operatorStack.activeTopLevel("search");
     if (pendingSearch !== undefined) return isSearchInputKey(key);
 
@@ -432,7 +440,10 @@ export class Vim {
       if (adopted) {
         this.clearPendingForExternalModeChange();
         this.insertOrigin = undefined;
-        this.modeState = "visual";
+        // Use [setMode] (not a direct [modeState] write) so the executor is
+        // synced to visual; otherwise the typed framework keeps its stale mode
+        // and declines every visual key, forcing them onto the legacy dispatcher.
+        this.setMode("visual");
         return { mode: this.modeState, ...reconciliation };
       }
     }
@@ -485,6 +496,9 @@ export class Vim {
       this.globalState.search.clearPending(this.editor, frameworkSearch, { restoreViewport: closeSearchHighlights });
       this.activeSearch = undefined;
     }
+    // The framework `:` command line has no editor preview to tear down; just
+    // drop the in-flight input (an escape/external cancel discards it).
+    this.activeCommand = undefined;
     this.searchOriginMode = undefined;
     this.handlerState.register = undefined;
     this.handlerState.countText = "";
@@ -496,7 +510,7 @@ export class Vim {
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.activeSearch !== undefined || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.keyExecutor.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
+    return this.operatorStack.length > 0 || this.activeSearch !== undefined || this.activeCommand !== undefined || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.keyExecutor.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -526,6 +540,7 @@ export class Vim {
     // Everything else renders the showcmd buffer: the literal keys typed for
     // the command in flight.
     if (this.activeSearch !== undefined) return this.globalState.search.pendingChord(this.activeSearch);
+    if (this.activeCommand !== undefined) return `:${this.activeCommand.value()}`;
     const pendingOperator = this.operatorStack.top();
     if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
     if (pendingOperator?.type === "command") return `:${pendingOperator.input}`;
@@ -581,6 +596,9 @@ export class Vim {
     if (state.mode === "search" && this.activeSearch !== undefined) {
       return [{ handler: this.searchRootHandler(), state }];
     }
+    if (state.mode === "command" && this.activeCommand !== undefined) {
+      return [{ handler: this.commandRootHandler(), state }];
+    }
     if (isVisualModeKind(state.mode)) {
       return [
         { handler: this.remapRootHandler(), state },
@@ -611,6 +629,13 @@ export class Vim {
         registers: this.globalState.registers,
         visual: this.visualMode,
         repeatState: this.globalState.repeat,
+        // [search] is injected so visual-mode `gn`/`gN`/`n`/`N` can extend the
+        // selection to a search match; [find] so visual-mode `f`/`t`/`F`/`T` and
+        // `;`/`,` can extend it to a find target (and record the find);
+        // [changeList] for the `g;`/`g,` editor `g`-chords shared with normal mode.
+        search: this.globalState.search,
+        find: this.globalState.find,
+        changeList: this.modelState.changeList,
       };
       return this.visualGrammar(key, liveState);
     };
@@ -629,6 +654,8 @@ export class Vim {
 
   // Root of the `search` mode grammar ([searchModeHandler]). The live editor and
   // the in-flight query travel in the handler state, like [normalRootHandler].
+  // [searchOrigin] and [visual] are injected so a `/`?` started from visual mode
+  // extends the selection and returns to that visual kind on completion.
   private searchRootHandler(): Handler<void> {
     return (key, state) => {
       const liveState: HandlerState = {
@@ -638,8 +665,26 @@ export class Vim {
         registers: this.globalState.registers,
         search: this.globalState.search,
         activeSearch: this.activeSearch,
+        searchOrigin: this.searchOriginMode,
+        visual: this.visualMode,
       };
       return searchModeHandler(key, liveState);
+    };
+  }
+
+  // Root of the `command` mode grammar ([commandModeHandler]). The live editable
+  // command line travels in the handler state, like [activeSearch]. Execution is
+  // owner-side (see [enterModeFromExecutor]), so the handler only needs to
+  // accumulate input.
+  private commandRootHandler(): Handler<void> {
+    return (key, state) => {
+      const liveState: HandlerState = {
+        ...state,
+        mode: "command",
+        editor: this.editor,
+        activeCommand: this.activeCommand,
+      };
+      return commandModeHandler(key, liveState);
     };
   }
 
@@ -679,18 +724,56 @@ export class Vim {
       // key routes to [searchRootHandler] (which [executorHandlers] gates on it).
       this.keyExecutor.reset("search");
     }
-    // Leaving `search` for normal (the `enter` completion; the motion was already
-    // applied by the effect): tear down the prompt session.
-    if (mode === "normal" && this.modeState === "search") {
+    if (mode === "command" && this.modeState !== "command") {
+      // Enter the `:` command line. From a visual mode, set the `'<`/`'>` marks
+      // and prefill the `'<,'>` range, then leave visual (mirrors the legacy
+      // `startCommand`).
+      let input = "";
+      if (isVisualModeKind(this.modeState)) {
+        const selection = this.editor.getSelections()[0];
+        if (selection !== undefined) this.modelState.marks.setVisualSelectionMarks(this.editor, selection);
+        this.visualMode.exit();
+        input = "'<,'>";
+      }
+      this.activeCommand = new CommandLine(input);
+      this.setMode("command");
+      // Rebuild the executor handlers now that [activeCommand] exists so the next
+      // key routes to [commandRootHandler].
+      this.keyExecutor.reset("command");
+    }
+    // Leaving `search` for another mode (the `enter` completion; the effect
+    // already applied the motion — a cursor move for a normal-origin search, a
+    // selection extension for a visual-origin one): tear down the prompt session.
+    // The mode-specific branches below return to the origin mode.
+    if (mode !== "search" && this.modeState === "search") {
       this.activeSearch = undefined;
       this.searchOriginMode = undefined;
+    }
+    if (mode === "normal" && this.modeState === "search") {
       this.setMode("normal");
+    }
+    // Submitting the `:` command line (`enter`): run the accumulated command and
+    // return to normal. Execution happens here — on the command -> normal
+    // transition, after the executor's effect queue has drained — so a
+    // `:normal`/`:g` command that re-enters [onKey] runs its keys synchronously
+    // rather than queuing them behind the in-flight effect. Escape cancels via
+    // the central escape handling instead, which never reaches this path.
+    if (mode === "normal" && this.modeState === "command") {
+      const command = this.activeCommand?.value() ?? "";
+      this.activeCommand = undefined;
+      this.setMode("normal");
+      executeCommand(this.editor, command, {
+        runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
+        exOptions: this.globalState.exOptions,
+        markLine: name => this.modelState.marks.position(name)?.row,
+      });
     }
     // Visual mode transitions (the framework targets only these three kinds):
     if (mode === "visual" || mode === "visualLine" || mode === "visualBlock") {
       if (!isVisualModeKind(this.modeState)) {
-        // Entering visual from normal (`v`/`V`/`ctrl-v`, later `gv`/`gn`): start
-        // the selection. The entry effect itself is a no-op.
+        // Entering visual from normal (`v`/`V`/`ctrl-v`, `gv`/`gn`), or returning
+        // to the visual origin after completing a `/`?` search: [enterVisualMode]
+        // keeps a pre-built / preserved selection rather than resetting it.
         this.enterVisualMode(mode);
       } else {
         // Already visual: a motion (same kind) or a toggle to another kind. The
@@ -703,18 +786,6 @@ export class Vim {
       // did the visual state cleanup (toggleMode/handleCommand/exit).
       this.setMode("normal");
     }
-  }
-
-  // Feed a finite-keymap chord the framework grammar did not migrate (the
-  // visual/search `g`-chords `gv`/`gn`/`gN`) to the legacy keymap resolver. This
-  // bypasses [dispatchKey]'s recording (the framework already recorded these
-  // keys for macros), and once the resolver goes pending any follow-up keys
-  // route to legacy via the usual executor/legacy coexistence
-  // ([isExecutorNormalContext]). The framework-owned [count] is handed to the
-  // legacy count state, which the resolved action reads via [takeCount].
-  private dispatchToLegacyKeymap(keys: readonly string[], count: number | undefined): void {
-    if (count !== undefined) this.handlerState.countText = String(count);
-    for (const key of keys) this.handleFiniteKeymapKey(key);
   }
 
   // Root of the migrated normal-mode grammar. It only begins a chord from a
@@ -738,6 +809,17 @@ export class Vim {
         changeList: this.modelState.changeList,
         lastInsertPosition: this.modelState.lastInsertPosition,
         search: this.globalState.search,
+        repeatState: this.globalState.repeat,
+        // [visual] is injected so the normal-mode `gn`/`gN` (and later `gv`)
+        // can build a visual selection from a search match.
+        visual: this.visualMode,
+        // [macro] drives `q` record/stop + register recording; `@`/`Q` request a
+        // replay via [requestMacroReplay], which [runPendingMacroReplay] runs
+        // after the executor drain (outside it).
+        macro: this.globalState.macro,
+        requestMacroReplay: (register, count) => {
+          this.pendingMacroReplay = { register, count };
+        },
       };
       return this.normalGrammar(key, liveState);
     };
@@ -816,6 +898,10 @@ export class Vim {
         // must revert to normal with a warning, like the legacy [dispatchKey]
         // finally.
         this.ensureNormalModeForReadonlyDocument();
+        // A `@`/`Q` that requested a macro replay runs it here — after the
+        // executor's effect drain, so each replayed key is fed back through
+        // [onKey] outside the drain and fully applies before the next.
+        this.runPendingMacroReplay();
         return "handled";
       }
       // Framework `/`?` prompt: a key the search grammar declined that is not
@@ -897,7 +983,12 @@ export class Vim {
       this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
     }
     const modeBefore = this.modeState;
+    const wasRecording = this.globalState.macro.isRecording();
     const claimed = this.keyExecutor.handle(key, allowRemap);
+    // The key that started a macro recording (`q{reg}`'s register key) must not
+    // become the first key of that recording: the effect just called
+    // [startRecording], so a plain [recordMacroKey] below would capture it.
+    const startedRecording = !wasRecording && this.globalState.macro.isRecording();
     // Keys the framework claims in a non-normal mode it owns (search-prompt
     // input, visual-mode keys) are macro-recorded too, like the legacy
     // waiting-input/visual paths, so a recorded `/foo<CR>` or `v3ls...` replays.
@@ -907,9 +998,15 @@ export class Vim {
     }
     if (claimed && recordable) {
       // Macros are a verbatim transcript: record every claimed key, including a
-      // chord-cancelling key (`d` then `.`).
-      this.recordMacroKey(key);
-      if (this.keyExecutor.lastHandleWasCancel()) {
+      // chord-cancelling key (`d` then `.`). The key that *started* a recording
+      // (`q{reg}`'s register key) is excluded so it is not the macro's first key.
+      if (!startedRecording) this.recordMacroKey(key);
+      if (this.keyExecutor.lastEffectPreservesDotRepeat()) {
+        // A dot-repeat-transparent key (`q`/`@`/`Q` + register): leave the
+        // recording untouched. `@`/`Q` replay their keys through the normal path,
+        // which sets the dot-repeat to the macro's last change; the macro-control
+        // keys themselves must neither enter nor cancel it.
+      } else if (this.keyExecutor.lastHandleWasCancel()) {
         // The key cancelled a pending chord (e.g. `d.`): discard its partial
         // recording and do not record the cancelling key for dot-repeat, so the
         // real last change survives.
@@ -1012,9 +1109,6 @@ export class Vim {
         if (finiteKeymapResult !== undefined) return finiteKeymapResult;
       }
 
-      const macroControlResult = this.handleMacroControlKey(key);
-      if (macroControlResult !== undefined) return macroControlResult;
-
       // Recording is positionally uniform: macro keys and repeatable keys are
       // recorded once, before any keymap resolution. Whether a key actually
       // starts or extends a dot-repeat recording is decided by the repeat
@@ -1104,10 +1198,14 @@ export class Vim {
     return this.dispatchVimAction(normalFallbackAction);
   }
 
-  private dispatchModeFallbackKey(_key: string): KeyDispatchResult {
+  private dispatchModeFallbackKey(key: string): KeyDispatchResult {
     if (this.isVisualMode()) {
-      const modeBefore = this.modeState;
-      return this.applyVisualResult(this.visualMode.handleUnhandledKey(), modeBefore);
+      // Vim: a key with no visual-mode binding is a no-op (it rings the bell) and
+      // keeps the selection — Vim does not drop to normal mode. Vim owns the key
+      // (see [Vim.ownsKey]) so the host does not type it into the buffer; the
+      // valuable normal-mode commands are registered directly in the visual
+      // grammar (e.g. `v_r`) rather than reached via a drop-to-normal fallback.
+      return "handled";
     }
 
     if (this.modeState !== "normal") return "native";
@@ -1133,19 +1231,6 @@ export class Vim {
         if (!this.isEscape(key)) this.recordMacroKey(key);
         this.handlePendingInsertRegisterKey(key);
         return "handled";
-      case "recordRegister":
-        this.operatorStack.popTopLevel("recordRegister");
-        this.globalState.macro.startRecording(key);
-        return "handled";
-      case "replayRegister": {
-        const pending = this.operatorStack.popTopLevel("replayRegister");
-        if (pending === undefined) return "handled";
-        this.recordMacroKey(key);
-        this.replayMacro(() =>
-          this.globalState.macro.replayRegisterKey(key, pending.count, replayKey => this.onKey(replayKey))
-        );
-        return "handled";
-      }
       case "register":
         this.recordMacroKey(key);
         this.operatorStack.popTopLevel("register");
@@ -1566,35 +1651,6 @@ export class Vim {
   // Macro control keys resolve after waiting input (so `f q`, `m q`, and
   // register/search input win while recording) but before macro key recording
   // (so the `q` that stops a recording is not recorded into it).
-  private handleMacroControlKey(key: string): KeyResult | undefined {
-    if (this.modeState !== "normal") return undefined;
-
-    if (this.globalState.macro.isRecording() && key === "q") {
-      this.globalState.macro.stopRecording();
-      return "handled";
-    }
-
-    if (key === "q") {
-      this.operatorStack.push({ type: "recordRegister" });
-      return "handled";
-    }
-
-    if (key === "@") {
-      this.recordMacroKey(key);
-      this.operatorStack.push({ type: "replayRegister", count: this.normalMode.takeCountForMotion(1) });
-      return "handled";
-    }
-
-    if (key === "Q") {
-      this.recordMacroKey(key);
-      this.replayMacro(() =>
-        this.globalState.macro.replayLast(this.normalMode.takeCountForMotion(1), replayKey => this.onKey(replayKey))
-      );
-      return "handled";
-    }
-
-    return undefined;
-  }
 
   private replayMacro(run: () => void): void {
     const undoTransaction = this.editor.beginUndoTransaction(this.editor.getSelections());
@@ -1603,6 +1659,26 @@ export class Vim {
     } finally {
       undoTransaction.finish(this.editor.getSelections());
     }
+  }
+
+  // A macro replay requested by the framework `@`/`Q` handlers ([register]
+  // undefined = `Q` replays the last recording). Run by [runPendingMacroReplay]
+  // after the executor's effect drain, so each replayed key is fed back through
+  // [onKey] and fully applies before the next — outside the drain, like a
+  // physically typed key.
+  private pendingMacroReplay: { register: string | undefined; count: number } | undefined;
+
+  private runPendingMacroReplay(): void {
+    const pending = this.pendingMacroReplay;
+    if (pending === undefined) return;
+    this.pendingMacroReplay = undefined;
+    this.replayMacro(() => {
+      const runKey = (replayKey: string): void => {
+        this.onKey(replayKey);
+      };
+      if (pending.register === undefined) this.globalState.macro.replayLast(pending.count, runKey);
+      else this.globalState.macro.replayRegisterKey(pending.register, pending.count, runKey);
+    });
   }
 
   private handleEscapeKey(): void {
@@ -1685,7 +1761,11 @@ export class Vim {
   }
 
   private enterVisualMode(mode: Extract<VisualResultMode, "visual" | "visualLine" | "visualBlock">): void {
-    this.visualMode.enter(visualKindForMode(mode));
+    // Normally entering visual starts a fresh selection at the cursor. But some
+    // entries pre-build the selection before this runs (e.g. `gn`/`gN` select a
+    // search match via [VisualMode.adoptSelection]); in that case keep it rather
+    // than resetting to a single-cell selection.
+    if (this.visualMode.currentMode() === undefined) this.visualMode.enter(visualKindForMode(mode));
     this.setMode(mode);
   }
 

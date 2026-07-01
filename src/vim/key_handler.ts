@@ -1,9 +1,10 @@
+import type { CommandLine } from "./command.js";
 import type { VimCommandMapping, WhenEvaluator } from "./config.js";
 import type { VimEditorCapabilities } from "./editor.js";
 import type { ChangeListState } from "./normal/change_list.js";
 import type { FindState } from "./normal/find.js";
 import type { MarkState } from "./normal/mark.js";
-import type { RepeatState } from "./normal/repeat.js";
+import type { MacroState, RepeatState } from "./normal/repeat.js";
 import type { PendingSearch, SearchState } from "./normal/search.js";
 import type { RegisterName, Registers } from "./registers.js";
 import type { Position, VimMode } from "./state.js";
@@ -56,6 +57,16 @@ export type HandlerState = {
   // by [Vim] (mode-entry creates it) and injected live so the pure search-mode
   // grammar can drive it.
   activeSearch?: PendingSearch;
+  // The in-flight `:` command line, while in `command` mode. Owned by [Vim]
+  // (mode-entry creates it) and injected live so the pure command-mode grammar
+  // can accumulate input; execution happens owner-side on the command -> normal
+  // transition.
+  activeCommand?: CommandLine;
+  // The mode `/`?` was entered from, while in `search` mode. When it is a visual
+  // kind, the completed search extends the selection and returns to that visual
+  // mode instead of moving the cursor and returning to normal. Injected live
+  // like [activeSearch].
+  searchOrigin?: VimMode;
   // The visual-mode selection state + edit helpers, injected live (like
   // [marks]/[search]) so the pure visual grammar can drive the selection and
   // apply visual operators while in a visual mode.
@@ -64,6 +75,17 @@ export type HandlerState = {
   // (same-size) visual repeat action — visual `.` reapplies to an
   // equivalently-shaped selection rather than replaying keys.
   repeatState?: RepeatState;
+  // The named-macro state (record/replay registers), for `q`/`@`/`Q`. Injected
+  // live like [search]/[repeatState]. Used by the effects that start/stop
+  // recording; replay is requested via [requestMacroReplay] instead.
+  macro?: MacroState;
+  // Request a macro replay (`@{reg}`/`@@` with [register] set, `Q` with
+  // [register] undefined). The owner runs it *after* the executor's effect drain
+  // — outside it, like a freshly typed key — because replaying feeds keys back
+  // through the full pipeline and each must fully apply (mode transitions,
+  // edits) before the next; running it inside the drain would defer the
+  // framework effects and scramble a replay that passes through insert mode.
+  requestMacroReplay?: (register: string | undefined, count: number) => void;
 };
 
 export const initialHandlerState: HandlerState = {
@@ -112,26 +134,35 @@ export type EffectMeta = {
   // editor-internal sync option (`syncSelectionAfter`) covers the rest. Defaults
   // to false when omitted.
   syncAfter?: boolean;
+  // Whether this key is transparent to dot-repeat: the owner should neither open,
+  // extend, nor cancel the dot-repeat recording for it. Distinct from
+  // `dotRepeatable: false`, which *cancels* — this *preserves*. Used by the
+  // macro-control keys (`q`/`@`/`Q` + register): they must not enter the dot
+  // register, and `@`/`Q` replay must leave the dot-repeat their replayed keys
+  // set intact. Defaults to false when omitted.
+  preservesDotRepeat?: boolean;
 };
 
 export type EffectAction<T> = {
   type: "effect";
   mode: VimMode;
   run: () => QueuedRunResult<T>;
+  // When set, the *actual* target mode is computed by calling this after [run]
+  // executes, instead of using the static [mode]. Used by commands whose
+  // resulting mode is only known after the side effect runs — e.g. a visual
+  // command dispatched through [VisualMode.handleCommand], whose result (stay
+  // visual / which visual kind / exit to normal / enter insert) depends on the
+  // selection at run time. The static [mode] is the executor's best-guess parser
+  // mode while [run] executes (not load-bearing among visual kinds, which share
+  // handlers); [resolveMode] is the true transition mode reported to
+  // [onEnterMode]. Unlike [EffectMeta] this is a callback, so it lives on the
+  // action next to [run] rather than in the plain-data meta.
+  resolveMode?: () => VimMode;
 } & EffectMeta;
 
 type VoidKeyAction =
   | { type: "keys"; mode: VimMode; keys: readonly KeyToDispatch[] }
   | { type: "commands"; mode: VimMode; commands: readonly VimCommandMapping[] }
-  // Hand a finite-keymap chord the framework grammar has not migrated (the
-  // visual/search `g`-chords `gv`/`gn`/`gN`) to the legacy keymap resolver. The
-  // keys feed the resolver directly (not the recording-and-re-dispatch path), so
-  // they are not double-recorded; once the resolver goes pending, follow-up keys
-  // route to legacy via the normal executor/legacy coexistence. [count] carries
-  // the framework-owned count over to the legacy side, which reads it from its
-  // own count state.
-  // Never a buffer change, so never dot-repeatable.
-  | { type: "legacyKeymap"; mode: VimMode; keys: readonly string[]; count: number | undefined }
   | { type: "sequence"; mode: VimMode; actions: readonly KeyAction<void>[] };
 
 export type KeyAction<T> = EffectAction<T> | (T extends void ? VoidKeyAction : never);
@@ -143,10 +174,19 @@ export type HandlerEnv<T> = {
   state: HandlerState;
 };
 
+// A side effect to run when a pending continuation is entered (the key that
+// left the chord pending is accepted). It runs through the same effect queue as
+// command effects — deferred, not during [handle] — so a handler that both
+// advances an interactive prompt and stays pending (e.g. the `d/` incremental
+// search operand: update the incsearch preview, then wait for the next key) can
+// keep its body pure and put the side effect here. Purely a side effect: it
+// carries no value and does not transition mode (the chord stays pending).
+export type PendingEffect = () => QueuedRunResult<void>;
+
 export type HandleResult<T> =
   | { type: "run"; action: KeyAction<T> }
-  | { type: "handler"; handlerEnvs: readonly HandlerEnv<T>[] }
-  | { type: "conflict"; accepted: KeyAction<T>; pending: readonly HandlerEnv<T>[] }
+  | { type: "handler"; handlerEnvs: readonly HandlerEnv<T>[]; effect?: PendingEffect; preservesDotRepeat?: boolean }
+  | { type: "conflict"; accepted: KeyAction<T>; pending: readonly HandlerEnv<T>[]; effect?: PendingEffect; preservesDotRepeat?: boolean }
   | { type: "unhandled" }
   | { type: "invalid" };
 
@@ -178,12 +218,16 @@ export function mapHandler<T, U>(
       case "run":
         return { type: "run", action: mapAction(result.action) };
       case "handler":
-        return { type: "handler", handlerEnvs: result.handlerEnvs.map(env => mapHandlerEnv(env, f)) };
+        // [effect] is a side-effect-only thunk (void), so it passes through the
+        // T -> U mapping unchanged; [preservesDotRepeat] is a plain flag.
+        return { type: "handler", handlerEnvs: result.handlerEnvs.map(env => mapHandlerEnv(env, f)), effect: result.effect, preservesDotRepeat: result.preservesDotRepeat };
       case "conflict":
         return {
           type: "conflict",
           accepted: mapAction(result.accepted),
           pending: result.pending.map(env => mapHandlerEnv(env, f)),
+          effect: result.effect,
+          preservesDotRepeat: result.preservesDotRepeat,
         };
       case "unhandled":
         return { type: "unhandled" };
@@ -204,6 +248,8 @@ export function combineHandleResults<T>(results: readonly HandleResult<T>[]): Ha
   let accepted: KeyAction<T> | undefined;
   let invalidResult: Extract<HandleResult<T>, { type: "invalid" }> | undefined;
   const pending: HandlerEnv<T>[] = [];
+  const effects: PendingEffect[] = [];
+  let preservesDotRepeat = false;
 
   for (const result of results) {
     switch (result.type) {
@@ -219,20 +265,40 @@ export function combineHandleResults<T>(results: readonly HandleResult<T>[]): Ha
         break;
       case "handler":
         pending.push(...result.handlerEnvs);
+        if (result.effect !== undefined) effects.push(result.effect);
+        if (result.preservesDotRepeat === true) preservesDotRepeat = true;
         break;
       case "conflict":
         if (accepted === undefined) accepted = result.accepted;
         pending.push(...result.pending);
+        if (result.effect !== undefined) effects.push(result.effect);
+        if (result.preservesDotRepeat === true) preservesDotRepeat = true;
         break;
     }
   }
 
+  const effect = combineEffects(effects);
+  const preserves = preservesDotRepeat ? true : undefined;
   if (accepted !== undefined && pending.length > 0) {
-    return { type: "conflict", accepted, pending };
+    return { type: "conflict", accepted, pending, effect, preservesDotRepeat: preserves };
   }
   if (accepted !== undefined) return { type: "run", action: accepted };
-  if (pending.length > 0) return { type: "handler", handlerEnvs: pending };
+  if (pending.length > 0) return { type: "handler", handlerEnvs: pending, effect, preservesDotRepeat: preserves };
   return invalidResult ?? { type: "unhandled" };
+}
+
+// Merge the pending effects of several combined handler results into one thunk,
+// preserving order (async effects chain). Returns [undefined] when there are
+// none so the common no-effect case stays allocation-free. In practice at most
+// one active handler carries a pending effect.
+function combineEffects(effects: readonly PendingEffect[]): PendingEffect | undefined {
+  if (effects.length === 0) return undefined;
+  if (effects.length === 1) return effects[0];
+  return () =>
+    effects.reduce<QueuedRunResult<void>>(
+      (previous, next) => (isPromiseLike(previous) ? Promise.resolve(previous).then(() => next()) : next()),
+      undefined
+    );
 }
 
 export function run<T>(action: KeyAction<T>): HandleResult<T> {
@@ -247,8 +313,23 @@ export function effect<T>(
   return { type: "run", action: { type: "effect", mode, run, ...meta } };
 }
 
-export function handler<T>(handlerEnvs: readonly HandlerEnv<T>[]): HandleResult<T> {
-  return { type: "handler", handlerEnvs };
+// Like [effect], but the target mode is resolved by calling [resolveMode] after
+// [run] executes (see [EffectAction.resolveMode]). [mode] is the executor's
+// best-guess parser mode while [run] runs.
+export function dynamicModeEffect<T>(
+  mode: VimMode,
+  run: () => QueuedRunResult<T>,
+  resolveMode: () => VimMode,
+  meta: EffectMeta = {}
+): HandleResult<T> {
+  return { type: "run", action: { type: "effect", mode, run, resolveMode, ...meta } };
+}
+
+export function handler<T>(
+  handlerEnvs: readonly HandlerEnv<T>[],
+  { effect, preservesDotRepeat }: { effect?: PendingEffect; preservesDotRepeat?: boolean } = {}
+): HandleResult<T> {
+  return { type: "handler", handlerEnvs, effect, preservesDotRepeat };
 }
 
 export function prefixedHandler<T>(

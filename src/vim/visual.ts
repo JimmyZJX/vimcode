@@ -15,6 +15,7 @@ import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, linewiseCursorAfterDelete, matchingPositionFromLine, Motion } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
+import { incrementNumbers } from "./normal/increment.js";
 import { IndentDirection } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { joinLines } from "./normal/join.js";
@@ -221,11 +222,6 @@ export class VisualMode {
     }
   }
 
-  handleUnhandledKey(): VisualKeyResult {
-    this.exit();
-    return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
   toggleMode(mode: VisualModeKind): VisualKeyResult {
     const state = this.state;
     if (state === undefined) return handled({ exitVisual: true });
@@ -278,7 +274,7 @@ export class VisualMode {
       case "paste":
         return this.pasteKey(state, registerOverride);
       case "percentOrMatching":
-        return this.percentKey(state) ?? handled();
+        return this.percentKey(state);
     }
   }
 
@@ -438,9 +434,24 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private percentKey(state: VisualState): VisualKeyResult | undefined {
-    if (this.countState.get().length > 0) {
-      this.applyVisualMotion(state, { type: "goToPercentage", percent: this.takeCount(1) }, 1, { displayLine: false });
+  private percentKey(state: VisualState): VisualKeyResult {
+    // Legacy path: the count lives in [countState].
+    const count = this.countState.get().length > 0 ? this.takeCount(1) : undefined;
+    return this.percentOrMatchingForState(state, count);
+  }
+
+  // Framework `%`: with a count it is go-to-percentage; without, it extends a
+  // charwise selection to the matching bracket. The count is supplied explicitly
+  // (the framework owns the count) rather than read from the legacy [countState].
+  percentOrMatching(count: number | undefined): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled();
+    return this.percentOrMatchingForState(state, count);
+  }
+
+  private percentOrMatchingForState(state: VisualState, count: number | undefined): VisualKeyResult {
+    if (count !== undefined) {
+      this.applyVisualMotion(state, { type: "goToPercentage", percent: count }, 1, { displayLine: false });
       return handled();
     }
 
@@ -456,7 +467,7 @@ export class VisualMode {
       return handled();
     }
 
-    return undefined;
+    return handled();
   }
 
   handlePendingSurroundKey(key: string): VisualKeyResult {
@@ -473,17 +484,46 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
+  // Framework path: surround the current visual selection with the pair named by
+  // [pairKey] (vim-surround `S{char}`). Combines the legacy range capture and
+  // apply into one step, reading the live selection — no operator stack (nothing
+  // edits the buffer between `S` and the pair key, so the ranges are unchanged).
+  addSurround(pairKey: string): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled();
+    const undoTransaction = this.editor.beginUndoTransaction(visualCurrentUndoSelections(this.editor, state));
+    try {
+      addSurrounds(this.editor, visualSurroundRanges(this.editor, state), pairKey, { linewise: state.kind === "linewise" });
+    } finally {
+      undoTransaction.finish();
+    }
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
+
+  // Legacy waiting-input path: the [around] flag comes from the pushed operator
+  // and the count from the legacy [countState].
   handlePendingTextObjectKey(key: string): VisualKeyResult {
     const pendingTextObject = this.operatorStack.popVisualOperator("object");
+    if (pendingTextObject === undefined) {
+      this.exit();
+      return handled({ exitVisual: true, nextMode: "normal" });
+    }
+    return this.applyTextObject(pendingTextObject.around, key, this.takeCount(1));
+  }
+
+  // Framework path: expand the live selection to the text object named by [key].
+  // [around] (`i` vs `a`) and [count] are supplied directly, so no operator stack
+  // is involved.
+  applyTextObject(around: boolean, key: string, count: number): VisualKeyResult {
     const state = this.state;
     const object = textObjectForKey(key);
-    if (state === undefined || object === undefined || pendingTextObject === undefined) {
+    if (state === undefined || object === undefined) {
       this.exit();
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
-    const around = pendingTextObject.around;
-    const count = this.takeCount(1);
     const states = state.kind === "charwise" ? currentCharwiseVisualStates(this.editor, state) : [state];
     if (states.some(state => object.type !== "paragraph" && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
       this.syncEditorSelection();
@@ -691,6 +731,49 @@ export class VisualMode {
   convertSelections(target: ConvertTarget): void {
     if (this.state === undefined) return;
     this.convert(this.state, target);
+  }
+
+  // Vim `v_r{char}`: replace every character in the selection with [char],
+  // preserving the line breaks (each line's own characters are replaced), then
+  // collapse to normal with the cursor at the selection start. Mirrors Zed's
+  // `Vim::visual_replace`, which splits each selection by display line and
+  // replaces each grapheme with the typed text; `r<CR>` replaces with line
+  // breaks the same way.
+  replaceSelection(char: string): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled({ exitVisual: true, nextMode: "normal" });
+    this.rememberState(state);
+    const replacement = char === "enter" ? "\n" : char;
+    const ranges = replaceRanges(this.editor, state);
+    const cursor = normalCursorPosition(this.editor, ranges[0]?.start ?? visualAnchorPosition(state));
+    const edits: TextEdit[] = ranges.map(range => ({
+      range,
+      text: replacement.repeat(range.end.column - range.start.column),
+    }));
+    beginVisualUndoTransaction(this.editor, state);
+    this.editor.applyEdits(edits, [charwiseSelection(cursor)]);
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal" });
+  }
+
+  // Vim visual `ctrl-a`/`ctrl-x` (and `g ctrl-a`/`g ctrl-x`): increment the
+  // numbers in the selection. [delta] is the signed step; [cumulativeStep] adds
+  // an extra multiple per matched number on successive lines (`g ctrl-a`), else
+  // 0. Exits the visual selection (the caller transitions to normal).
+  increment(delta: number, cumulativeStep: number): void {
+    const state = this.state;
+    if (state === undefined) return;
+    // Vim: a visual operator moves the cursor to the selection start before
+    // changing text, so that is where `u` later restores it.
+    const selection = this.editor.getSelections()[0];
+    if (selection !== undefined) {
+      this.editor.beginUndoTransaction([charwiseSelection(rangeOfSelection(selection).start)]);
+    }
+    incrementNumbers(this.editor, delta, cumulativeStep);
+    this.editor.finishUndoTransaction();
+    this.clearState();
+    this.editor.setCursorStyle("block");
   }
 
   private convert(state: VisualState, target: ConvertTarget): void {
@@ -1337,6 +1420,40 @@ function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState):
       return ranges;
     }
   }
+}
+
+// Per-line, single-row ranges covering the selection, for `v_r` (replace every
+// selected character). Unlike [visualConvertRanges] (whose linewise/charwise
+// cases can return a multi-line range), every range here stays within one line,
+// so replacing its text with a repeated char preserves the line breaks between
+// them.
+function replaceRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
+  switch (state.kind) {
+    case "charwise":
+      return currentCharwiseVisualRanges(editor, state).flatMap(range => splitRangeByLine(editor, range));
+    case "linewise": {
+      const { startLine, endLine } = lineBounds(state);
+      const ranges: TextRange[] = [];
+      for (let row = startLine; row <= endLine; row++) {
+        ranges.push({ start: { row, column: 0 }, end: { row, column: editor.lineLength(row) } });
+      }
+      return ranges;
+    }
+    case "blockwise":
+      return blockRanges(editor, state);
+  }
+}
+
+function splitRangeByLine(editor: VimEditorCapabilities, range: TextRange): readonly TextRange[] {
+  if (range.start.row === range.end.row) return [range];
+  const ranges: TextRange[] = [
+    { start: range.start, end: { row: range.start.row, column: editor.lineLength(range.start.row) } },
+  ];
+  for (let row = range.start.row + 1; row < range.end.row; row++) {
+    ranges.push({ start: { row, column: 0 }, end: { row, column: editor.lineLength(row) } });
+  }
+  ranges.push({ start: { row: range.end.row, column: 0 }, end: range.end });
+  return ranges;
 }
 
 function visualLineBounds(editor: VimEditorCapabilities, state: VisualState): { startRow: number; endRow: number } {
