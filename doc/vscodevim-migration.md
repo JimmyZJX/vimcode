@@ -22,25 +22,34 @@ what users' muscle memory and settings encode.
    `gC{motion|object}`/`gCC` (block), visual `gc`/`gC` — delegated to the
    native language-aware toggle-comment commands, dot-repeatable
    (`comment.test.ts`).
-3. **`:s` replacement supports only `\0`, no capture groups (`\1`…), no `c`
-   (confirm) / `i` flags, no `vim.inccommand` live preview.** `:s` power users
-   will hit `\1` immediately.
+3. ~~**`:s` replacement supports only `\0`…**~~ **Mostly fixed**: `:s` now
+   supports `\1`–`\9` capture groups, `&`/`\0`, `\&`, `\r` (line break),
+   `\t`; patterns support `\<`/`\>` word boundaries and `\c`/`\C` case
+   forcing (also in `/`?` search and `:g`), pinned by `test_vim_regex` +
+   unit tests. Still missing: `c` (confirm) / `i` flags, case modifiers
+   (`\u`/`\U`), `vim.inccommand` preview.
 4. **Search case controls missing**: no `vim.ignorecase` / `vim.smartcase`.
    Hardcoded behavior equals VSCodeVim's *defaults* (ignorecase+smartcase), so
    most users won't notice — but `ignorecase=false` users can't get their
    behavior back, and `\c`/`\C` pattern overrides don't work either.
-5. **`vim.mode` when-clause values differ mid-chord and in prompts**:
-   vimcode emits `Normal+` while a chord is pending, `Search`/`Command` for
-   prompts (VSCodeVim: `SearchInProgressMode`/`CommandlineInProgress`, and a
-   distinct `OperatorPendingMode`). Users' keybindings.json rules using
-   `vim.mode == 'Normal'` etc. behave differently. Consider emitting
-   VSCodeVim-compatible values (or additionally exposing compat aliases).
+5. **`vim.mode` when-clause values differ — deliberate** (see divergences
+   below): vimcode marks *any* mode with a pending chord with a `+` suffix
+   (`Normal+`, `Visual+`, …) instead of VSCodeVim's normal-mode-only
+   `OperatorPendingMode`, and uses `Search`/`Command` instead of
+   `SearchInProgressMode`/`CommandlineInProgress`. keybindings.json
+   when-clauses need adjusting on migration; equality tests on `vim.mode ==
+   'Normal'` etc. exclude pending states (use `vim.pending` /
+   `vim.normal` for chord-insensitive checks).
 6. **Enablement model differs**: vimcode is opt-in via `vim.enabled`
    (default false); VSCodeVim is on-by-install with `vim.disableExtension`.
    Migration tooling must set `vim.enabled: true` for migrated users, or the
    rollout flips them to no-Vim.
-7. **Tag text objects `it`/`at` and surround `t` targets missing** (VSCodeVim
-   has both; web/XML users notice fast).
+7. ~~**Tag text objects `it`/`at` and surround `t` targets missing**~~
+   **Fixed**: `it`/`at` (nvim-pinned: nesting, counts, empty tags,
+   self-closing skip, multiline, on-tag cursor; `test_tag_objects`), and
+   vim-surround tag entry — `ys…t`/`ys…<`, `dst`, `cs{from}t`,
+   `cst<new>` (`>` replaces attributes, enter preserves them), visual `St`
+   (`surround_tag.test.ts`). `ds<` stays the plain angle-bracket pair.
 8. **Jumplist**: `ctrl-o`/`ctrl-i` are native VSCode nav history, not a Vim
    jumplist (deliberate). VSCodeVim implements a real jumplist. Behavior is
    *similar* but ordering/granularity differ; document rather than change,
@@ -120,18 +129,19 @@ is from the README plus known majors and may miss minor keys.
 - `gcc`/`gc{motion}`/visual `gc`, `gC{object}` — commentary via native
   toggle-comment.
 - `:s` capture groups `\1`–`\9` (and ideally `&`), `c` confirm flag.
-- `it`/`at` tag objects; surround `t` target (`cst<`, `ysiwt`).
+- ~~`it`/`at` tag objects; surround `t` target.~~ Done.
 - `gb` alias for add-next-match cursor.
 - `vim.mode` context-value compatibility for keybindings.json users.
-- Vim-regex conveniences in search: at minimum translate `\<` `\>` word
-  boundaries and `\c`/`\C` case overrides (VSCodeVim does *(verify scope)*;
-  users type `/\<foo\>` reflexively).
+- ~~Vim-regex conveniences in search~~ **Fixed**: `\<`/`\>` → `\b` and
+  `\c`/`\C` case forcing are translated for `/`?` search (core + host
+  find-highlight), `:s`, and `:g`.
 
 ### Tier 2 — common enough to schedule
 
-- Indent objects `ii`/`ai`/`aI` (VSCodeVim always-on).
-- Argument objects `ia`/`aa` (VSCodeVim always-on; delimiters configurable).
-- `ae`/`ie` entire-buffer objects (always-on).
+- ~~Indent objects `ii`/`ai`/`aI`.~~ Done (`plugin_objects.test.ts`).
+- ~~Argument objects `ia`/`aa`.~~ Done — delimiters hardcoded to VSCodeVim's
+  defaults (`(`/`[`, `,`); the `vim.argumentObject*` settings are not read.
+- ~~`ae`/`ie` entire-buffer objects.~~ Done.
 - ReplaceWithRegister `gr{motion}`/`grr` (opt-in but popular).
 - `af` visual expand-selection (VSCodeVim special).
 - Paste variants `gp`/`gP`/`]p`/`[p`.
@@ -170,6 +180,12 @@ command-line-mode remaps, `vim.visualstar`, quickpick cmdline, `ctrl-w`
   by fixtures, and `Y` = `y$` per Neovim's default mapping — VSCodeVim yanks
   the whole line; remap `Y` → `yy` for the classic behavior).
 - Persistent search highlight until `:noh` (Vim hlsearch-on behavior).
+- **`vim.mode` context values**: every mode reports pending chords with a `+`
+  suffix (`Normal+`, `Visual+`, …) — richer than VSCodeVim's single
+  `OperatorPendingMode`, which only exists for normal mode — and the prompts
+  are `Search`/`Command`. Migration mapping: `OperatorPendingMode` →
+  `Normal+`, `SearchInProgressMode` → `Search`, `CommandlineInProgress` →
+  `Command`; other names match (append `+` to also match mid-chord states).
 
 ## vimcode advantages worth stating in the migration pitch
 
@@ -194,11 +210,12 @@ command-line-mode remaps, `vim.visualstar`, quickpick cmdline, `ctrl-w`
    `vim.hlsearch`/`vim.startInInsertMode`; log ignored `vim.*` settings;
    decide the `useSystemClipboard` default; migration doc for
    `vim.enabled`.
-3. `:s` capture groups + `c` flag; minimal Vim-regex translation
-   (`\<`/`\>`, `\c`/`\C`).
-4. `vim.mode` context compatibility values.
-5. Text objects wave: `it`/`at` (+surround `t`), `ii`/`ai`, `ia`/`aa`,
-   `ae`/`ie`.
+3. ~~`:s` capture groups; minimal Vim-regex translation.~~ Done (`c` confirm
+   flag still open).
+4. ~~`vim.mode` context compatibility values.~~ Deliberately kept vimcode's
+   `+`-suffix scheme; documented as a divergence instead.
+5. ~~Text objects wave: `it`/`at` (+surround `t`), `ii`/`ai`, `ia`/`aa`,
+   `ae`/`ie`.~~ Done.
 6. Tier-2 ex commands and paste variants; highlightedyank;
    `cursorStylePerMode`.
 7. Publish a "differences from VSCodeVim" page from the divergences section;

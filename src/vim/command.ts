@@ -9,6 +9,7 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "./prompt_history.js";
+import { translateVimRegex } from "./search.js";
 import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
 // The in-flight `:` command-line input, held while in `command` mode. A small
@@ -574,10 +575,11 @@ function sortRange(editor: VimEditorCapabilities, range: LineRange): void {
 function matchingLines(editor: VimEditorCapabilities, range: LineRange, command: string, options: CommandOptions): void {
   const parsed = parseMatchingLines(command);
   if (parsed === undefined) return;
+  const translated = translateVimRegex(parsed.pattern);
+  const regexp = new RegExp(translated.source, translated.forceCase === "ignore" ? "i" : "");
   const rows: number[] = [];
   for (let row = range.startRow; row <= range.endRowInclusive; row++) {
-    const matches = new RegExp(parsed.pattern).test(editor.line(row));
-    if (matches !== parsed.invert) rows.push(row);
+    if (regexp.test(editor.line(row)) !== parsed.invert) rows.push(row);
   }
   if (parsed.command === "d" || parsed.command === "delete") {
     deleteMatchingRows(editor, rows);
@@ -688,8 +690,20 @@ function substitute(editor: VimEditorCapabilities, range: LineRange, command: st
     }
   }
   if (edits.length > 0) {
+    // Vim: the cursor lands on the last substituted line, first non-blank. A
+    // `\r` replacement inserts line breaks, so count the rows added by the
+    // edits above and within the last edit's own text.
     const lastEdit = edits[edits.length - 1];
-    editor.applyEdits(edits, [charwiseSelection({ row: lastEdit.range.start.row, column: firstNonWhitespace(lastEdit.text) })]);
+    let addedRows = 0;
+    for (const edit of edits.slice(0, -1)) addedRows += edit.text.split("\n").length - 1;
+    const lastEditLines = lastEdit.text.split("\n");
+    const lastLine = lastEditLines[lastEditLines.length - 1];
+    editor.applyEdits(edits, [
+      charwiseSelection({
+        row: lastEdit.range.start.row + addedRows + lastEditLines.length - 1,
+        column: firstNonWhitespace(lastLine),
+      }),
+    ]);
   }
 }
 
@@ -729,14 +743,55 @@ function readUntilDelimiter(
 }
 
 function substituteLine(line: string, pattern: string, replacement: string, global: boolean): string {
-  const regexp = new RegExp(pattern, global ? "g" : "");
-  return line.replace(regexp, match => expandReplacement(replacement, match));
+  const translated = translateVimRegex(pattern);
+  const regexp = new RegExp(translated.source, `${global ? "g" : ""}${translated.forceCase === "ignore" ? "i" : ""}`);
+  return line.replace(regexp, (...args) => {
+    // replace() callback args: match, ...captureGroups, offset, line
+    // (+ named-group object when present); the capture groups are everything
+    // before the first number.
+    const offsetIndex = args.findIndex(arg => typeof arg === "number");
+    const groups = args.slice(1, offsetIndex) as (string | undefined)[];
+    return expandReplacement(replacement, args[0] as string, groups);
+  });
 }
 
-function expandReplacement(replacement: string, match: string): string {
-  return replacement
-    .replace(/\\0/g, match)
-    .replace(/\\([^0])/g, "$1");
+// Vim replacement metacharacters (`:h sub-replace-special`, the commonly used
+// subset): `&` and `\0` insert the whole match, `\1`–`\9` insert capture
+// groups (empty when unmatched), `\&` a literal ampersand, `\r` a line break,
+// `\t` a tab, `\\` a backslash. Any other escaped character is inserted
+// literally (e.g. an escaped delimiter, `\/`). Case modifiers (`\u`/`\U`/…)
+// are not supported.
+function expandReplacement(replacement: string, match: string, groups: readonly (string | undefined)[]): string {
+  let out = "";
+  for (let index = 0; index < replacement.length; index++) {
+    const char = replacement[index];
+    if (char === "&") {
+      out += match;
+      continue;
+    }
+    if (char !== "\\") {
+      out += char;
+      continue;
+    }
+    const next = replacement[index + 1];
+    index++;
+    if (next === undefined) {
+      out += "\\";
+    } else if (next === "0") {
+      out += match;
+    } else if (next >= "1" && next <= "9") {
+      out += groups[Number(next) - 1] ?? "";
+    } else if (next === "&") {
+      out += "&";
+    } else if (next === "r") {
+      out += "\n";
+    } else if (next === "t") {
+      out += "\t";
+    } else {
+      out += next;
+    }
+  }
+  return out;
 }
 
 function rangeToFullLines(editor: VimEditorCapabilities, range: LineRange): TextRange {

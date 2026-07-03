@@ -42,7 +42,7 @@ import {
 import { lookupDigraph } from "./digraph.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
 import { SimpleAction, applySimpleAction, simpleActionForKey } from "./normal/simple_action.js";
-import { addSurrounds, changeSurrounds, deleteSurrounds } from "./surrounds.js";
+import { addSurrounds, addTagSurrounds, changeSurrounds, changeSurroundsToTag, deleteSurrounds } from "./surrounds.js";
 import { TextRange, VimMode, charwiseSelection, selectionHead } from "./state.js";
 
 // The full normal-mode grammar: the count/register prefix wrapping the raw
@@ -1107,17 +1107,53 @@ function addSurroundObjectHandler(around: boolean): Handler<void> {
 }
 
 // Pending continuation that consumes the pair character and applies the add.
+// `t` and `<` enter tag-entry mode instead (vim-surround: type the tag body,
+// finish with `>` or enter).
 function surroundPairWaiter(state: HandlerState, target: SurroundTarget): HandleResult<void> {
   return handler([
     {
       handler: (key, state) => {
         const editor = state.editor;
         if (editor === undefined) return invalid();
+        if (key === "t" || key === "<") {
+          return tagEntryWaiter(state, "", (tagBody, entryState) =>
+            effect(entryState.mode, () =>
+              addTagSurrounds(editor, target.ranges, tagBody, { linewise: target.linewise })
+            )
+          );
+        }
         return effect(state.mode, () =>
           addSurrounds(editor, target.ranges, keyForInput(key), { linewise: target.linewise })
         );
       },
       state: deeper(state),
+    },
+  ]);
+}
+
+// vim-surround tag entry: after a `t`/`<` target, collect the tag body until
+// `>` or enter finishes it (escape cancels, backspace edits). [onDone] gets
+// the body and whether enter (vs `>`) finished it — `cst` + enter preserves
+// the old tag's attributes.
+function tagEntryWaiter(
+  state: HandlerState,
+  collected: string,
+  onDone: (tagBody: string, state: HandlerState, finishedWithEnter: boolean) => HandleResult<void>
+): HandleResult<void> {
+  return handler([
+    {
+      handler: (key, entryState) => {
+        if (isEscapeKey(key)) return invalid();
+        if (key === ">") return onDone(collected, entryState, false);
+        if (key === "enter") return onDone(collected, entryState, true);
+        if (key === "backspace") {
+          return tagEntryWaiter(entryState, collected.slice(0, -1), onDone);
+        }
+        const char = keyForInput(key);
+        if (char.length !== 1) return invalid();
+        return tagEntryWaiter(entryState, collected + char, onDone);
+      },
+      state: cloneHandlerState(state),
     },
   ]);
 }
@@ -1143,6 +1179,13 @@ function changeSurroundHandler(fromKey: string | undefined): Handler<void> {
       ]);
     }
     const from = fromKey;
+    if (key === "t" || key === "<") {
+      return tagEntryWaiter(state, "", (tagBody, entryState, finishedWithEnter) =>
+        effect(entryState.mode, () =>
+          changeSurroundsToTag(editor, from, tagBody, { preserveAttributes: finishedWithEnter })
+        )
+      );
+    }
     return effect(state.mode, () => changeSurrounds(editor, from, keyForInput(key)));
   };
 }

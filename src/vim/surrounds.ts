@@ -8,6 +8,7 @@
 //   any-bracket matching, multicursor deduplication, and display-map details.
 
 import { VimEditorCapabilities, rangeText } from "./editor.js";
+import { enclosingTagBlock } from "./object.js";
 import { TextEdit, TextRange, charwiseSelection, comparePositions, selectionHead } from "./state.js";
 
 export type SurroundPair = {
@@ -68,6 +69,63 @@ export function addSurrounds(
   editor.applyEdits(edits, selectionsAfter);
 }
 
+// `ysiwt`/`ySt`-style add with a typed tag body instead of a pair character.
+export function addTagSurrounds(
+  editor: VimEditorCapabilities,
+  ranges: readonly TextRange[],
+  tagBody: string,
+  { linewise = false }: { linewise?: boolean } = {}
+): void {
+  const pair = tagPairTexts(tagBody);
+  const edits: TextEdit[] = [];
+  const selectionsAfter = ranges.map(range => charwiseSelection(range.start));
+  for (const range of ranges) {
+    if (linewise && comparePositions(range.start, range.end) !== 0) {
+      edits.push({ range: { start: range.start, end: range.start }, text: `${pair.open}\n` });
+      edits.push({ range: { start: range.end, end: range.end }, text: `\n${pair.close}` });
+    } else {
+      edits.push({ range: { start: range.start, end: range.start }, text: pair.open });
+      edits.push({ range: { start: range.end, end: range.end }, text: pair.close });
+    }
+  }
+  editor.applyEdits(edits, selectionsAfter);
+}
+
+// `cs{from}t` with a typed tag body. [preserveAttributes] is vim-surround's
+// `<CR>` terminator on a tag-to-tag change (`cst` + name + enter): the old
+// opening tag's attributes are kept on the new tag.
+export function changeSurroundsToTag(
+  editor: VimEditorCapabilities,
+  fromKey: string,
+  tagBody: string,
+  { preserveAttributes = false }: { preserveAttributes?: boolean } = {}
+): void {
+  const edits: TextEdit[] = [];
+  const selectionsAfter = [];
+
+  for (const selection of editor.getSelections()) {
+    const head = selectionHead(selection);
+    const found = fromKey === "t" ? findTagSurround(editor, head) : findSurround(editor, head, surroundSpecForKey(fromKey).pair);
+    if (found === undefined) {
+      selectionsAfter.push(charwiseSelection(head));
+      continue;
+    }
+    let pair = tagPairTexts(tagBody);
+    if (preserveAttributes && fromKey === "t") {
+      const oldOpenText = rangeText(editor, found.openRange);
+      const oldBody = oldOpenText.slice(1, -1);
+      const oldName = oldBody.trim().split(/\s/, 1)[0] ?? "";
+      const oldAttributes = oldBody.slice(oldBody.indexOf(oldName) + oldName.length);
+      pair = { open: `<${tagBody}${oldAttributes}>`, close: `</${tagBody.trim().split(/\s/, 1)[0]}>` };
+    }
+    edits.push({ range: found.openRange, text: pair.open });
+    edits.push({ range: found.closeRange, text: pair.close });
+    selectionsAfter.push(charwiseSelection(found.cursor));
+  }
+
+  if (edits.length > 0) editor.applyEdits(edits, selectionsAfter);
+}
+
 export function deleteSurrounds(editor: VimEditorCapabilities, key: string): void {
   const spec = surroundSpecForKey(key);
   const edits: TextEdit[] = [];
@@ -75,7 +133,7 @@ export function deleteSurrounds(editor: VimEditorCapabilities, key: string): voi
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
-    const found = findSurround(editor, head, spec.pair);
+    const found = key === "t" ? findTagSurround(editor, head) : findSurround(editor, head, spec.pair);
     if (found === undefined) {
       selectionsAfter.push(charwiseSelection(head));
       continue;
@@ -96,7 +154,7 @@ export function changeSurrounds(editor: VimEditorCapabilities, fromKey: string, 
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
-    const found = findSurround(editor, head, fromSpec.pair);
+    const found = fromKey === "t" ? findTagSurround(editor, head) : findSurround(editor, head, fromSpec.pair);
     if (found === undefined) {
       selectionsAfter.push(charwiseSelection(head));
       continue;
@@ -125,6 +183,27 @@ type FoundSurround = {
 function findSurround(editor: VimEditorCapabilities, head: TextRange["start"], pair: SurroundPair): FoundSurround | undefined {
   if (pair.open === pair.close) return findSymmetricSurround(editor, head, pair.open);
   return findAsymmetricSurround(editor, head, pair);
+}
+
+// vim-surround `t` target: the enclosing tag block's full open/close tokens.
+function findTagSurround(editor: VimEditorCapabilities, head: TextRange["start"]): FoundSurround | undefined {
+  const text = editor.getText();
+  const offset = offsetOfPosition(editor, head);
+  const block = enclosingTagBlock(text, offset, 1);
+  if (block === undefined) return undefined;
+  return {
+    openRange: { start: positionOfOffset(editor, block.openStart), end: positionOfOffset(editor, block.openEnd) },
+    closeRange: { start: positionOfOffset(editor, block.closeStart), end: positionOfOffset(editor, block.closeEnd) },
+    cursor: positionOfOffset(editor, block.openStart),
+  };
+}
+
+// A typed tag body (the text between `<` and the terminating `>`/enter):
+// `div class="x"` opens `<div class="x">` and closes `</div>` (attributes only
+// on the opening tag, closing by first word, like vim-surround).
+export function tagPairTexts(tagBody: string): SurroundPair {
+  const name = tagBody.trim().split(/\s/, 1)[0] ?? "";
+  return { open: `<${tagBody}>`, close: `</${name}>` };
 }
 
 function findSymmetricSurround(editor: VimEditorCapabilities, head: TextRange["start"], char: string): FoundSurround | undefined {

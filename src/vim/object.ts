@@ -13,7 +13,20 @@ export type TextObject =
   | { type: "word"; bigWord: boolean }
   | { type: "paragraph" }
   | { type: "sentence" }
-  | { type: "surround"; open: string; close: string };
+  | { type: "surround"; open: string; close: string }
+  // `it`/`at` tag blocks (`:h tag-blocks`): text-based HTML/XML tag pairs,
+  // filetype-independent like Vim's.
+  | { type: "tag" }
+  // vim-indent-object (VSCodeVim compat): `ii` the current indentation block,
+  // `ai` plus the line above, `aI` ([big]) plus the lines above and below.
+  // Linewise, like the plugin.
+  | { type: "indent"; big: boolean }
+  // targets.vim-style argument object (VSCodeVim compat): `ia` the argument,
+  // `aa` including one separator.
+  | { type: "argument" }
+  // vim-textobj-entire (VSCodeVim compat): `ae` the whole buffer, `ie` without
+  // leading/trailing blank lines. Linewise.
+  | { type: "entire" };
 
 export function textObjectForKey(key: string): TextObject | undefined {
   switch (key) {
@@ -48,6 +61,16 @@ export function textObjectForKey(key: string): TextObject | undefined {
     case "<":
     case ">":
       return { type: "surround", open: "<", close: ">" };
+    case "t":
+      return { type: "tag" };
+    case "i":
+      return { type: "indent", big: false };
+    case "I":
+      return { type: "indent", big: true };
+    case "a":
+      return { type: "argument" };
+    case "e":
+      return { type: "entire" };
     default:
       return undefined;
   }
@@ -68,7 +91,204 @@ export function textObjectRange(
       return sentenceRange(editor, head, { around });
     case "surround":
       return surroundRange(editor, head, object, { around });
+    case "tag":
+      return tagRange(editor, head, { around, count });
+    case "indent":
+      return indentRange(editor, head, { around, big: object.big });
+    case "argument":
+      return argumentRange(editor, head, { around }) ?? { start: head, end: head };
+    case "entire":
+      return entireRange(editor, { around });
   }
+}
+
+// ---------------------------------------------------------------------------
+// vim-indent-object (`ii`/`ai`/`aI`)
+// ---------------------------------------------------------------------------
+
+function lineIsBlank(editor: VimEditorCapabilities, row: number): boolean {
+  return /^[ \t]*$/.test(editor.line(row));
+}
+
+function lineIndentWidth(editor: VimEditorCapabilities, row: number): number {
+  const match = /^[ \t]*/.exec(editor.line(row));
+  return match === null ? 0 : match[0].length;
+}
+
+// The indentation block around the cursor: contiguous lines whose indent is at
+// least the reference line's, with blank lines bridging same-level runs but
+// trimmed from the block's edges. `around` includes the first non-blank line
+// above (`ai` — a Python `if:` header); [big] (`aI`) also the one below.
+function indentRange(
+  editor: VimEditorCapabilities,
+  head: Position,
+  { around, big }: { around: boolean; big: boolean }
+): TextRange {
+  const lastRow = editor.lineCount() - 1;
+  // Reference line: the cursor line, or the nearest non-blank below then above.
+  let referenceRow = head.row;
+  if (lineIsBlank(editor, referenceRow)) {
+    let below = referenceRow;
+    while (below <= lastRow && lineIsBlank(editor, below)) below++;
+    let above = referenceRow;
+    while (above >= 0 && lineIsBlank(editor, above)) above--;
+    referenceRow = below <= lastRow ? below : above;
+    if (referenceRow < 0) return fullLineRange(editor, head.row, head.row);
+  }
+  const referenceIndent = lineIndentWidth(editor, referenceRow);
+
+  let startRow = referenceRow;
+  while (startRow > 0 && (lineIsBlank(editor, startRow - 1) || lineIndentWidth(editor, startRow - 1) >= referenceIndent)) {
+    startRow--;
+  }
+  let endRow = referenceRow;
+  while (endRow < lastRow && (lineIsBlank(editor, endRow + 1) || lineIndentWidth(editor, endRow + 1) >= referenceIndent)) {
+    endRow++;
+  }
+  // Blank lines bridge the block but are not part of its edges.
+  while (startRow < referenceRow && lineIsBlank(editor, startRow)) startRow++;
+  while (endRow > referenceRow && lineIsBlank(editor, endRow)) endRow--;
+
+  if (around) {
+    let above = startRow - 1;
+    while (above >= 0 && lineIsBlank(editor, above)) above--;
+    if (above >= 0) startRow = above;
+    if (big) {
+      let below = endRow + 1;
+      while (below <= lastRow && lineIsBlank(editor, below)) below++;
+      if (below <= lastRow) endRow = below;
+    }
+  }
+  return fullLineRange(editor, startRow, endRow);
+}
+
+function fullLineRange(editor: VimEditorCapabilities, startRow: number, endRow: number): TextRange {
+  return {
+    start: { row: startRow, column: 0 },
+    end: { row: endRow, column: editor.lineLength(endRow) },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Argument object (`ia`/`aa`, targets.vim-style)
+// ---------------------------------------------------------------------------
+
+const ARGUMENT_OPEN = "([";
+const ARGUMENT_CLOSE = ")]";
+const ARGUMENT_SEPARATOR = ",";
+
+// The innermost `(`/`[` pair enclosing [offset], skipping quoted strings and
+// nested brackets.
+function enclosingArgumentList(text: string, offset: number): { open: number; close: number } | undefined {
+  const stack: number[] = [];
+  let enclosing: { open: number; close: number } | undefined;
+  let quote: string | undefined;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      else if (char === "\\") index++;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (ARGUMENT_OPEN.includes(char)) {
+      stack.push(index);
+      continue;
+    }
+    if (ARGUMENT_CLOSE.includes(char)) {
+      const open = stack.pop();
+      if (open === undefined) continue;
+      if (open <= offset && offset < index + 1 && enclosing === undefined) {
+        enclosing = { open, close: index };
+      }
+      // Keep scanning: an outer pair may also enclose, but the first found
+      // closing after the cursor with an open before it is the innermost.
+    }
+  }
+  return enclosing;
+}
+
+export function argumentRange(
+  editor: VimEditorCapabilities,
+  head: Position,
+  { around }: { around: boolean }
+): TextRange | undefined {
+  const text = editor.getText();
+  const offset = offsetOfPosition(editor, head);
+  const list = enclosingArgumentList(text, offset);
+  if (list === undefined) return undefined;
+
+  // Separator offsets at depth 0 within the list, quotes respected.
+  const separators: number[] = [];
+  let depth = 0;
+  let quote: string | undefined;
+  for (let index = list.open + 1; index < list.close; index++) {
+    const char = text[index];
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      else if (char === "\\") index++;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (ARGUMENT_OPEN.includes(char)) depth++;
+    else if (ARGUMENT_CLOSE.includes(char)) depth--;
+    else if (char === ARGUMENT_SEPARATOR && depth === 0) separators.push(index);
+  }
+
+  const boundaries = [list.open, ...separators, list.close];
+  let argumentIndex = boundaries.length - 2;
+  for (let index = 0; index + 1 < boundaries.length; index++) {
+    if (offset <= boundaries[index + 1]) {
+      argumentIndex = index;
+      break;
+    }
+  }
+  const previousBoundary = boundaries[argumentIndex];
+  const nextBoundary = boundaries[argumentIndex + 1];
+
+  // Inner argument: trimmed of surrounding whitespace.
+  let innerStart = previousBoundary + 1;
+  while (innerStart < nextBoundary && /\s/.test(text[innerStart])) innerStart++;
+  let innerEnd = nextBoundary;
+  while (innerEnd > innerStart && /\s/.test(text[innerEnd - 1])) innerEnd--;
+
+  if (!around) {
+    return { start: positionOfOffset(editor, innerStart), end: positionOfOffset(editor, innerEnd) };
+  }
+  // `aa`: include the following separator (and the whitespace after it) when
+  // one exists; for the last argument, the leading separator instead.
+  const hasNextSeparator = argumentIndex + 1 < boundaries.length - 1;
+  if (hasNextSeparator) {
+    let end = nextBoundary + 1;
+    while (end < list.close && /\s/.test(text[end])) end++;
+    return { start: positionOfOffset(editor, innerStart), end: positionOfOffset(editor, end) };
+  }
+  const hasPreviousSeparator = argumentIndex > 0;
+  const start = hasPreviousSeparator ? previousBoundary : innerStart;
+  return { start: positionOfOffset(editor, start), end: positionOfOffset(editor, innerEnd) };
+}
+
+/** Whether an argument object exists at the cursor (an enclosing `(`/`[`
+    list); a missing list fails the operator, like surround objects. */
+export function argumentObjectFound(editor: VimEditorCapabilities, head: Position): boolean {
+  return enclosingArgumentList(editor.getText(), offsetOfPosition(editor, head)) !== undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Entire buffer (`ae`/`ie`)
+// ---------------------------------------------------------------------------
+
+function entireRange(editor: VimEditorCapabilities, { around }: { around: boolean }): TextRange {
+  const lastRow = editor.lineCount() - 1;
+  if (around) return fullLineRange(editor, 0, lastRow);
+  let startRow = 0;
+  while (startRow < lastRow && lineIsBlank(editor, startRow)) startRow++;
+  let endRow = lastRow;
+  while (endRow > startRow && lineIsBlank(editor, endRow)) endRow--;
+  return fullLineRange(editor, startRow, endRow);
 }
 
 function wordRange(
@@ -271,6 +491,96 @@ function expandOffsetsToIncludeWhitespace(
   }
 
   return { start, end };
+}
+
+// ---------------------------------------------------------------------------
+// Tag blocks (`it`/`at`, and the vim-surround `t` target)
+// ---------------------------------------------------------------------------
+
+// A parsed tag token: `<name ...>` (open), `</name>` (close); self-closing
+// tags (`<br/>`) are skipped when pairing, like Vim. Offsets are document
+// text offsets; [end] is exclusive.
+type TagToken = { name: string; kind: "open" | "close" | "selfClose"; start: number; end: number };
+
+export type TagBlock = {
+  // `<name ...>` token, exclusive end.
+  openStart: number;
+  openEnd: number;
+  // `</name>` token, exclusive end.
+  closeStart: number;
+  closeEnd: number;
+};
+
+// Tag tokens: a name starting with a letter, attributes allowing quoted
+// strings (so `>` inside an attribute value does not terminate the token).
+const TAG_TOKEN = /<(\/?)([A-Za-z][^\s>/]*)((?:"[^"]*"|'[^']*'|[^<>"'])*?)(\/?)>/g;
+
+function parseTagTokens(text: string): TagToken[] {
+  const tokens: TagToken[] = [];
+  TAG_TOKEN.lastIndex = 0;
+  for (let match = TAG_TOKEN.exec(text); match !== null; match = TAG_TOKEN.exec(text)) {
+    const kind = match[1] === "/" ? "close" : match[4] === "/" ? "selfClose" : "open";
+    tokens.push({ name: match[2], kind, start: match.index, end: match.index + match[0].length });
+  }
+  return tokens;
+}
+
+// All well-formed tag pairs in the document, paired browser-style: a closing
+// tag matches the nearest open tag of the same name on the stack, discarding
+// unmatched opens between them.
+function tagBlocks(text: string): TagBlock[] {
+  const blocks: TagBlock[] = [];
+  const stack: TagToken[] = [];
+  for (const token of parseTagTokens(text)) {
+    if (token.kind === "selfClose") continue;
+    if (token.kind === "open") {
+      stack.push(token);
+      continue;
+    }
+    for (let index = stack.length - 1; index >= 0; index--) {
+      if (stack[index].name === token.name) {
+        blocks.push({
+          openStart: stack[index].start,
+          openEnd: stack[index].end,
+          closeStart: token.start,
+          closeEnd: token.end,
+        });
+        stack.length = index;
+        break;
+      }
+    }
+  }
+  return blocks;
+}
+
+// The tag block enclosing [offset] (a cursor anywhere from the opening `<`
+// through the closing `>` counts as inside); [count] walks outward through
+// the enclosing levels (`2it`). Undefined when there are fewer than [count]
+// enclosing blocks (the operator fails, like Vim).
+export function enclosingTagBlock(text: string, offset: number, count: number): TagBlock | undefined {
+  const enclosing = tagBlocks(text)
+    .filter(block => block.openStart <= offset && offset < block.closeEnd)
+    // Innermost last: sort outer-to-inner by opening position.
+    .sort((a, b) => a.openStart - b.openStart);
+  return enclosing[enclosing.length - Math.max(1, count)];
+}
+
+function tagRange(
+  editor: VimEditorCapabilities,
+  head: Position,
+  { around, count }: { around: boolean; count: number }
+): TextRange {
+  const block = enclosingTagBlock(editor.getText(), offsetOfPosition(editor, head), count);
+  if (block === undefined) return { start: head, end: head };
+  return around
+    ? { start: positionOfOffset(editor, block.openStart), end: positionOfOffset(editor, block.closeEnd) }
+    : { start: positionOfOffset(editor, block.openEnd), end: positionOfOffset(editor, block.closeStart) };
+}
+
+/** Whether a tag block encloses the cursor. An enclosing-but-empty block
+    (`cit` on `<a></a>`) still edits; no block fails the operator. */
+export function tagObjectFound(editor: VimEditorCapabilities, head: Position, count: number): boolean {
+  return enclosingTagBlock(editor.getText(), offsetOfPosition(editor, head), count) !== undefined;
 }
 
 function surroundRange(

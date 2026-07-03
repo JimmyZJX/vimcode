@@ -1,0 +1,82 @@
+{"Put":{"state":"ˇthis is his island\nis here"}}
+{"Key":"/"}
+{"Key":"\\"}
+{"Key":"<"}
+{"Key":"i"}
+{"Key":"s"}
+{"Key":"\\"}
+{"Key":">"}
+{"Key":"enter"}
+{"Get":{"state":"this ˇis his island\nis here","mode":"Normal"}}
+{"Put":{"state":"ˇxfoo then FOO then foo"}}
+{"Key":"/"}
+{"Key":"F"}
+{"Key":"O"}
+{"Key":"O"}
+{"Key":"\\"}
+{"Key":"c"}
+{"Key":"enter"}
+{"Get":{"state":"xˇfoo then FOO then foo","mode":"Normal"}}
+{"Put":{"state":"ˇFOO then foo end"}}
+{"Key":"/"}
+{"Key":"f"}
+{"Key":"o"}
+{"Key":"o"}
+{"Key":"\\"}
+{"Key":"C"}
+{"Key":"enter"}
+{"Get":{"state":"FOO then ˇfoo end","mode":"Normal"}}
+{"Put":{"state":"ˇa war a bat\nsecond a"}}
+{"Key":":"}
+{"Key":"%"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"\\"}
+{"Key":"<"}
+{"Key":"a"}
+{"Key":"\\"}
+{"Key":">"}
+{"Key":"/"}
+{"Key":"X"}
+{"Key":"/"}
+{"Key":"g"}
+{"Key":"enter"}
+{"Get":{"state":"X war X bat\nˇsecond X","mode":"Normal"}}
+{"Put":{"state":"ˇone is two is"}}
+{"Key":":"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"i"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"&"}
+{"Key":"&"}
+{"Key":"/"}
+{"Key":"g"}
+{"Key":"enter"}
+{"Get":{"state":"ˇone isis two isis","mode":"Normal"}}
+{"Put":{"state":"ˇalpha,beta,gamma"}}
+{"Key":":"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":","}
+{"Key":"/"}
+{"Key":"\\"}
+{"Key":"r"}
+{"Key":"/"}
+{"Key":"g"}
+{"Key":"enter"}
+{"Get":{"state":"alpha\nbeta\nˇgamma","mode":"Normal"}}
+{"Put":{"state":"ˇkeep A\ndrop b\nkeep AB\nplain"}}
+{"Key":":"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"\\"}
+{"Key":"<"}
+{"Key":"A"}
+{"Key":"\\"}
+{"Key":">"}
+{"Key":"/"}
+{"Key":"d"}
+{"Key":"enter"}
+{"Get":{"state":"ˇdrop b\nkeep AB\nplain","mode":"Normal"}}

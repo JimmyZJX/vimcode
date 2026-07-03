@@ -71,3 +71,35 @@ describe("command mode via framework (clean contexts)", () => {
     expect(head(editor)).toEqual({ row: 2, column: 0 });
   });
 });
+
+// `:s` replacement specials and JS capture groups (the pattern language is
+// JS regex, so `(...)`-group scenarios cannot be pinned against Neovim —
+// see test_vim_regex for the shared `\<`/`\>`/`\c`/`\C`/`&`/`\r` subset).
+describe(":s capture groups and replacement escapes", () => {
+  function run(text: string, command: string): { text: string } {
+    const editor = new InMemoryVimEditor(text);
+    const vim = new Vim(editor);
+    runKeys(vim, [":", ...command.split("").map(key => (key === " " ? "space" : key)), "enter"]);
+    return { text: editor.getText() };
+  }
+
+  it("reorders capture groups", () => {
+    expect(run("alpha-beta", "s/(\\w+)-(\\w+)/\\2_\\1/").text).toBe("beta_alpha");
+  });
+
+  it("expands an unmatched group to the empty string", () => {
+    expect(run("abc", "s/a(x)?(b)/\\1\\2/").text).toBe("bc");
+  });
+
+  it("inserts a literal ampersand with \\&", () => {
+    expect(run("one and two", "s/and/\\&/").text).toBe("one & two");
+  });
+
+  it("inserts a tab with \\t", () => {
+    expect(run("a b", "s/ /\\t/").text).toBe("a\tb");
+  });
+
+  it("case-forces the pattern with \\c", () => {
+    expect(run("keep FOO", "s/foo\\c/bar/").text).toBe("keep bar");
+  });
+});

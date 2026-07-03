@@ -27,7 +27,7 @@ import { applyFormat } from "./normal/format.js";
 import { IndentDirection, applyIndent } from "./normal/indent.js";
 import { paragraphObjectCancelled } from "./normal/object.js";
 import { applyYank } from "./normal/yank.js";
-import { TextObject, blankLineAroundWordRows, surroundObjectFound, textObjectRange } from "./object.js";
+import { TextObject, argumentObjectFound, blankLineAroundWordRows, surroundObjectFound, tagObjectFound, textObjectRange } from "./object.js";
 import { RegisterName, Registers } from "./registers.js";
 import { Position, TextRange, selectionHead } from "./state.js";
 
@@ -283,13 +283,16 @@ export function textObjectOperatorTarget(
   // A single blank line is a valid one-row paragraph; only `ap` on a trailing
   // blank run at end of file fails (cancelled: no edit, change does not enter
   // insert).
-  if (object.type === "paragraph") {
+  // Linewise text objects: paragraphs (`:h ap`), and the plugin objects that
+  // operate on whole lines (vim-indent-object `ii`/`ai`/`aI`,
+  // vim-textobj-entire `ie`/`ae`).
+  if (object.type === "paragraph" || object.type === "indent" || object.type === "entire") {
     const rows: RowRange[] = [];
     const charwise: CharwiseTarget[] = [];
     for (const selection of selections) {
       const head = selectionHead(selection);
       const range = textObjectRange(editor, head, object, { around, count });
-      if (paragraphObjectCancelled(editor, head, range, { around })) {
+      if (object.type === "paragraph" && paragraphObjectCancelled(editor, head, range, { around })) {
         charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined });
         continue;
       }
@@ -326,9 +329,15 @@ export function textObjectOperatorTarget(
     targets: selections.map(selection => {
       const head = selectionHead(selection);
       const range = textObjectRange(editor, head, object, { around, count });
-      // Vim: a surround object with no pair at the cursor fails the operator
-      // (`ci"` with no quotes ahead must not enter insert).
-      const cancelled = object.type === "surround" && !surroundObjectFound(editor, head, object) ? true : undefined;
+      // Vim: a surround/tag object with no pair at the cursor fails the
+      // operator (`ci"` with no quotes ahead, `cit` outside any tag, must not
+      // enter insert).
+      const cancelled =
+        (object.type === "surround" && !surroundObjectFound(editor, head, object))
+        || (object.type === "tag" && !tagObjectFound(editor, head, count))
+        || (object.type === "argument" && !argumentObjectFound(editor, head))
+          ? true
+          : undefined;
       return { head, range, cancelled };
     }),
   };

@@ -15,7 +15,7 @@ import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
-import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
+import { SearchDirection, SearchMatch, SearchOptions, translateVimRegex } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
 import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
 
@@ -604,8 +604,12 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.closeNativeFindWidget();
 
 		const hiddenFindState = this.ensureHiddenFindState();
+		// Vim-pattern conveniences (`\<`, `\>`, `\c`, `\C`) are translated to
+		// plain JS regex before the host's find engine sees the pattern; the
+		// case force is already folded into [options.caseSensitive].
+		const searchString = options.regex === true ? translateVimRegex(query).source : query;
 		hiddenFindState.change({
-			searchString: query,
+			searchString,
 			isRegex: options.regex ?? false,
 			wholeWord: options.wholeWord ?? false,
 			matchCase: options.caseSensitive ?? true,
@@ -626,10 +630,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return this.hiddenFindState;
 	}
 
-	findSearchMatch(query: string, start: VimPosition, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
-		if (query.length === 0) {
+	findSearchMatch(rawQuery: string, start: VimPosition, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
+		if (rawQuery.length === 0) {
 			return undefined;
 		}
+		const query = options.regex === true ? translateVimRegex(rawQuery).source : rawQuery;
 		const model = this.model();
 		const wordSeparators = options.wholeWord === true ? this.editor.getOption(EditorOption.wordSeparators) : null;
 		if (options.includeStart === true) {

@@ -80,11 +80,14 @@ export function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: T
       column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
     });
   }
+  // Clamp against the post-edit joined line, not the pre-edit buffer: deleting
+  // a multi-row range can make a column valid that was one past the old line
+  // end (`dit` on a multiline tag leaves the cursor between the joined tags).
   const newLineLength = range.start.column + editor.line(range.end.row).slice(range.end.column).length;
-  return normalCursorPosition(editor, {
+  return {
     row: range.start.row,
     column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
-  });
+  };
 }
 
 export function deleteLineRange(

@@ -1,0 +1,98 @@
+{"Put":{"state":"<div>ˇhello world</div>"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<div>ˇ</div>","mode":"Normal"}}
+{"Put":{"state":"<div>ˇhello world</div>"}}
+{"Key":"d"}
+{"Key":"a"}
+{"Key":"t"}
+{"Get":{"state":"ˇ","mode":"Normal"}}
+{"Put":{"state":"<div>ˇhello world</div>"}}
+{"Key":"c"}
+{"Key":"i"}
+{"Key":"t"}
+{"Key":"X"}
+{"Key":"escape"}
+{"Get":{"state":"<div>ˇX</div>","mode":"Normal"}}
+{"Put":{"state":"<a><b>ˇx</b> y</a>"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<a><b>ˇ</b> y</a>","mode":"Normal"}}
+{"Put":{"state":"<a><b>ˇx</b> y</a>"}}
+{"Key":"d"}
+{"Key":"a"}
+{"Key":"t"}
+{"Get":{"state":"<a>ˇ y</a>","mode":"Normal"}}
+{"Put":{"state":"<a><b>ˇx</b> y</a>"}}
+{"Key":"2"}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<a>ˇ</a>","mode":"Normal"}}
+{"Put":{"state":"<a><b>ˇx</b> y</a>"}}
+{"Key":"2"}
+{"Key":"d"}
+{"Key":"a"}
+{"Key":"t"}
+{"Get":{"state":"ˇ","mode":"Normal"}}
+{"Put":{"state":"<div>ˇhello</div>"}}
+{"Key":"2"}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<div>ˇhello</div>","mode":"Normal"}}
+{"Put":{"state":"<diˇv class=\"c\">body</div>"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<div class=\"c\">ˇ</div>","mode":"Normal"}}
+{"Put":{"state":"before <a>x</a> <b>ˇy</b> after"}}
+{"Key":"d"}
+{"Key":"a"}
+{"Key":"t"}
+{"Get":{"state":"before <a>x</a> ˇ after","mode":"Normal"}}
+{"Put":{"state":"<a>ˇ</a>"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<a>ˇ</a>","mode":"Normal"}}
+{"Put":{"state":"<a>ˇ</a>"}}
+{"Key":"c"}
+{"Key":"i"}
+{"Key":"t"}
+{"Key":"X"}
+{"Key":"escape"}
+{"Get":{"state":"<a>ˇX</a>","mode":"Normal"}}
+{"Put":{"state":"<div>\n  ˇline two\n</div>"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<div>ˇ</div>","mode":"Normal"}}
+{"Put":{"state":"<div>\n  ˇline two\n</div>"}}
+{"Key":"d"}
+{"Key":"a"}
+{"Key":"t"}
+{"Get":{"state":"ˇ","mode":"Normal"}}
+{"Put":{"state":"<a>x <br/> ˇy z</a>"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<a>ˇ</a>","mode":"Normal"}}
+{"Put":{"state":"ˇplain text here"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"ˇplain text here","mode":"Normal"}}
+{"Put":{"state":"<a>x</a> ˇtail"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"t"}
+{"Get":{"state":"<a>x</a> ˇtail","mode":"Normal"}}
+{"Put":{"state":"<div>ˇhello</div>"}}
+{"Key":"v"}
+{"Key":"a"}
+{"Key":"t"}
+{"Key":"d"}
+{"Get":{"state":"ˇ","mode":"Normal"}}

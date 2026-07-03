@@ -39,11 +39,44 @@ export function parseSearchOffset(text: string): SearchOffset | undefined {
   return match[1] === "e" ? { type: "end", delta } : { type: "start", delta };
 }
 
+// Minimal Vim-pattern conveniences layered over JS regex syntax (the pattern
+// language is otherwise JavaScript's, like VSCodeVim): `\<` and `\>` become
+// word boundaries (`\b`), and `\c`/`\C` anywhere in the pattern force
+// case-insensitive/-sensitive matching, overriding the smartcase heuristic
+// (`:h /\c`). Other escapes pass through untouched.
+export function translateVimRegex(pattern: string): { source: string; forceCase: "ignore" | "match" | undefined } {
+  let source = "";
+  let forceCase: "ignore" | "match" | undefined;
+  for (let index = 0; index < pattern.length; index++) {
+    const char = pattern[index];
+    if (char !== "\\") {
+      source += char;
+      continue;
+    }
+    const next = pattern[index + 1];
+    index++;
+    if (next === undefined) {
+      source += "\\";
+    } else if (next === "<" || next === ">") {
+      source += "\\b";
+    } else if (next === "c") {
+      forceCase = "ignore";
+    } else if (next === "C") {
+      forceCase = "match";
+    } else {
+      source += `\\${next}`;
+    }
+  }
+  return { source, forceCase };
+}
+
 export function searchOptionsForQuery(query: string, options: SearchOptions = {}): SearchOptions {
+  const forceCase = options.regex === false ? undefined : translateVimRegex(query).forceCase;
   return {
     ...options,
     regex: options.regex ?? true,
-    caseSensitive: options.caseSensitive ?? hasUppercase(query),
+    caseSensitive:
+      forceCase !== undefined ? forceCase === "match" : options.caseSensitive ?? hasUppercase(query),
   };
 }
 
@@ -115,7 +148,7 @@ function findMatchFromMatches(
 
 function regexForQuery(query: string, options: SearchOptions): RegExp | undefined {
   try {
-    return new RegExp(query, `g${options.caseSensitive === false ? "i" : ""}m`);
+    return new RegExp(translateVimRegex(query).source, `g${options.caseSensitive === false ? "i" : ""}m`);
   } catch (_error) {
     return undefined;
   }

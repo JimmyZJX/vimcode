@@ -215,7 +215,31 @@ function visualSurroundHandler(key: string, state: HandlerState): HandleResult<v
 
 function visualSurroundContinuation(key: string, state: HandlerState): HandleResult<void> {
   if (state.visual === undefined) return invalid();
+  // `St`/`S<`: tag entry mode — collect the tag body until `>`/enter.
+  if (key === "t" || key === "<") {
+    return visualTagEntry(state, "");
+  }
   return visualResultEffect(state, visual => visual.addSurround(key));
+}
+
+function visualTagEntry(state: HandlerState, collected: string): HandleResult<void> {
+  return handler([
+    {
+      handler: (key, entryState) => {
+        if (entryState.visual === undefined) return invalid();
+        if (key === "escape" || key === "<escape>" || key === "ctrl-[") return invalid();
+        if (key === ">" || key === "enter") {
+          const tagBody = collected;
+          return visualResultEffect(entryState, visual => visual.addTagSurround(tagBody));
+        }
+        if (key === "backspace") return visualTagEntry(entryState, collected.slice(0, -1));
+        const char = keyForInput(key);
+        if (char.length !== 1) return invalid();
+        return visualTagEntry(entryState, collected + char);
+      },
+      state: visualDeeper(state),
+    },
+  ]);
 }
 
 // Visual `r{char}`: replace every character in the selection with the next typed

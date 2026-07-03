@@ -845,6 +845,15 @@ class ClipboardTransaction implements VimSystemClipboard {
 	}
 }
 
+// The `vim.mode` context values use VSCodeVim-style mode names with a
+// deliberate difference: any mode with a pending chord gets a `+` suffix
+// (`Normal+`, `Visual+`, …) instead of VSCodeVim's single
+// `OperatorPendingMode` value, so when-clauses can distinguish pending state
+// uniformly in every mode (VSCodeVim only models it for normal mode). The
+// prompts are `Search`/`Command` rather than VSCodeVim's
+// `SearchInProgressMode`/`CommandlineInProgress`. Migrating users with
+// keybindings.json when-clauses on `vim.mode` need to adjust — documented in
+// doc/vscodevim-migration.md ("Deliberate divergences").
 function vscodeVimModeContextValue(status: VimStatus): string {
 	const suffix = status.pending ? '+' : '';
 	switch (status.mode) {

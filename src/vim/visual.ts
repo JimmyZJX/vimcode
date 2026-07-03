@@ -24,7 +24,7 @@ import type { FormatOptions } from "./normal/format.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
 import { ResolvedTarget, applyOperatorToTarget } from "./operator_target.js";
 import { canonicalVimSelection, canonicalizationChangesMeaning, characterCellEnd, lowerCharwiseGeometry, raiseCharwiseSelection } from "./selection_geometry.js";
-import { addSurrounds } from "./surrounds.js";
+import { addSurrounds, addTagSurrounds } from "./surrounds.js";
 import {
   KeyResult,
   Position,
@@ -472,11 +472,25 @@ export class VisualMode {
   // apply into one step, reading the live selection — no operator stack (nothing
   // edits the buffer between `S` and the pair key, so the ranges are unchanged).
   addSurround(pairKey: string): VisualKeyResult {
+    return this.addSurroundWith(state =>
+      addSurrounds(this.editor, visualSurroundRanges(this.editor, state), pairKey, { linewise: state.kind === "linewise" })
+    );
+  }
+
+  // Visual `St`/`S<`: wrap the selection in a typed tag (vim-surround tag
+  // entry mode).
+  addTagSurround(tagBody: string): VisualKeyResult {
+    return this.addSurroundWith(state =>
+      addTagSurrounds(this.editor, visualSurroundRanges(this.editor, state), tagBody, { linewise: state.kind === "linewise" })
+    );
+  }
+
+  private addSurroundWith(apply: (state: VisualState) => void): VisualKeyResult {
     const state = this.state;
     if (state === undefined) return handled();
     const undoTransaction = this.editor.beginUndoTransaction(visualCurrentUndoSelections(this.editor, state));
     try {
-      addSurrounds(this.editor, visualSurroundRanges(this.editor, state), pairKey, { linewise: state.kind === "linewise" });
+      apply(state);
     } finally {
       undoTransaction.finish();
     }
@@ -496,13 +510,16 @@ export class VisualMode {
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
+    // Linewise objects (paragraph, indent, entire) handle blank cursor lines
+    // themselves; other objects fail on an empty line.
+    const linewiseObject = object.type === "paragraph" || object.type === "indent" || object.type === "entire";
     const states = state.kind === "charwise" ? currentCharwiseVisualStates(this.editor, state) : [state];
-    if (states.some(state => object.type !== "paragraph" && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
+    if (states.some(state => !linewiseObject && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
       this.syncEditorSelection();
       return handled();
     }
 
-    if (object.type === "paragraph") {
+    if (linewiseObject) {
       const range = textObjectRange(this.editor, visualObjectPosition(this.editor, state), object, { around, count });
       this.state = paragraphLinewiseStateForRange(state, range);
       this.syncEditorSelection();

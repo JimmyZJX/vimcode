@@ -46,9 +46,6 @@ export type KeyExecutorOptions = {
    * that fallback.
    */
   redispatch?: (key: string, allowRemap: boolean) => void;
-  // CR jimzhao: decide whether `onEnterMode` is really needed. (`onCancel` was
-  // removed in favor of [lastHandleCancelled]; `onEnterMode` is still used for
-  // the insert-mode transition + session params.)
   /**
    * Apply the Vim mode an accepted action targets (the [mode] on the action /
    * effect). The executor owns mode transitions: after running an action it
@@ -61,7 +58,10 @@ export type KeyExecutorOptions = {
    */
   onEnterMode?: (
     mode: VimMode,
-    opts?: { enterInsert?: { count: number; separator: string }; search?: { backwards: boolean } }
+    opts?: {
+      enterInsert?: { count: number; separator: string };
+      search?: { backwards: boolean };
+    }
   ) => void;
   log?: KeyExecutorLog;
   timeoutMs?: number | (() => number);
@@ -246,7 +246,10 @@ export class KeyExecutor {
    * interactive prompt updates as pending [PendingEffect]s — so this is safe to
    * call for the ownership decision alone; pass [result] to [commit] to apply it.
    */
-  parse(key: string, allowRemap = true): { result: HandleResult<void>; claimed: boolean; generation: number } {
+  parse(
+    key: string,
+    allowRemap = true
+  ): { result: HandleResult<void>; claimed: boolean; generation: number } {
     const result = combineHandleResults(
       this.handlerEnvs.map(({ handler, state }) =>
         handler(key, { ...state, allowRemap })
@@ -393,8 +396,12 @@ export class KeyExecutor {
       // [resolveMode], when present, computes the true target mode after [run]
       // has executed (e.g. a visual command whose resulting kind depends on the
       // selection); the static [mode] is the best-guess parser mode used above.
-      const targetMode = action.resolveMode !== undefined ? action.resolveMode() : action.mode;
-      this.options.onEnterMode?.(targetMode, { enterInsert: action.enterInsert, search: action.search });
+      const targetMode =
+        action.resolveMode !== undefined ? action.resolveMode() : action.mode;
+      this.options.onEnterMode?.(targetMode, {
+        enterInsert: action.enterInsert,
+        search: action.search,
+      });
     }
     this.replayKeys(replayKeys);
   }
@@ -496,7 +503,8 @@ export class KeyExecutor {
     // return type is used (see [TimerHandle]); the raw global's return type is
     // environment-dependent.
     const setTimer =
-      this.options.setTimeout ?? (setTimeout as unknown as NonNullable<KeyExecutorOptions["setTimeout"]>);
+      this.options.setTimeout ??
+      (setTimeout as unknown as NonNullable<KeyExecutorOptions["setTimeout"]>);
     this.conflictTimer = setTimer(() => {
       this.conflictTimer = undefined;
       this.acceptConflict();
@@ -511,7 +519,10 @@ export class KeyExecutor {
   private clearConflictTimer(): void {
     if (this.conflictTimer === undefined) return;
     const clearTimer =
-      this.options.clearTimeout ?? (clearTimeout as unknown as NonNullable<KeyExecutorOptions["clearTimeout"]>);
+      this.options.clearTimeout ??
+      (clearTimeout as unknown as NonNullable<
+        KeyExecutorOptions["clearTimeout"]
+      >);
     clearTimer(this.conflictTimer);
     this.conflictTimer = undefined;
   }
