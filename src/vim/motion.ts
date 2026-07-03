@@ -628,8 +628,12 @@ function modelColumnForGoal(
     case "endOfLine":
       return maxColumn;
     case "modelColumn":
-    case "viewColumn":
       return Math.min(goal.column, maxColumn);
+    case "viewColumn":
+      // View-column goals are 1-based VSCode view coordinates (set by the host
+      // view-line movements, e.g. `ctrl-d`/`ctrl-u`). The model core cannot see
+      // soft wraps or folds, so approximate with the 0-based model column.
+      return Math.max(0, Math.min(goal.column - 1, maxColumn));
   }
 }
 

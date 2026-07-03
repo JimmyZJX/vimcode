@@ -10,8 +10,7 @@ executor emits (remap expansions) or replays (ambiguous-conflict suffixes) are
 re-dispatched through `Vim.dispatchThroughPipeline` via the executor's generic
 `redispatch` hook, so they take the same executor-then-legacy path as typed
 keys. The executor has no knowledge of the legacy dispatcher. Remaining legacy
-subsystems (waiting input, finite keymap, easymotion, operators, motions,
-insert/replace, search, command, macros/repeat) are ported into
+subsystems (waiting input, insert/replace, char-input waiters) are ported into
 `Vim.executorHandlers` slice by slice.
 
 ## Migration progress
@@ -61,6 +60,172 @@ insert/replace, search, command, macros/repeat) are ported into
   that passes through insert. Legacy `handleMacroControlKey`, the
   `recordRegister`/`replayRegister` waiting-inputs, and their `VimOperatorStack`
   machinery are removed.
+- [x] EasyMotion (`<leader><leader>…` overlay) migrated onto the framework
+  (`easymotion_handler.ts`). `EasyMotionState` keeps the same trigger → input →
+  label state machine but is split into a pure `decide(editor, config, key)`
+  (returns a `pending`/`jump`/`clear` outcome, reading the editor to collect
+  matches but mutating nothing) and a `commit(editor, outcome)` (advances
+  `pending` + repaints the marker overlay). The framework handler drives it as an
+  *in-graph* interactive overlay like the `d/` search operand: the leader key
+  starts a pending continuation, each subsequent key runs `decide` (pure body)
+  and defers `commit` into the continuation's `PendingEffect` (stay-pending) or a
+  completing `effect` (jump/clear). Every result carries `preservesDotRepeat` —
+  easyMotion is a navigation overlay that must never touch the `.` register
+  (matching the legacy path, which recorded the keys for macros but let the jump
+  cancel any dot-repeat). `easyMotionRootHandler` is added to `executorHandlers`
+  for both normal and visual modes, after the remap layer (a remap on the leader
+  wins) but before the normal/visual grammar; those grammars decline the leader
+  via `Vim.startsEasyMotion` so easyMotion wins cleanly even when the leader is an
+  otherwise-bound key (e.g. `<space>`). The jump is applied through an injected
+  `applyEasyMotionJump` (the same `Vim.applyMotion` call the legacy path used, so
+  it moves the cursor in normal mode and extends the selection in visual mode).
+  Escape declines so the owner's escape handling cancels the overlay. Legacy
+  `dispatchEasyMotionKey`, `shouldStartEasyMotion`, and the `!easyMotion.isPending()`
+  guards in `isExecutorNormalContext`/`isExecutorVisualContext`/`canStartRemap`
+  are removed; `easyMotion.isPending()`/`pendingChord()`/`clear()` are still
+  consulted by `ownsKey`/`isPending`/`pendingDepth`/`pendingChord`/escape handling
+  (deferred with the rest of `ownsKey`).
+- [x] Insert mode — passthrough model. In insert/replace mode Vim
+  does not edit the buffer for ordinary typing; VSCode types natively. Recording
+  is key-based with a tagged `RecordedKey`: `{ kind: "shortcut" }` (Vim dispatched
+  it, replayed via `onKey`) vs `{ kind: "typed" }` (a passthrough char / backspace,
+  replayed via `editor.replayInsertKey` — the VSCode default handler: `type {text}`
+  for printable input, `deleteLeft` for backspace). Done and jest-verified (the
+  `onKey`/replay path): `insert_handler.ts`'s `insertModeHandler` claims plain text +
+  backspace and returns an `insertTyped` marker effect; `Vim.insertRootHandler`
+  (in the default handler set, gated on the live insert mode) wires it in;
+  `handleThroughExecutor` reads *the parsed result* (not a post-commit flag, which
+  a remap expansion would clobber) to record the key as `typed` (extending the
+  in-flight change recording), accumulate the insert session text for count-repeat,
+  and reproduce the edit via `applyInsertTypedKey`/`replayInsertKey`; dot-repeat and
+  macros replay `typed` entries through the default handler. Fixes the dropped
+  insert-mode backspace.
+  Controller/real-typing half also done (fork side is reasoning-only — the fork
+  can't build here): `KeyPlan` carries `passthrough` (a third ownership state);
+  `handleKey` classifies insert text/backspace as passthrough via
+  `isInsertPassthroughKey` (and `ownsKey` no longer owns them —
+  `shouldRecordInsertTextKeyThroughVim` is gone); `passthrough` threads through
+  `dispatchTypedKey`/`routeKeyThroughExecutor`/`handleThroughExecutor` into
+  `applyInsertTypedKey`, which records the key but skips the buffer edit when
+  passthrough (the host already typed it). `vimController.handleKeyDown` runs the
+  plan without `preventDefault` for a passthrough key (native typing + Vim
+  recording); the recording plan does no editor mutation, so VSCode coalesces the
+  typed burst into one undo unit (avoids char-by-char undo).
+
+  The **navigation whitelist** extends the passthrough set beyond text/backspace:
+  `delete`, arrows, `ctrl+left`/`ctrl+right`, home/end, pageup/pagedown,
+  `ctrl+backspace`/`ctrl+delete` (see `isPassthroughInsertKey`). It is a static
+  whitelist by design — command chords (`ctrl+shift+p`, …) must never land in a
+  recording and stay native + unrecorded. Cursor-movement keys split the insert
+  undo unit (VSCode breaks typing coalescing on cursor changes; Vim's arrows break
+  the undo sequence — see `test_undo`) and reset the count-repeat session text.
+  Replay drives the corresponding *default* editor commands
+  (`vscodeVimEditor.replayInsertKey`'s `insertReplayCommands` map — deterministic
+  by design; honoring rebindings via the keybinding service is a possible
+  follow-up); `keyFromEvent` gained `ctrl-backspace`/`ctrl-delete`.
+
+  The **insert editing commands and char-input waiters** are framework handlers
+  too (`insert_handler.ts`): `ctrl-w`/`ctrl-u`/`ctrl-y`/`ctrl-e` as plain effects,
+  `ctrl-o` via an injected `enterTemporaryNormal`, `ctrl-k` (digraph), `ctrl-r`
+  (register insert), and `ctrl-v` (literal/decimal/hex codes) as in-graph waiters.
+  Waiter chords are recorded as shortcuts owner-side (a direct effect or a plain
+  "handler" pending in insert mode — remap chords are conflicts/keys actions and
+  stay excluded); a `ctrl-v` code terminated by an ordinary key completes via a
+  `sequence` action that re-dispatches the terminator, and **`typed` entries
+  replay through `onKey`** (not by applying directly) so a replayed terminator can
+  feed the still-pending waiter and insert-mode mappings apply on replay like live
+  typing (`insertRootHandler` yields to remaps only when `state.allowRemap`, so a
+  noremap expansion key like the literal `j` of a broken `jk` chord is typed, not
+  re-remapped). Resolved digraph/literal text joins the count-repeat session text
+  via `appendInsertSessionText`. Legacy `dispatchInsertLikeKey`'s insert side, the
+  `insertKeyHandlers` map, and the `literal`/`insertRegister` waiting-input
+  machinery are removed (`insertDigraph` remains for the replace-mode `ctrl-k` and
+  find digraphs).
+
+  **Replace mode** (`R`) is migrated too (`replaceModeHandler` +
+  `replaceEntryHandler`, the `enterReplace` keymap action removed). Unlike
+  insert, typing cannot pass through — native typing inserts while Vim
+  overwrites and remembers what it replaced — so text and backspace are
+  Vim-owned effects driving the injected `applyReplaceText`/`undoReplace`; only
+  the navigation keys pass through (recorded as `typed`, sharing the insert
+  whitelist machinery, so replace-mode arrows now land in macros). `ctrl-k`
+  reuses the digraph waiter with a replace-mode apply. `R` rides the shared
+  insert-session meta for counts (`3R`), and the recording branch covers both
+  insert and replace claimed keys. The legacy `replaceKeyHandlers`, the
+  `dispatchInsertLikeKey` replace side, and the `insertDigraph` "replace" target
+  are removed (the operator-stack digraph now exists only for find targets); the
+  test harness's `emulateNativeInsertKey` shim is gone (the passthrough sim,
+  including the cursor-movement undo split, covers it). Note the passthrough
+  navigation sim follows VSCode (e.g. `left` at column 0 wraps to the previous
+  line), not nvim's no-wrap insert arrows — passthrough keys are native by
+  definition.
+
+  **Deferred:** owning copy/cut/paste (`ctrl+c/v/x`) as Vim commands (their
+  default handlers are async, which does not fit the synchronous replay loop).
+- [x] `.` (dot-repeat), standalone `` ` ``/`'` mark jumps, and the `i_CTRL-O`
+  temporary-normal excursion migrated onto the framework; **the legacy dispatch
+  layer is deleted**. `dotRepeatHandler` requests the replay via
+  `requestDotReplay` and the owner runs it after the executor drain
+  (`runPendingDotReplay`, like the macro replay), first discarding the recording
+  opened for `.`'s own count/register prefix — `.` is dot-repeat-transparent and
+  the replay machinery manages the last change itself. `markJumpHandler` waits
+  for the mark name and applies `marks.jumpMotion`. `isExecutorNormalContext` no
+  longer excludes `temporaryNormal`; the ctrl-o return-to-insert bookkeeping is
+  mirrored in `routeKeyThroughExecutor` for framework-handled keys. Root
+  handlers yield to remaps only for remappable keys (`state.allowRemap`), so
+  noremap expansion keys run as plain commands, and the recording gate matches.
+  A full-suite instrumentation pass plus a throw-probe proved the remaining
+  `dispatchKey` phases unreachable (zero hits across all 650 tests), and they
+  are now **removed**: `dispatchWaitingInput` and every pending-input handler,
+  `dispatchVimAction` and the keymap-phase resolvers
+  (`handleFiniteKeymapKey`/`dispatchMotionModeKey`/`dispatchFallbackKeymapKey`/
+  `dispatchModeFallbackKey`), and their exclusive helpers (~600 lines).
+  `dispatchKey` is now only the terminal fallback: central escape, native for
+  unclaimed insert/replace keys (deliberately unrecorded, per the whitelist
+  policy), and the recorded bell no-op for unbound normal/visual keys.
+  Still to sweep: the now-vestigial `keymapResolver` field and `keymap.ts`
+  interpreter, the always-empty `VimOperatorStack` and its `operator.ts`
+  machinery, the legacy `NormalMode`/`VisualMode` pending-input methods, the
+  `handlerState` count/register bridge — and then `ownsKey` itself.
+- [x] Vestigial-state sweep: **`keymap.ts` and `operator.ts` are deleted**
+  (~1350 lines). The live types moved out — `ForcedMotion` →
+  `operator_target.ts`, `VisualCommand`/`VisualModeKind` → `visual.ts`.
+  `NormalMode` shrank to its live core (~90 lines: the owner-side plain-motion
+  applier for easyMotion/mark/search jumps, plus the legacy count/register
+  accessors and the clipboard-read query); every keymap-era execution method is
+  gone, and `applyMotion` no longer consults an operator stack (motions never
+  enter insert). `VisualMode` lost its pending-input methods
+  (`handlePendingSurroundKey`/`handlePendingTextObjectKey`, the
+  `startSurround`/`startTextObject` command arms) and the stack. `Vim` lost the
+  `operatorStack` + `keymapResolver` fields, `canStartRemap` (constant true),
+  and the count/register `bridgePendingPrefixToLegacy`;
+  `isExecutorNormalContext`/`isExecutorVisualContext` reduce to mode checks.
+  `status.operator` is now always `undefined` and operator-pending remap mode is
+  constant `false` — both were already dead for framework operators
+  (pre-existing gaps, noted in code, restorable from executor state if wanted).
+  Left for the finale: the `handlerState` count/register remnants and
+  `ownsKey` → `parse`.
+- [x] **`ownsKey` is deleted: key ownership comes from the grammar.**
+  `Vim.handleKey` evaluates the key against the executor's real handlers via
+  `parse` (pure — every handler defers its side effects) and decides from the
+  result (`Vim.keyOwnership`): a claimed key is owned (or *passthrough* when the
+  claim is an `insertTyped` whitelist marker); `vim.useCtrlKeys` still gates
+  claimed built-in normal/visual ctrl commands (insert/replace ctrl commands and
+  mid-remap/easyMotion chords are exempt, as before); unclaimed keys follow the
+  terminal-fallback policy — escape via `shouldHandleEscapeKey`, bell-owned in
+  normal/visual (native for unclaimed non-builtin ctrl chords), native in
+  insert/replace/search/command. `vim.handleKeys` overrides still short-circuit,
+  and the remap-timeout pseudo-key is owned exactly while a remap is pending.
+  **Single evaluation:** the parse result rides into the `KeyPlan` (a
+  `PreParsedKey` tagged with the executor's `stateGeneration`) and is committed
+  by the dispatcher; if the executor state moved in between — keydowns racing
+  ahead of their queued async commits — the dispatcher re-parses against the
+  fresh state, so a raced `d`,`w` still deletes a word instead of committing the
+  stale bare-motion parse (regression-tested). The `maybeStart`/
+  `isRepeatableStartKey` legacy dot-repeat seed and `NormalMode.pendingChord`
+  are gone too. The hand-maintained ownership predictor no longer exists;
+  `dispatchKey` remains only as the owner-side terminal fallback (escape +
+  bell/native), reached exclusively for keys the grammar declined.
 - [x] `KeyExecutor.handle` split into `parse` + `commit`. `parse` evaluates the
   key against the current handlers with no side effects — no parser-state
   advance, no queued effect — and returns the grammar `result` and whether it
@@ -395,12 +560,12 @@ insert/replace, search, command, macros/repeat) are ported into
   not a drop-to-normal.)
 
   With that, the framework owns the entire visual-mode key path in every clean or
-  externally-adopted context. The legacy dispatcher is only reached in visual
-  from the easyMotion-pending edge.
+  externally-adopted context, including the easyMotion overlay (now a framework
+  root handler; see the EasyMotion entry above).
 
   Next: the legacy dispatcher (`dispatchKey`) is now unused in clean/adopted
   normal + visual. Retiring it fully needs the remaining subsystems migrated:
-  easyMotion, insert/replace mode, and the char-input waiters (digraph/surround).
+  insert/replace mode and the char-input waiters (digraph/surround).
 - [x] `:` command mode migrated (`command_handler.ts`): `commandPromptHandler` +
   `commandModeHandler`, the [CommandLine] input injected into the handler state
   like [activeSearch], and execution owner-side on the command → normal

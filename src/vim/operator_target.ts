@@ -26,7 +26,6 @@ import { IndentDirection, applyIndent } from "./normal/indent.js";
 import { paragraphObjectCancelled } from "./normal/object.js";
 import { applyYank } from "./normal/yank.js";
 import { TextObject, blankLineAroundWordRows, surroundObjectFound, textObjectRange } from "./object.js";
-import type { ForcedMotion } from "./operator.js";
 import { RegisterName, Registers } from "./registers.js";
 import { Position, TextRange, selectionHead } from "./state.js";
 
@@ -63,6 +62,9 @@ export type CharwiseTarget = {
 // application; locally inclusivity is resolved into concrete range extents at
 // resolution, so only charwise/linewise remain. A blockwise variant is reserved
 // for the visual-block fold-in.
+// Vim `o_v`/`o_V`: a pending operator's motion can be forced charwise/linewise.
+export type ForcedMotion = "charwise" | "linewise";
+
 export type ResolvedTarget =
   | { kind: "charwise"; targets: readonly CharwiseTarget[] }
   | { kind: "linewise"; rows: readonly RowRange[] };

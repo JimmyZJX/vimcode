@@ -8,7 +8,6 @@
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
 import { VimConfiguration } from "./config.js";
-import type { VisualCommand, VisualModeKind } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { VimEditorCapabilities, VimUndoTransaction, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
@@ -20,7 +19,6 @@ import { IndentDirection } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { joinLines } from "./normal/join.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
-import { VimOperatorStack } from "./operator.js";
 import { ResolvedTarget, applyOperatorToTarget } from "./operator_target.js";
 import { canonicalVimSelection, canonicalizationChangesMeaning, characterCellEnd, lowerCharwiseGeometry, raiseCharwiseSelection } from "./selection_geometry.js";
 import { addSurrounds } from "./surrounds.js";
@@ -39,6 +37,24 @@ import {
 
 export type VisualResultMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock";
 export type RestoredVisualMode = "visual" | "visualLine" | "visualBlock";
+
+export type VisualModeKind = "visual" | "visualLine" | "visualBlock";
+
+// The visual-mode command vocabulary [VisualMode.handleCommand] executes,
+// produced by the typed visual grammar (visual_handler.ts).
+export type VisualCommand =
+  | { type: "insertAtSelection"; side: "start" | "end" }
+  | { type: "indent"; key: ">" | "<" | "=" }
+  | { type: "convert"; key: "u" | "U" | "~" }
+  | { type: "otherEnd"; rowAware: boolean }
+  | { type: "yankLinewise" }
+  | { type: "yank" }
+  | { type: "deleteToLineEnd" }
+  | { type: "delete" }
+  | { type: "change" }
+  | { type: "changeLines" }
+  | { type: "paste" }
+  | { type: "percentOrMatching" };
 
 export type VisualKeyResult = {
   keyResult: KeyResult;
@@ -119,7 +135,6 @@ export class VisualMode {
     private readonly registers: Registers,
     private readonly registerSelection: RegisterSelection,
     private readonly countState: CountState,
-    private readonly operatorStack: VimOperatorStack,
     configuration: Pick<VimConfiguration, "visualMultilineInsert">
   ) {
     this.visualMultilineInsert = configuration.visualMultilineInsert;
@@ -130,21 +145,10 @@ export class VisualMode {
   }
 
 
-  clearPending(): void {
-    this.clearPendingStack();
-    this.registerSelection.clear();
-    this.countState.clear();
-  }
-
-  private clearPendingStack(): void {
-    this.operatorStack.clear();
-  }
-
   enter(kind: VisualState["kind"] = "charwise"): void {
     const selections = this.editor.getSelections();
     const selection = selections[0];
     const head = selectionHead(selection);
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
     this.editor.setCursorStyle("line");
@@ -186,7 +190,6 @@ export class VisualMode {
 
   clearState(): void {
     this.state = undefined;
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
   }
@@ -210,7 +213,6 @@ export class VisualMode {
     const state = this.state;
     if (state !== undefined) this.rememberState(state);
     this.state = undefined;
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
     this.editor.setCursorStyle("block");
@@ -247,15 +249,11 @@ export class VisualMode {
         return command.side === "start"
           ? this.insertBeforeOrAtBlockStart(state) ?? handled()
           : this.insertAfterOrAtBlockEnd(state) ?? handled();
-      case "startSurround":
-        return this.startSurround(state);
       case "indent":
         return this.indentKey(state, command.key);
       case "convert":
         this.convert(state, convertTargetForKey(command.key));
         return handled({ exitVisual: true, nextMode: "normal" });
-      case "startTextObject":
-        return this.startTextObject(command.around);
       case "otherEnd":
         return this.otherEnd(state, { rowAware: command.rowAware });
       case "yankLinewise":
@@ -346,25 +344,11 @@ export class VisualMode {
     return undefined;
   }
 
-  private startSurround(state: VisualState): VisualKeyResult {
-    this.operatorStack.pushVisualAddSurrounds({
-      ranges: visualSurroundRanges(this.editor, state),
-      linewise: state.kind === "linewise",
-      undoSelectionsBefore: visualCurrentUndoSelections(this.editor, state),
-    });
-    return handled();
-  }
-
   private indentKey(state: VisualState, key: ">" | "<" | "="): VisualKeyResult {
     const direction = indentDirectionForKey(key);
     const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction);
     this.indent(state, direction);
     return handled({ exitVisual: true, nextMode: "normal", repeatAction });
-  }
-
-  private startTextObject(around: boolean): VisualKeyResult {
-    this.operatorStack.push({ type: "object", around });
-    return handled();
   }
 
   private otherEnd(state: VisualState, { rowAware }: { rowAware: boolean }): VisualKeyResult {
@@ -470,20 +454,6 @@ export class VisualMode {
     return handled();
   }
 
-  handlePendingSurroundKey(key: string): VisualKeyResult {
-    const pendingSurround = this.operatorStack.popVisualOperator("visualAddSurrounds");
-    if (pendingSurround === undefined) return handled();
-    const undoTransaction = this.editor.beginUndoTransaction(pendingSurround.undoSelectionsBefore);
-    try {
-      addSurrounds(this.editor, pendingSurround.ranges, key, { linewise: pendingSurround.linewise });
-    } finally {
-      undoTransaction.finish();
-    }
-    this.state = undefined;
-    this.editor.setCursorStyle("block");
-    return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
   // Framework path: surround the current visual selection with the pair named by
   // [pairKey] (vim-surround `S{char}`). Combines the legacy range capture and
   // apply into one step, reading the live selection — no operator stack (nothing
@@ -500,17 +470,6 @@ export class VisualMode {
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal" });
-  }
-
-  // Legacy waiting-input path: the [around] flag comes from the pushed operator
-  // and the count from the legacy [countState].
-  handlePendingTextObjectKey(key: string): VisualKeyResult {
-    const pendingTextObject = this.operatorStack.popVisualOperator("object");
-    if (pendingTextObject === undefined) {
-      this.exit();
-      return handled({ exitVisual: true, nextMode: "normal" });
-    }
-    return this.applyTextObject(pendingTextObject.around, key, this.takeCount(1));
   }
 
   // Framework path: expand the live selection to the text object named by [key].
@@ -900,7 +859,6 @@ export class VisualMode {
   ): boolean {
     if (selection.type !== "charwise") return false;
     if (!allowEmpty && comparePositions(selection.anchor, selection.head) === 0) return false;
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
     this.state = externalSelectionToCharwiseState(this.editor, selection);
@@ -937,7 +895,6 @@ export class VisualMode {
   }
 
   private clearPendingInteraction(): void {
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
   }
@@ -1474,6 +1431,11 @@ function visualLineBounds(editor: VimEditorCapabilities, state: VisualState): { 
   }
 }
 
+// The visual edits run as one undo unit anchored on the visual selection.
+function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: VisualState): VimUndoTransaction {
+  return editor.beginUndoTransaction(visualUndoSelections(state));
+}
+
 function visualUndoSelections(state: VisualState): readonly VimSelection[] {
   return [charwiseSelection(visualAnchorPosition(state))];
 }
@@ -1553,10 +1515,6 @@ function linewiseEditRange(editor: VimEditorCapabilities, state: LinewiseVisualS
     };
   }
   return { start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } };
-}
-
-function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: VisualState): VimUndoTransaction {
-  return editor.beginUndoTransaction(visualUndoSelections(state));
 }
 
 function openVisualChangeEditOptions() {

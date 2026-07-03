@@ -38,7 +38,7 @@ export class CommandLine {
 
 // Keys the `:` command line consumes: printable characters, space, enter,
 // backspace, and escape (which cancels via the central escape handling). Used by
-// [Vim.ownsKey] so VSCode does not intercept them while the prompt is open, and
+// [Vim.keyOwnership] so VSCode does not intercept them while the prompt is open, and
 // by the command-mode grammar to bound the keys it accepts.
 export function isCommandInputKey(key: string): boolean {
   return (

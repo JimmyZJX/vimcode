@@ -9,7 +9,6 @@
 
 import { cloneHandlerState, combineHandleResults, dynamicModeEffect, effect, handler, invalid, unhandled } from "./key_handler.js";
 import type { Handler, HandleResult, HandlerState } from "./key_handler.js";
-import type { VisualCommand, VisualModeKind } from "./keymap.js";
 import type { RepeatState } from "./normal/repeat.js";
 import { bracketChordHandler, ctrlWHandler, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
 import type { FindApplier } from "./normal_mode_handler.js";
@@ -18,7 +17,7 @@ import { prefixHandler } from "./prefix_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
 import { searchPromptHandler, searchSelectionHandler, visualSearchUnderCursorHandler } from "./search_handler.js";
 import type { VimMode } from "./state.js";
-import type { VisualKeyResult, VisualMode } from "./visual.js";
+import type { VisualKeyResult, VisualMode, VisualCommand, VisualModeKind } from "./visual.js";
 
 // The full visual-mode grammar: the count/register prefix wrapping the raw
 // grammar. Keys the framework declines fall through to the legacy dispatcher
@@ -135,7 +134,7 @@ function visualCommandForKey(key: string): VisualCommand | undefined {
     case "y":
     case "ctrl-c":
       // Vim `v_CTRL-C` yanks the selection like `y` (Vim owns the key in visual
-      // mode via [Vim.ownsKey] so VSCode does not intercept it).
+      // mode via [Vim.keyOwnership] so VSCode does not intercept it).
       return { type: "yank" };
     case "Y":
       return { type: "yankLinewise" };

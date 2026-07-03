@@ -12,7 +12,7 @@ import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
-import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, normalCursorPosition } from '../common/editor.js';
+import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
@@ -244,6 +244,30 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				this.finishUndoTransaction(selectionsAfter);
 			},
 		};
+	}
+
+	// Reproduce VSCode's default insert-mode handling for a passthrough key on the
+	// replay path (dot-repeat / macros) — there is no real keydown to let through,
+	// so drive the editor's own commands: printable text via the `type` command
+	// (VSCode's typed-input entry point, so auto-indent / auto-closing / on-type
+	// formatting fire), and the whitelisted editing/navigation keys via the
+	// corresponding synchronous core editor commands (their default bindings).
+	// Using the `keyboard` source makes VSCode coalesce a replayed run into one
+	// undo unit, matching live typing. Deterministic by design: replay drives the
+	// *default* editing behavior rather than re-resolving keybindings at replay
+	// time (honoring user rebindings via the keybinding service is a possible
+	// follow-up).
+	replayInsertKey(key: string): void {
+		const command = insertReplayCommands[key];
+		if (command !== undefined) {
+			this.editor.trigger('keyboard', command, null);
+			return;
+		}
+		const text = insertTextForKey(key);
+		if (text === undefined) {
+			return;
+		}
+		this.editor.trigger('keyboard', 'type', { text });
 	}
 
 	applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
@@ -996,6 +1020,27 @@ function formatVimSelections(selections: readonly VimSelection[] | undefined): s
 		}
 	}).join(', ')}]`;
 }
+
+// The default editing/navigation commands behind the insert-mode passthrough
+// whitelist (see `isPassthroughInsertKey` in ../common/insert_handler.js). All
+// synchronous core editor commands, so the recorded-key replay loop stays
+// synchronous.
+const insertReplayCommands: Readonly<Record<string, string>> = {
+	'backspace': 'deleteLeft',
+	'delete': 'deleteRight',
+	'ctrl-backspace': 'deleteWordLeft',
+	'ctrl-delete': 'deleteWordRight',
+	'up': 'cursorUp',
+	'down': 'cursorDown',
+	'left': 'cursorLeft',
+	'right': 'cursorRight',
+	'ctrl-left': 'cursorWordLeft',
+	'ctrl-right': 'cursorWordRight',
+	'home': 'cursorHome',
+	'end': 'cursorEnd',
+	'pageup': 'cursorPageUp',
+	'pagedown': 'cursorPageDown',
+};
 
 function formatVimPosition(position: VimPosition): string {
 	return `${position.row + 1}:${position.column + 1}`;

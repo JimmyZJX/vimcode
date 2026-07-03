@@ -1,5 +1,6 @@
 import type { CommandLine } from "./command.js";
-import type { VimCommandMapping, WhenEvaluator } from "./config.js";
+import type { VimCommandMapping, VimConfiguration, WhenEvaluator } from "./config.js";
+import type { EasyMotionState } from "./easymotion.js";
 import type { VimEditorCapabilities } from "./editor.js";
 import type { ChangeListState } from "./normal/change_list.js";
 import type { FindState } from "./normal/find.js";
@@ -86,6 +87,36 @@ export type HandlerState = {
   // edits) before the next; running it inside the drain would defer the
   // framework effects and scramble a replay that passes through insert mode.
   requestMacroReplay?: (register: string | undefined, count: number) => void;
+  // `.`: request a replay of the last recorded change. Like [requestMacroReplay],
+  // the owner runs it *after* the executor's effect drain — the replay feeds
+  // recorded keys back through the dispatcher and each must fully apply before
+  // the next. [count]/[register] carry the `3.` / `"a.` overrides.
+  requestDotReplay?: (count: number | undefined, register: RegisterName | undefined) => void;
+  // Vim `i_CTRL-O`: leave insert mode for exactly one normal-mode command. The
+  // owner finishes the insert session, enters normal mode, and flags the
+  // excursion so the next completed command returns to insert. Injected live
+  // into the insert-mode grammar like [requestMacroReplay].
+  enterTemporaryNormal?: () => void;
+  // Append resolved text (a digraph, a literal character code) to the insert
+  // session's count-repeat text — the text `3i…<esc>` re-inserts. Ordinary typed
+  // input accumulates owner-side (see the `typed` recording path); this is for
+  // insert-mode commands that resolve to text inside their effect.
+  appendInsertSessionText?: (text: string) => void;
+  // Replace-mode text application: overwrite [text] at the cursors, remembering
+  // what it replaced (for backspace restore) and appending to the count-repeat
+  // session text. Injected live into the replace-mode grammar.
+  applyReplaceText?: (text: string) => void;
+  // Replace-mode backspace: restore the most recently overwritten character at
+  // the cursor, or step left when nothing was overwritten there.
+  undoReplace?: () => void;
+  // The easyMotion overlay state (leader-triggered label jumps), for the `q`-less
+  // `<leader><leader>…` chords. Injected live like [search]/[macro]. The handler
+  // drives it via [EasyMotionState.decide]/[commit]; [configuration] supplies the
+  // leader + easyMotion key tables, and [applyEasyMotionJump] applies the chosen
+  // jump (a cursor move in normal mode, a selection extension in visual mode).
+  easyMotion?: EasyMotionState;
+  configuration?: VimConfiguration;
+  applyEasyMotionJump?: (position: Position) => void;
 };
 
 export const initialHandlerState: HandlerState = {
@@ -141,6 +172,13 @@ export type EffectMeta = {
   // register, and `@`/`Q` replay must leave the dot-repeat their replayed keys
   // set intact. Defaults to false when omitted.
   preservesDotRepeat?: boolean;
+  // Whether this is a passthrough insert/replace-mode character: VSCode handles
+  // the buffer edit (live typing is native; replay/tests go through
+  // [editor.replayInsertKey]). The owner records it as a `typed` [RecordedKey]
+  // (extending the in-flight change recording) and accumulates the insert
+  // session text, rather than running the shortcut record/dot-repeat path. The
+  // effect itself is a marker — its [run] does no buffer edit. Defaults to false.
+  insertTyped?: boolean;
 };
 
 export type EffectAction<T> = {

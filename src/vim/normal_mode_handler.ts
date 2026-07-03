@@ -28,6 +28,7 @@ import { applyMotion, bracketMotion, lineRange, motionForKey } from "./motion.js
 import { applyMotionResults, motionHandler } from "./motion_handler.js";
 import { bracketChordHandler, ctrlWHandler, editorTabEffect, multiCursorEffect, nativeCommandEffect, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
+import { replaceEntryHandler } from "./insert_handler.js";
 import { macroControlHandler } from "./macro_handler.js";
 import { searchActionHandler, searchOperandHandler, searchPromptHandler, searchSelectionHandler } from "./search_handler.js";
 import { prefixHandler } from "./prefix_handlers.js";
@@ -56,7 +57,10 @@ function rawNormalModeHandler(): Handler<void> {
       operatorRootHandler(key, state),
       simpleActionHandler(key, state),
       markHandler(key, state),
+      markJumpHandler(key, state),
+      dotRepeatHandler(key, state),
       insertEntryHandler(key, state),
+      replaceEntryHandler(key, state),
       changeDeleteShortcutHandler(key, state),
       findHandler(key, state),
       repeatFindHandler(key, state),
@@ -454,6 +458,60 @@ function markHandler(key: string, state: HandlerState): HandleResult<void> {
       state: deeper(state),
     },
   ]);
+}
+
+// Standalone `` ` ``/`'` mark jumps: wait for the mark name, then jump (`'` is
+// linewise: first non-blank of the mark's line). The operand form (`d'a`) is
+// handled by the operator grammar; this is the idle motion. A count is ignored,
+// like the legacy jump. Not a change, so not dot-repeatable.
+function markJumpHandler(key: string, state: HandlerState): HandleResult<void> {
+  if (key !== "'" && key !== "`") return unhandled();
+  const line = key === "'";
+  return handler([
+    {
+      handler: (name, jumpState) => {
+        if (isEscapeKey(name)) return invalid();
+        const editor = jumpState.editor;
+        const marks = jumpState.marks;
+        if (editor === undefined || marks === undefined) return invalid();
+        return effect(
+          "normal",
+          () => {
+            const motion = marks.jumpMotion(editor, name, { line });
+            if (motion === undefined) return;
+            applyMotionResults(
+              editor,
+              editor.getSelections().map(selection => ({
+                position: applyMotion(editor, selectionHead(selection), motion, 1),
+              }))
+            );
+          },
+          { dotRepeatable: false }
+        );
+      },
+      state: deeper(state),
+    },
+  ]);
+}
+
+// `.`: replay the last recorded change. Like the macro replay (`@`/`Q`), the
+// replay is *requested* and run by the owner after the executor's effect drain,
+// because it feeds recorded keys back through the dispatcher. Transparent to
+// dot-repeat: `.` itself must not open or cancel a recording — the replay
+// machinery updates the last change (count overrides, numbered-paste advance)
+// itself. A `.` typed while a dot replay is already running is ignored.
+function dotRepeatHandler(key: string, state: HandlerState): HandleResult<void> {
+  if (key !== ".") return unhandled();
+  if (state.repeatState?.isReplaying() === true) return unhandled();
+  const count = state.hasCount === true ? state.repeat : undefined;
+  const register = state.register;
+  return effect("normal", () => state.requestDotReplay?.(count, register), {
+    preservesDotRepeat: true,
+  });
+}
+
+function isEscapeKey(key: string): boolean {
+  return key === "escape" || key === "<escape>" || key === "ctrl-[";
 }
 
 // Leaf normal-mode actions that take no motion/object operand: the single-key

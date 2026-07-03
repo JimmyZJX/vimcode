@@ -5,47 +5,37 @@
 // - intentional differences: GPUI action registration is replaced by direct key dispatch
 //   from the VSCode patch / tests.
 
-import { CommandLine, LineRange, executeCommand, isCommandInputKey } from "./command.js";
+import { CommandLine, LineRange, executeCommand } from "./command.js";
 import { commandModeHandler } from "./command_handler.js";
 import { RemapTimeoutKey, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
 import type { NormalizedRemapping, WhenEvaluator, VimCommandMapping, VimConfiguration } from "./config.js";
-import { lookupDigraph } from "./digraph.js";
 import { EasyMotionState } from "./easymotion.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
-import { VimEditorCapabilities, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
-import { enterNormalMode, insertCharacterFromAdjacentLine, insertText, deleteToBeginningOfLine, deleteToPreviousWord } from "./insert.js";
+import { VimEditorCapabilities, insertTextForKey, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
+import { enterNormalMode, insertText } from "./insert.js";
 import { initialHandlerState, unhandled } from "./key_handler.js";
-import type { Handler, HandlerEnv, HandlerState } from "./key_handler.js";
+import type { HandleResult, Handler, HandlerEnv, HandlerState } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
-import { finiteKeymapPermissions, resolveVimAction, shouldResolveMotionModeAction, VimAction, VimKeymapContext, VimKeymapPhase, VimKeymapResolver } from "./keymap.js";
-import { FindMotion, Motion } from "./motion.js";
+import { Motion } from "./motion.js";
 import { NormalMode } from "./normal.js";
-import type { NormalKeyResult } from "./normal.js";
 import { normalModeHandler } from "./normal_mode_handler.js";
+import { easyMotionHandler } from "./easymotion_handler.js";
+import { insertModeHandler, replaceModeHandler } from "./insert_handler.js";
 import { searchModeHandler } from "./search_handler.js";
 import { visualModeHandler } from "./visual_handler.js";
-import { VimOperatorStack, WaitingInput, convertTargetForPending, isSelfEscapingWaitingInput } from "./operator.js";
 import { RangeOperator } from "./operator_target.js";
-import type {
-  PendingFindOperator,
-  PendingLiteralOperator,
-  TopLevelPendingOperator,
-} from "./operator.js";
-import { MacroRecordingStatus, RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
-import { incrementNumbers } from "./normal/increment.js";
-import { isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
+import { MacroRecordingStatus, RecordedKey, RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import type { PendingSearch } from "./normal/search.js";
 import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
 import { DebugRemapConflict, createRemaps, debugRemapConflicts, handleKeyOverride as remapKeyOverride, hasRemapStartingWith, pendingRemapInsertText, remapHandler } from "./remap.js";
 import type { Remaps } from "./remap.js";
 import type { VimSystemClipboard } from "./registers.js";
-import { ConvertTarget } from "./normal/convert.js";
 import { indentRanges } from "./normal/indent.js";
 import { ReplacedText, replaceModeText } from "./replace.js";
-import { KeyDispatchResult, KeyResult, Position, TextEdit, TextRange, VimMode, charwiseSelection, comparePositions, isVisualModeKind, rangeOfSelection, selectionHead, vimModeName } from "./state.js";
+import { KeyDispatchResult, KeyResult, TextEdit, TextRange, VimMode, charwiseSelection, comparePositions, isVisualModeKind, selectionHead, vimModeName } from "./state.js";
 import { VisualMode, visualKindForMode } from "./visual.js";
-import type { VisualKeyResult, VisualResultMode } from "./visual.js";
+import type { VisualResultMode } from "./visual.js";
 import { VimGlobalState, VimModelState } from "./vim_state.js";
 
 export type VimStatus = {
@@ -89,7 +79,21 @@ export type EditorSyncResult = {
   reason: string;
 };
 
-export type KeyPlan = { run: (env?: { clipboard?: VimSystemClipboard }) => Promise<void> };
+// A key Vim wants to act on. [passthrough] is the third ownership state (besides
+// "owned" and "native/null"): the host should still handle the key natively — the
+// controller must NOT [preventDefault] — but Vim runs [run] to *record* it (an
+// insert-mode passthrough character; see [Vim.isInsertPassthroughKey]). For an
+// owned key [passthrough] is false and the controller prevents default as usual.
+// The single grammar evaluation from [handleKey], carried into the plan and
+// committed by the dispatcher — unless the executor state moved in between
+// (keys racing ahead of their queued commits), in which case the dispatcher
+// re-parses against the fresh state (see [KeyExecutor.currentGeneration]).
+type PreParsedKey = { result: HandleResult<void>; claimed: boolean; generation: number };
+
+export type KeyPlan = {
+  passthrough: boolean;
+  run: (env?: { clipboard?: VimSystemClipboard }) => Promise<void>;
+};
 
 const alwaysActiveWhenEvaluator: WhenEvaluator = () => true;
 
@@ -111,9 +115,7 @@ export { VimGlobalState, VimModelState };
 // `VimEditorCapabilities`.
 export class Vim {
   private modeState: VimMode = "normal";
-  private readonly keymapResolver = new VimKeymapResolver();
   private readonly easyMotion = new EasyMotionState();
-  private readonly operatorStack = new VimOperatorStack();
   private modelState: VimModelState;
   private handlerState: HandlerState = { ...initialHandlerState };
   // Vim 'showcmd': the literal keys typed for the in-flight pending command,
@@ -157,20 +159,7 @@ export class Vim {
   // insert mode, then back to insert.
   private temporaryNormal = false;
   private readonlyWarningUntil = 0;
-  private readonly insertKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
-    ["ctrl-k", () => this.startInsertDigraph()],
-    ["ctrl-v", () => this.startPlainLiteral()],
-    ["ctrl-r", () => this.startInsertRegister()],
-    ["ctrl-w", () => this.deleteInsertPreviousWord()],
-    ["ctrl-u", () => this.deleteInsertLineStart()],
-    ["ctrl-y", () => this.insertCharacterFromAdjacentLine("above")],
-    ["ctrl-e", () => this.insertCharacterFromAdjacentLine("below")],
-    ["ctrl-o", () => this.enterTemporaryNormalMode()],
-  ]);
-  private readonly replaceKeyHandlers: ReadonlyMap<string, () => KeyResult> = new Map([
-    ["ctrl-k", () => this.startReplaceDigraph()],
-    ["backspace", () => this.undoReplace()],
-  ]);
+
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
 
@@ -187,7 +176,7 @@ export class Vim {
     this.editor.setCursorStyle("block");
     this.handlerState.editor = editor;
     this.handlerState.registers = this.globalState.registers;
-    this.normalMode = new NormalMode(editor, this.globalState.registers, {
+    this.normalMode = new NormalMode(editor, {
       get: () => this.effectiveRegister(),
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
@@ -196,7 +185,7 @@ export class Vim {
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
-    }, this.operatorStack);
+    });
     this.visualMode = new VisualMode(editor, this.globalState.registers, {
       get: () => this.effectiveRegister(),
       take: () => this.takeSelectedRegister(),
@@ -206,7 +195,7 @@ export class Vim {
       append: key => this.appendCountKey(key),
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
-    }, this.operatorStack, this.configuration);
+    }, this.configuration);
   }
 
   attachModelState(modelState: VimModelState): void {
@@ -242,7 +231,11 @@ export class Vim {
       mode,
       pending: this.isPending(),
       pendingDepth: this.pendingDepth(),
-      operator: this.modeState === "normal" ? this.normalMode.pendingOperatorName() : undefined,
+      // The legacy operator name is gone with the legacy grammar; framework
+      // operator-pending state is visible via [pending]/[pendingDepth]. (The
+      // `vim.operator` context key has not carried framework operators — a
+      // known gap to restore from executor state if needed.)
+      operator: undefined,
       chord,
       text,
       remapPending: this.remapIsPending(),
@@ -308,12 +301,37 @@ export class Vim {
   }
 
   handleKey(key: string, { whenEvaluator = alwaysActiveWhenEvaluator }: { whenEvaluator?: WhenEvaluator } = {}): KeyPlan | null {
-    if (!this.ownsKey(key, whenEvaluator)) return null;
+    // The remap-timeout pseudo-key never reaches the grammar ([dispatchTypedKey]
+    // intercepts it); it is owned exactly while a remap chord is pending.
+    if (key === RemapTimeoutKey) {
+      return this.remapIsPending() ? this.keyPlan(key, whenEvaluator, false, undefined) : null;
+    }
+    const override = this.handleKeyOverride(key);
+    if (override === false) return null;
+    // Ownership comes from the real grammar: evaluate the key once, purely
+    // (every handler defers its side effects), and decide from whether a
+    // handler claims it. The plan commits this same evaluation (see
+    // [PreParsedKey]).
+    const previousWhenEvaluator = this.dispatchWhenEvaluator;
+    this.dispatchWhenEvaluator = whenEvaluator;
+    let parsed: PreParsedKey;
+    try {
+      parsed = this.keyExecutor.parse(key, true);
+    } finally {
+      this.dispatchWhenEvaluator = previousWhenEvaluator;
+    }
+    const ownership = override === true ? "owned" : this.keyOwnership(key, parsed, whenEvaluator);
+    if (ownership === null) return null;
+    return this.keyPlan(key, whenEvaluator, ownership === "passthrough", parsed);
+  }
+
+  private keyPlan(key: string, whenEvaluator: WhenEvaluator, passthrough: boolean, preParsed: PreParsedKey | undefined): KeyPlan {
     return {
+      passthrough,
       run: async ({ clipboard }: { clipboard?: VimSystemClipboard } = {}) => {
         await this.globalState.registers.withSystemClipboard(clipboard, async () => {
           await this.refreshSystemClipboardRegisterForKey(key);
-          this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator });
+          this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator, passthrough, preParsed });
           // Drain any effect actions the executor queued. With a synchronous
           // editor these have already run inline; this awaits the tail when an
           // effect was genuinely asynchronous (e.g. real editor edits).
@@ -321,6 +339,50 @@ export class Vim {
         });
       },
     };
+  }
+
+  // How Vim relates to [key], given the grammar's verdict from [parse]:
+  // - "owned": Vim handles it; the host must not (the controller prevents
+  //   default).
+  // - "passthrough": the host applies the edit natively and Vim only records it
+  //   (an insert/replace whitelist character).
+  // - null: fully native; Vim is not involved.
+  private keyOwnership(key: string, parsed: PreParsedKey, whenEvaluator: WhenEvaluator): "owned" | "passthrough" | null {
+    if (parsed.claimed) {
+      const action = parsed.result.type === "run" && parsed.result.action.type === "effect"
+        ? parsed.result.action
+        : undefined;
+      if (action?.insertTyped === true) return "passthrough";
+      // A pending easyMotion overlay / remap chord owns every key it claims,
+      // regardless of the ctrl gating below.
+      if (this.easyMotion.isPending() || this.remapIsPending()) return "owned";
+      // `vim.useCtrlKeys` gates Vim's built-in normal/visual ctrl commands even
+      // when the grammar knows them; insert/replace ctrl commands (`ctrl-w`,
+      // `ctrl-k`, …) are unaffected, as before.
+      if (
+        (this.modeState === "normal" || this.isVisualMode()) &&
+        isCtrlKey(key) &&
+        !hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, whenEvaluator) &&
+        !(this.configuration.useCtrlKeys && isBuiltInCtrlKey(key))
+      ) {
+        return null;
+      }
+      return "owned";
+    }
+    // Unclaimed keys follow the terminal-fallback policy (see [dispatchKey]).
+    // Escape is the one cross-mode command still dispatched owner-side.
+    if (this.isEscape(key)) return this.shouldHandleEscapeKey() ? "owned" : null;
+    if (this.modeState === "normal" || this.isVisualMode()) {
+      // An unbound key rings the bell: Vim owns it so the host does not act on
+      // it. Unbound ctrl chords stay native unless they are gated-in builtins.
+      if (isCtrlKey(key)) {
+        return this.configuration.useCtrlKeys && isBuiltInCtrlKey(key) ? "owned" : null;
+      }
+      return "owned";
+    }
+    // Insert/replace keys outside the passthrough whitelist, and prompt-mode
+    // keys the search/command grammars decline, stay native.
+    return null;
   }
 
   executeExternalRemap(mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] }): void {
@@ -339,79 +401,12 @@ export class Vim {
       || hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, whenEvaluator);
   }
 
-  private ownsKey(key: string, whenEvaluator: WhenEvaluator): boolean {
-    const handleOverride = this.handleKeyOverride(key);
-    if (handleOverride !== undefined) return handleOverride;
 
-    // The framework `/`?` prompt owns search-input keys (and escape, to cancel);
-    // anything else (e.g. `ctrl-a`) is left to the host, like the legacy prompt.
-    if (this.activeSearch !== undefined) return isSearchInputKey(key);
 
-    // The framework `:` prompt owns command-line-input keys (and escape, to
-    // cancel); anything else is left to the host.
-    if (this.activeCommand !== undefined) return isCommandInputKey(key);
-
-    const pendingSearch = this.operatorStack.activeTopLevel("search");
-    if (pendingSearch !== undefined) return isSearchInputKey(key);
-
-    if (this.operatorStack.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.remapIsPending()) return true;
-
-    if (this.isEscape(key)) return this.shouldHandleEscapeKey();
-
-    if (this.modeState === "insert" || this.modeState === "replace") {
-      // Insert mode normally delegates plain typing to the host. While a macro
-      // recording is in flight, own the printable keys we can apply ourselves
-      // so the recording captures the same key stream it will later replay.
-      // This mirrors Zed's split between `VimGlobals::observe_action` and
-      // `VimGlobals::observe_insertion`, but keeps vimcode's replay
-      // representation key-based.
-      if (this.modeState === "insert" && this.shouldRecordInsertTextKeyThroughVim(key)) {
-        return true;
-      }
-      // Replace mode cannot delegate plain typing: native typing inserts,
-      // while Vim `R` overwrites and backspace restores what was overwritten.
-      // (Keys the host produces outside the keydown map — e.g. IME composition
-      // — still fall through natively.)
-      if (this.modeState === "replace" && (insertTextForKey(key) !== undefined || key === "backspace")) {
-        return true;
-      }
-      return this.shouldPrepareInsertOrReplaceKey(key, whenEvaluator);
-    }
-
-    if (this.isVisualMode() && key === "ctrl-c") return true;
-
-    if (isCtrlKey(key)) {
-      const isMapped = hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, whenEvaluator);
-      if (!isMapped) {
-        return this.configuration.useCtrlKeys && isBuiltInCtrlKey(key);
-      }
-    }
-
-    return true;
-  }
-
-  private shouldPrepareInsertOrReplaceKey(key: string, whenEvaluator: WhenEvaluator): boolean {
-    return this.remapIsPending()
-      || hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, whenEvaluator)
-      || this.operatorStack.length > 0
-      || key === "ctrl-k"
-      || key === "ctrl-v"
-      || key === "ctrl-r"
-      || key === "ctrl-w"
-      || key === "ctrl-u"
-      || key === "ctrl-y"
-      || key === "ctrl-e";
-  }
-
-  private shouldRecordInsertTextKeyThroughVim(key: string): boolean {
-    return insertTextForKey(key) !== undefined && this.globalState.macro.isRecording();
-  }
 
   private shouldHandleEscapeKey(): boolean {
     return this.modeState !== "normal"
       || this.hasMultipleCursorsOrSelection()
-      || this.operatorStack.length > 0
-      || this.keymapResolver.isPending()
       || this.easyMotion.isPending()
       || this.keyExecutor.isPending()
       || this.normalMode.isPending();
@@ -484,13 +479,9 @@ export class Vim {
   }
 
   private clearPendingGrammar({ closeSearchHighlights }: { closeSearchHighlights: boolean }): void {
-    const pendingSearch = this.operatorStack.activeTopLevel("search");
-    this.keymapResolver.clearPending();
     this.easyMotion.clear(this.editor);
     this.clearPendingRemaps();
-    this.globalState.search.clearPending(this.editor, pendingSearch, { restoreViewport: closeSearchHighlights });
-    // The framework `/`?` prompt keeps its query in [activeSearch] (not the
-    // operator stack); tear it down on the same path.
+    // Tear down the framework `/`?` prompt's editor preview and drop its query.
     const frameworkSearch = this.activeSearch;
     if (frameworkSearch !== undefined) {
       this.globalState.search.clearPending(this.editor, frameworkSearch, { restoreViewport: closeSearchHighlights });
@@ -502,15 +493,14 @@ export class Vim {
     this.searchOriginMode = undefined;
     this.handlerState.register = undefined;
     this.handlerState.countText = "";
-    if (closeSearchHighlights && (pendingSearch !== undefined || frameworkSearch !== undefined)) {
+    if (closeSearchHighlights && frameworkSearch !== undefined) {
       this.editor.clearSearchHighlights();
     }
-    this.operatorStack.clear();
     this.normalMode.clearPending();
   }
 
   private isPending(): boolean {
-    return this.operatorStack.length > 0 || this.activeSearch !== undefined || this.activeCommand !== undefined || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.keymapResolver.isPending() || this.easyMotion.isPending() || this.keyExecutor.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
+    return this.activeSearch !== undefined || this.activeCommand !== undefined || this.handlerState.register !== undefined || this.handlerState.countText.length > 0 || this.easyMotion.isPending() || this.keyExecutor.isPending() || (this.modeState === "normal" && this.normalMode.isPending());
   }
 
   // The pending-stack size behind [isPending]: each operator-stack entry is
@@ -526,10 +516,8 @@ export class Vim {
     const executorDepth = this.keyExecutor.isPending()
       ? this.keyExecutor.currentParserState().operatorDepth
       : 0;
-    return this.operatorStack.length
-      + (this.handlerState.register !== undefined ? 1 : 0)
+    return (this.handlerState.register !== undefined ? 1 : 0)
       + (this.handlerState.countText.length > 0 ? 1 : 0)
-      + (this.keymapResolver.isPending() ? 1 : 0)
       + (this.easyMotion.isPending() ? 1 : 0)
       + executorDepth;
   }
@@ -541,9 +529,6 @@ export class Vim {
     // the command in flight.
     if (this.activeSearch !== undefined) return this.globalState.search.pendingChord(this.activeSearch);
     if (this.activeCommand !== undefined) return `:${this.activeCommand.value()}`;
-    const pendingOperator = this.operatorStack.top();
-    if (pendingOperator?.type === "search") return this.globalState.search.pendingChord(pendingOperator);
-    if (pendingOperator?.type === "command") return `:${pendingOperator.input}`;
     if (this.easyMotion.isPending()) return this.easyMotion.pendingChord();
     return this.isPending() ? this.showcmdKeys.join("") : "";
   }
@@ -555,7 +540,7 @@ export class Vim {
     return this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator: alwaysActiveWhenEvaluator });
   }
 
-  private dispatchTypedKey(key: string, { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }): KeyDispatchResult {
+  private dispatchTypedKey(key: string, { allowRemap, whenEvaluator, passthrough = false, preParsed }: { allowRemap: boolean; whenEvaluator: WhenEvaluator; passthrough?: boolean; preParsed?: PreParsedKey }): KeyDispatchResult {
     // Remap expansions re-enter through [dispatchKey] and bypass this append,
     // so the showcmd buffer shows remapped sequences as physically typed
     // (`x`, not its expansion). This intentionally differs from Vim's
@@ -565,7 +550,7 @@ export class Vim {
     if (key === RemapTimeoutKey) return this.handleRemapTimeout(whenEvaluator);
     if (!this.isPending()) this.showcmdKeys.length = 0;
     this.showcmdKeys.push(key);
-    const result = this.routeKeyThroughExecutor(key, { allowRemap, whenEvaluator });
+    const result = this.routeKeyThroughExecutor(key, { allowRemap, whenEvaluator, passthrough, preParsed });
     if (result === "native") this.showcmdKeys.pop();
     return result;
   }
@@ -602,11 +587,15 @@ export class Vim {
     if (isVisualModeKind(state.mode)) {
       return [
         { handler: this.remapRootHandler(), state },
+        { handler: this.easyMotionRootHandler(), state },
         { handler: this.visualRootHandler(), state },
       ];
     }
     return [
       { handler: this.remapRootHandler(), state },
+      { handler: this.easyMotionRootHandler(), state },
+      { handler: this.insertRootHandler(), state },
+      { handler: this.replaceRootHandler(), state },
       { handler: this.normalRootHandler(), state },
     ];
   }
@@ -622,6 +611,7 @@ export class Vim {
   private visualRootHandler(): Handler<void> {
     return (key, state) => {
       if (!this.isExecutorVisualContext()) return unhandled();
+      if (this.startsEasyMotion(key)) return unhandled();
       const liveState: HandlerState = {
         ...state,
         mode: this.modeState,
@@ -642,14 +632,11 @@ export class Vim {
   }
 
   // Whether the executor may handle a visual-mode key: a visual mode with no
-  // legacy subsystem mid-chord. Mirrors [isExecutorNormalContext].
+  // Mirrors [isExecutorNormalContext]: with the legacy subsystems gone, the
+  // visual grammar owns every visual-mode key (a pending framework chord routes
+  // to its continuation before this root is consulted).
   private isExecutorVisualContext(): boolean {
-    return (
-      this.isVisualMode() &&
-      this.operatorStack.length === 0 &&
-      !this.keymapResolver.isPending() &&
-      !this.easyMotion.isPending()
-    );
+    return this.isVisualMode();
   }
 
   // Root of the `search` mode grammar ([searchModeHandler]). The live editor and
@@ -711,6 +698,14 @@ export class Vim {
       // collapses cursors and replicates the typed text over the block.
       this.enterInsertMode({
         origin: isVisualModeKind(this.modeState) ? this.modeState : "normal",
+        count: opts?.enterInsert?.count ?? 1,
+        separator: opts?.enterInsert?.separator ?? "",
+      });
+    }
+    if (mode === "replace" && this.modeState !== "replace") {
+      // `R`: start the replace session (shared with insert: count-repeat text,
+      // finish on escape) and switch modes.
+      this.enterReplaceMode({
         count: opts?.enterInsert?.count ?? 1,
         separator: opts?.enterInsert?.separator ?? "",
       });
@@ -788,6 +783,108 @@ export class Vim {
     }
   }
 
+  // Root of the easyMotion overlay ([easyMotionHandler]), shared by the normal
+  // and visual grammars. Runs after the remap layer (a remap starting with the
+  // leader wins) but before the normal/visual grammar (which decline the leader
+  // when [startsEasyMotion] is true, so easyMotion strictly wins even when the
+  // leader is an otherwise-bound key like `<space>`). The overlay state, config,
+  // and jump applier travel in the handler state so the handler stays pure. Once
+  // the leader starts the overlay the executor is pending on [easyMotionHandler]'s
+  // continuation, so subsequent keys bypass this root entirely.
+  private easyMotionRootHandler(): Handler<void> {
+    return (key, state) => {
+      // EasyMotion is off by default; skip the per-key live-state construction
+      // for the common disabled case (a pending overlay never reaches this root —
+      // it drives its own continuation).
+      if (!this.configuration.easymotion) return unhandled();
+      // EasyMotion only starts from a motion mode (normal/visual), like the
+      // legacy `shouldStartEasyMotion`. The executor consults the normal-mode
+      // handler set in insert/replace too (those modes have no dedicated set), so
+      // decline there — otherwise typing the leader in insert mode would start
+      // the overlay instead of inserting it.
+      if (this.modeState !== "normal" && !this.isVisualMode()) return unhandled();
+      if (state.allowRemap && hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator)) {
+        return unhandled();
+      }
+      const liveState: HandlerState = {
+        ...state,
+        mode: this.modeState,
+        editor: this.editor,
+        easyMotion: this.easyMotion,
+        configuration: this.configuration,
+        applyEasyMotionJump: position =>
+          this.applyMotion({ type: "jump", position, line: false }, 1),
+      };
+      return easyMotionHandler(key, liveState);
+    };
+  }
+
+  // Whether [key] would start the easyMotion overlay from a clean context: the
+  // feature is on and [key] is the leader. The normal/visual root handlers use
+  // this to decline the leader so easyMotion (a higher-priority root handler)
+  // claims it cleanly instead of racing the grammar (e.g. `<space>` as both the
+  // leader and the wrapping-right motion).
+  private startsEasyMotion(key: string): boolean {
+    return this.configuration.easymotion && key === this.configuration.leader;
+  }
+
+  // Root of the insert-mode passthrough handler ([insertModeHandler]). Lives in
+  // the default (normal) handler set, which the executor consults in insert mode
+  // too (insert is not an executor-synced mode; see [isExecutorOwnedNonNormalMode]),
+  // gated on the live mode. It claims plain typed input + backspace so the owner
+  // records them and reproduces the edit through the host; special ctrl keys and
+  // the char-input waiters fall through to the legacy insert dispatcher. Replace
+  // mode stays on the legacy dispatcher for now.
+  private insertRootHandler(): Handler<void> {
+    return (key, state) => {
+      if (this.modeState !== "insert") return unhandled();
+      // Yield to a higher-priority insert-mode remap — but only for a remappable
+      // key. A key a remap expansion emitted with noremap (e.g. the literal `j`
+      // of a broken `jk` chord) must be handled as plain input here, not
+      // re-declined into a remap that cannot fire.
+      if (state.allowRemap && hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator)) {
+        return unhandled();
+      }
+      return insertModeHandler(key, {
+        ...state,
+        mode: this.modeState,
+        editor: this.editor,
+        registers: this.globalState.registers,
+        enterTemporaryNormal: () => {
+          this.enterTemporaryNormalMode();
+        },
+        appendInsertSessionText: text => {
+          this.insertRepeatText += text;
+        },
+      });
+    };
+  }
+
+  // Root of the replace-mode grammar ([replaceModeHandler]), gated on the live
+  // mode like [insertRootHandler]. Typing/backspace are Vim-owned (overwrite +
+  // restore, driven through the injected replace machinery); only navigation
+  // keys pass through.
+  private replaceRootHandler(): Handler<void> {
+    return (key, state) => {
+      if (this.modeState !== "replace") return unhandled();
+      if (state.allowRemap && hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator)) {
+        return unhandled();
+      }
+      return replaceModeHandler(key, {
+        ...state,
+        mode: this.modeState,
+        editor: this.editor,
+        applyReplaceText: text => {
+          this.replaceModeReplacements.push(...replaceModeText(this.editor, text, 1, this.insertEditOptions()));
+          this.insertRepeatText += text;
+        },
+        undoReplace: () => {
+          this.undoReplace();
+        },
+      });
+    };
+  }
+
   // Root of the migrated normal-mode grammar. It only begins a chord from a
   // clean state (no legacy subsystem pending; see [isExecutorNormalContext]) and
   // yields to a higher-priority remap. The live editor/registers travel in the
@@ -796,7 +893,12 @@ export class Vim {
   private normalRootHandler(): Handler<void> {
     return (key, state) => {
       if (!this.isExecutorNormalContext()) return unhandled();
-      if (hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator)) {
+      if (this.startsEasyMotion(key)) return unhandled();
+      // Yield to a higher-priority remap — but only for a remappable key. A key
+      // a remap expansion emitted with noremap (e.g. the `h` of `h -> hl`) must
+      // be handled as the plain command here, not re-declined into a remap that
+      // cannot fire.
+      if (state.allowRemap && hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator)) {
         return unhandled();
       }
       const liveState: HandlerState = {
@@ -820,6 +922,11 @@ export class Vim {
         requestMacroReplay: (register, count) => {
           this.pendingMacroReplay = { register, count };
         },
+        // `.` requests a dot replay the same way (run after the drain; see
+        // [runPendingDotReplay]).
+        requestDotReplay: (count, register) => {
+          this.pendingDotReplay = { count, register };
+        },
       };
       return this.normalGrammar(key, liveState);
     };
@@ -830,17 +937,10 @@ export class Vim {
   // intentionally not checked here (the framework owns them), so a buffered
   // count does not block the next key.
   private isExecutorNormalContext(): boolean {
-    // Note: [normalMode.isPending()] is intentionally not consulted — it is
-    // [operatorStack.length > 0 || count present], and the count is now
-    // framework-owned (a buffered count must not block the next framework key).
-    // The operator-pending part is covered by the [operatorStack] check.
-    return (
-      this.modeState === "normal" &&
-      !this.temporaryNormal &&
-      this.operatorStack.length === 0 &&
-      !this.keymapResolver.isPending() &&
-      !this.easyMotion.isPending()
-    );
+    // Count/register are intentionally not checked (the framework owns them in
+    // the executor's pending state), and with the legacy subsystems gone there
+    // is nothing else that could be mid-chord outside the executor.
+    return this.modeState === "normal";
   }
 
   // Root remap handler for the start of a fresh chord. It reads the live Vim
@@ -848,9 +948,7 @@ export class Vim {
   // mode/evaluator captured when the chord began, matching the legacy path).
   private remapRootHandler(): Handler<void> {
     return (key, state) => {
-      // [canStartRemap] is a Vim concern (no other pending subsystem); the
-      // [allowRemap] flag is honored inside [remapHandler] itself.
-      if (!this.canStartRemap()) return unhandled();
+      // The [allowRemap] flag is honored inside [remapHandler] itself.
       const liveState: HandlerState = {
         ...state,
         mode: this.modeState,
@@ -860,30 +958,20 @@ export class Vim {
     };
   }
 
-  // Whether a brand-new remap chord may begin. A remap already in progress is
-  // driven by the executor's pending continuations, so it does not consult
-  // this; only the fresh-start root handler does.
-  private canStartRemap(): boolean {
-    return (
-      !this.keymapResolver.isPending() &&
-      !this.easyMotion.isPending() &&
-      this.operatorStack.length === 0
-    );
-  }
-
   // Run one top-level key through the typed executor; if no handler claims it,
   // fall back to the legacy dispatcher and use its native/handled result. A key
   // the executor claims is always [handled].
   private routeKeyThroughExecutor(
     key: string,
-    { allowRemap, whenEvaluator }: { allowRemap: boolean; whenEvaluator: WhenEvaluator }
+    { allowRemap, whenEvaluator, passthrough = false, preParsed }: { allowRemap: boolean; whenEvaluator: WhenEvaluator; passthrough?: boolean; preParsed?: PreParsedKey }
   ): KeyDispatchResult {
     const previousWhenEvaluator = this.dispatchWhenEvaluator;
     this.dispatchWhenEvaluator = whenEvaluator;
     const versionBefore = this.editor.documentVersion();
     const modeBefore = this.modeState;
+    const temporaryNormalBefore = this.temporaryNormal;
     try {
-      if (this.handleThroughExecutor(key, allowRemap)) {
+      if (this.handleThroughExecutor(key, allowRemap, passthrough, preParsed)) {
         // A framework command that edited the buffer must update the change list
         // (`g;`/`g,`), mirroring the legacy [dispatchKey] bookkeeping — framework
         // commands never reach [dispatchKey].
@@ -898,10 +986,22 @@ export class Vim {
         // must revert to normal with a warning, like the legacy [dispatchKey]
         // finally.
         this.ensureNormalModeForReadonlyDocument();
-        // A `@`/`Q` that requested a macro replay runs it here — after the
+        // A `@`/`Q` (or `.`) that requested a replay runs it here — after the
         // executor's effect drain, so each replayed key is fed back through
         // [onKey] outside the drain and fully applies before the next.
         this.runPendingMacroReplay();
+        this.runPendingDotReplay();
+        // Vim `i_CTRL-O`: once the one normal-mode command completes, return to
+        // insert (mirrors the legacy [dispatchKey] finally for framework-handled
+        // keys). Visual mode extends the excursion; entering another mode
+        // (`ctrl-o cw`) ends it.
+        if (temporaryNormalBefore && this.temporaryNormal) {
+          if (this.modeState === "normal" && !this.isPending()) {
+            this.returnFromTemporaryNormal();
+          } else if (this.modeState !== "normal" && !this.isVisualMode()) {
+            this.temporaryNormal = false;
+          }
+        }
         return "handled";
       }
       // Framework `/`?` prompt: a key the search grammar declined that is not
@@ -909,15 +1009,9 @@ export class Vim {
       // it without disturbing the prompt or recording it. Escape falls through to
       // the legacy escape handling below, which cancels the prompt.
       if (this.activeSearch !== undefined && !this.isEscape(key)) return "native";
-      // The key fell through to legacy while the executor was mid-chord (e.g. a
-      // buffered count/register from `2`/`"a`). Carry that pending count and
-      // register into the legacy [handlerState] so the legacy operation can
-      // consume them (e.g. `2cw`, `"add`). See [bridgePendingPrefixToLegacy].
-      this.bridgePendingPrefixToLegacy();
-      // Clear the executor's now-stale continuation *before* running the legacy
-      // dispatcher: a legacy key can re-enter the executor (e.g. `.` replays its
-      // recorded keys through [onKey]), which would otherwise be misrouted into
-      // the leftover continuation.
+      // Clear the executor's now-stale continuation *before* running the
+      // terminal fallback: escape handling can re-enter the executor, which
+      // would otherwise be misrouted into the leftover continuation.
       this.keyExecutor.reset(this.modeState);
       return this.dispatchKey(key);
     } finally {
@@ -925,36 +1019,12 @@ export class Vim {
     }
   }
 
-  // TEMPORARY MIGRATION BRIDGE. Delete once operators and the simple-action
-  // table are migrated onto the framework (at which point counted operations
-  // like `2cw` are handled entirely by the executor and never fall through).
-  //
-  // The framework owns the normal-mode count/register prefix
-  // ([prefixHandler]): a `2` or `"a` typed from a clean state is claimed by the
-  // executor and accumulated in its pending parser state, not in the legacy
-  // [handlerState]. When the following key is an operation that has not yet been
-  // migrated (e.g. `c`), it falls through to the legacy dispatcher, which reads
-  // the count/register from [handlerState]. Without this bridge that count and
-  // register would be lost. Copy the executor's pending prefix into
-  // [handlerState] just before yielding so legacy [takeCount]/register reads see
-  // it. Only non-empty values are copied, so a count accumulated directly by the
-  // legacy dispatcher (e.g. `d2w`, where `2` is typed with an operator already
-  // pending and the executor is idle) is never clobbered.
-  private bridgePendingPrefixToLegacy(): void {
-    const pending = this.keyExecutor.currentParserState();
-    if (pending.countText.length > 0) this.handlerState.countText = pending.countText;
-    if (pending.register !== undefined) this.handlerState.register = pending.register;
-  }
-
-  // The bridge between the typed executor and the not-yet-migrated dispatcher,
-  // used to re-dispatch keys the executor emits (remap expansions) or replays
-  // (ambiguous-conflict suffixes): try the executor first, then legacy. The
-  // when-evaluator is already established by the enclosing top-level dispatch.
+  // Re-dispatch keys the executor emits (remap expansions) or replays
+  // (ambiguous-conflict suffixes): try the executor first, then the terminal
+  // fallback. The when-evaluator is already established by the enclosing
+  // top-level dispatch.
   private dispatchThroughPipeline(key: string, allowRemap: boolean): void {
     if (this.handleThroughExecutor(key, allowRemap)) return;
-    // See [bridgePendingPrefixToLegacy]: carry any framework-pending count/
-    // register to legacy before yielding (temporary migration bridge).
-    this.bridgePendingPrefixToLegacy();
     this.dispatchKey(key);
   }
 
@@ -963,7 +1033,7 @@ export class Vim {
   // for the keys it handles; a key the executor claims never reaches it, so the
   // recording is mirrored here. Remap keys are excluded: their expansion is
   // re-dispatched and recorded as it flows through this same path.
-  private handleThroughExecutor(key: string, allowRemap: boolean): boolean {
+  private handleThroughExecutor(key: string, allowRemap: boolean, passthrough = false, preParsed?: PreParsedKey): boolean {
     // A key the framework claims in normal context never reaches [dispatchKey],
     // so the per-key recording the legacy dispatcher does (macro + dot-repeat)
     // is mirrored here. Both dot-repeat and macros are keystroke-based: the
@@ -972,7 +1042,7 @@ export class Vim {
     // it flows through this path.
     const normalContext =
       this.isExecutorNormalContext() &&
-      !hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator);
+      !(allowRemap && hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator));
     const recordable = normalContext && !this.globalState.repeat.isReplaying();
     // Commit any in-flight dot-repeat recording before this framework key,
     // mirroring legacy [dispatchKey]. A framework key never reaches
@@ -984,7 +1054,54 @@ export class Vim {
     }
     const modeBefore = this.modeState;
     const wasRecording = this.globalState.macro.isRecording();
-    const claimed = this.keyExecutor.handle(key, allowRemap);
+    // Parse before commit so we can inspect *this* key's own action. [commit] can
+    // synchronously redispatch emitted keys (a remap expansion), which would
+    // clobber the executor's [lastEffect*] flags — so the "is this a passthrough
+    // insert char" decision must read the parsed result, not a post-commit flag
+    // (otherwise `jo` breaking a `jk` remap would re-apply the emitted `o`).
+    const remapConflictBefore = this.keyExecutor.pendingConflict() !== undefined;
+    // Commit the plan's own evaluation when it is still fresh; re-parse when
+    // the executor state moved since (an earlier key's commit was still queued
+    // when this key was parsed for ownership).
+    const parsed =
+      preParsed !== undefined && preParsed.generation === this.keyExecutor.currentGeneration()
+        ? preParsed
+        : this.keyExecutor.parse(key, allowRemap);
+    const directEffectAction =
+      parsed.claimed && parsed.result.type === "run" && parsed.result.action.type === "effect"
+        ? parsed.result.action
+        : undefined;
+    const directlyInsertTyped = directEffectAction?.insertTyped === true;
+    const claimed = this.keyExecutor.commit(key, parsed.result);
+    // A passthrough insert character ([insertModeHandler]): record it as a
+    // `typed` key, accumulate the session text, and reproduce the edit through
+    // the host. This is its own recording path (typed, not shortcut), so it
+    // short-circuits the shortcut record/dot-repeat branches below. Emitted keys
+    // from a remap expansion are handled by their own re-entrant dispatch, so
+    // only a *directly* typed key runs this.
+    if (directlyInsertTyped) {
+      this.applyInsertTypedKey(key, passthrough);
+      return claimed;
+    }
+    // A framework-claimed insert/replace-mode command (`ctrl-w`/`ctrl-u`/
+    // `ctrl-y`/`ctrl-e`/`ctrl-o`, replace-mode typing/backspace, and the
+    // `ctrl-k`/`ctrl-v`/`ctrl-r` waiter chords): record it as a shortcut for
+    // macros + dot-repeat, mirroring the legacy dispatcher's recording. Direct
+    // effects and plain waiter pendings qualify; remap chords are excluded like
+    // everywhere else — a multi-key insert remap is a *conflict* (never a plain
+    // "handler" result) and a single-key remap is a keys/commands action, and
+    // their expansions record as they re-dispatch. Cancel keys (a waiter's
+    // escape → "invalid") record nothing.
+    if (claimed && (modeBefore === "insert" || modeBefore === "replace")) {
+      const recordAsShortcut =
+        !remapConflictBefore &&
+        (directEffectAction !== undefined || parsed.result.type === "handler");
+      if (recordAsShortcut) {
+        this.recordMacroKey(key);
+        this.recordRepeatKey(key);
+      }
+      return claimed;
+    }
     // The key that started a macro recording (`q{reg}`'s register key) must not
     // become the first key of that recording: the effect just called
     // [startRecording], so a plain [recordMacroKey] below would capture it.
@@ -1037,7 +1154,12 @@ export class Vim {
   }
 
   private systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
-    if (this.operatorStack.activeTopLevel("insertRegister") !== undefined) {
+    // A pending insert-mode framework chord can be the `ctrl-r` register waiter,
+    // whose next key names the register to insert; refresh the OS clipboard for
+    // `+`/`*` before it reads. (Slightly over-approximate — any pending insert
+    // chord with a register-shaped next key triggers the refresh — but the
+    // refresh is a harmless read.)
+    if (this.modeState === "insert" && this.keyExecutor.isPending()) {
       const registerName = parseRegisterName(key);
       return isSystemClipboardRegister(registerName) ? { registerName } : undefined;
     }
@@ -1069,20 +1191,6 @@ export class Vim {
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
 
-      // Note: user-remap resolution happens earlier, in the typed [keyExecutor]
-      // (see [remapRootHandler]); the legacy dispatcher below only runs for keys
-      // the executor routes here via [onUnhandled], so it never remaps.
-
-      // Zed: `vim_mode == waiting` contexts. One classification of what the
-      // operator stack is waiting for, dispatched at one place; the precedence
-      // list lives in [VimOperatorStack.waitingInput]. Only the self-escaping
-      // classes (insert digraph/literal/register) see the escape key; for all
-      // other waiting input the central escape handling cancels first.
-      const waiting = this.operatorStack.waitingInput(this.modeState, key);
-      if (waiting !== undefined && isSelfEscapingWaitingInput(waiting)) {
-        return this.dispatchWaitingInput(waiting, key) ?? "native";
-      }
-
       if (this.isEscape(key)) {
         if (!this.shouldHandleEscapeKey()) return "native";
         this.recordEscapeKey();
@@ -1090,49 +1198,21 @@ export class Vim {
         return "handled";
       }
 
-      if (waiting !== undefined) {
-        const waitingResult = this.dispatchWaitingInput(waiting, key);
-        if (waitingResult !== undefined) return waitingResult;
-      }
+      // Insert/replace keys outside the passthrough whitelist and the framework
+      // grammar (e.g. `tab`, function keys) stay native — and deliberately
+      // unrecorded: command-like chords must never land in a macro.
+      if (this.modeState === "insert" || this.modeState === "replace") return "native";
 
-      if (this.easyMotion.isPending()) {
-        this.recordMacroKey(key);
-        this.recordRepeatableKey(key);
-        const easyMotionResult = this.dispatchEasyMotionKey(key);
-        if (easyMotionResult !== undefined) return easyMotionResult;
-      }
-
-      if (this.keymapResolver.isPending()) {
-        this.recordMacroKey(key);
-        this.recordRepeatableKey(key);
-        const finiteKeymapResult = this.handleFiniteKeymapKey(key);
-        if (finiteKeymapResult !== undefined) return finiteKeymapResult;
-      }
-
-      // Recording is positionally uniform: macro keys and repeatable keys are
-      // recorded once, before any keymap resolution. Whether a key actually
-      // starts or extends a dot-repeat recording is decided by the repeat
-      // state (change-initiating start keys, in-flight recordings), and
-      // actions that are not repeatable cancel via their dispatch arms.
+      // An unbound normal/visual key rings the bell: Vim owns it (the host does
+      // not type it into the buffer) and nothing happens. It is still recorded,
+      // like Vim, which records every key typed while recording a macro.
       this.recordMacroKey(key);
-      this.recordRepeatableKey(key);
+      this.recordRepeatKey(key);
 
-      const easyMotionResult = this.dispatchEasyMotionKey(key);
-      if (easyMotionResult !== undefined) return easyMotionResult;
-
-      const finiteKeymapResult = this.handleFiniteKeymapKey(key);
-      if (finiteKeymapResult !== undefined) return finiteKeymapResult;
-
-      const insertLikeResult = this.dispatchInsertLikeKey(key);
-      if (insertLikeResult !== undefined) return insertLikeResult;
-
-      const motionModeResult = this.dispatchMotionModeKey(key);
-      if (motionModeResult !== undefined) return motionModeResult;
-
-      const fallbackKeymapResult = this.dispatchFallbackKeymapKey(key);
-      if (fallbackKeymapResult !== undefined) return fallbackKeymapResult;
-
-      return this.dispatchModeFallbackKey(key);
+      if (this.isVisualMode()) return "handled";
+      if (this.modeState !== "normal") return "native";
+      this.normalMode.clearPending();
+      return "handled";
     } finally {
       if (this.editor.documentVersion() !== versionBefore) {
         this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
@@ -1151,207 +1231,7 @@ export class Vim {
     }
   }
 
-  private recordRepeatableKey(key: string): void {
-    if (this.globalState.repeat.isReplaying()) return;
-    this.globalState.repeat.maybeStart(key, { mode: this.modeState, pendingChord: this.normalPendingChordForRepeat() });
-    this.globalState.repeat.recordKey(key);
-  }
 
-  private dispatchInsertLikeKey(key: string): KeyDispatchResult | undefined {
-    if (this.modeState === "insert") {
-      const handler = this.insertKeyHandlers.get(key);
-      if (handler !== undefined) return handler();
-      const text = insertTextForKey(key);
-      if (text !== undefined) {
-        insertText(this.editor, text, this.insertEditOptions());
-        this.insertRepeatText += text;
-        return "handled";
-      }
-      return "native";
-    }
-
-    if (this.modeState === "replace") {
-      const handler = this.replaceKeyHandlers.get(key);
-      if (handler !== undefined) return handler();
-      const text = insertTextForKey(key);
-      if (text !== undefined) {
-        this.replaceModeReplacements.push(...replaceModeText(this.editor, text, 1, this.insertEditOptions()));
-        this.insertRepeatText += text;
-        return "handled";
-      }
-      return "native";
-    }
-
-    return undefined;
-  }
-
-  private dispatchMotionModeKey(key: string): KeyResult | undefined {
-    if (!shouldResolveMotionModeAction(this.keymapContext())) return undefined;
-    const motionModeAction = this.resolveKeymapAction(key, "motionMode");
-    if (motionModeAction === undefined) return undefined;
-    return this.dispatchVimAction(motionModeAction);
-  }
-
-  private dispatchFallbackKeymapKey(key: string): KeyResult | undefined {
-    const normalFallbackAction = this.resolveKeymapAction(key, "normalFallback");
-    if (normalFallbackAction === undefined) return undefined;
-    return this.dispatchVimAction(normalFallbackAction);
-  }
-
-  private dispatchModeFallbackKey(key: string): KeyDispatchResult {
-    if (this.isVisualMode()) {
-      // Vim: a key with no visual-mode binding is a no-op (it rings the bell) and
-      // keeps the selection — Vim does not drop to normal mode. Vim owns the key
-      // (see [Vim.ownsKey]) so the host does not type it into the buffer; the
-      // valuable normal-mode commands are registered directly in the visual
-      // grammar (e.g. `v_r`) rather than reached via a drop-to-normal fallback.
-      return "handled";
-    }
-
-    if (this.modeState !== "normal") return "native";
-
-    return this.applyNormalResult(this.normalMode.handleUnhandledKey());
-  }
-
-  // The single waiting-input dispatcher. Recording policy per class:
-  // waiting-input keys are recorded into macros (so replays of `f x`, `"a`,
-  // `/foo`, `ma` work), search/find input is recorded for dot-repeat, and
-  // operator inputs (replace chars, surround targets, object selectors) are
-  // recorded for both, exactly like keys that flow through the keymap phases.
-  private dispatchWaitingInput(waiting: WaitingInput, key: string): KeyDispatchResult | undefined {
-    switch (waiting.type) {
-      case "insertDigraph":
-        if (!this.isEscape(key)) this.recordMacroKey(key);
-        this.handlePendingDigraphKey(key);
-        return "handled";
-      case "literal":
-        if (!this.isEscape(key)) this.recordMacroKey(key);
-        return this.handlePendingLiteralKey(key);
-      case "insertRegister":
-        if (!this.isEscape(key)) this.recordMacroKey(key);
-        this.handlePendingInsertRegisterKey(key);
-        return "handled";
-      case "register":
-        this.recordMacroKey(key);
-        this.operatorStack.popTopLevel("register");
-        this.handlePendingRegisterKey(key);
-        return "handled";
-      case "command":
-        this.recordMacroKey(key);
-        this.handlePendingCommandKey(key);
-        return "handled";
-      case "search": {
-        const pendingSearch = this.operatorStack.activeTopLevel("search");
-        if (pendingSearch === undefined) return undefined;
-        if (!isSearchInputKey(key)) return "native";
-        this.recordMacroKey(key);
-        return this.handlePendingSearchKey(key, pendingSearch);
-      }
-      case "find":
-        this.recordMacroKey(key);
-        this.recordRepeatKey(key);
-        this.handlePendingFindKey(key);
-        return "handled";
-      case "mark":
-        this.recordMacroKey(key);
-        this.operatorStack.popTopLevel("mark");
-        this.modelState.marks.createMark(this.editor, key);
-        return "handled";
-      case "jump": {
-        const pendingJump = this.operatorStack.popTopLevel("jump");
-        if (pendingJump === undefined) return "handled";
-        this.recordMacroKey(key);
-        // The jump target extends an in-flight change recording (`d'a`).
-        this.recordRepeatKey(key);
-        const motion = this.modelState.marks.jumpMotion(this.editor, key, { line: pendingJump.line });
-        if (motion !== undefined) this.applyMotion(motion, 1);
-        return "handled";
-      }
-      case "normalDigraph":
-        this.recordWaitingOperatorKey(key);
-        return this.applyNormalResult(this.normalMode.handlePendingDigraphKey(key));
-      case "normalReplace":
-        this.recordWaitingOperatorKey(key);
-        return this.applyNormalResult(this.normalMode.handlePendingReplaceKey(key));
-      case "normalSurround":
-        this.recordWaitingOperatorKey(key);
-        return this.applyNormalResult(this.normalMode.handlePendingSurroundKey(key));
-      case "normalTextObject":
-        this.recordWaitingOperatorKey(key);
-        return this.applyNormalResult(this.normalMode.handlePendingTextObjectKey(key));
-      case "normalSurroundPrefix":
-        this.recordWaitingOperatorKey(key);
-        return this.applyNormalResult(this.normalMode.handlePendingSurroundPrefixKey());
-      case "visualSurround":
-        this.recordWaitingOperatorKey(key);
-        return this.applyVisualResult(this.visualMode.handlePendingSurroundKey(key), this.modeState);
-      case "visualTextObject":
-        this.recordWaitingOperatorKey(key);
-        return this.applyVisualResult(this.visualMode.handlePendingTextObjectKey(key), this.modeState);
-    }
-  }
-
-  private recordWaitingOperatorKey(key: string): void {
-    this.recordMacroKey(key);
-    this.recordRepeatableKey(key);
-  }
-
-  private dispatchEasyMotionKey(key: string): KeyResult | undefined {
-    const result = this.easyMotion.handleKey(this.editor, this.configuration, key, {
-      canStart: this.shouldStartEasyMotion(),
-    });
-    if (result === undefined) return undefined;
-    if (result.type === "jump") {
-      this.globalState.repeat.cancelCurrent();
-      this.applyMotion({ type: "jump", position: result.position, line: false }, 1);
-    }
-    return "handled";
-  }
-
-  private handleFiniteKeymapKey(key: string): KeyResult | undefined {
-    const { allowShared, allowNormal } = finiteKeymapPermissions(key, this.keymapContext());
-    if (!allowShared && !allowNormal && !this.keymapResolver.isPending()) return undefined;
-
-    const resolution = this.keymapResolver.handleKey(key, { allowShared, allowNormal });
-    switch (resolution.kind) {
-      case "pending":
-        return "handled";
-      case "action":
-        this.dispatchVimAction(resolution.action);
-        return "handled";
-      case "cancelled":
-        if (resolution.scope === "shared"
-          && this.modeState === "normal"
-          && this.normalMode.pendingOperatorName() !== undefined) {
-          this.normalMode.clearPending();
-        }
-        return "handled";
-      case "noMatch":
-        return undefined;
-    }
-  }
-
-  private normalPendingChordForRepeat(): string {
-    const chord = this.normalMode.pendingChord();
-    const register = this.effectiveRegister();
-    const base = register === undefined ? chord : `${chord}\"${register}`;
-    // The dot-repeat seed must include a framework-owned count typed before the
-    // command (e.g. the `3` of `3d3l`). The seed is captured *before* the command
-    // key is handled, so the count is usually still the in-progress digits in
-    // [countText] (not yet folded into [repeat]); fall back to the applied
-    // [repeat] for the already-delegated case. The legacy count (in
-    // [normalMode.pendingChord]) is empty for framework chords, so there is no
-    // double-counting.
-    const parser = this.keyExecutor.currentParserState();
-    const countPrefix = !this.keyExecutor.isPending()
-      ? ""
-      : parser.countText.length > 0
-        ? parser.countText
-        : parser.hasCount === true
-          ? String(parser.repeat)
-          : "";
-    return `${countPrefix}${base}`;
-  }
 
   // The selected register, whether owned by the legacy dispatcher
   // ([handlerState.register]) or pending in the typed framework (the executor's
@@ -1365,288 +1245,6 @@ export class Vim {
     return this.handlerState.register ?? this.keyExecutor.currentParserState().register;
   }
 
-  private resolveKeymapAction(key: string, phase: VimKeymapPhase): VimAction | undefined {
-    return resolveVimAction(key, phase, this.keymapContext());
-  }
-
-  // Zed: `vim::Vim::extend_key_context`.
-  private keymapContext(): VimKeymapContext {
-    return {
-      mode: this.modeState,
-      operator: this.operatorStack.operatorContext(),
-      operatorPendingKey: this.modeState === "normal" ? this.operatorStack.operatorPendingKey() : undefined,
-      hasSelectedRegister: this.handlerState.register !== undefined,
-      expectsRegisterName: this.modeIsExpectingRegisterName(),
-      countText: this.handlerState.countText,
-      repeatIsReplaying: this.globalState.repeat.isReplaying(),
-    };
-  }
-
-  private dispatchVimAction(action: VimAction): KeyResult | undefined {
-    switch (action.type) {
-      case "pushMark":
-        this.operatorStack.push({ type: "mark" });
-        return "handled";
-      case "pushJump":
-        this.operatorStack.push({ type: "jump", line: action.line });
-        return "handled";
-      case "insertEmptyLines":
-        this.insertEmptyLines(action.side, this.takeCountForMotion(1));
-        return "handled";
-      case "repeatLastChange":
-        this.globalState.repeat.replay(this.normalMode.takeCountForRepeat(), {
-          registerName: this.takeSelectedRegister(),
-          runKey: key => this.onKey(key),
-          runVisualAction: (selection, repeatAction) => this.replayVisualAction(selection, repeatAction),
-        });
-        return "handled";
-      case "cancelRepeat":
-        this.globalState.repeat.cancelCurrent();
-        return undefined;
-      case "startCommand": {
-        let input = "";
-        if (this.isVisualMode()) {
-          // Vim: `:` from visual mode sets the `'<`/`'>` marks and prefills
-          // the command line with the visual range.
-          const selection = this.editor.getSelections()[0];
-          if (selection !== undefined) this.modelState.marks.setVisualSelectionMarks(this.editor, selection);
-          this.visualMode.exit();
-          input = "'<,'>";
-        }
-        this.operatorStack.push({ type: "command", input });
-        this.setMode("command");
-        return "handled";
-      }
-      case "forceMotion":
-        this.operatorStack.forceMotion(action.force);
-        return "handled";
-      case "toggleVisual":
-        if (this.isVisualMode()) {
-          return this.applyVisualResult(this.visualMode.toggleMode(action.mode), this.modeState);
-        }
-        this.enterVisualMode(action.mode);
-        return "handled";
-      case "enterReplace":
-        this.enterReplaceMode({ count: this.normalMode.takeCountForMotion(1), separator: "" });
-        return "handled";
-      case "repeatSearch": {
-        const motion = this.globalState.search.repeat({ reversed: action.reversed });
-        if (motion !== undefined) this.applyMotion(motion, 1);
-        return "handled";
-      }
-      case "repeatFind":
-        this.repeatFind({ reversed: action.reversed });
-        return "handled";
-      case "pushFindForward":
-        this.operatorStack.push({ type: "findForward", before: action.before, count: this.takeCountForMotion(1) });
-        return "handled";
-      case "pushFindBackward":
-        this.operatorStack.push({ type: "findBackward", after: action.after, count: this.takeCountForMotion(1) });
-        return "handled";
-      case "startSearch":
-        this.searchOriginMode = this.modeState;
-        this.operatorStack.push(this.globalState.search.start(action.backwards, this.editor));
-        this.setMode("search");
-        return "handled";
-      case "searchUnderCursor":
-        this.applySearchUnderCursor({ backwards: action.backwards });
-        return "handled";
-      case "motion":
-        if (!(this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined)) {
-          this.globalState.repeat.cancelCurrent();
-        }
-        this.applyMotion(action.motion, this.takeCountForMotion(1));
-        return "handled";
-      case "lineOperation":
-        return this.applyNormalResult(this.normalMode.handleLineOperation());
-      case "pushEditOperator":
-        return this.applyNormalResult(this.normalMode.handleEditOperatorKey(action.operator, action.key));
-      case "pushObject":
-        this.operatorStack.pushObject(action.around, this.normalMode.chordKey(action.key));
-        return "handled";
-      case "pushIndent":
-        this.operatorStack.pushIndent(action.direction, this.takeCountForMotion(1), this.normalMode.chordKey(action.key, { includeCount: true }));
-        return "handled";
-      case "normalCommand":
-        return this.applyNormalResult(this.normalMode.handleCommand(action.command));
-      case "visualCommand":
-        return this.applyVisualResult(this.visualMode.handleCommand(action.command), this.modeState);
-      case "pushRegister":
-        this.operatorStack.push({ type: "register" });
-        return "handled";
-      case "pushCount":
-        this.appendCountKey(action.key);
-        return "handled";
-      case "changeList": {
-        this.globalState.repeat.cancelCurrent();
-        const position = this.modelState.changeList.move(this.takeCountForMotion(1), action.direction);
-        if (position !== undefined) this.editor.setSelections([charwiseSelection(position)]);
-        return "handled";
-      }
-      case "insertAtPrevious":
-        if (this.modeState === "normal") this.enterInsertAtPrevious();
-        return "handled";
-      case "page": {
-        this.globalState.repeat.cancelCurrent();
-        const selections = this.editor.moveByPages(
-          action.direction,
-          this.takeCountForMotion(1),
-          { halfPage: action.halfPage, extend: this.isVisualMode() });
-        if (selections !== undefined) this.editor.setSelections(selections);
-        if (this.isVisualMode()) this.visualMode.adoptSelectionFromHost();
-        return "handled";
-      }
-      case "restoreVisualSelection": {
-        this.globalState.repeat.cancelCurrent();
-        const nextMode = this.visualMode.restoreLastSelection();
-        if (nextMode !== undefined) this.modeState = nextMode;
-        return "handled";
-      }
-      case "searchSelection":
-        this.applySearchSelection({ reversed: action.reversed, count: this.takeCountForMotion(1) });
-        return "handled";
-      case "pushConvert":
-        if (this.modeState === "normal") {
-          // Vim `gugu` (and `gUgU`/`g~g~`): repeating the convert operator is
-          // the line-doubling rule, like `guu`.
-          const pendingConvert = this.operatorStack.activeConvert();
-          if (pendingConvert !== undefined && convertTargetForPending(pendingConvert) === action.target) {
-            return this.applyNormalResult(this.normalMode.handleLineOperation());
-          }
-          // Vim: starting a new operator while another is pending aborts both
-          // (`dgu`, `gugU`).
-          if (this.operatorStack.length > 0) {
-            this.normalMode.clearPending();
-            return "handled";
-          }
-          const key = keyForConvertTarget(action.target);
-          this.operatorStack.pushConvert(action.target, this.takeCountForMotion(1), this.normalMode.chordKey(`g${key}`, { includeCount: true }));
-        } else if (this.isVisualMode()) {
-          this.visualMode.convertSelections(action.target);
-          this.setMode("normal");
-        }
-        return "handled";
-      case "join":
-        if (this.modeState === "normal") {
-          return this.applyNormalResult(this.normalMode.joinLines({ insertWhitespace: action.insertWhitespace }));
-        } else if (this.isVisualMode()) {
-          this.visualMode.joinSelections({ insertWhitespace: action.insertWhitespace });
-          this.setMode("normal");
-        }
-        return "handled";
-      case "incrementStep": {
-        const count = this.takeCountForMotion(1);
-        const delta = (action.direction === "increment" ? 1 : -1) * count;
-        // Vim: a visual operator moves the cursor to the selection start
-        // before changing text, so that is where `u` later restores it.
-        if (this.isVisualMode()) {
-          const selection = this.editor.getSelections()[0];
-          if (selection !== undefined) {
-            this.editor.beginUndoTransaction([charwiseSelection(rangeOfSelection(selection).start)]);
-          }
-        }
-        incrementNumbers(this.editor, delta, action.cumulative ? delta : 0);
-        this.editor.finishUndoTransaction();
-        if (this.isVisualMode()) {
-          this.visualMode.clearState();
-          this.editor.setCursorStyle("block");
-          this.setMode("normal");
-        }
-        return "handled";
-      }
-      case "multiCursor": {
-        this.globalState.repeat.cancelCurrent();
-        const count = this.takeCountForMotion(1);
-        for (let index = 0; index < count; index++) {
-          this.editor.executeNativeCommand(action.command, [], { syncSelectionAfter: true });
-        }
-        return "handled";
-      }
-      case "editorTab":
-        this.globalState.repeat.cancelCurrent();
-        this.switchEditorTab(action.direction, this.takeCount(undefined));
-        return "handled";
-      case "native":
-        this.globalState.repeat.cancelCurrent();
-        this.editor.executeNativeCommand(action.command);
-        this.syncFromEditorState();
-        return "handled";
-      case "hostCommand":
-        this.editor.executeHostCommand(action.command);
-        this.syncFromEditorState();
-        return "handled";
-      case "scrollLines":
-        this.editor.scrollByLines(action.direction, this.takeCountForMotion(1), { extend: this.isVisualMode() });
-        if (this.isVisualMode()) this.visualMode.adoptSelectionFromHost();
-        return "handled";
-      case "revealCurrentLine":
-        this.editor.revealCurrentLine(action.target);
-        return "handled";
-      case "fold":
-        this.editor.executeFoldCommand(action.command);
-        this.syncFromEditorState();
-        return "handled";
-    }
-  }
-
-  private switchEditorTab(direction: "next" | "previous", count: number | undefined): void {
-    if (count !== undefined && count <= 0) return;
-
-    if (direction === "next" && count !== undefined) {
-      // VSCodeVim follows Vim's `{count}gt`: jump to the one-based tab index
-      // instead of repeating next-tab movement.
-      this.editor.executeNativeCommand("workbench.action.openEditorAtIndex", [count - 1], { syncSelectionAfter: true });
-      return;
-    }
-
-    const command = direction === "next"
-      ? "workbench.action.nextEditorInGroup"
-      : "workbench.action.previousEditorInGroup";
-    for (let index = 0; index < (count ?? 1); index++) {
-      this.editor.executeNativeCommand(command, [], { syncSelectionAfter: true });
-    }
-  }
-
-  private handlePendingRegisterKey(key: string): void {
-    const registerName = parseRegisterName(key);
-    if (registerName !== undefined) {
-      this.handlerState.register = registerName;
-      return;
-    }
-    if (this.modeState === "normal") this.normalMode.clearPending();
-    else if (this.isVisualMode()) this.visualMode.clearPending();
-  }
-
-  private handlePendingSearchKey(key: string, pendingSearch: Extract<TopLevelPendingOperator, { type: "search" }>): KeyDispatchResult {
-    this.recordRepeatKey(key);
-    const originMode = this.searchOriginMode ?? "normal";
-    const motion = this.globalState.search.handleKey(pendingSearch, key, this.globalState.registers, this.editor);
-    if (key === "enter") this.operatorStack.popTopLevel("search");
-    if (motion !== undefined) {
-      this.searchOriginMode = undefined;
-      this.setMode(isVisualModeKind(originMode) ? originMode : "normal");
-      this.applyMotion(motion, 1);
-      this.editor.clearSearchHighlights();
-    } else if (key === "enter") {
-      this.searchOriginMode = undefined;
-      this.setMode(isVisualModeKind(originMode) ? originMode : "normal");
-    }
-    return "handled";
-  }
-
-  private insertEmptyLines(side: "above" | "below", count: number): void {
-    const selections = this.editor.getSelections();
-    const edits: TextEdit[] = [];
-    const selectionsAfter: ReturnType<typeof charwiseSelection>[] = [];
-    for (const selection of selections) {
-      const head = selectionHead(selection);
-      const editPosition = emptyLineInsertPosition(this.editor, head, side);
-      edits.push({ range: { start: editPosition, end: editPosition }, text: "\n".repeat(count) });
-      const row = side === "above" ? head.row + count : head.row;
-      selectionsAfter.push(charwiseSelection({ row, column: head.column }));
-    }
-    this.editor.applyEdits(edits, selectionsAfter);
-  }
 
   // Macro control keys resolve after waiting input (so `f q`, `m q`, and
   // register/search input win while recording) but before macro key recording
@@ -1673,12 +1271,95 @@ export class Vim {
     if (pending === undefined) return;
     this.pendingMacroReplay = undefined;
     this.replayMacro(() => {
-      const runKey = (replayKey: string): void => {
-        this.onKey(replayKey);
-      };
+      const runKey = (entry: RecordedKey): void => this.replayRecordedKey(entry);
       if (pending.register === undefined) this.globalState.macro.replayLast(pending.count, runKey);
       else this.globalState.macro.replayRegisterKey(pending.register, pending.count, runKey);
     });
+  }
+
+  // A dot replay requested by the framework `.` handler, run after the executor's
+  // effect drain like [runPendingMacroReplay] (each replayed key is fed back
+  // through the dispatcher and must fully apply before the next). Unlike a macro
+  // replay it is not wrapped in one undo transaction: the replayed change manages
+  // its own undo unit, exactly as it did when first typed.
+  private pendingDotReplay: { count: number | undefined; register: RegisterName | undefined } | undefined;
+
+  private runPendingDotReplay(): void {
+    const pending = this.pendingDotReplay;
+    if (pending === undefined) return;
+    this.pendingDotReplay = undefined;
+    // Discard the recording opened for `.`'s own chord (the count/register
+    // prefix of `3.` / `"a.`): `.` is transparent to dot-repeat and the replay
+    // below manages the last change itself (count override, numbered-paste
+    // advance). Without this, the dangling `[3]` would be committed as the
+    // last change by the next key's [maybeFinish].
+    this.globalState.repeat.cancelCurrent();
+    this.globalState.repeat.replay(pending.count, {
+      registerName: pending.register,
+      runKey: entry => this.replayRecordedKey(entry),
+      runVisualAction: (selection, repeatAction) => this.replayVisualAction(selection, repeatAction),
+    });
+  }
+
+  // Replay one recorded key from a dot-repeat / macro sequence. A [shortcut]
+  // (Vim dispatched it originally) is fed back through [onKey], the same
+  // mechanism physically typed keys use. (The insert-mode migration will add a
+  // [typed] variant that replays through the VSCode default handler.)
+  private replayRecordedKey(entry: RecordedKey): void {
+    // Both kinds are fed back through the dispatcher, like Vim's register
+    // replay: the grammar routes a `typed` entry to the insert-mode typed path,
+    // which reproduces the edit through the host default handler
+    // ([applyInsertTypedKey] — replay is never passthrough). Routing through
+    // [onKey] (rather than applying directly) keeps replay coherent when a
+    // replayed chord left a char-input waiter pending (`ctrl-v 1 2` completed by
+    // a typed key) and lets insert-mode mappings apply, as they do live.
+    switch (entry.kind) {
+      case "shortcut":
+        this.onKey(entry.key);
+        break;
+      case "typed":
+        this.onKey(entry.key);
+        break;
+    }
+  }
+
+  // Handle one passthrough insert character, both when freshly typed (via
+  // [handleThroughExecutor]) and when replayed (dot-repeat / macro, via
+  // [replayRecordedKey]). It (1) accumulates the insert-session text for
+  // count-repeat (`3i…`), always — a replayed count insert re-inserts the extra
+  // copies on Escape; (2) records the key for dot-repeat and macros, gated the
+  // same way as [recordRepeatKey]/[recordMacroKey] (so a `.` while recording a
+  // macro records `.`, not the expanded characters); and (3) reproduces the edit
+  // through the host default handler — unless [passthrough], where the host
+  // already handled the live keystroke natively (the controller did not
+  // preventDefault), so Vim only records.
+  private applyInsertTypedKey(key: string, passthrough: boolean): void {
+    // The session text drives count-repeat (`3i…`). Backspace edits it in place;
+    // any other non-text whitelist key (cursor movement, word delete) starts a
+    // new chunk, like Vim, where moving in insert restarts the repeated text.
+    const text = insertTextForKey(key);
+    if (text !== undefined) {
+      this.insertRepeatText += text;
+    } else if (key === "backspace") {
+      this.insertRepeatText = this.insertRepeatText.slice(0, -1);
+    } else {
+      this.insertRepeatText = "";
+    }
+    if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.recordTyped(key);
+    if (!this.globalState.repeat.isReplaying() && !this.globalState.macro.isReplaying()) {
+      this.globalState.macro.recordTyped(key);
+    }
+    if (!passthrough) {
+      this.editor.replayInsertKey(key);
+    } else if (text !== undefined || key === "backspace" || key === "delete" || key === "ctrl-backspace" || key === "ctrl-delete") {
+      // On the live path the host edited the buffer *before* this plan ran, so
+      // the change-list bookkeeping in [routeKeyThroughExecutor] (which compares
+      // against a version captured after the native edit) never fires; record
+      // the insert position here for the keys that edit, mirroring the legacy
+      // dispatcher's per-key change-list update. Pure navigation keys record
+      // nothing.
+      this.modelState.changeList.record(this.editor, { insertMode: true });
+    }
   }
 
   private handleEscapeKey(): void {
@@ -1730,34 +1411,6 @@ export class Vim {
 
   private recordMacroKey(key: string): void {
     if (!this.globalState.macro.isReplaying() && !this.globalState.repeat.isReplaying()) this.globalState.macro.recordKey(key);
-  }
-
-  private applyVisualResult(result: VisualKeyResult, modeBefore: VimMode): KeyResult {
-    if (result.repeatAction !== undefined && !this.globalState.repeat.isReplaying()) {
-      this.globalState.repeat.recordVisualAction(result.repeatAction.selection, result.repeatAction.action);
-    }
-    if (result.pendingRepeatChange !== undefined && !this.globalState.repeat.isReplaying()) {
-      this.globalState.repeat.setPendingVisualChange(result.pendingRepeatChange.selection);
-    }
-    if (result.enterInsert) {
-      this.enterInsertMode({ origin: modeBefore });
-    } else if (result.nextMode !== undefined) {
-      this.setMode(result.nextMode);
-    } else if (result.exitVisual) {
-      this.setMode("normal");
-    }
-    return result.keyResult;
-  }
-
-  private applyNormalResult(result: NormalKeyResult): KeyResult {
-    if (result.enterInsert) {
-      this.enterInsertMode({
-        origin: this.modeState,
-        count: result.insertCount,
-        separator: result.insertSeparator,
-      });
-    }
-    return result.keyResult;
   }
 
   private enterVisualMode(mode: Extract<VisualResultMode, "visual" | "visualLine" | "visualBlock">): void {
@@ -1826,9 +1479,9 @@ export class Vim {
 
   // Zed: `replace::Vim::undo_replace` — backspace in replace mode restores
   // what was overwritten in this session, or just moves left otherwise.
-  private undoReplace(): KeyResult {
+  private undoReplace(): void {
     const selection = this.editor.getSelections()[0];
-    if (selection === undefined) return "handled";
+    if (selection === undefined) return;
     const end = selectionHead(selection);
     const start = end.column > 0
       ? { row: end.row, column: end.column - 1 }
@@ -1854,7 +1507,6 @@ export class Vim {
       this.editor.setSelections([charwiseSelection(start)]);
     }
     this.insertRepeatText = this.insertRepeatText.slice(0, -1);
-    return "handled";
   }
 
   private enterReplaceMode({ count, separator }: { count: number; separator: string }): void {
@@ -1876,13 +1528,6 @@ export class Vim {
     if (isExecutorOwnedNonNormalMode(previous) || isExecutorOwnedNonNormalMode(mode)) {
       this.keyExecutor.syncMode(mode);
     }
-  }
-
-  private enterInsertAtPrevious(): void {
-    const position = this.modelState.lastInsertPosition;
-    if (position !== undefined) this.editor.setSelections([charwiseSelection(position)]);
-    this.editor.setCursorStyle("line");
-    this.enterInsertMode({ origin: this.modeState, count: this.takeCountForMotion(1) });
   }
 
   private startInsertOrReplaceSession({ count, separator }: { count: number; separator: string }): void {
@@ -1923,40 +1568,10 @@ export class Vim {
     return keepUndoTransactionOpen();
   }
 
-  private startInsertDigraph(): KeyResult {
-    this.operatorStack.push({ type: "insertDigraph", target: "insert" });
-    return "handled";
-  }
 
-  private startReplaceDigraph(): KeyResult {
-    this.operatorStack.push({ type: "insertDigraph", target: "replace" });
-    return "handled";
-  }
 
-  private startPlainLiteral(): KeyResult {
-    this.operatorStack.push({ type: "literal", kind: "plain" });
-    return "handled";
-  }
 
-  private startInsertRegister(): KeyResult {
-    this.operatorStack.push({ type: "insertRegister" });
-    return "handled";
-  }
 
-  private deleteInsertPreviousWord(): KeyResult {
-    deleteToPreviousWord(this.editor, this.insertEditOptions());
-    return "handled";
-  }
-
-  private deleteInsertLineStart(): KeyResult {
-    deleteToBeginningOfLine(this.editor, this.insertEditOptions());
-    return "handled";
-  }
-
-  private insertCharacterFromAdjacentLine(side: "above" | "below"): KeyResult {
-    insertCharacterFromAdjacentLine(this.editor, side, this.insertEditOptions());
-    return "handled";
-  }
 
   // A remap is pending precisely when the executor holds an ambiguous chord
   // (shorter accepted but a longer mapping is still possible). Every pending
@@ -1978,7 +1593,10 @@ export class Vim {
 
   private currentRemapMode() {
     return remapModeForVimMode(this.modeState, {
-      operatorPending: this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined,
+      // Framework operator-pending state never surfaced here (pre-existing
+      // gap): operator-pending remaps only applied to the legacy grammar,
+      // which is gone.
+      operatorPending: false,
     });
   }
 
@@ -2003,191 +1621,6 @@ export class Vim {
 
   private hasMultipleCursorsOrSelection(): boolean {
     return hasMultipleCursorsOrSelection(this.editor.getSelections());
-  }
-
-  private shouldStartEasyMotion(): boolean {
-    return this.isMotionMode()
-      && !this.modeIsExpectingRegisterName()
-      && this.operatorStack.operatorContext() === "none"
-      && this.handlerState.countText.length === 0
-      && this.handlerState.register === undefined;
-  }
-
-  private applySearchUnderCursor({ backwards }: { backwards: boolean }): void {
-    const motion = this.modeState === "normal"
-      ? searchUnderCursorMotion(this.editor, this.globalState.search, this.globalState.registers, { backwards })
-      : this.visualSearchMotion({ backwards });
-    if (motion === undefined) return;
-    if (this.isVisualMode()) {
-      this.visualMode.clearState();
-      this.editor.setCursorStyle("block");
-      this.setMode("normal");
-    }
-    this.applyMotion(motion, this.takeCountForMotion(1));
-    this.editor.clearSearchHighlights();
-  }
-
-  private visualSearchMotion({ backwards }: { backwards: boolean }): Motion | undefined {
-    const selection = this.editor.getSelections()[0];
-    if (selection === undefined) return undefined;
-    const query = this.editor.getText(rangeOfSelection(selection));
-    if (query.length === 0) return undefined;
-    return this.globalState.search.setLast(query, backwards, this.globalState.registers, this.editor, { regex: false });
-  }
-
-  private handlePendingFindKey(key: string): void {
-    const pending = this.operatorStack.popFind();
-    if (pending === undefined) return;
-    if (key === "ctrl-k") {
-      this.operatorStack.push({ type: "insertDigraph", target: "find", pending });
-      return;
-    }
-    this.applyFindChar(pending, keyForInput(key));
-  }
-
-  private applyFindChar(pending: PendingFindOperator, char: string): void {
-    const motion: FindMotion = pending.type === "findForward"
-      ? { type: "findForward", before: pending.before, char }
-      : { type: "findBackward", after: pending.after, char };
-    this.globalState.find.record(motion);
-    this.applyMotion(motion, pending.count);
-  }
-
-  private repeatFind({ reversed }: { reversed: boolean }): void {
-    const motion = this.globalState.find.repeat(reversed);
-    if (motion === undefined) return;
-    this.applyMotion(motion, this.takeCountForMotion(1));
-  }
-
-  private handlePendingDigraphKey(key: string): void {
-    const pending = this.operatorStack.activeTopLevel("insertDigraph");
-    if (pending === undefined) return;
-    if (this.isEscape(key)) {
-      this.operatorStack.popTopLevel("insertDigraph");
-      return;
-    }
-    const input = keyForInput(key);
-    if (pending.first === undefined) {
-      this.operatorStack.replaceActiveInsertDigraph({ ...pending, first: input });
-      return;
-    }
-
-    this.operatorStack.popTopLevel("insertDigraph");
-    const text = lookupDigraph(pending.first, input);
-    switch (pending.target) {
-      case "insert":
-        insertText(this.editor, text, this.insertEditOptions());
-        this.insertRepeatText += text;
-        return;
-      case "replace":
-        this.replaceModeReplacements.push(...replaceModeText(this.editor, text, 1, this.insertEditOptions()));
-        this.insertRepeatText += text;
-        return;
-      case "find":
-        this.applyFindChar(pending.pending, text);
-        return;
-    }
-  }
-
-  private handlePendingLiteralKey(key: string): KeyResult | undefined {
-    const pending = this.operatorStack.activeTopLevel("literal");
-    if (pending === undefined) return "handled";
-
-    if (pending.kind === "plain") {
-      if (key === "x") {
-        return this.handlePendingLiteralKeyWithState({ type: "literal", kind: "hex", digits: "", maxDigits: 2 });
-      }
-      if (key === "u" || key === "U") {
-        return this.handlePendingLiteralKeyWithState({ type: "literal", kind: "hex", digits: "", maxDigits: key === "u" ? 4 : 8 });
-      }
-      if (/^[0-9]$/.test(key)) {
-        return this.handlePendingLiteralKeyWithState({ type: "literal", kind: "decimal", digits: key });
-      }
-      this.operatorStack.popTopLevel("literal");
-      this.insertLiteralText(literalTextForKey(key));
-      return "handled";
-    }
-
-    if (pending.kind === "decimal") {
-      if (/^[0-9]$/.test(key)) {
-        return this.handlePendingLiteralKeyWithState({ ...pending, digits: pending.digits + key });
-      }
-      this.operatorStack.popTopLevel("literal");
-      this.insertLiteralCodepoint(Number(pending.digits));
-      if (this.isEscape(key)) {
-        this.recordEscapeKey();
-        this.handleEscapeKey();
-        return "handled";
-      }
-      const text = insertTextForKey(key);
-      if (text !== undefined) this.insertLiteralText(text);
-      return "handled";
-    }
-
-    if (/^[0-9a-fA-F]$/.test(key) && pending.digits.length + 1 < pending.maxDigits) {
-      return this.handlePendingLiteralKeyWithState({ ...pending, digits: pending.digits + key });
-    }
-    if (/^[0-9a-fA-F]$/.test(key)) {
-      this.operatorStack.popTopLevel("literal");
-      this.insertLiteralCodepoint(Number.parseInt(pending.digits + key, 16));
-      return "handled";
-    }
-    this.operatorStack.popTopLevel("literal");
-    if (pending.digits.length > 0) this.insertLiteralCodepoint(Number.parseInt(pending.digits, 16));
-    const text = insertTextForKey(key);
-    if (text !== undefined) this.insertLiteralText(text);
-    return "handled";
-  }
-
-  private handlePendingLiteralKeyWithState(next: PendingLiteralOperator): KeyResult {
-    this.operatorStack.replaceActiveLiteral(next);
-    if (next.kind === "decimal" && next.digits.length >= 3) {
-      this.operatorStack.popTopLevel("literal");
-      this.insertLiteralCodepoint(Number(next.digits));
-    }
-    return "handled";
-  }
-
-  private insertLiteralCodepoint(codepoint: number): void {
-    this.insertLiteralText(String.fromCodePoint(Math.max(0, codepoint)));
-  }
-
-  private insertLiteralText(text: string): void {
-    if (this.modeState === "replace") {
-      replaceModeText(this.editor, text, 1, this.insertEditOptions());
-    } else {
-      insertText(this.editor, text, this.insertEditOptions());
-    }
-    this.insertRepeatText += text;
-  }
-
-  private handlePendingInsertRegisterKey(key: string): void {
-    this.operatorStack.popTopLevel("insertRegister");
-    if (this.isEscape(key)) return;
-    const registerName = parseRegisterName(key);
-    if (registerName === undefined) return;
-    insertText(this.editor, this.globalState.registers.read(registerName), this.insertEditOptions());
-  }
-
-  private handlePendingCommandKey(key: string): void {
-    const pending = this.operatorStack.activeTopLevel("command");
-    if (pending === undefined) return;
-    if (key === "enter") {
-      const command = pending.input;
-      this.operatorStack.popTopLevel("command");
-      this.setMode("normal");
-      executeCommand(this.editor, command, {
-        runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
-        exOptions: this.globalState.exOptions,
-        markLine: name => this.modelState.marks.position(name)?.row,
-      });
-      return;
-    }
-    if (key === "backspace") {
-      this.operatorStack.replaceActiveCommand(pending.input.slice(0, -1));
-      return;
-    }
-    this.operatorStack.replaceActiveCommand(`${pending.input}${key === "space" ? " " : key}`);
   }
 
   private runNormalKeysForCommand(keys: readonly string[], range: LineRange | undefined): void {
@@ -2301,61 +1734,12 @@ export class Vim {
     };
   }
 
-  private applySearchSelection({ reversed, count }: { reversed: boolean; count: number }): void {
-    const includeStart = this.modeState === "normal";
-    const range = this.globalState.search.matchRangeForSelection(this.editor, { reversed, count, includeStart });
-    if (range === undefined) {
-      // Vim: `cgn` with no match aborts the pending operator without editing,
-      // and `.`-replaying an aborted `cgn` swallows the rest of the recording
-      // (the recorded insert text must not run as normal-mode keys).
-      if (this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
-        this.normalMode.clearPending();
-        this.globalState.repeat.abortCurrentReplay();
-      }
-      return;
-    }
-    if (this.modeState === "normal" && this.normalMode.pendingOperatorName() !== undefined) {
-      const enterInsert = this.normalMode.applyMotion({ type: "searchMatch", range }, 1);
-      if (enterInsert) this.modeState = "insert";
-      return;
-    }
-
-    const currentSelection = this.editor.getSelections()[0];
-    if (this.isVisualMode() && currentSelection?.type === "charwise") {
-      const currentRange = rangeOfSelection(currentSelection);
-      this.editor.setSelections([reversed
-        ? { type: "charwise", anchor: currentRange.end, head: range.start }
-        : { type: "charwise", anchor: currentRange.start, head: range.end }]);
-    } else {
-      this.editor.setSelections([reversed
-        ? { type: "charwise", anchor: range.end, head: range.start }
-        : { type: "charwise", anchor: range.start, head: range.end }]);
-    }
-    if (this.visualMode.adoptSelection(this.editor.getSelections()[0])) {
-      this.modeState = "visual";
-    }
-  }
-
   private applyMotion(motion: Motion, count: number): void {
     if (this.modeState === "normal") {
-      const modeBeforeMotion = this.modeState;
-      const enterInsert = this.normalMode.applyMotion(motion, count);
-      if (enterInsert) this.enterInsertMode({ origin: modeBeforeMotion });
+      this.normalMode.applyMotion(motion, count);
     } else if (this.isVisualMode()) {
       this.visualMode.applyMotion(motion, count);
     }
-  }
-
-  private takeCountForMotion(defaultValue: number): number {
-    return this.takeCount(defaultValue);
-  }
-
-  private isMotionMode(): boolean {
-    return this.modeState === "normal" || this.isVisualMode();
-  }
-
-  private modeIsExpectingRegisterName(): boolean {
-    return this.operatorStack.activeTopLevel("register") !== undefined;
   }
 
   private isVisualMode(): boolean {
@@ -2365,42 +1749,6 @@ export class Vim {
   private isEscape(key: string): boolean {
     return key === "<escape>" || key === "escape" || key === "ctrl-[";
   }
-}
-
-function emptyLineInsertPosition(
-  editor: { lineLength: (row: number) => number },
-  head: Position,
-  side: "above" | "below"
-): Position {
-  return side === "above" ? { row: head.row, column: 0 } : { row: head.row, column: editor.lineLength(head.row) };
-}
-
-function keyForInput(key: string): string {
-  return key === "space" ? " " : key;
-}
-
-function literalTextForKey(key: string): string {
-  if (key === "tab") return "\t";
-  if (key === "enter") return "\n";
-  if (key === "escape" || key === "<escape" || key === "<escape>") return "\u001b";
-  const control = /^ctrl-(.)$/.exec(key);
-  if (control !== null) {
-    if (control[1] === "j") return "\u0000";
-    if (control[1] === "[") return "\u001b";
-    return String.fromCodePoint(control[1].toLowerCase().charCodeAt(0) - "a".charCodeAt(0) + 1);
-  }
-  return keyForInput(key);
-}
-
-function insertTextForKey(key: string): string | undefined {
-  if (key === "space") return " ";
-  if (key === "enter") return "\n";
-  if (key === "\n") return "\n";
-  if (key.length === 1) return key;
-  // A single astral character (e.g. an emoji from a remap replacement) is one
-  // key even though it spans two UTF-16 units.
-  if (key.length === 2 && key.charCodeAt(0) >= 0xd800 && key.charCodeAt(0) <= 0xdbff) return key;
-  return undefined;
 }
 
 function isCtrlKey(key: string): boolean {
@@ -2440,19 +1788,6 @@ function isBuiltInCtrlKey(key: string): boolean {
 function commandArgs(command: { args?: unknown | unknown[] }): readonly unknown[] {
   if (command.args === undefined) return [];
   return Array.isArray(command.args) ? command.args : [command.args];
-}
-
-function keyForConvertTarget(target: ConvertTarget): "u" | "U" | "~" | "?" {
-  switch (target) {
-    case "lower":
-      return "u";
-    case "upper":
-      return "U";
-    case "toggle":
-      return "~";
-    case "rot13":
-      return "?";
-  }
 }
 
 // Local test helper, analogous in spirit to Zed's test harness helpers in

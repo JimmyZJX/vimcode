@@ -25,9 +25,16 @@ type PendingState =
   | { type: "input"; spec: EasyMotionSpec; input: string }
   | { type: "label"; markers: readonly EasyMotionMarker[]; input: string };
 
-export type EasyMotionResult =
-  | { type: "handled" }
-  | { type: "jump"; position: Position };
+// The result of evaluating one key against the easyMotion state ([decide]).
+// [pending] keeps the overlay open (advancing to [next], optionally repainting
+// [markers]); [jump] moves the cursor/extends the selection to [position] and
+// ends the overlay; [clear] ends the overlay without a jump (invalid trigger,
+// no/empty match). [decide] is pure; [commit] applies the outcome's side
+// effects (mutating [pending] + showing/clearing markers).
+export type EasyMotionOutcome =
+  | { type: "pending"; next: PendingState; markers?: readonly EasyMotionMarker[] }
+  | { type: "jump"; position: Position }
+  | { type: "clear" };
 
 const defaultTriggerLeaderCount = 2;
 
@@ -84,129 +91,131 @@ export class EasyMotionState {
     editor.clearEasyMotionMarkers();
   }
 
-  handleKey(
+  // Evaluate [key] against the current overlay state *without side effects*,
+  // returning the [EasyMotionOutcome] the owner should [commit] (or [undefined]
+  // when easyMotion does not claim the key: disabled, or a non-leader key while
+  // idle). Pure so it can run in a framework handler body; the state advance and
+  // marker repaint happen in [commit]. Escape is intentionally not special-cased
+  // here — the caller declines it so the owner's escape handling cancels the
+  // overlay, matching the legacy dispatcher where escape never reached easyMotion.
+  decide(
     editor: VimEditorCapabilities,
     configuration: VimConfiguration,
-    key: string,
-    { canStart }: { canStart: boolean }
-  ): EasyMotionResult | undefined {
+    key: string
+  ): EasyMotionOutcome | undefined {
     if (!configuration.easymotion) return undefined;
 
     switch (this.pending?.type) {
       case "trigger":
-        return this.handleTriggerKey(editor, configuration, key, this.pending);
+        return decideTriggerKey(editor, configuration, key, this.pending);
       case "input":
-        return this.handleInputKey(editor, configuration, key, this.pending);
+        return decideInputKey(editor, configuration, key, this.pending);
       case "label":
-        return this.handleLabelKey(editor, key, this.pending);
+        return decideLabelKey(key, this.pending);
       case undefined:
-        if (!canStart || key !== configuration.leader) return undefined;
-        this.pending = { type: "trigger", keys: [key] };
-        return { type: "handled" };
+        if (key !== configuration.leader) return undefined;
+        return { type: "pending", next: { type: "trigger", keys: [key] } };
     }
   }
 
-  private handleTriggerKey(
-    editor: VimEditorCapabilities,
-    configuration: VimConfiguration,
-    key: string,
-    pending: Extract<PendingState, { type: "trigger" }>
-  ): EasyMotionResult {
-    const keys = [...pending.keys, key];
-    const exact = specs.find(spec => sameKeys(triggerKeys(configuration, spec), keys));
-    if (exact !== undefined) {
-      if (exact.search === "char" || exact.search === "nchar") {
-        this.pending = { type: "input", spec: exact, input: "" };
-        return { type: "handled" };
-      }
-      return this.startLabelMode(editor, configuration, exact, "");
+  // Apply an [EasyMotionOutcome] from [decide]: advance/clear [pending] and
+  // repaint the marker overlay. A [jump] clears the overlay too — the owner
+  // applies the cursor motion separately.
+  commit(editor: VimEditorCapabilities, outcome: EasyMotionOutcome): void {
+    switch (outcome.type) {
+      case "pending":
+        this.pending = outcome.next;
+        if (outcome.markers !== undefined) editor.showEasyMotionMarkers(outcome.markers);
+        break;
+      case "jump":
+      case "clear":
+        this.clear(editor);
+        break;
     }
+  }
+}
 
-    if (specs.some(spec => isPrefixOrEqual(keys, triggerKeys(configuration, spec)))) {
-      this.pending = { type: "trigger", keys };
-      return { type: "handled" };
+function decideTriggerKey(
+  editor: VimEditorCapabilities,
+  configuration: VimConfiguration,
+  key: string,
+  pending: Extract<PendingState, { type: "trigger" }>
+): EasyMotionOutcome {
+  const keys = [...pending.keys, key];
+  const exact = specs.find(spec => sameKeys(triggerKeys(configuration, spec), keys));
+  if (exact !== undefined) {
+    if (exact.search === "char" || exact.search === "nchar") {
+      return { type: "pending", next: { type: "input", spec: exact, input: "" } };
     }
-
-    this.clear(editor);
-    return { type: "handled" };
+    return labelOutcome(editor, configuration, exact, "");
   }
 
-  private handleInputKey(
-    editor: VimEditorCapabilities,
-    configuration: VimConfiguration,
-    key: string,
-    pending: Extract<PendingState, { type: "input" }>
-  ): EasyMotionResult {
-    if (key === "backspace") {
-      this.pending = { ...pending, input: pending.input.slice(0, -1) };
-      return { type: "handled" };
-    }
+  if (specs.some(spec => isPrefixOrEqual(keys, triggerKeys(configuration, spec)))) {
+    return { type: "pending", next: { type: "trigger", keys } };
+  }
 
-    if (pending.spec.search === "nchar") {
-      if (key === "enter") {
-        if (pending.input.length === 0) {
-          this.clear(editor);
-          return { type: "handled" };
-        }
-        return this.startLabelMode(editor, configuration, pending.spec, pending.input);
-      }
-      const text = inputTextForKey(key);
-      if (text !== undefined) this.pending = { ...pending, input: pending.input + text };
-      return { type: "handled" };
-    }
+  return { type: "clear" };
+}
 
+function decideInputKey(
+  editor: VimEditorCapabilities,
+  configuration: VimConfiguration,
+  key: string,
+  pending: Extract<PendingState, { type: "input" }>
+): EasyMotionOutcome {
+  if (key === "backspace") {
+    return { type: "pending", next: { ...pending, input: pending.input.slice(0, -1) } };
+  }
+
+  if (pending.spec.search === "nchar") {
+    if (key === "enter") {
+      if (pending.input.length === 0) return { type: "clear" };
+      return labelOutcome(editor, configuration, pending.spec, pending.input);
+    }
     const text = inputTextForKey(key);
-    if (text === undefined) return { type: "handled" };
-    const input = pending.input + text;
-    if (input.length >= (pending.spec.charCount ?? 1)) {
-      return this.startLabelMode(editor, configuration, pending.spec, input);
-    }
-    this.pending = { ...pending, input };
-    return { type: "handled" };
+    const next = text === undefined ? pending : { ...pending, input: pending.input + text };
+    return { type: "pending", next };
   }
 
-  private handleLabelKey(
-    editor: VimEditorCapabilities,
-    key: string,
-    pending: Extract<PendingState, { type: "label" }>
-  ): EasyMotionResult {
-    const text = inputTextForKey(key);
-    if (text === undefined) return { type: "handled" };
-    const input = pending.input + text;
-    const matching = pending.markers.filter(marker => marker.label.startsWith(input));
-    if (matching.length === 0) {
-      this.clear(editor);
-      return { type: "handled" };
-    }
-    if (matching.length === 1) {
-      const position = matching[0].position;
-      this.clear(editor);
-      return { type: "jump", position };
-    }
-    this.pending = { ...pending, input };
-    editor.showEasyMotionMarkers(matching.map(marker => ({ ...marker, label: marker.label.slice(input.length) })));
-    return { type: "handled" };
+  const text = inputTextForKey(key);
+  if (text === undefined) return { type: "pending", next: pending };
+  const input = pending.input + text;
+  if (input.length >= (pending.spec.charCount ?? 1)) {
+    return labelOutcome(editor, configuration, pending.spec, input);
   }
+  return { type: "pending", next: { ...pending, input } };
+}
 
-  private startLabelMode(
-    editor: VimEditorCapabilities,
-    configuration: VimConfiguration,
-    spec: EasyMotionSpec,
-    input: string
-  ): EasyMotionResult {
-    const markers = generateMarkers(collectMatches(editor, configuration, spec, input), configuration.easymotionKeys);
-    if (markers.length === 0) {
-      this.clear(editor);
-      return { type: "handled" };
-    }
-    if (markers.length === 1) {
-      this.clear(editor);
-      return { type: "jump", position: markers[0].position };
-    }
-    this.pending = { type: "label", markers, input: "" };
-    editor.showEasyMotionMarkers(markers);
-    return { type: "handled" };
-  }
+function decideLabelKey(
+  key: string,
+  pending: Extract<PendingState, { type: "label" }>
+): EasyMotionOutcome {
+  const text = inputTextForKey(key);
+  if (text === undefined) return { type: "pending", next: pending };
+  const input = pending.input + text;
+  const matching = pending.markers.filter(marker => marker.label.startsWith(input));
+  if (matching.length === 0) return { type: "clear" };
+  if (matching.length === 1) return { type: "jump", position: matching[0].position };
+  return {
+    type: "pending",
+    next: { ...pending, input },
+    markers: matching.map(marker => ({ ...marker, label: marker.label.slice(input.length) })),
+  };
+}
+
+// Generate the label markers for [spec]/[input] and pick the outcome: no matches
+// clears, a single match jumps, multiple matches open label mode showing the
+// markers. Pure (reads the editor to collect matches); [commit] paints them.
+function labelOutcome(
+  editor: VimEditorCapabilities,
+  configuration: VimConfiguration,
+  spec: EasyMotionSpec,
+  input: string
+): EasyMotionOutcome {
+  const markers = generateMarkers(collectMatches(editor, configuration, spec, input), configuration.easymotionKeys);
+  if (markers.length === 0) return { type: "clear" };
+  if (markers.length === 1) return { type: "jump", position: markers[0].position };
+  return { type: "pending", next: { type: "label", markers, input: "" }, markers };
 }
 
 function collectMatches(

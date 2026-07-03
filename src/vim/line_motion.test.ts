@@ -12,9 +12,7 @@ function head(editor: InMemoryVimEditor) {
 function cursor(editor: InMemoryVimEditor) {
   return (editor.getSelections()[0] as { cursor: { row: number; column: number } }).cursor;
 }
-function opStackLen(vim: Vim): number {
-  return (vim as unknown as { operatorStack: { length: number } }).operatorStack.length;
-}
+
 
 describe("line motions G / + / - via framework", () => {
   it("normal G goes to the last line (count -> line N), keeping the column", () => {
@@ -51,13 +49,15 @@ describe("line motions G / + / - via framework", () => {
     expect(cursor(editor)).toEqual({ row: 2, column: 0 });
   });
 
-  it("G / + / - are framework-owned (operatorStack stays empty)", () => {
+  it("G / - move to the expected lines (framework-owned)", () => {
+    // The legacy operator stack this test used to introspect is gone; assert
+    // the motions' behavior directly.
     const editor = new InMemoryVimEditor("a\nb\nc");
     const vim = new Vim(editor);
     runKeys(vim, ["G"]);
-    expect(opStackLen(vim)).toBe(0);
+    expect(head(editor)).toEqual({ row: 2, column: 0 });
     runKeys(vim, ["-"]);
-    expect(opStackLen(vim)).toBe(0);
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
   });
 
   it("dG still deletes linewise (operator path unchanged)", () => {
@@ -108,5 +108,37 @@ describe("line motions G / + / - via framework", () => {
     const vim = new Vim(editor);
     runKeys(vim, ["d", "5", "|"]); // delete cols 0..3 (to column 5 exclusive)
     expect(editor.getText()).toBe("o world");
+  });
+});
+
+describe("viewColumn selection goals (host view-line movements)", () => {
+  // The VSCode adapter's view-line movements (`ctrl-d`/`ctrl-u`, `gj`/`gk`)
+  // stamp the resulting selection with a 1-based *view*-column goal. A
+  // following model-space vertical motion (`j`/`k`) must convert that back to
+  // the 0-based model column instead of drifting one column to the right
+  // (regression: `ctrl-u` `ctrl-d` then `k` shifted the cursor right by one).
+  it("j/k interpret a 1-based viewColumn goal as the same model column", () => {
+    const editor = new InMemoryVimEditor("abcdef\nghijkl\nmnopqr");
+    const vim = new Vim(editor);
+    runKeys(vim, ["j", "l", "l"]); // row 1, column 2
+    expect(head(editor)).toEqual({ row: 1, column: 2 });
+    const selection = editor.getSelections()[0];
+    editor.setSelections([{ ...selection, goal: { type: "viewColumn", column: 3 } }]);
+    runKeys(vim, ["k"]);
+    expect(head(editor)).toEqual({ row: 0, column: 2 });
+    runKeys(vim, ["j", "j"]);
+    expect(head(editor)).toEqual({ row: 2, column: 2 });
+  });
+
+  it("a viewColumn goal keeps the column through short lines", () => {
+    const editor = new InMemoryVimEditor("abcdef\nx\nmnopqr");
+    const vim = new Vim(editor);
+    runKeys(vim, ["5", "|"]); // row 0, column 4
+    const selection = editor.getSelections()[0];
+    editor.setSelections([{ ...selection, goal: { type: "viewColumn", column: 5 } }]);
+    runKeys(vim, ["j"]); // clipped by the short line
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
+    runKeys(vim, ["j"]); // returns to the goal column
+    expect(head(editor)).toEqual({ row: 2, column: 4 });
   });
 });

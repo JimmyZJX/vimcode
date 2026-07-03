@@ -50,6 +50,20 @@ export function keepUndoTransactionOpen(options: ApplyEditsOptions = {}): ApplyE
   return { ...options, undoStopAfter: false };
 }
 
+// The text a printable insert-mode key inserts, or [undefined] for a key that
+// is not plain typed input (a bare `backspace`, a ctrl-chord, …). Shared by the
+// Vim core (dispatch/ownership) and the in-memory editor's [replayInsertKey].
+export function insertTextForKey(key: string): string | undefined {
+  if (key === "space") return " ";
+  if (key === "enter") return "\n";
+  if (key === "\n") return "\n";
+  if (key.length === 1) return key;
+  // A single astral character (e.g. an emoji from a remap replacement) is one
+  // key even though it spans two UTF-16 units.
+  if (key.length === 2 && key.charCodeAt(0) >= 0xd800 && key.charCodeAt(0) <= 0xdbff) return key;
+  return undefined;
+}
+
 // Zed: `vim::Vim::update_editor` is the closest
 // equivalent boundary, but it closes over Zed's concrete `Editor`. This interface
 // is intentionally local: production VSCode and fake tests both implement it.
@@ -77,6 +91,17 @@ export interface VimEditorCapabilities {
   beginUndoTransaction(selectionsBefore: readonly VimSelection[]): VimUndoTransaction;
   finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void;
   flushUndoTransaction(): void;
+
+  // Reproduce the host's default handling of an insert/replace-mode [key] that
+  // Vim let pass through (see [RecordedKey] "typed"). It is called on the
+  // replay path (dot-repeat / macros) — where there is no real keydown — and in
+  // tests; live typing is handled natively by the host (the controller does not
+  // preventDefault). VSCode routes the key through its real keybinding resolution
+  // (a printable char → the `type` command, `backspace` → `deleteLeft`, honoring
+  // user overrides); the in-memory editor applies the equivalent buffer edit so
+  // tests can assert contents. Edits keep the insert undo transaction open (they
+  // coalesce into one undo unit finished on Escape).
+  replayInsertKey(key: string): void;
 
   executeHostCommand(command: HostCommand): void;
   executeNativeCommand(command: string, args?: readonly unknown[], options?: NativeCommandOptions): void;
@@ -305,6 +330,101 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   clearEasyMotionMarkers(): void {
     this.easyMotionMarkers = [];
+  }
+
+  // Simulate VSCode's default insert-mode handling for the passthrough
+  // whitelist: printable keys insert their text; backspace/delete remove one
+  // character (joining lines at boundaries); `ctrl-backspace`/`ctrl-delete`
+  // remove a (whitespace-delimited — an approximation of VSCode's word rules)
+  // word; the navigation keys move the cursor. Edits keep the insert undo
+  // transaction open so a replayed session is one undo unit.
+  replayInsertKey(key: string): void {
+    const options = keepUndoTransactionOpen();
+    const text = insertTextForKey(key);
+    if (text !== undefined) {
+      const edits: TextEdit[] = [];
+      const selectionsAfter: VimSelection[] = [];
+      for (const selection of this.getSelections()) {
+        const head = selectionHead(selection);
+        edits.push({ range: { start: head, end: head }, text });
+        const lines = text.split("\n");
+        const after = lines.length > 1
+          ? { row: head.row + lines.length - 1, column: lines[lines.length - 1].length }
+          : { row: head.row, column: head.column + text.length };
+        selectionsAfter.push(charwiseSelection(after));
+      }
+      this.applyEdits(edits, selectionsAfter, options);
+      return;
+    }
+
+    const deleteToTarget = (target: (head: Position) => Position, side: "before" | "after"): void => {
+      const edits: TextEdit[] = [];
+      const selectionsAfter: VimSelection[] = [];
+      for (const selection of this.getSelections()) {
+        const head = selectionHead(selection);
+        const other = target(head);
+        const range = side === "before" ? { start: other, end: head } : { start: head, end: other };
+        edits.push({ range, text: "" });
+        selectionsAfter.push(charwiseSelection(range.start));
+      }
+      this.applyEdits(edits, selectionsAfter, options);
+    };
+    const moveTo = (target: (head: Position) => Position): void => {
+      // Cursor movement splits the insert undo unit, like VSCode (a cursor
+      // change breaks typing coalescing) and like Vim, where arrow keys in
+      // insert break the undo sequence.
+      this.finishUndoTransaction();
+      this.setSelections(this.getSelections().map(selection => charwiseSelection(target(selectionHead(selection)))));
+    };
+
+    switch (key) {
+      case "backspace":
+        deleteToTarget(head => characterLeft(this, head), "before");
+        return;
+      case "delete":
+        deleteToTarget(head => characterRight(this, head), "after");
+        return;
+      case "ctrl-backspace":
+        deleteToTarget(head => simulatedWordLeft(this, head), "before");
+        return;
+      case "ctrl-delete":
+        deleteToTarget(head => simulatedWordRight(this, head), "after");
+        return;
+      case "left":
+        moveTo(head => characterLeft(this, head));
+        return;
+      case "right":
+        moveTo(head => characterRight(this, head));
+        return;
+      case "up":
+      case "down": {
+        const delta = key === "up" ? -1 : 1;
+        moveTo(head => {
+          const row = Math.max(0, Math.min(this.lineCount() - 1, head.row + delta));
+          return { row, column: Math.min(head.column, this.lineLength(row)) };
+        });
+        return;
+      }
+      case "home":
+        moveTo(head => ({ row: head.row, column: 0 }));
+        return;
+      case "end":
+        moveTo(head => ({ row: head.row, column: this.lineLength(head.row) }));
+        return;
+      case "ctrl-left":
+        moveTo(head => simulatedWordLeft(this, head));
+        return;
+      case "ctrl-right":
+        moveTo(head => simulatedWordRight(this, head));
+        return;
+      case "pageup":
+      case "pagedown": {
+        this.finishUndoTransaction();
+        const moved = this.moveByPages(key === "pageup" ? "up" : "down", 1, { halfPage: false, extend: false });
+        if (moved !== undefined) this.setSelections(moved);
+        return;
+      }
+    }
   }
 
   applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
@@ -614,6 +734,40 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
 // Position (in [after]) of the first character where the two texts differ, or
 // undefined when the texts are equal.
+// Character/word steps for the in-memory default-handler simulation
+// ([InMemoryVimEditor.replayInsertKey]). Word boundaries are a deliberate
+// simplification of VSCode's word rules (whitespace-delimited): only the test
+// double uses them, and the real editor runs VSCode's own commands.
+function characterLeft(editor: VimEditorCapabilities, head: Position): Position {
+  if (head.column > 0) return { row: head.row, column: head.column - 1 };
+  if (head.row > 0) return { row: head.row - 1, column: editor.lineLength(head.row - 1) };
+  return head;
+}
+
+function characterRight(editor: VimEditorCapabilities, head: Position): Position {
+  if (head.column < editor.lineLength(head.row)) return { row: head.row, column: head.column + 1 };
+  if (head.row < editor.lineCount() - 1) return { row: head.row + 1, column: 0 };
+  return head;
+}
+
+function simulatedWordLeft(editor: VimEditorCapabilities, head: Position): Position {
+  if (head.column === 0) return characterLeft(editor, head);
+  const line = editor.line(head.row);
+  let column = head.column;
+  while (column > 0 && /\s/.test(line[column - 1])) column--;
+  while (column > 0 && !/\s/.test(line[column - 1])) column--;
+  return { row: head.row, column };
+}
+
+function simulatedWordRight(editor: VimEditorCapabilities, head: Position): Position {
+  const line = editor.line(head.row);
+  if (head.column >= line.length) return characterRight(editor, head);
+  let column = head.column;
+  while (column < line.length && /\s/.test(line[column])) column++;
+  while (column < line.length && !/\s/.test(line[column])) column++;
+  return { row: head.row, column };
+}
+
 function firstDifferencePosition(before: string, after: string): Position | undefined {
   if (before === after) return undefined;
   const limit = Math.min(before.length, after.length);
@@ -670,8 +824,11 @@ function modelColumnForGoal(editor: VimEditorCapabilities, row: number, goal: Vi
     case "endOfLine":
       return maxColumn;
     case "modelColumn":
-    case "viewColumn":
       return Math.min(goal.column, maxColumn);
+    case "viewColumn":
+      // View-column goals are 1-based VSCode view coordinates; convert to the
+      // 0-based model column (approximate under soft wraps/folds).
+      return Math.max(0, Math.min(goal.column - 1, maxColumn));
   }
 }
 

@@ -427,8 +427,14 @@ export class VimController extends Disposable {
 			return;
 		}
 
-		event.preventDefault();
-		event.stopPropagation();
+		// A passthrough key (insert-mode typing/backspace) is handled natively by
+		// VSCode — do NOT preventDefault, so the editor types/deletes as usual —
+		// but still run the plan so Vim records the keystroke (for macros +
+		// dot-repeat). Owned keys prevent default as usual.
+		if (!keyPlan.passthrough) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
 		void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan)).then(undefined, () => this.syncStatus());
 	}
 
@@ -1037,6 +1043,12 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 				return 'ctrl-pagedown';
 			case KeyCode.BracketLeft:
 				return 'ctrl-[';
+			// Word deletes are insert-mode passthrough keys (recorded for macros /
+			// dot-repeat); in other modes Vim declines them and they stay native.
+			case KeyCode.Backspace:
+				return 'ctrl-backspace';
+			case KeyCode.Delete:
+				return 'ctrl-delete';
 			default:
 				break;
 		}

@@ -23,6 +23,19 @@ async function runKeysWithWhen(vim: Vim, keys: readonly string[], activeWhen: st
   }
 }
 
+// Mimic the VSCode controller's real key path: a passthrough key (insert-mode
+// typing/backspace) is handled natively by the host — here we simulate that by
+// applying it through the editor's default handler — while Vim only records it;
+// owned keys are handled entirely by the plan.
+async function pressKeysThroughController(vim: Vim, editor: InMemoryVimEditor, keys: readonly string[]): Promise<void> {
+  for (const key of keys) {
+    const plan = vim.handleKey(key);
+    if (plan === null) continue;
+    if (plan.passthrough) editor.replayInsertKey(key);
+    await plan.run();
+  }
+}
+
 function exKeys(command: string): string[] {
   return [":", ...[...command].map(key => key === " " ? "space" : key), "enter"];
 }
@@ -238,33 +251,77 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.cursorStyle).toBe("block");
   });
 
-  // Insert mode delegates plain typing to the host editor unless Vim needs to
-  // capture the key stream for macro recording; replace mode must own text
-  // keys because native typing inserts instead of overwriting.
-  it("owns plain text keys in insert mode only while recording", () => {
+  // Ownership now comes from the real grammar: [handleKey] parses the key
+  // purely and owns it iff a handler claims it (plus the terminal-fallback
+  // policy for unclaimed keys). The same evaluation is committed by the plan.
+  it("derives key ownership from the grammar parse", () => {
+    const editor = new InMemoryVimEditor("one two");
+    const vim = new Vim(editor, { useCtrlKeys: false });
+
+    // Mid-chord: the operand is claimed by the pending operator's continuation;
+    // a gated ctrl chord stays native; escape is owned to cancel the chord.
+    runKeys(vim, ["d"]);
+    expect(vim.wouldHandleKeyForTest("w")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("ctrl-x")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("escape")).toBe(true);
+    runKeys(vim, ["escape"]);
+
+    // Unbound keys ring the bell (owned) in normal mode; unbound/gated ctrl
+    // chords stay native.
+    expect(vim.wouldHandleKeyForTest("_")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("ctrl-q")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-u")).toBe(false);
+  });
+
+  it("owns search-prompt keys exactly as the search grammar claims them", () => {
+    const vim = new Vim(new InMemoryVimEditor("one two"));
+    runKeys(vim, ["/"]);
+    expect(vim.wouldHandleKeyForTest("a")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("enter")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("escape")).toBe(true);
+    expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(false);
+    runKeys(vim, ["escape"]);
+  });
+
+  it("re-parses a stale pre-parsed key when commits lag behind keydowns", async () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor);
+
+    // Simulate keydowns racing ahead of the async plan queue: both keys are
+    // parsed for ownership before either plan runs. `w` parses as a bare motion
+    // at the root, but by commit time `d` is pending — the dispatcher must
+    // re-parse it into the delete operand instead of committing the stale
+    // result.
+    const first = vim.handleKey("d");
+    const second = vim.handleKey("w");
+    await first?.run();
+    await second?.run();
+
+    expect(editor.line(0)).toBe("two three");
+  });
+
+  // Insert-mode plain typing + backspace are *passthrough*: the host types them
+  // natively (the controller does not preventDefault) and Vim only records them.
+  // Replace mode must own text keys because native typing inserts instead of
+  // overwriting, so it is not passthrough.
+  it("passes insert-mode typing (incl. backspace) through to the host, recording it", () => {
     const editor = new InMemoryVimEditor("abcdef");
     const vim = new Vim(editor);
 
     runKeys(vim, ["i"]);
-    expect(vim.wouldHandleKeyForTest("x")).toBe(false);
-    expect(vim.wouldHandleKeyForTest("backspace")).toBe(false);
+    expect(vim.handleKey("x")?.passthrough).toBe(true);
+    expect(vim.handleKey("space")?.passthrough).toBe(true);
+    expect(vim.handleKey("enter")?.passthrough).toBe(true);
+    expect(vim.handleKey("backspace")?.passthrough).toBe(true);
 
-    runKeys(vim, ["<escape>", "q", "q", "a"]);
-    expect(vim.modeName).toBe("vim:insert");
-    expect(vim.wouldHandleKeyForTest("x")).toBe(true);
-    expect(vim.wouldHandleKeyForTest("space")).toBe(true);
-    expect(vim.wouldHandleKeyForTest("enter")).toBe(true);
-    expect(vim.wouldHandleKeyForTest("backspace")).toBe(false);
-    runKeys(vim, ["<escape>", "q"]);
+    runKeys(vim, ["<escape>"]);
 
+    // Replace mode owns typing (overwrite / restore), so it is not passthrough.
     runKeys(vim, ["R"]);
-    expect(vim.wouldHandleKeyForTest("x")).toBe(true);
-    expect(vim.wouldHandleKeyForTest("space")).toBe(true);
-    expect(vim.wouldHandleKeyForTest("enter")).toBe(true);
-    expect(vim.wouldHandleKeyForTest("backspace")).toBe(true);
-
-    const plan = vim.handleKey("x");
-    expect(plan).not.toBeNull();
+    expect(vim.handleKey("x")?.passthrough).toBe(false);
+    expect(vim.handleKey("space")?.passthrough).toBe(false);
+    expect(vim.handleKey("enter")?.passthrough).toBe(false);
+    expect(vim.handleKey("backspace")?.passthrough).toBe(false);
   });
 
   it("delegates unsupported insert-mode Ctrl keys to VSCode", () => {
@@ -560,6 +617,243 @@ describe("Zed-inspired Vim core smoke tests", () => {
     runKeys(vim, ["a"]);
 
     expect(head(editor)).toEqual({ row: 0, column: 1 });
+    expect(editor.easyMotionMarkers).toEqual([]);
+  });
+
+  it("runs EasyMotion 2-char searches, waiting for both input chars", () => {
+    const editor = new InMemoryVimEditor("afo fo fo fo");
+    const vim = new Vim(editor, { easymotion: true, easymotionKeys: "abcdef" });
+
+    // `2s` is the bidirectional 2-char search; the first input char is not
+    // enough to search, so the overlay stays pending with no markers yet.
+    runKeys(vim, ["\\", "\\", "2", "s", "f"]);
+    expect(vim.status.pending).toBe(true);
+    expect(editor.easyMotionMarkers).toEqual([]);
+
+    // The second char completes the query ("fo" at columns 1, 4, 7, 10).
+    runKeys(vim, ["o"]);
+    expect(editor.easyMotionMarkers).toEqual([
+      { label: "a", position: { row: 0, column: 1 } },
+      { label: "b", position: { row: 0, column: 4 } },
+      { label: "c", position: { row: 0, column: 7 } },
+      { label: "d", position: { row: 0, column: 10 } },
+    ]);
+
+    runKeys(vim, ["c"]);
+    expect(head(editor)).toEqual({ row: 0, column: 7 });
+    expect(editor.easyMotionMarkers).toEqual([]);
+    expect(vim.status.pending).toBe(false);
+  });
+
+  it("supports EasyMotion backspace while entering a char query", () => {
+    const editor = new InMemoryVimEditor("foo bar foo");
+    const vim = new Vim(editor, { easymotion: true, easymotionKeys: "abcdef" });
+
+    runKeys(vim, ["\\", "\\", "2", "s", "f", "backspace", "o", "o"]);
+    // "oo" occurs at columns 1 and 9.
+    expect(editor.easyMotionMarkers).toEqual([
+      { label: "a", position: { row: 0, column: 1 } },
+      { label: "b", position: { row: 0, column: 9 } },
+    ]);
+  });
+
+  it("runs EasyMotion n-char searches confirmed with enter", () => {
+    const editor = new InMemoryVimEditor("foo bar foo baz foo");
+    const vim = new Vim(editor, { easymotion: true, easymotionKeys: "abcdef" });
+
+    // `/` is the bidirectional n-char search; input accumulates until `enter`,
+    // which builds the labels (matches at columns 8 and 16; column 0 is the
+    // cursor and is skipped).
+    runKeys(vim, ["\\", "\\", "/", "f", "o", "o"]);
+    expect(vim.status.pending).toBe(true);
+    expect(editor.easyMotionMarkers).toEqual([]);
+
+    runKeys(vim, ["enter"]);
+    expect(editor.easyMotionMarkers).toEqual([
+      { label: "a", position: { row: 0, column: 8 } },
+      { label: "b", position: { row: 0, column: 16 } },
+    ]);
+
+    runKeys(vim, ["b"]);
+    expect(head(editor)).toEqual({ row: 0, column: 16 });
+    expect(vim.status.pending).toBe(false);
+  });
+
+  it("narrows EasyMotion multi-key labels as the prefix is typed", () => {
+    const editor = new InMemoryVimEditor("x x x x x");
+    const vim = new Vim(editor, { easymotion: true, easymotionKeys: "ab" });
+
+    // Five `x`s minus the cursor gives four matches, but only two label keys, so
+    // labels become multi-key (the last match gets no label and is dropped).
+    runKeys(vim, ["\\", "\\", "s", "x"]);
+    expect(editor.easyMotionMarkers).toEqual([
+      { label: "a", position: { row: 0, column: 2 } },
+      { label: "ba", position: { row: 0, column: 4 } },
+      { label: "bb", position: { row: 0, column: 6 } },
+    ]);
+
+    // Typing the shared prefix `b` narrows to the two `b_` labels, repainting
+    // them with the prefix stripped.
+    runKeys(vim, ["b"]);
+    expect(editor.easyMotionMarkers).toEqual([
+      { label: "a", position: { row: 0, column: 4 } },
+      { label: "b", position: { row: 0, column: 6 } },
+    ]);
+    expect(vim.status.pending).toBe(true);
+
+    runKeys(vim, ["a"]);
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+    expect(vim.status.pending).toBe(false);
+  });
+
+  it("cancels EasyMotion on escape and on an invalid trigger", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor, { easymotion: true });
+
+    runKeys(vim, ["\\", "\\", "w"]);
+    expect(vim.status.pending).toBe(true);
+    expect(editor.easyMotionMarkers.length).toBeGreaterThan(0);
+
+    runKeys(vim, ["escape"]);
+    expect(vim.status.pending).toBe(false);
+    expect(vim.status.mode).toBe("normal");
+    expect(editor.easyMotionMarkers).toEqual([]);
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+
+    // A trigger key that matches no spec clears the overlay.
+    runKeys(vim, ["\\", "\\", "!"]);
+    expect(vim.status.pending).toBe(false);
+    expect(editor.easyMotionMarkers).toEqual([]);
+  });
+
+  it("extends the selection when EasyMotion runs from visual mode", () => {
+    const editor = new InMemoryVimEditor("one two three");
+    const vim = new Vim(editor, { easymotion: true });
+
+    runKeys(vim, ["v", "\\", "\\", "w"]);
+    expect(vim.status.pending).toBe(true);
+    expect(editor.easyMotionMarkers).toEqual([
+      { label: "h", position: { row: 0, column: 4 } },
+      { label: "k", position: { row: 0, column: 8 } },
+    ]);
+
+    runKeys(vim, ["k"]);
+    // Still visual; a charwise head is exclusive, so selecting through column 8
+    // lands the head at column 9.
+    expect(vim.status.mode).toBe("visual");
+    const selection = editor.getSelections()[0];
+    expect(selection.type).toBe("charwise");
+    expect(head(editor)).toEqual({ row: 0, column: 9 });
+    expect(editor.easyMotionMarkers).toEqual([]);
+  });
+
+  it("records insert-mode typing (incl. backspace) for dot-repeat via the passthrough path", () => {
+    const editor = new InMemoryVimEditor("Z");
+    const vim = new Vim(editor);
+
+    // Type "foo" with a corrected character: `foX<bs>o`. Backspace is a recorded
+    // passthrough key (the old path dropped it), so the net inserted text is "foo".
+    runKeys(vim, ["i", "f", "o", "X", "backspace", "o", "escape"]);
+    expect(editor.line(0)).toBe("fooZ");
+
+    // Dot-repeats the whole insert (replayed through the default handler),
+    // reproducing the net "foo" at the cursor.
+    runKeys(vim, ["."]);
+    expect(editor.line(0)).toBe("fofoooZ");
+  });
+
+  it("records insert-mode navigation keys so dot-repeat replays them", () => {
+    const editor = new InMemoryVimEditor("abc\nabc");
+    const vim = new Vim(editor);
+
+    // `iX<left>Y<esc>`: the arrow is a recorded passthrough key, so `.` on the
+    // next line reproduces the same edit (including the cursor move).
+    runKeys(vim, ["i", "X", "left", "Y", "escape"]);
+    expect(editor.line(0)).toBe("YXabc");
+
+    runKeys(vim, ["j", "0", "."]);
+    expect(editor.line(1)).toBe("YXabc");
+  });
+
+  it("splits insert undo at cursor movement, like native VSCode/Vim", () => {
+    const editor = new InMemoryVimEditor("Z");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["i", "a", "b", "right", "c", "d", "escape"]);
+    expect(editor.line(0)).toBe("abZcd");
+
+    // The arrow split the insert into two undo units.
+    runKeys(vim, ["u"]);
+    expect(editor.line(0)).toBe("abZ");
+    runKeys(vim, ["u"]);
+    expect(editor.line(0)).toBe("Z");
+  });
+
+  it("replays a ctrl-v code completed by a typed key coherently in macros", () => {
+    const editor = new InMemoryVimEditor("x\nx");
+    const vim = new Vim(editor);
+
+    // `ctrl-v 6 5` is completed by the typed `Z`, which is recorded as typed and
+    // must feed the pending literal waiter again on replay.
+    runKeys(vim, ["q", "a", "A", "ctrl-v", "6", "5", "Z", "escape", "q"]);
+    expect(editor.line(0)).toBe("xAZ");
+
+    runKeys(vim, ["j", "@", "a"]);
+    expect(editor.line(1)).toBe("xAZ");
+  });
+
+  it("cancels the insert ctrl-r register waiter with escape without leaving insert", () => {
+    const editor = new InMemoryVimEditor("ab");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["i", "ctrl-r", "escape", "x", "escape"]);
+    expect(editor.line(0)).toBe("xab");
+    expect(vim.status.mode).toBe("normal");
+  });
+
+  it("repeats a counted replace session (3R) on escape", () => {
+    const editor = new InMemoryVimEditor("aaaaaaaaaa");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["3", "R", "x", "y", "escape"]);
+    expect(editor.line(0)).toBe("xyxyxyaaaa");
+  });
+
+  it("restores overwritten characters with backspace in replace mode", () => {
+    const editor = new InMemoryVimEditor("abcdef");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["R", "X", "Y", "backspace", "backspace"]);
+    expect(editor.line(0)).toBe("abcdef");
+    expect(vim.status.mode).toBe("replace");
+    runKeys(vim, ["escape"]);
+    expect(vim.status.mode).toBe("normal");
+  });
+
+  it("records replace-mode navigation keys into macros", () => {
+    const editor = new InMemoryVimEditor("abcd\nabcd");
+    const vim = new Vim(editor);
+
+    // Mid-line navigation (no line-wrap ambiguity): overwrite `c`, step left
+    // twice, overwrite `b`. Both the overwrites (shortcuts) and the arrows
+    // (typed passthrough) land in the macro.
+    runKeys(vim, ["q", "a", "l", "l", "R", "X", "left", "left", "Y", "escape", "q"]);
+    expect(editor.line(0)).toBe("aYXd");
+
+    runKeys(vim, ["j", "0", "@", "a"]);
+    expect(editor.line(1)).toBe("aYXd");
+  });
+
+  it("does not trigger EasyMotion from insert mode (leader is inserted literally)", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor, { easymotion: true });
+
+    // The executor consults the normal-mode handler set in insert mode too, so
+    // the easyMotion root must decline there — the leader is ordinary text.
+    runKeys(vim, ["i", "\\", "x"]);
+    expect(editor.line(0)).toBe("\\xabc");
+    expect(vim.status.mode).toBe("insert");
+    expect(vim.status.pending).toBe(false);
     expect(editor.easyMotionMarkers).toEqual([]);
   });
 
@@ -967,9 +1261,12 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["A"]);
 
-    expect(vim.wouldHandleKeyForTest("backspace")).toBe(false);
-    expect(vim.wouldHandleKeyForTest("left")).toBe(false);
-    expect(vim.wouldHandleKeyForTest("tab")).toBe(false);
+    // Backspace and the whitelisted navigation keys are passthrough (native +
+    // recorded); keys outside the whitelist (tab, command chords) fall through
+    // natively and unrecorded. None is captured by the `fd` remap.
+    expect(vim.handleKey("backspace")?.passthrough).toBe(true);
+    expect(vim.handleKey("left")?.passthrough).toBe(true);
+    expect(vim.handleKey("tab")).toBeNull();
   });
 
   it("supports <Nop> insert remaps", () => {
@@ -992,7 +1289,9 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["A"]);
 
-    expect(vim.handleKey("x", { whenEvaluator: when => when !== "vimcode.test" })).toBeNull();
+    // With the when-clause not matching, `x` does not start the remap — it is
+    // ordinary insert-mode passthrough text, not remap-owned.
+    expect(vim.handleKey("x", { whenEvaluator: when => when !== "vimcode.test" })?.passthrough).toBe(true);
 
     await runKeysWithWhen(vim, ["x", "y"], "vimcode.test");
 
@@ -1769,15 +2068,13 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const editor = new InMemoryVimEditor("");
     const vim = new Vim(editor);
 
-    for (const key of ["q", "q", "a", "a", "b", "c", "<escape>", "q"]) {
-      await vim.handleKey(key)?.run();
-    }
+    // Insert text is passthrough on the real path: the host types it and Vim
+    // records it. [pressKeysThroughController] simulates that native typing.
+    await pressKeysThroughController(vim, editor, ["q", "q", "a", "a", "b", "c", "<escape>", "q"]);
 
     expect(editor.getText()).toBe("abc");
 
-    for (const key of ["@", "q"]) {
-      await vim.handleKey(key)?.run();
-    }
+    await pressKeysThroughController(vim, editor, ["@", "q"]);
 
     expect(editor.getText()).toBe("abcabc");
   });

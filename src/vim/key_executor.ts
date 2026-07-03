@@ -77,11 +77,22 @@ export class KeyExecutor {
   /** True while a chord is mid-flight (the last key left a pending continuation). */
   private pending = false;
 
+  /** Bumped whenever parser state may have moved ([commit]/[reset]/
+      [acceptConflict]). A [parse] result tagged with an older generation must
+      not be committed — the owner re-parses instead. This lets the synchronous
+      ownership decision reuse its single evaluation across the host's async
+      boundary in the common case while staying correct when keys race ahead of
+      their queued commits. */
+  private stateGeneration = 0;
+
   /** [dotRepeatable] of the effect run during the current/last [handle]. */
   private lastDotRepeatable: boolean | undefined;
 
   /** [syncAfter] of the effect run during the current/last [handle]. */
   private lastSyncAfter = false;
+
+  /** [insertTyped] of the effect run during the current/last [handle]. */
+  private lastInsertTyped = false;
 
   /** [preservesDotRepeat] of the effect run — or of the pending continuation
       entered — during the current/last [handle]. */
@@ -140,6 +151,7 @@ export class KeyExecutor {
 
   /** Clear pending handlers/conflicts and rebuild default handlers for [mode]. */
   reset(mode: VimMode = this.state.mode): void {
+    this.stateGeneration++;
     this.clearConflict();
     this.pending = false;
     this.state = {
@@ -169,6 +181,14 @@ export class KeyExecutor {
       `syncFromEditorState`). [false] when no such effect ran. */
   lastEffectSyncAfter(): boolean {
     return this.lastSyncAfter;
+  }
+
+  /** Whether the effect run during the most recent [handle] was a passthrough
+      insert/replace-mode character (see [EffectMeta.insertTyped]): the owner
+      records it as a `typed` key and reproduces the edit via the default
+      handler. [false] when no such effect ran. */
+  lastEffectInsertTyped(): boolean {
+    return this.lastInsertTyped;
   }
 
   /** Whether the most recent [handle] was transparent to dot-repeat (its effect
@@ -226,7 +246,7 @@ export class KeyExecutor {
    * interactive prompt updates as pending [PendingEffect]s — so this is safe to
    * call for the ownership decision alone; pass [result] to [commit] to apply it.
    */
-  parse(key: string, allowRemap = true): { result: HandleResult<void>; claimed: boolean } {
+  parse(key: string, allowRemap = true): { result: HandleResult<void>; claimed: boolean; generation: number } {
     const result = combineHandleResults(
       this.handlerEnvs.map(({ handler, state }) =>
         handler(key, { ...state, allowRemap })
@@ -235,7 +255,13 @@ export class KeyExecutor {
     // Mirrors [commit]'s return: every outcome is claimed except an [unhandled]
     // key with no pending conflict to accept.
     const claimed = result.type !== "unhandled" || this.conflict !== undefined;
-    return { result, claimed };
+    return { result, claimed, generation: this.stateGeneration };
+  }
+
+  /** The generation a fresh [parse] would be tagged with; a stored parse from
+      an older generation is stale (see [stateGeneration]). */
+  currentGeneration(): number {
+    return this.stateGeneration;
   }
 
   /**
@@ -245,6 +271,7 @@ export class KeyExecutor {
    * serializes keys so this holds across the `preventDefault` boundary.
    */
   commit(key: string, result: HandleResult<void>): boolean {
+    this.stateGeneration++;
     const previousConflict = this.conflict;
     this.clearConflictTimer();
     // Reset before running: stays [undefined] if this key only left a pending
@@ -252,6 +279,7 @@ export class KeyExecutor {
     // completed dot-repeatable / non-repeatable command.
     this.lastDotRepeatable = undefined;
     this.lastSyncAfter = false;
+    this.lastInsertTyped = false;
     this.lastHandleCancelled = false;
     this.lastPreservesDotRepeat = false;
 
@@ -323,6 +351,7 @@ export class KeyExecutor {
   acceptConflict(): boolean {
     const conflict = this.conflict;
     if (conflict === undefined) return false;
+    this.stateGeneration++;
     this.executeConflict(conflict, conflict.replaySuffix);
     this.logDebug("accepted conflict");
     return true;
@@ -359,6 +388,7 @@ export class KeyExecutor {
     if (action.type === "effect") {
       this.lastDotRepeatable = action.dotRepeatable === true;
       this.lastSyncAfter = action.syncAfter === true;
+      this.lastInsertTyped = action.insertTyped === true;
       this.lastPreservesDotRepeat = action.preservesDotRepeat === true;
       // [resolveMode], when present, computes the true target mode after [run]
       // has executed (e.g. a visual command whose resulting kind depends on the

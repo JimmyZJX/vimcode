@@ -53,13 +53,11 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
         ({ editor, vim } = editorFromMarkedText("ˇ", fixtureConfigurations[fixture.testCaseId] ?? {}));
       }
       const localKey = keyForLocalVim(entry.Key);
-      const dispatchResult = vim.onKey(localKey);
-      // Keys the core leaves to the host (arrow keys in insert mode) take
-      // effect natively in a real editor; emulate that for the in-memory
-      // editor, including the undo split native cursor movement causes.
-      if (dispatchResult === "native") {
-        emulateNativeInsertKey(requireEditor(editor, fixture.testCaseId), requireVim(vim, fixture.testCaseId), localKey);
-      }
+      // Insert/replace-mode navigation keys used to be host-native and needed
+      // emulation here; they are framework passthrough keys now, applied through
+      // [InMemoryVimEditor.replayInsertKey] (including the undo split cursor
+      // movement causes), so a "native" result needs no special handling.
+      vim.onKey(localKey);
     } else if ("SetOption" in entry) {
       // Zed fixtures may contain Neovim UI options (e.g. wrap/columns) that do
       // not affect the model-buffer semantics supported by this harness yet.
@@ -128,35 +126,6 @@ function requireVim(vim: Vim | undefined, testCaseId: string): Vim {
 
 // Native cursor movement during insert/replace mode: a real host moves the
 // cursor itself, which also breaks Vim's undo block (`i_<Left>` etc.).
-function emulateNativeInsertKey(editor: InMemoryVimEditor, vim: Vim, key: string): void {
-  if (vim.mode !== "insert" && vim.mode !== "replace") return;
-  const selection = editor.getSelections()[0];
-  if (selection === undefined || selection.type !== "charwise") return;
-  const head = selection.cursor ?? selection.head;
-  const lineLength = editor.lineLength(head.row);
-  const target = (() => {
-    switch (key) {
-      case "left":
-        return { row: head.row, column: Math.max(0, head.column - 1) };
-      case "right":
-        return { row: head.row, column: Math.min(head.column + 1, lineLength) };
-      case "up":
-      case "down": {
-        const row = Math.max(0, Math.min(head.row + (key === "down" ? 1 : -1), editor.lineCount() - 1));
-        return { row, column: Math.min(head.column, editor.lineLength(row)) };
-      }
-      case "home":
-        return { row: head.row, column: 0 };
-      case "end":
-        return { row: head.row, column: lineLength };
-      default:
-        return undefined;
-    }
-  })();
-  if (target === undefined) return;
-  editor.finishUndoTransaction();
-  editor.setSelections([{ type: "charwise", anchor: target, head: target }]);
-}
 
 function keyForLocalVim(key: string): string {
   switch (key) {
