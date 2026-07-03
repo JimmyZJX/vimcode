@@ -666,6 +666,12 @@ export function motionRange(
       return orderedRange(start, { row: target.row, column });
     }
     const range = motionRange(editor, start, inner, count);
+    if (inner.type === "matching") {
+      // Neovim: the charwise force does not toggle `%` to exclusive (the
+      // default `%` is the bundled matchit mapping, not a plain inclusive
+      // motion); `dv%` deletes the same inclusive range as `d%`.
+      return range;
+    }
     if (isInclusiveMotion(inner)) {
       const end = { row: range.end.row, column: Math.max(0, range.end.column - 1) };
       return { start: range.start, end: comparePositions(end, range.start) < 0 ? range.start : end };
@@ -729,7 +735,18 @@ export function motionRange(
     }
     return orderedRange(start, end);
   }
-  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "goToPercentage" || motion.type === "matching" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+  if (motion.type === "matching") {
+    // Vim: `%` is an inclusive motion — the landed-on bracket is included in
+    // the operated range in both directions (`d%` deletes `(abc)` entirely
+    // from either bracket). When no match is found, `matching` returns the
+    // start position and the inclusive range covers the character under the
+    // cursor — Neovim's default `%` (the bundled matchit mapping) does the
+    // same under an operator, including joining lines when the cursor sits on
+    // an empty line (the one case where the one-character extension wraps).
+    const range = orderedRange(start, end);
+    return { start: range.start, end: nextPosition(editor, range.end) ?? range.end };
+  }
+  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "goToPercentage" || motion.type === "unmatchedBackward" || motion.type === "jump") {
     return orderedRange(start, end);
   }
   if (motion.type === "searchMatch") {
