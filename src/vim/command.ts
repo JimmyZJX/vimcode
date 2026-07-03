@@ -9,6 +9,7 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "./prompt_history.js";
+import { Registers, parseRegisterName } from "./registers.js";
 import { translateVimRegex } from "./search.js";
 import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
@@ -72,6 +73,8 @@ export function isCommandInputKey(key: string): boolean {
 
 export type CommandOptions = {
   runNormalKeys?: (keys: readonly string[], range: LineRange | undefined) => void;
+  /** Register access for `:pu[t]`. */
+  registers?: Registers;
   exOptions?: { gdefault: boolean };
   /** Resolves `'x` mark addresses (`:'<,'>s/...`) to a row. */
   markLine?: (name: string) => number | undefined;
@@ -363,7 +366,7 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
     return;
   }
 
-  const { range, rest } = parseRange(editor, command, options);
+  const { range, rawEndRow, rest } = parseRange(editor, command, options);
   const trimmedRest = rest.trim();
   if (trimmedRest.length === 0) {
     if (range !== undefined) moveToLine(editor, range.endRowInclusive);
@@ -377,6 +380,25 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
   }
 
   if (dispatchSimpleCommand({ editor, range }, trimmedRest)) return;
+
+  // `:[range]m {addr}` / `:[range]t {addr}` (`:co`): move/copy lines to after
+  // the destination address (`0` = above the first line).
+  const moveCopy = parseMoveCopy(trimmedRest);
+  if (moveCopy !== undefined) {
+    const destination = parseAddress(editor, moveCopy.addressText, 0, options);
+    if (destination !== undefined && destination.nextIndex === moveCopy.addressText.length) {
+      moveCopyLines(editor, range ?? currentLineRange(editor, 1), destination.row, moveCopy.kind);
+    }
+    return;
+  }
+
+  // `:[line]pu[t] [!] [reg]`: put a register linewise below [line] (above with
+  // `!`); `:0pu` puts above the first line.
+  const put = parsePut(trimmedRest);
+  if (put !== undefined) {
+    putLines(editor, rawEndRow ?? selectionHead(editor.getSelections()[0]).row, put, options);
+    return;
+  }
 
   const setOption = parseSetCommand(trimmedRest);
   if (setOption !== undefined) {
@@ -454,13 +476,91 @@ function commandSearch(editor: VimEditorCapabilities, command: string): void {
   if (found !== undefined) editor.setSelections([charwiseSelection(found)]);
 }
 
+function parseMoveCopy(command: string): { kind: "move" | "copy"; addressText: string } | undefined {
+  const match = /^(move|mov|mo|m|copy|cop|co|t)(\s*)(.+)$/.exec(command);
+  if (match === null) return undefined;
+  return {
+    kind: match[1] === "t" || match[1].startsWith("c") ? "copy" : "move",
+    addressText: match[3].trim(),
+  };
+}
+
+function moveCopyLines(
+  editor: VimEditorCapabilities,
+  range: LineRange,
+  destinationRow: number,
+  kind: "move" | "copy"
+): void {
+  const lines: string[] = [];
+  for (let row = range.startRow; row <= range.endRowInclusive; row++) lines.push(editor.line(row));
+  const count = lines.length;
+
+  // Vim E134: cannot move lines into themselves.
+  if (kind === "move" && destinationRow >= range.startRow - 1 && destinationRow <= range.endRowInclusive) return;
+
+  const edits: TextEdit[] = [];
+  if (kind === "move") edits.push({ range: rangeToFullLines(editor, range), text: "" });
+  edits.push(lineInsertionEdit(editor, destinationRow, lines));
+
+  // Vim: the cursor lands on the last moved/copied line, first non-blank.
+  const cursorRow =
+    kind === "copy" || destinationRow > range.endRowInclusive ? destinationRow + (kind === "copy" ? count : 0) : destinationRow + count;
+  editor.applyEdits(edits, [
+    charwiseSelection({ row: cursorRow, column: firstNonWhitespace(lines[lines.length - 1] ?? "") }),
+  ]);
+}
+
+// An edit inserting [lines] after [afterRow] (-1 = above the first line),
+// expressed in pre-edit coordinates.
+function lineInsertionEdit(editor: VimEditorCapabilities, afterRow: number, lines: readonly string[]): TextEdit {
+  const lastRow = editor.lineCount() - 1;
+  if (afterRow >= lastRow) {
+    const at = { row: lastRow, column: editor.lineLength(lastRow) };
+    return { range: { start: at, end: at }, text: `\n${lines.join("\n")}` };
+  }
+  const at = { row: Math.max(0, afterRow + 1), column: 0 };
+  return { range: { start: at, end: at }, text: `${lines.join("\n")}\n` };
+}
+
+function parsePut(command: string): { before: boolean; registerKey: string | undefined } | undefined {
+  const match = /^pu(?:t)?(!)?(?:\s+(\S))?$/.exec(command);
+  if (match === null) return undefined;
+  return { before: match[1] === "!", registerKey: match[2] };
+}
+
+function putLines(
+  editor: VimEditorCapabilities,
+  addressedRow: number,
+  { before, registerKey }: { before: boolean; registerKey: string | undefined },
+  options: CommandOptions
+): void {
+  const registers = options.registers;
+  if (registers === undefined) return;
+  const content = registers.readContent(registerKey === undefined ? undefined : parseRegisterName(registerKey));
+  if (content.text.length === 0) return;
+  const text = content.text.endsWith("\n") ? content.text.slice(0, -1) : content.text;
+  const lines = text.split("\n");
+  // `:pu` inserts below the addressed line, `:pu!` above it; `:0pu` addresses
+  // the row above line 1.
+  const afterRow = before ? addressedRow - 1 : addressedRow;
+  const edit = lineInsertionEdit(editor, afterRow, lines);
+  const lastRow = editor.lineCount() - 1;
+  const firstInsertedRow = afterRow >= lastRow ? lastRow + 1 : Math.max(0, afterRow + 1);
+  editor.applyEdits([edit], [
+    charwiseSelection({
+      row: firstInsertedRow + lines.length - 1,
+      column: firstNonWhitespace(lines[lines.length - 1] ?? ""),
+    }),
+  ]);
+}
+
 function parseGotoLine(command: string): number | undefined {
   return /^\d+$/.test(command) ? Number(command) : undefined;
 }
 
-function parseRange(editor: VimEditorCapabilities, command: string, options: CommandOptions): { range: LineRange | undefined; rest: string } {
+function parseRange(editor: VimEditorCapabilities, command: string, options: CommandOptions): { range: LineRange | undefined; rawEndRow?: number; rest: string } {
   if (command.startsWith("%") && command.length > 1 && command[1] !== "+" && command[1] !== "-" && command[1] !== "," && command[1] !== ";") {
-    return { range: wholeBufferRange(editor), rest: command.slice(1) };
+    return { range: wholeBufferRange(editor), rawEndRow: editor.lineCount() - 1, rest: command.slice(1) };
   }
 
   const first = parseAddress(editor, command, 0, options);
@@ -478,6 +578,9 @@ function parseRange(editor: VimEditorCapabilities, command: string, options: Com
 
   return {
     range: normalizeLineRange(editor, first.row, endRow),
+    // The unclipped end row: `:0pu` addresses the row *above* line 1, which
+    // the normalized range cannot represent.
+    rawEndRow: endRow,
     rest: command.slice(nextIndex),
   };
 }
@@ -490,6 +593,9 @@ function parseAddress(editor: VimEditorCapabilities, command: string, startIndex
     index++;
   } else if (command[index] === ".") {
     row = selectionHead(editor.getSelections()[0]).row;
+    index++;
+  } else if (command[index] === "$") {
+    row = editor.lineCount() - 1;
     index++;
   } else if (command[index] === "'" && command[index + 1] !== undefined) {
     // Vim `:h :range`: `'x` addresses the line holding mark x (`:'<,'>`).

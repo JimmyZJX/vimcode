@@ -10,12 +10,25 @@ import { positionAfterInsertedText } from "../insert.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers } from "../registers.js";
 import { TextEdit, VimSelection, charwiseSelection, selectionHead } from "../state.js";
 
+export type PasteVariant = {
+  before: boolean;
+  count?: number;
+  // `gp`/`gP`: leave the cursor just after the pasted text (the character
+  // following a charwise paste; the line below a linewise one).
+  cursorAfter?: boolean;
+  // `]p`/`[p`/`]P`/`[P`: reindent a linewise paste to the current line,
+  // preserving the pasted lines' relative indentation (spaces-first, like
+  // 'expandtab' — the fixtures are recorded with it). Charwise/blockwise
+  // registers paste plainly, like Vim.
+  adjustIndent?: boolean;
+};
+
 // Zed: `normal::paste::Vim::paste`.
 export function paste(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  { before, count = 1 }: { before: boolean; count?: number }
+  { before, count = 1, cursorAfter = false, adjustIndent = false }: PasteVariant
 ): void {
   const content = registers.readContent(registerName);
   if (content.text.length === 0) return;
@@ -27,11 +40,11 @@ export function paste(
   }
 
   if (content.kind === "linewise") {
-    pasteLinewise(editor, content.text, { before, count });
+    pasteLinewise(editor, content.text, { before, count, cursorAfter, adjustIndent });
   } else if (content.kind === "blockwise") {
     pasteBlockwise(editor, content.text, { before, count });
   } else {
-    pasteCharacterwise(editor, content.text.repeat(count), { before });
+    pasteCharacterwise(editor, content.text.repeat(count), { before, cursorAfter });
   }
 }
 
@@ -79,10 +92,10 @@ function pushPasteEditsForSelection(
 ): void {
   switch (part.kind) {
     case "characterwise":
-      pushCharacterwisePasteEdit(editor, edits, selectionsAfter, selection, part.text.repeat(count), { before });
+      pushCharacterwisePasteEdit(editor, edits, selectionsAfter, selection, part.text.repeat(count), { before, cursorAfter: false });
       return;
     case "linewise":
-      pushLinewisePasteEdit(editor, edits, selectionsAfter, selection, repeatedLinewiseText(part.text, count), { before });
+      pushLinewisePasteEdit(editor, edits, selectionsAfter, selection, repeatedLinewiseText(part.text, count), { before, cursorAfter: false });
       return;
     case "blockwise":
       pushBlockwisePasteEdits(editor, edits, selectionsAfter, selection, part.text, { before, count });
@@ -93,12 +106,12 @@ function pushPasteEditsForSelection(
 function pasteCharacterwise(
   editor: VimEditorCapabilities,
   text: string,
-  { before }: { before: boolean }
+  { before, cursorAfter = false }: { before: boolean; cursorAfter?: boolean }
 ): void {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
   for (const selection of editor.getSelections()) {
-    pushCharacterwisePasteEdit(editor, edits, selectionsAfter, selection, text, { before });
+    pushCharacterwisePasteEdit(editor, edits, selectionsAfter, selection, text, { before, cursorAfter });
   }
   editor.applyEdits(edits, selectionsAfter);
 }
@@ -109,14 +122,18 @@ function pushCharacterwisePasteEdit(
   selectionsAfter: VimSelection[],
   selection: VimSelection,
   text: string,
-  { before }: { before: boolean }
+  { before, cursorAfter }: { before: boolean; cursorAfter: boolean }
 ): void {
   const head = selectionHead(selection);
   const insertAt = before
     ? head
     : { row: head.row, column: Math.min(head.column + 1, editor.lineLength(head.row)) };
   edits.push({ range: { start: insertAt, end: insertAt }, text });
-  selectionsAfter.push(charwiseSelection(cursorAtEndOfInsertedText(insertAt, text)));
+  // `gp`/`gP`: the cursor lands on the character just after the pasted text.
+  const cursor = cursorAfter
+    ? positionAfterInsertedText(insertAt, text)
+    : cursorAtEndOfInsertedText(insertAt, text);
+  selectionsAfter.push(charwiseSelection(cursor));
 }
 
 function cursorAtEndOfInsertedText(start: ReturnType<typeof selectionHead>, text: string): ReturnType<typeof selectionHead> {
@@ -165,17 +182,53 @@ function pushBlockwisePasteEdits(
 function pasteLinewise(
   editor: VimEditorCapabilities,
   text: string,
-  { before, count }: { before: boolean; count: number }
+  { before, count, cursorAfter = false, adjustIndent = false }: { before: boolean; count: number; cursorAfter?: boolean; adjustIndent?: boolean }
 ): void {
   const repeatedLineText = repeatedLinewiseText(text, count);
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
 
   for (const selection of editor.getSelections()) {
-    pushLinewisePasteEdit(editor, edits, selectionsAfter, selection, repeatedLineText, { before });
+    const lineText = adjustIndent
+      ? reindentedLines(repeatedLineText, editor.line(selectionHead(selection).row))
+      : repeatedLineText;
+    pushLinewisePasteEdit(editor, edits, selectionsAfter, selection, lineText, { before, cursorAfter });
   }
 
   editor.applyEdits(edits, selectionsAfter);
+}
+
+// `]p`-family reindentation: shift every pasted line's indentation by the
+// difference between the current line's indent width and the first pasted
+// line's, preserving relative indentation. Widths count tabs at 8 columns;
+// the synthesized indent is spaces.
+function reindentedLines(text: string, currentLine: string): string {
+  const lines = text.split("\n");
+  const targetWidth = indentWidth(currentLine);
+  const sourceWidth = lines.length > 0 ? indentWidth(lines[0]) : 0;
+  const delta = targetWidth - sourceWidth;
+  return lines
+    .map(line => {
+      if (/^[ \t]*$/.test(line)) return line;
+      const body = line.replace(/^[ \t]*/, "");
+      return " ".repeat(Math.max(0, indentWidth(line) + delta)) + body;
+    })
+    .join("\n");
+}
+
+function firstNonBlankColumn(line: string): number {
+  const column = line.search(/[^ \t]/);
+  return column < 0 ? 0 : column;
+}
+
+function indentWidth(line: string): number {
+  let width = 0;
+  for (const char of line) {
+    if (char === " ") width++;
+    else if (char === "\t") width = (Math.floor(width / 8) + 1) * 8;
+    else break;
+  }
+  return width;
 }
 
 function repeatedLinewiseText(text: string, count: number): string {
@@ -189,7 +242,7 @@ function pushLinewisePasteEdit(
   selectionsAfter: VimSelection[],
   selection: VimSelection,
   repeatedLineText: string,
-  { before }: { before: boolean }
+  { before, cursorAfter }: { before: boolean; cursorAfter: boolean }
 ): void {
   const head = selectionHead(selection);
   const insertAt = before
@@ -197,5 +250,12 @@ function pushLinewisePasteEdit(
     : { row: head.row, column: editor.lineLength(head.row) };
   const insertedText = before ? `${repeatedLineText}\n` : `\n${repeatedLineText}`;
   edits.push({ range: { start: insertAt, end: insertAt }, text: insertedText });
-  selectionsAfter.push(charwiseSelection({ row: before ? head.row : head.row + 1, column: 0 }));
+  const firstPastedRow = before ? head.row : head.row + 1;
+  const pastedLineCount = repeatedLineText.split("\n").length;
+  // `gp`/`gP`: the line after the pasted block; otherwise the first non-blank
+  // of the first pasted line.
+  const cursor = cursorAfter
+    ? { row: firstPastedRow + pastedLineCount, column: 0 }
+    : { row: firstPastedRow, column: firstNonBlankColumn(repeatedLineText.split("\n")[0] ?? "") };
+  selectionsAfter.push(charwiseSelection(cursor));
 }

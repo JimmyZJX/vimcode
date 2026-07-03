@@ -144,6 +144,11 @@ function gContinuation(key: string, state: HandlerState): HandleResult<void> {
     );
   }
 
+  // `gp`/`gP`: paste after/before, cursor just after the pasted text.
+  if (key === "p" || key === "P") {
+    return applySimpleActionEffect(state, { type: "paste", before: key === "P", cursorAfter: true });
+  }
+
   // Cumulative increment `g ctrl-a`/`g ctrl-x` and `gJ` (join without a space).
   if (key === "ctrl-a") return applySimpleActionEffect(state, { type: "increment", direction: "increment", cumulative: true });
   if (key === "ctrl-x") return applySimpleActionEffect(state, { type: "increment", direction: "decrement", cumulative: true });

@@ -26,7 +26,8 @@ export type SimpleAction =
   | { type: "joinLines"; withSpace: boolean } // J (true) / gJ (false)
   | { type: "replaceChar"; char: string } // r{char}
   | { type: "increment"; direction: "increment" | "decrement"; cumulative: boolean } // ctrl-a / ctrl-x (g-prefixed = cumulative)
-  | { type: "paste"; before: boolean }; // p (after) / P (before)
+  | { type: "paste"; before: boolean; cursorAfter?: boolean; adjustIndent?: boolean };
+// p/P; `gp`/`gP` set [cursorAfter], the `]p` family sets [adjustIndent].
 
 export function simpleActionForKey(key: string): SimpleAction | undefined {
   switch (key) {
@@ -89,7 +90,7 @@ export function applySimpleAction(
       return;
     }
     case "paste":
-      paste(editor, registers, register, { before: action.before, count });
+      paste(editor, registers, register, { before: action.before, count, cursorAfter: action.cursorAfter, adjustIndent: action.adjustIndent });
       return;
   }
 }

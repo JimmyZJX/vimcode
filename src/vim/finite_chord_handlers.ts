@@ -11,6 +11,7 @@ import type { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, Vim
 import { cloneHandlerState, effect, handler, invalid, unhandled } from "./key_handler.js";
 import type { HandleResult, Handler, HandlerState } from "./key_handler.js";
 import { applyMotion, bracketMotion } from "./motion.js";
+import { paste } from "./normal/paste.js";
 import { applyMotionResults } from "./motion_handler.js";
 import { charwiseSelection, isVisualModeKind, selectionHead } from "./state.js";
 import type { Position, TextEdit, VimMode } from "./state.js";
@@ -329,6 +330,20 @@ function bracketContinuation(bracket: "]" | "["): Handler<void> {
   return (key, state) => {
     const editor = state.editor;
     if (editor === undefined) return invalid();
+    // `]p`/`]P`/`[p`/`[P`: paste with the indentation adjusted to the current
+    // line (normal-only; `]p` pastes below, the other three above).
+    if (key === "p" || key === "P") {
+      if (isVisualModeKind(state.mode)) return invalid();
+      const registers = state.registers;
+      if (registers === undefined) return invalid();
+      const register = state.register;
+      const count = state.repeat;
+      const before = bracket === "[" || key === "P";
+      return effect(state.mode, () => paste(editor, registers, register, { before, count, adjustIndent: true }), {
+        dotRepeatable: true,
+      });
+    }
+
     // `] space`/`[ space`: insert blank lines below/above (normal-only).
     if (key === "space") {
       if (isVisualModeKind(state.mode)) return invalid();

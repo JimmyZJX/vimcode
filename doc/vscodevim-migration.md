@@ -142,10 +142,20 @@ is from the README plus known majors and may miss minor keys.
 - ~~Argument objects `ia`/`aa`.~~ Done — delimiters hardcoded to VSCodeVim's
   defaults (`(`/`[`, `,`); the `vim.argumentObject*` settings are not read.
 - ~~`ae`/`ie` entire-buffer objects.~~ Done.
-- ReplaceWithRegister `gr{motion}`/`grr` (opt-in but popular).
-- `af` visual expand-selection (VSCodeVim special).
-- Paste variants `gp`/`gP`/`]p`/`[p`.
-- Ex: `:m[ove]`, `:t`/`:co[py]`, `:pu[t]`, `:reg[isters]`, `:marks`,
+- ReplaceWithRegister `gr{motion}`/`grr` — **deliberately not implemented**:
+  vimcode's `gr` chord carries Neovim 0.11's default LSP mappings (`grr`
+  references, `grn` rename, `gra` code action), and ReplaceWithRegister is
+  opt-in-off in VSCodeVim. Users who want it can remap; taking `gr` would
+  trade an nvim-faithful default for an off-by-default emulation.
+- `af` visual expand-selection (VSCodeVim special) — still open; the natural
+  shape is the host's `editor.action.smartSelect.expand` plus adopting the
+  grown selection into the visual session after the async command completes
+  (needs an `adopt-after` hook like `selectionsAfter`).
+- ~~Paste variants `gp`/`gP`/`]p`/`[p`/`]P`/`[P`.~~ Done
+  (`test_paste_variants`; `]p` reindentation is spaces-first, recorded with
+  'expandtab' — nvim's default would synthesize tabs).
+- Ex: ~~`:m[ove]`, `:t`/`:co[py]`, `:pu[t]`~~ done (`test_ex_move_copy_put`;
+  `$`/`0` addresses now parse). Still open: `:reg[isters]`, `:marks`,
   `:delmarks`, `:>`/`:<`, `:sort` flags (`i`, `u`, `n`), `:s` repeat (`:s`,
   `&`), `:g` with more than `d`/`normal`.
 - `U` (undo line) — nvim fixtures already recorded (disabled).
@@ -216,8 +226,9 @@ command-line-mode remaps, `vim.visualstar`, quickpick cmdline, `ctrl-w`
    `+`-suffix scheme; documented as a divergence instead.
 5. ~~Text objects wave: `it`/`at` (+surround `t`), `ii`/`ai`, `ia`/`aa`,
    `ae`/`ie`.~~ Done.
-6. Tier-2 ex commands and paste variants; highlightedyank;
-   `cursorStylePerMode`.
+6. Tier-2 ex commands and paste variants: `:m`/`:t`/`:pu` + `gp`-family done;
+   `:reg`/`:marks`/`:sort` flags, highlightedyank, `cursorStylePerMode` still
+   open.
 7. Publish a "differences from VSCodeVim" page from the divergences section;
    collect dogfooder feedback before broad rollout.
 

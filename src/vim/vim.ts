@@ -845,6 +845,7 @@ export class Vim {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
         exOptions: this.globalState.exOptions,
         markLine: name => this.modelState.marks.position(name)?.row,
+        registers: this.globalState.registers,
       });
     }
     // Visual mode transitions (the framework targets only these three kinds):
@@ -1696,7 +1697,7 @@ export class Vim {
 
   private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
     if (typeof command === "string") {
-      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions, markLine: name => this.modelState.marks.position(name)?.row });
+      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions, markLine: name => this.modelState.marks.position(name)?.row, registers: this.globalState.registers });
       else this.editor.executeNativeCommand(command, [], { preserveVisualSelection: this.isVisualMode() });
       return;
     }
