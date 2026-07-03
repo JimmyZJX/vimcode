@@ -36,6 +36,10 @@ export type ApplyEditsOptions = {
 export type NativeCommandOptions = {
   preserveVisualSelection?: boolean;
   syncSelectionAfter?: boolean;
+  /** Selections to apply once the (asynchronous) native command completes —
+      e.g. the restored cursor after `gcc` runs the native comment toggle over
+      a temporary selection. */
+  selectionsAfter?: readonly VimSelection[];
 };
 
 export type VimUndoTransaction = {
@@ -528,8 +532,13 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     }
   }
 
-  executeNativeCommand(command: string, args: readonly unknown[] = [], _options: NativeCommandOptions = {}): void {
+  executeNativeCommand(command: string, args: readonly unknown[] = [], options: NativeCommandOptions = {}): void {
     this.nativeCommands.push({ command, args });
+    // The in-memory host runs commands synchronously (as no-ops), so the
+    // post-command selections apply immediately.
+    if (options.selectionsAfter !== undefined) {
+      this.setSelections([...options.selectionsAfter]);
+    }
   }
 
   revealPrimaryCursorIfOutsideViewport(): void {}

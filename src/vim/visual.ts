@@ -18,6 +18,7 @@ import { incrementNumbers } from "./normal/increment.js";
 import { IndentDirection } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { joinLines } from "./normal/join.js";
+import { applyComment } from "./normal/comment.js";
 import { applyFormat } from "./normal/format.js";
 import type { FormatOptions } from "./normal/format.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
@@ -722,6 +723,29 @@ export class VisualMode {
   convertSelections(target: ConvertTarget): VisualSessionEnd {
     if (this.state === undefined) return this.endSession();
     return this.convert(this.state, target);
+  }
+
+  // Visual `gc`/`gC` (vim-commentary): toggle line comments over the selected
+  // rows, or a block comment over the exact charwise selection for `gC`. The
+  // cursor lands on the selection start (like the plugin); the native command
+  // applies asynchronously and restores it via [selectionsAfter].
+  commentSelections({ block }: { block: boolean }): VisualSessionEnd {
+    const state = this.state;
+    if (state === undefined) return this.endSession();
+    this.rememberState(state);
+    let target: ResolvedTarget;
+    if (block && state.kind === "charwise") {
+      target = visualCharwiseTarget(this.editor, state);
+    } else {
+      const { startRow, endRow } = visualLineBounds(this.editor, state);
+      target = { kind: "linewise", rows: [{ startRow, endRow, column: 0 }] };
+    }
+    const cursor =
+      target.kind === "charwise"
+        ? target.targets[0]?.range.start ?? visualAnchorPosition(state)
+        : { row: target.rows[0].startRow, column: 0 };
+    applyComment(this.editor, target, { block, cursorsAfter: [cursor] });
+    return this.endSession();
   }
 
   // Vim `v_r{char}`: replace every character in the selection with [char],

@@ -20,6 +20,7 @@ import {
   motionRange,
 } from "./motion.js";
 import { applyChange } from "./normal/change.js";
+import { applyComment } from "./normal/comment.js";
 import { ConvertTarget, applyConvert } from "./normal/convert.js";
 import { applyDelete } from "./normal/delete.js";
 import { applyFormat } from "./normal/format.js";
@@ -101,7 +102,10 @@ export type RangeOperator =
   // `gq`/`gw`; [keepCursor] is `gw`. The effective 'textwidth' is resolved from
   // the configuration when the operator is built (the application modules have
   // no configuration access).
-  | { type: "format"; keepCursor: boolean; textwidth: number };
+  | { type: "format"; keepCursor: boolean; textwidth: number }
+  // `gc` (line) / `gC` (block): toggle comments via the host's native
+  // commenting commands (vim-commentary / VSCodeVim compat).
+  | { type: "comment"; block: boolean };
 
 export type OperatorOutcome = { enterInsert: boolean };
 
@@ -412,6 +416,9 @@ export function applyOperatorToTarget(
       return { enterInsert: false };
     case "format":
       applyFormat(editor, target, { textwidth: operator.textwidth, keepCursor: operator.keepCursor });
+      return { enterInsert: false };
+    case "comment":
+      applyComment(editor, target, { block: operator.block });
       return { enterInsert: false };
   }
 }

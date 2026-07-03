@@ -133,6 +133,17 @@ function gContinuation(key: string, state: HandlerState): HandleResult<void> {
     return operandGrammar(formatOperatorSpec(key, state), state);
   }
 
+  // Commentary (vim-commentary / VSCodeVim): `gc{motion}`/`gcc`/`gcgc` toggle
+  // line comments (linewise, like the plugin), `gC{motion|object}`/`gCC`
+  // toggle block comments over the exact range. Delegated to the host's
+  // language-aware commenting commands.
+  if (key === "c" || key === "C") {
+    return operandGrammar(
+      { key, operator: { type: "comment", block: key === "C" }, forChange: false, gPrefixed: true, linewiseMotion: key === "c" },
+      state
+    );
+  }
+
   // Cumulative increment `g ctrl-a`/`g ctrl-x` and `gJ` (join without a space).
   if (key === "ctrl-a") return applySimpleActionEffect(state, { type: "increment", direction: "increment", cumulative: true });
   if (key === "ctrl-x") return applySimpleActionEffect(state, { type: "increment", direction: "decrement", cumulative: true });
@@ -239,6 +250,9 @@ function gChordNativeCommand(key: string): string | undefined {
 function gChordMultiCursorCommand(key: string): string | undefined {
   switch (key) {
     case "l":
+    case "b":
+      // `gb` is VSCodeVim's name for add-cursor-at-next-match; kept as an
+      // alias of `gl` for migrating users.
       return "editor.action.addSelectionToNextFindMatch";
     case "L":
       return "editor.action.addSelectionToPreviousFindMatch";
@@ -374,16 +388,19 @@ function applyResolvedMotion(state: HandlerState, motion: Motion, recordFind?: F
   });
 }
 
-// Single-key operator+operand aliases: `s`=`cl`, `S`=`cc`, `C`=`c$`, `D`=`d$`.
-// `s`/`S`/`C` are changes (enter insert); `D` deletes. They reuse the operator
-// machinery with a fixed target, so counts and dot-repeat behave like the
-// spelled-out forms.
+// Single-key operator+operand aliases: `s`=`cl`, `S`=`cc`, `C`=`c$`, `D`=`d$`,
+// `Y`=`y$` (Neovim's default `Y` mapping; classic Vim's whole-line `Y` is a
+// one-line user remap away). `s`/`S`/`C` are changes (enter insert); `D`
+// deletes; `Y` yanks. They reuse the operator machinery with a fixed target,
+// so counts, registers, and dot-repeat behave like the spelled-out forms.
 function changeDeleteShortcutHandler(key: string, state: HandlerState): HandleResult<void> {
   switch (key) {
     case "s":
       return applyOperator(CHANGE_OPERATOR, state, { kind: "motion", motion: { type: "right" } });
     case "S":
       return applyOperator(CHANGE_OPERATOR, state, { kind: "line" });
+    case "Y":
+      return applyOperator(YANK_OPERATOR, state, { kind: "motion", motion: { type: "endOfLine" } });
     case "C":
       return applyOperator(CHANGE_OPERATOR, state, { kind: "motion", motion: { type: "endOfLine" } });
     case "D":
@@ -696,6 +713,7 @@ type OperatorSpec = {
 // as the spelled-out `c`/`d` operators.
 const CHANGE_OPERATOR: OperatorSpec = { key: "c", operator: { type: "change" }, forChange: true };
 const DELETE_OPERATOR: OperatorSpec = { key: "d", operator: { type: "delete" }, forChange: false };
+const YANK_OPERATOR: OperatorSpec = { key: "y", operator: { type: "yank" }, forChange: false };
 
 function operatorForKey(key: string): OperatorSpec | undefined {
   switch (key) {
@@ -704,7 +722,7 @@ function operatorForKey(key: string): OperatorSpec | undefined {
     case "c":
       return CHANGE_OPERATOR;
     case "y":
-      return { key, operator: { type: "yank" }, forChange: false };
+      return YANK_OPERATOR;
     case ">":
       return { key, operator: { type: "indent", direction: "in" }, forChange: false };
     case "<":

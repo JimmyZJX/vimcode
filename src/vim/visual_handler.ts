@@ -303,6 +303,12 @@ function visualGContinuation(key: string, state: HandlerState): HandleResult<voi
   // normal.
   if (key === "q" || key === "w") return visualFormat(state, key === "w");
 
+  // `gc`/`gC` (vim-commentary): toggle line comments over the selected rows /
+  // a block comment over the exact selection, then exit to normal.
+  if (key === "c" || key === "C") {
+    return exitVisualEffect(state, visual => visual.commentSelections({ block: key === "C" }));
+  }
+
   // `gJ`: join the selected lines without inserting whitespace.
   if (key === "J") return visualJoin(state, false);
 

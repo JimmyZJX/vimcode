@@ -369,6 +369,9 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			if (selectionsToRestore !== undefined) {
 				this.setSelections(selectionsToRestore);
 			}
+			if (options.selectionsAfter !== undefined) {
+				this.setSelections(options.selectionsAfter);
+			}
 		});
 		if (syncSelectionAfter) {
 			this.pendingNativeSelectionSyncs.push(commandPromise.then(() => undefined, () => undefined));
