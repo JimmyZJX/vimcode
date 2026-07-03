@@ -1,4 +1,5 @@
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
@@ -30,11 +31,16 @@ type VSCodeUndoTransaction = {
 	hasEdits: boolean;
 };
 
-registerThemingParticipant((_theme, collector) => {
+registerThemingParticipant((theme, collector) => {
+	// The label replaces the target text visually (VSCodeVim-style): the
+	// character under the marker is hidden (`.vim-easymotion-target` below),
+	// and the label paints on the editor background so a multi-character label
+	// also covers the character it overhangs.
+	const background = theme.getColor(editorBackground);
 	collector.addRule(`
 		.monaco-editor .vim-easymotion-marker {
 			color: #ff0000;
-			background-color: transparent;
+			background-color: ${background ?? 'transparent'};
 			font-weight: bold;
 			font-style: normal;
 			position: absolute;
@@ -45,6 +51,9 @@ registerThemingParticipant((_theme, collector) => {
 			height: 100%;
 			margin: 0 -1ch 0 0;
 			z-index: 10;
+		}
+		.monaco-editor .vim-easymotion-target {
+			opacity: 0;
 		}
 	`);
 });
@@ -204,13 +213,17 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			this.easyMotionDecorations.clear();
 			return;
 		}
+		const model = this.model();
 		const decorations: IModelDeltaDecoration[] = [];
 		for (const marker of markers) {
 			const lineNumber = marker.position.row + 1;
 			const column = marker.position.column + 1;
-			const position = new VSCodePosition(lineNumber, column);
+			// Cover the character under the marker so the label replaces it
+			// visually (`.vim-easymotion-target` hides it); at end-of-line there
+			// is no character and the range stays collapsed (label only).
+			const endColumn = Math.min(column + 1, model.getLineMaxColumn(lineNumber));
 			decorations.push({
-				range: Range.fromPositions(position),
+				range: new Range(lineNumber, column, lineNumber, endColumn),
 				options: {
 					description: 'vim-easymotion-marker',
 					before: {
@@ -218,6 +231,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 						inlineClassName: 'vim-easymotion-marker',
 						cursorStops: InjectedTextCursorStops.Right,
 					},
+					inlineClassName: 'vim-easymotion-target',
 					showIfCollapsed: true,
 				},
 			});
