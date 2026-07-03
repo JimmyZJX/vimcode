@@ -12,12 +12,12 @@ import type { Handler, HandleResult, HandlerState } from "./key_handler.js";
 import type { RepeatState } from "./normal/repeat.js";
 import { bracketChordHandler, ctrlWHandler, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
 import type { FindApplier } from "./normal_mode_handler.js";
-import { convertTargetForKey, digraphWaiter, editorGChordHandler, findHandler, gChordMotion, keyForInput, lineMotionForKey, repeatFindHandler, resolveMotion, restoreVisualSelectionHandler } from "./normal_mode_handler.js";
+import { configuredTextwidth, convertTargetForKey, digraphWaiter, editorGChordHandler, findHandler, gChordMotion, keyForInput, lineMotionForKey, repeatFindHandler, resolveMotion, restoreVisualSelectionHandler } from "./normal_mode_handler.js";
 import { prefixHandler } from "./prefix_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
 import { searchPromptHandler, searchSelectionHandler, visualSearchUnderCursorHandler } from "./search_handler.js";
 import type { VimMode } from "./state.js";
-import type { VisualKeyResult, VisualMode, VisualCommand, VisualModeKind } from "./visual.js";
+import type { VisualKeyResult, VisualMode, VisualCommand, VisualModeKind, VisualSessionEnd } from "./visual.js";
 
 // The full visual-mode grammar: the count/register prefix wrapping the raw
 // grammar. Keys the framework declines fall through to the legacy dispatcher
@@ -296,8 +296,12 @@ function visualGContinuation(key: string, state: HandlerState): HandleResult<voi
   // Convert the selection: `gu`/`gU`/`g~`/`g?` then exit to normal.
   const convertTarget = convertTargetForKey(key);
   if (convertTarget !== undefined) {
-    return effect("normal", () => visual.convertSelections(convertTarget), { dotRepeatable: false });
+    return exitVisualEffect(state, live => live.convertSelections(convertTarget));
   }
+
+  // `gq`/`gw`: format the selected lines (`gw` keeps the cursor) and exit to
+  // normal.
+  if (key === "q" || key === "w") return visualFormat(state, key === "w");
 
   // `gJ`: join the selected lines without inserting whitespace.
   if (key === "J") return visualJoin(state, false);
@@ -337,10 +341,35 @@ function visualSimpleHandler(key: string, state: HandlerState): HandleResult<voi
   }
 }
 
-function visualJoin(state: HandlerState, insertWhitespace: boolean): HandleResult<void> {
+// The one way the visual grammar exits to normal with an edit outside the
+// [VisualCommand] funnel: the command body must return the [VisualSessionEnd]
+// proof, which only VisualMode's session-ending methods produce. A new command
+// written through this helper cannot compile without the visual-session
+// teardown (the runtime invariant in [Vim.assertModeStateInvariants] backstops
+// any path that bypasses it).
+function exitVisualEffect(state: HandlerState, run: (visual: VisualMode) => VisualSessionEnd): HandleResult<void> {
   const visual = state.visual;
   if (visual === undefined) return invalid();
-  return effect("normal", () => visual.joinSelections({ insertWhitespace }), { dotRepeatable: false });
+  return effect(
+    "normal",
+    () => {
+      void run(visual);
+    },
+    { dotRepeatable: false }
+  );
+}
+
+// Visual `gq`/`gw`: format the lines the selection covers, like the linewise
+// operator on the selected row range. `gq` leaves the cursor on the last
+// formatted line; `gw` keeps it. The visual-session teardown (remember for
+// `gv`, clear the state) lives in [VisualMode.formatSelections], like the
+// other visual commands.
+function visualFormat(state: HandlerState, keepCursor: boolean): HandleResult<void> {
+  return exitVisualEffect(state, visual => visual.formatSelections({ textwidth: configuredTextwidth(state), keepCursor }));
+}
+
+function visualJoin(state: HandlerState, insertWhitespace: boolean): HandleResult<void> {
+  return exitVisualEffect(state, visual => visual.joinSelections({ insertWhitespace }));
 }
 
 function visualIncrement(
@@ -348,10 +377,8 @@ function visualIncrement(
   direction: "increment" | "decrement",
   cumulative: boolean
 ): HandleResult<void> {
-  const visual = state.visual;
-  if (visual === undefined) return invalid();
   const delta = (direction === "increment" ? 1 : -1) * state.repeat;
-  return effect("normal", () => visual.increment(delta, cumulative ? delta : 0), { dotRepeatable: false });
+  return exitVisualEffect(state, visual => visual.increment(delta, cumulative ? delta : 0));
 }
 
 // Find motions (`f`/`t`/`F`/`T` + char, `;`/`,`) in visual mode extend the live

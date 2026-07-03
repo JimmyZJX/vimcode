@@ -140,10 +140,12 @@ function searchOperandWaiter(
     if (editor === undefined || search === undefined || registers === undefined)
       return invalid();
     // Escape aborts the operator (no edit) and tears down the prompt preview.
+    // Vim: the aborted query still enters the search history.
     if (isSearchEscape(key)) {
-      return effect("normal", () =>
-        search.clearPending(editor, pending, { restoreViewport: true })
-      );
+      return effect("normal", () => {
+        search.recordHistory(pending);
+        search.clearPending(editor, pending, { restoreViewport: true });
+      });
     }
     if (!isSearchInputKey(key)) return invalid();
     if (key !== "enter") {
@@ -165,8 +167,9 @@ function searchOperandWaiter(
     }
     // `enter`: resolve the pattern to a [Motion] purely, then apply the operator.
     // An empty / no-pattern input aborts the operator (still ending the preview).
-    // The search's own side effects (preview teardown, [last]/register/highlight
-    // update) and the operator edit are deferred into the effect below.
+    // The search's own side effects (preview teardown, history entry,
+    // [last]/register/highlight update) and the operator edit are deferred into
+    // the effect below.
     const motion = search.resolveMotion(pending);
     if (motion === undefined) {
       return effect("normal", () =>
@@ -174,9 +177,10 @@ function searchOperandWaiter(
       );
     }
     return withClearHighlights(
-      withSearchCommit(apply(motion, state), () =>
-        search.commitMotion(motion, registers, editor)
-      ),
+      withSearchCommit(apply(motion, state), () => {
+        search.recordHistory(pending);
+        search.commitMotion(motion, registers, editor);
+      }),
       editor
     );
   };

@@ -126,6 +126,13 @@ function gContinuation(key: string, state: HandlerState): HandleResult<void> {
     return operandGrammar({ key, operator: { type: "convert", target: convertTarget }, forChange: false, gPrefixed: true }, state);
   }
 
+  // Format operators `gq`/`gw` (`gw` keeps the cursor): g-prefixed operators
+  // over linewise motion operands, with the usual doublings (`gqq`/`gqgq`,
+  // `gww`/`gwgw`).
+  if (key === "q" || key === "w") {
+    return operandGrammar(formatOperatorSpec(key, state), state);
+  }
+
   // Cumulative increment `g ctrl-a`/`g ctrl-x` and `gJ` (join without a space).
   if (key === "ctrl-a") return applySimpleActionEffect(state, { type: "increment", direction: "increment", cumulative: true });
   if (key === "ctrl-x") return applySimpleActionEffect(state, { type: "increment", direction: "decrement", cumulative: true });
@@ -678,6 +685,11 @@ type OperatorSpec = {
   // full chord repeated (`gugu`), not just [key] (`guu`); [operandHandler]
   // recognizes the extra `g`-form.
   gPrefixed?: boolean;
+  // `gq`/`gw`: the operator makes its motion operand linewise (Vim: "format the
+  // lines that {motion} moves over"), using the raw motion target row — an
+  // exclusive motion ending in column zero still includes that row (`gq}`
+  // formats through the paragraph's trailing blank line).
+  linewiseMotion?: boolean;
 };
 
 // Shared so the single-key aliases (`s`/`S`/`C`/`D`) reuse the exact same specs
@@ -702,6 +714,29 @@ function operatorForKey(key: string): OperatorSpec | undefined {
     default:
       return undefined;
   }
+}
+
+// `gq`/`gw`: format (reflow to 'textwidth') the operand's lines; `gw` restores
+// the cursor. The effective 'textwidth' comes from the configuration at
+// operator-build time.
+function formatOperatorSpec(key: "q" | "w", state: HandlerState): OperatorSpec {
+  return {
+    key,
+    operator: { type: "format", keepCursor: key === "w", textwidth: configuredTextwidth(state) },
+    forChange: false,
+    gPrefixed: true,
+    linewiseMotion: true,
+  };
+}
+
+// The `gq`/`gw` format width: an explicit `vim.textwidth` wins; otherwise the
+// editor's first vertical ruler (`editor.rulers`, like VSCodeVim); otherwise 0,
+// which [applyFormat] resolves to Vim's 79-column 'textwidth'=0 fallback.
+export function configuredTextwidth(state: HandlerState): number {
+  const configured = state.configuration?.textwidth ?? 0;
+  if (configured > 0) return configured;
+  const ruler = state.editor?.rulerColumns()[0];
+  return ruler !== undefined && ruler > 0 ? ruler : 0;
 }
 
 // Claims an operator key from a clean state and continues into the operand
@@ -953,7 +988,11 @@ function applyOperator(spec: OperatorSpec, state: HandlerState, target: Operator
   if (editor === undefined || registers === undefined) return invalid();
   const register = state.register;
   const hasCount = state.hasCount === true;
-  const resolved = resolveTarget(editor, target, state.repeat, { hasCount, forChange: spec.forChange });
+  const effectiveTarget: OperatorTarget =
+    spec.linewiseMotion === true && target.kind === "motion" && target.forced === undefined
+      ? { ...target, forced: "linewise" }
+      : target;
+  const resolved = resolveTarget(editor, effectiveTarget, state.repeat, { hasCount, forChange: spec.forChange });
   const mode = spec.forChange && changeEntersInsert(resolved) ? "insert" : state.mode;
   // Every operator but yank modifies the buffer, so only yank is not
   // dot-repeatable (`.` repeats the last *change*).

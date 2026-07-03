@@ -550,6 +550,12 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return this.moveByViewLines(direction, pageLineCount * count, { displayLine: true, extend });
 	}
 
+	rulerColumns(): readonly number[] {
+		// `editor.rulers` resolved for this editor (per-language overrides
+		// included); entries are numbers or `{ column, color }` objects.
+		return this.editor.getOption(EditorOption.rulers).map(ruler => ruler.column);
+	}
+
 	visibleRowRange(): { top: number; bottom: number } | undefined {
 		// Vim `H`/`M`/`L` target the visible window. Convert the completely
 		// visible view range back to model rows so soft wraps and folds use the

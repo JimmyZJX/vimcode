@@ -43,6 +43,9 @@ export type VimConfiguration = {
   easymotion: boolean;
   easymotionKeys: string;
   easymotionJumpToAnywhereRegex: string;
+  // 'textwidth' for the `gq`/`gw` format operators; 0 formats to 79 columns
+  // (Vim's fallback for 'textwidth'=0, capped screen width).
+  textwidth: number;
 };
 
 export const defaultVimHandleKeys: Readonly<Record<string, boolean>> = {
@@ -69,6 +72,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   easymotion: false,
   easymotionKeys: "hklyuiopnm,qwertzxcvbasdgjf;",
   easymotionJumpToAnywhereRegex: "\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]",
+  textwidth: 0,
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {

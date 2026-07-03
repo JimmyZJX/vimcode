@@ -938,3 +938,57 @@ Each phase should keep `npm run build -- --noEmit` and `npm test -- --runInBand`
 - Whether `operatorDepth` is enough for cursor shape, or whether status should ask handlers for a display depth/chord/operator label.
 - How much of macro/repeat recording belongs in parser handling vs queued effects. Current code records near `dispatchKey`; migration should preserve existing repeat/macro tests before moving that boundary.
 - How native/host command `KeyAction`s should handle selection synchronization once the executor is integrated into `vim.ts`.
+
+## Mode/session-state ownership (post-migration contract)
+
+The mode FSM and the per-mode session state are owned separately, and the
+transitions deliberately do not reset each other's state:
+
+- `Vim.modeState` is the single mode source of truth. Executor effects declare
+  a target mode; `enterModeFromExecutor` applies the transition (plus escape
+  handling and external syncs).
+- Per-mode session state and its owner:
+  - `VisualMode.state` (kind + anchor): torn down by *each visual command's
+    effect* (`rememberState` for `gv`, `state = undefined`, block cursor) — see
+    `join`/`convert`/`replaceSelection`/`formatSelections`. The visual→normal
+    transition does **not** clear it, and the visual *entry* path deliberately
+    adopts a pre-built session (`gv`/`gn`/`adoptSelection`). Together those two
+    features make a missed teardown a delayed, ghost-selection bug.
+  - `activeSearch` / `activeCommand`: created and dropped by the owner's mode
+    transition; aborts go through `clearPendingGrammar` (which also records
+    prompt history).
+  - Insert session (`insertRepeat*`, `insertOrigin`, `replaceModeReplacements`)
+    and `temporaryNormal`: owner-managed on insert entry/exit.
+- Exceptions where a visual session legitimately outlives the visual mode: a
+  `/`?` prompt opened from visual (the search extends the selection), and the
+  visual `I`/`A` multiline-insert excursion (`insertOrigin` is a visual kind).
+
+**Enforcement — three layers:**
+
+1. *Structural (compile time), prompt modes:* `Vim.session` is a `ModeSession`
+   discriminated union; the `/`?` prompt (`PendingSearch` + its origin mode)
+   and the `:` command line are payloads of their mode variant. Holding a
+   prompt outside its mode, being in a prompt mode without one, or leaving the
+   mode while keeping the payload does not typecheck. Entering a prompt mode
+   goes through `setSession` (which demands the payload); `setMode`'s parameter
+   type excludes `search`/`command`. Aborting a prompt is one explicit decision
+   point (`dismissPromptSession`): record history, tear down the preview, and
+   pick the successor mode — the visual origin (selection intact, like Neovim)
+   or normal.
+2. *Structural (compile time), visual exits:* commands that leave visual mode
+   with an edit outside the `VisualCommand` funnel go through
+   `exitVisualEffect`, whose body must return the `VisualSessionEnd` proof —
+   a unique-symbol-branded token only `VisualMode.endSession` (the single
+   teardown: remember for `gv`, clear state, block cursor) produces. A new
+   command written through the helper cannot compile without the teardown.
+3. *Runtime (test harnesses):* `Vim.assertModeStateInvariants` checks the
+   remaining data-dependent invariant — visual session ⇔ visual mode (with the
+   visual-origin-search and visual-insert-excursion exceptions) — after *every
+   key* in `runKeys`, the Neovim fixture runner, and the controller-simulation
+   helper. It backstops any path that bypasses the typed helpers, and found the
+   escape-from-visual-origin-search ghost (pinned by
+   `test_visual_search_escape`).
+
+When adding a new mode-leaving command, route it through the mode object's
+command surface (`VisualMode.formatSelections`-style) via `exitVisualEffect`,
+or extend the invariants if a new legitimate exception is introduced.

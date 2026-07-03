@@ -28,14 +28,19 @@ export function runNeovim({
   initialState,
   keys,
   readRegisters = [],
+  setup = [],
 }: {
   initialState: string;
   keys: readonly string[];
   readRegisters?: readonly string[];
+  // Ex commands (e.g. `set textwidth=20`) run after the buffer is populated
+  // and before the keys are fed; used when recording option-dependent
+  // fixtures.
+  setup?: readonly string[];
 }): NeovimState {
   const parsed = parseMarkedText(initialState);
   const input = keys.map(keyToNeovimInput).join("");
-  const script = luaScript(parsed, input, readRegisters);
+  const script = luaScript(parsed, input, readRegisters, setup);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vimcode-nvim-"));
   const scriptPath = path.join(dir, "script.lua");
   fs.writeFileSync(scriptPath, script);
@@ -79,11 +84,14 @@ export function runNeovim({
   }
 }
 
-function luaScript(parsed: ParsedMarkedText, input: string, readRegisters: readonly string[]): string {
+function luaScript(parsed: ParsedMarkedText, input: string, readRegisters: readonly string[], setup: readonly string[] = []): string {
   return `
 local lines = ${luaStringArray(parsed.text.split("\n"))}
 vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
 vim.api.nvim_win_set_cursor(0, { ${parsed.row + 1}, ${parsed.column} })
+for _, command in ipairs(${luaStringArray(setup)}) do
+  vim.cmd(command)
+end
 local keys = vim.api.nvim_replace_termcodes(${JSON.stringify(input)}, true, false, true)
 vim.api.nvim_feedkeys(keys, "xt", false)
 local registers = {}

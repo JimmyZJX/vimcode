@@ -1,0 +1,33 @@
+{"Put":{"state":"ˇone apple here\ntwo banana there\nthree apricot far\nfour cherry near\nfive apple again"}}
+{"Key":":"}
+{"Key":"3"}
+{"Key":"enter"}
+{"Get":{"state":"one apple here\ntwo banana there\nˇthree apricot far\nfour cherry near\nfive apple again","mode":"Normal"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":":"}
+{"Key":"up"}
+{"Key":"enter"}
+{"Get":{"state":"one apple here\ntwo banana there\nˇthree apricot far\nfour cherry near\nfive apple again","mode":"Normal"}}
+{"Key":":"}
+{"Key":"4"}
+{"Key":"enter"}
+{"Key":":"}
+{"Key":"3"}
+{"Key":"enter"}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":":"}
+{"Key":"4"}
+{"Key":"up"}
+{"Key":"enter"}
+{"Get":{"state":"one apple here\ntwo banana there\nthree apricot far\nˇfour cherry near\nfive apple again","mode":"Normal"}}
+{"Key":":"}
+{"Key":"2"}
+{"Key":"escape"}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":":"}
+{"Key":"up"}
+{"Key":"enter"}
+{"Get":{"state":"one apple here\nˇtwo banana there\nthree apricot far\nfour cherry near\nfive apple again","mode":"Normal"}}

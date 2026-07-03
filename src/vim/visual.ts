@@ -18,6 +18,8 @@ import { incrementNumbers } from "./normal/increment.js";
 import { IndentDirection } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import { joinLines } from "./normal/join.js";
+import { applyFormat } from "./normal/format.js";
+import type { FormatOptions } from "./normal/format.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
 import { ResolvedTarget, applyOperatorToTarget } from "./operator_target.js";
 import { canonicalVimSelection, canonicalizationChangesMeaning, characterCellEnd, lowerCharwiseGeometry, raiseCharwiseSelection } from "./selection_geometry.js";
@@ -123,6 +125,16 @@ function handled(
 ): VisualKeyResult {
   return { keyResult: "handled", exitVisual, enterInsert, nextMode, repeatAction, pendingRepeatChange };
 }
+
+// Proof that a command tore down the visual session (state cleared, block
+// cursor restored). Produced only by [VisualMode.endSession], so a
+// visual-grammar command routed through `exitVisualEffect` (visual_handler.ts)
+// cannot compile without the teardown: the "left visual mode with the session
+// alive" bug class becomes a type error instead of a runtime ghost. The
+// unique-symbol brand prevents constructing the proof outside this module.
+declare const visualSessionEndBrand: unique symbol;
+export type VisualSessionEnd = { readonly [visualSessionEndBrand]: true };
+const VISUAL_SESSION_END = {} as VisualSessionEnd;
 
 export class VisualMode {
   private state: VisualState | undefined;
@@ -674,22 +686,42 @@ export class VisualMode {
     }
   }
 
-  joinSelections({ insertWhitespace }: { insertWhitespace: boolean }): void {
-    if (this.state === undefined) return;
-    this.join(this.state, { insertWhitespace });
+  // The single visual-session teardown: every command that exits visual mode
+  // with an edit ends by returning this proof (see [VisualSessionEnd]).
+  private endSession(): VisualSessionEnd {
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return VISUAL_SESSION_END;
   }
 
-  private join(state: VisualState, { insertWhitespace }: { insertWhitespace: boolean }): void {
+  joinSelections({ insertWhitespace }: { insertWhitespace: boolean }): VisualSessionEnd {
+    if (this.state === undefined) return this.endSession();
+    return this.join(this.state, { insertWhitespace });
+  }
+
+  // Visual `gq`/`gw`: format the selected lines and exit visual. Like [join],
+  // this owns the visual-session teardown (remember for `gv`, clear the state,
+  // restore the block cursor) — the owner's normal-mode transition relies on
+  // the command's effect having done it.
+  formatSelections(options: FormatOptions): VisualSessionEnd {
+    const state = this.state;
+    if (state === undefined) return this.endSession();
+    this.rememberState(state);
+    const { startRow, endRow } = visualLineBounds(this.editor, state);
+    applyFormat(this.editor, { kind: "linewise", rows: [{ startRow, endRow, column: 0 }] }, options);
+    return this.endSession();
+  }
+
+  private join(state: VisualState, { insertWhitespace }: { insertWhitespace: boolean }): VisualSessionEnd {
     this.rememberState(state);
     const { startRow, endRow } = visualLineBounds(this.editor, state);
     joinLines(this.editor, startRow, Math.max(1, endRow - startRow), { insertWhitespace });
-    this.state = undefined;
-    this.editor.setCursorStyle("block");
+    return this.endSession();
   }
 
-  convertSelections(target: ConvertTarget): void {
-    if (this.state === undefined) return;
-    this.convert(this.state, target);
+  convertSelections(target: ConvertTarget): VisualSessionEnd {
+    if (this.state === undefined) return this.endSession();
+    return this.convert(this.state, target);
   }
 
   // Vim `v_r{char}`: replace every character in the selection with [char],
@@ -720,9 +752,9 @@ export class VisualMode {
   // numbers in the selection. [delta] is the signed step; [cumulativeStep] adds
   // an extra multiple per matched number on successive lines (`g ctrl-a`), else
   // 0. Exits the visual selection (the caller transitions to normal).
-  increment(delta: number, cumulativeStep: number): void {
+  increment(delta: number, cumulativeStep: number): VisualSessionEnd {
     const state = this.state;
-    if (state === undefined) return;
+    if (state === undefined) return this.endSession();
     // Vim: a visual operator moves the cursor to the selection start before
     // changing text, so that is where `u` later restores it.
     const selection = this.editor.getSelections()[0];
@@ -731,11 +763,10 @@ export class VisualMode {
     }
     incrementNumbers(this.editor, delta, cumulativeStep);
     this.editor.finishUndoTransaction();
-    this.clearState();
-    this.editor.setCursorStyle("block");
+    return this.endSession();
   }
 
-  private convert(state: VisualState, target: ConvertTarget): void {
+  private convert(state: VisualState, target: ConvertTarget): VisualSessionEnd {
     this.rememberState(state);
     // Vim: a visual operator moves the cursor to the selection start before
     // changing text, so that is where `u` later restores it.
@@ -751,8 +782,7 @@ export class VisualMode {
         convertRanges(this.editor, visualConvertRanges(this.editor, state), target);
         break;
     }
-    this.state = undefined;
-    this.editor.setCursorStyle("block");
+    return this.endSession();
   }
 
   private indent(state: VisualState, direction: IndentDirection): void {

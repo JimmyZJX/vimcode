@@ -33,6 +33,7 @@ async function pressKeysThroughController(vim: Vim, editor: InMemoryVimEditor, k
     if (plan === null) continue;
     if (plan.passthrough) editor.replayInsertKey(key);
     await plan.run();
+    vim.assertModeStateInvariants(`after key "${key}"`);
   }
 }
 

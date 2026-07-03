@@ -12,12 +12,15 @@ import { ChangeListState } from "./normal/change_list.js";
 import { MarkState } from "./normal/mark.js";
 import { MacroState, RepeatState } from "./normal/repeat.js";
 import { SearchState } from "./normal/search.js";
+import { PromptHistory } from "./prompt_history.js";
 import { Registers } from "./registers.js";
 import { Position } from "./state.js";
 
 export class VimGlobalState {
   readonly registers = new Registers();
   readonly search = new SearchState();
+  /** `:` command-line history (the `/`?` history lives in [search]). */
+  readonly commandHistory = new PromptHistory();
   readonly repeat = new RepeatState();
   readonly macro = new MacroState();
   readonly find = new FindState();

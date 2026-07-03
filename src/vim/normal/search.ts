@@ -8,6 +8,7 @@
 
 import { VimEditorCapabilities } from "../editor.js";
 import { Motion } from "../motion.js";
+import { HistoryNavigation, PromptHistory, historyNavigationKey } from "../prompt_history.js";
 import { Registers } from "../registers.js";
 import { SearchOffset, SearchOptions, parseSearchOffset, searchOptionsForQuery } from "../search.js";
 import {
@@ -16,7 +17,9 @@ import {
 } from "../single_line_editor.js";
 import { TextRange, selectionHead } from "../state.js";
 
-export type PendingSearch = { type: "search"; backwards: boolean; input: SingleLineEditor };
+// [nav] is the in-flight history-navigation session (`<Up>`/`<C-p>`), created
+// on the first history key and dropped when the query is edited.
+export type PendingSearch = { type: "search"; backwards: boolean; input: SingleLineEditor; nav?: HistoryNavigation };
 
 function singleLineEditorKey(key: string): SingleLineEditorKey | undefined {
   switch (key) {
@@ -45,7 +48,8 @@ export function isSearchInputKey(key: string): boolean {
     || key === "<escape>"
     || key === "escape"
     || key === "ctrl-["
-    || singleLineEditorKey(key) !== undefined;
+    || singleLineEditorKey(key) !== undefined
+    || historyNavigationKey(key) !== undefined;
 }
 
 // Split a typed search input into its pattern and (optional) offset. The offset
@@ -86,6 +90,9 @@ export class SearchState {
   private last:
     | { query: string; backwards: boolean; options: SearchOptions; offset: SearchOffset | undefined }
     | undefined;
+  // Vim search history (`:h cmdline-history`), shared by `/` and `?` (and fed
+  // by `*`/`#`); global, like [last].
+  readonly history = new PromptHistory();
 
   pendingChord(pending: PendingSearch): string {
     const value = pending.input.value();
@@ -156,7 +163,26 @@ export class SearchState {
   appendText(pending: PendingSearch, text: string, editor: VimEditorCapabilities): void {
     if (text.length === 0) return;
     pending.input.insert(text);
+    pending.nav = undefined;
     this.updatePendingSearchUi(pending, editor);
+  }
+
+  // A history recall replaces the query (cursor at the end) and refreshes the
+  // incsearch preview like typing. Vim: aborted prompts also enter the history
+  // (see the cancel paths' [recordHistory] calls).
+  recordHistory(pending: PendingSearch): void {
+    this.history.add(pending.input.value());
+  }
+
+  private navigateHistory(pending: PendingSearch, key: string): boolean {
+    const step = historyNavigationKey(key);
+    if (step === undefined) return false;
+    if (pending.nav === undefined) {
+      pending.nav = { prefix: pending.input.value(), index: undefined };
+    }
+    const recalled = this.history.navigate(pending.nav, step);
+    if (recalled !== undefined) pending.input.reset(recalled);
+    return true;
   }
 
   handleKey(
@@ -170,8 +196,14 @@ export class SearchState {
       return undefined;
     }
 
+    if (this.navigateHistory(pending, key)) {
+      this.updatePendingSearchUi(pending, editor);
+      return undefined;
+    }
+
     if (key === "enter") {
       const rawInput = pending.input.value();
+      this.recordHistory(pending);
       // Vim: an empty query repeats the last pattern (and its offset) in the
       // direction of THIS prompt (`?<CR>` searches backward even after a forward
       // search).
@@ -199,6 +231,9 @@ export class SearchState {
     } else if (key.length === 1) {
       pending.input.insert(key);
     }
+    // An edit ends the history-navigation session: the next `<Up>` matches
+    // against the edited text.
+    pending.nav = undefined;
     this.updatePendingSearchUi(pending, editor);
     return undefined;
   }
@@ -295,6 +330,10 @@ export function searchUnderCursorMotion(
 ): Motion | undefined {
   const query = wordUnderCursor(editor);
   if (query === undefined) return undefined;
+  // Vim: `*`/`#` add the pattern to the search history (Neovim stores it in
+  // `\<word\>` syntax; locally the plain word + whole-word option is the same
+  // search, so that is what a `/<Up>` recall re-runs).
+  searchState.history.add(query);
   return searchState.setLast(query, backwards, registers, editor, {
     wholeWord: true,
   });

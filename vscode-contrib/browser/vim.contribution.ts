@@ -219,6 +219,13 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.timeout', "Timeout in milliseconds for remapped key sequences."),
 	},
+	'vim.textwidth': {
+		type: 'number',
+		default: 0,
+		minimum: 0,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.textwidth', "Line width used by the gq/gw format operators ('textwidth'). 0 uses the first editor.rulers column when one is set, and 79 otherwise (Vim's 'textwidth'=0 fallback)."),
+	},
 	'vim.visualMultilineInsert': {
 		type: 'boolean',
 		default: true,

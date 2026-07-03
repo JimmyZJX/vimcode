@@ -22,6 +22,7 @@ import {
 import { applyChange } from "./normal/change.js";
 import { ConvertTarget, applyConvert } from "./normal/convert.js";
 import { applyDelete } from "./normal/delete.js";
+import { applyFormat } from "./normal/format.js";
 import { IndentDirection, applyIndent } from "./normal/indent.js";
 import { paragraphObjectCancelled } from "./normal/object.js";
 import { applyYank } from "./normal/yank.js";
@@ -96,7 +97,11 @@ export type RangeOperator =
   | { type: "change" }
   | { type: "yank" }
   | { type: "convert"; target: ConvertTarget }
-  | { type: "indent"; direction: IndentDirection };
+  | { type: "indent"; direction: IndentDirection }
+  // `gq`/`gw`; [keepCursor] is `gw`. The effective 'textwidth' is resolved from
+  // the configuration when the operator is built (the application modules have
+  // no configuration access).
+  | { type: "format"; keepCursor: boolean; textwidth: number };
 
 export type OperatorOutcome = { enterInsert: boolean };
 
@@ -404,6 +409,9 @@ export function applyOperatorToTarget(
       return { enterInsert: false };
     case "indent":
       applyIndent(editor, operator.direction, target);
+      return { enterInsert: false };
+    case "format":
+      applyFormat(editor, target, { textwidth: operator.textwidth, keepCursor: operator.keepCursor });
       return { enterInsert: false };
   }
 }

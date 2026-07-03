@@ -52,6 +52,12 @@ export class SingleLineEditor {
     });
   }
 
+  /** Replace the whole input (a history recall), cursor at the end. */
+  reset(value: string): void {
+    this.input = value.replace(/\r|\n/g, "");
+    this.cursor = this.input.length;
+  }
+
   tryKey(key: SingleLineEditorKey): "handled" | undefined {
     switch (key) {
       case "left":

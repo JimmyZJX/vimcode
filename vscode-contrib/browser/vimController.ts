@@ -335,6 +335,7 @@ export class VimController extends Disposable {
 		const useCtrlKeys = this.readCompatibilityConfigValue('useCtrlKeys');
 		const useSystemClipboard = this.readCompatibilityConfigValue('useSystemClipboard');
 		const timeout = this.readCompatibilityConfigValue('timeout');
+		const textwidth = this.readCompatibilityConfigValue('textwidth');
 		const visualMultilineInsert = this.readCompatibilityConfigValue('visualMultilineInsert');
 		const easymotion = this.readCompatibilityConfigValue('easymotion');
 		const easymotionKeys = this.readCompatibilityConfigValue('easymotionKeys');
@@ -345,6 +346,7 @@ export class VimController extends Disposable {
 			useCtrlKeys: typeof useCtrlKeys === 'boolean' ? useCtrlKeys : undefined,
 			useSystemClipboard: typeof useSystemClipboard === 'boolean' ? useSystemClipboard : undefined,
 			timeout: typeof timeout === 'number' ? timeout : undefined,
+			textwidth: typeof textwidth === 'number' ? textwidth : undefined,
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean' ? visualMultilineInsert : undefined,
 			easymotion: typeof easymotion === 'boolean' ? easymotion : undefined,
 			easymotionKeys: typeof easymotionKeys === 'string' ? easymotionKeys : undefined,

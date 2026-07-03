@@ -58,6 +58,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       // [InMemoryVimEditor.replayInsertKey] (including the undo split cursor
       // movement causes), so a "native" result needs no special handling.
       vim.onKey(localKey);
+      vim.assertModeStateInvariants(`after key "${localKey}" in ${fixture.testCaseId}`);
     } else if ("SetOption" in entry) {
       // Zed fixtures may contain Neovim UI options (e.g. wrap/columns) that do
       // not affect the model-buffer semantics supported by this harness yet.

@@ -10,6 +10,7 @@
 import { isCommandInputKey } from "./command.js";
 import type { HandleResult, HandlerState } from "./key_handler.js";
 import { effect, unhandled } from "./key_handler.js";
+import { historyNavigationKey } from "./prompt_history.js";
 
 // `:` enters command mode. Like the `/`?` search prompt the effect only targets
 // the mode; the owner's transition ([enterModeFromExecutor]) creates the
@@ -37,6 +38,16 @@ export function commandModeHandler(key: string, state: HandlerState): HandleResu
   }
   if (key === "backspace") {
     return effect("command", () => command.backspace(), { dotRepeatable: false });
+  }
+  // `<Up>`/`<Down>`/`<C-p>`/`<C-n>`: recall through the command history.
+  if (historyNavigationKey(key) !== undefined) {
+    return effect(
+      "command",
+      () => {
+        command.historyKey(key);
+      },
+      { dotRepeatable: false }
+    );
   }
   return effect("command", () => command.append(key), { dotRepeatable: false });
 }

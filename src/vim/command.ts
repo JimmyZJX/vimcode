@@ -8,6 +8,7 @@
 //   commands, marks, regex conversion, and async UI completion.
 
 import { VimEditorCapabilities } from "./editor.js";
+import { HistoryNavigation, PromptHistory, historyNavigationKey } from "./prompt_history.js";
 import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
 // The in-flight `:` command-line input, held while in `command` mode. A small
@@ -15,11 +16,13 @@ import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.j
 // `space` inserts a space), mirroring the legacy command line; unlike the search
 // prompt it has no cursor navigation. Owned by [Vim] (mode entry constructs it,
 // prefilling `'<,'>` from a visual selection) and injected live into the pure
-// command-mode grammar.
+// command-mode grammar. [history] is the global command history; `<Up>`/`<C-p>`
+// recall through it (see [PromptHistory]).
 export class CommandLine {
   private text: string;
+  private nav: HistoryNavigation | undefined;
 
-  constructor(initial = "") {
+  constructor(initial = "", private readonly history: PromptHistory = new PromptHistory()) {
     this.text = initial;
   }
 
@@ -29,10 +32,23 @@ export class CommandLine {
 
   append(key: string): void {
     this.text += key === "space" ? " " : key;
+    this.nav = undefined;
   }
 
   backspace(): void {
     this.text = this.text.slice(0, -1);
+    this.nav = undefined;
+  }
+
+  // `<Up>`/`<Down>`/`<C-p>`/`<C-n>`: recall through the command history.
+  // Returns false for other keys.
+  historyKey(key: string): boolean {
+    const step = historyNavigationKey(key);
+    if (step === undefined) return false;
+    if (this.nav === undefined) this.nav = { prefix: this.text, index: undefined };
+    const recalled = this.history.navigate(this.nav, step);
+    if (recalled !== undefined) this.text = recalled;
+    return true;
   }
 }
 
@@ -48,7 +64,8 @@ export function isCommandInputKey(key: string): boolean {
     key === "backspace" ||
     key === "<escape>" ||
     key === "escape" ||
-    key === "ctrl-["
+    key === "ctrl-[" ||
+    historyNavigationKey(key) !== undefined
   );
 }
 

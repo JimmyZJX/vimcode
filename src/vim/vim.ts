@@ -104,6 +104,27 @@ function isExecutorOwnedNonNormalMode(mode: VimMode): boolean {
   return mode === "search" || mode === "command" || isVisualModeKind(mode);
 }
 
+// The mode FSM state *and* the session data that exists only in that mode.
+// Modeling the prompt sessions as payloads of their mode makes the
+// inconsistent combinations unrepresentable at the type level: there is no way
+// to hold a `PendingSearch` outside `search` mode, to be in `search` mode
+// without a prompt, or to leave `search`/`command` without giving the payload
+// up (the successor session has no slot for it). See
+// doc/key-handler-refactor.md "Mode/session-state ownership".
+type ModeSession =
+  | { mode: Exclude<VimMode, "search" | "command"> }
+  | {
+      mode: "search";
+      // The in-flight `/`?` prompt, driven by the search-mode grammar.
+      search: PendingSearch;
+      // The mode the prompt was opened from: a visual-kind origin extends the
+      // selection on completion and is restored when the prompt is aborted.
+      origin: VimMode;
+    }
+  // The `:` command line (prefilled with `'<,'>` from a visual origin, which
+  // exits visual on entry — so no origin needs restoring here).
+  | { mode: "command"; command: CommandLine };
+
 
 
 ;
@@ -114,7 +135,10 @@ export { VimGlobalState, VimModelState };
 // entity/window fields are intentionally replaced by the injected
 // `VimEditorCapabilities`.
 export class Vim {
-  private modeState: VimMode = "normal";
+  private session: ModeSession = { mode: "normal" };
+  private get modeState(): VimMode {
+    return this.session.mode;
+  }
   private readonly easyMotion = new EasyMotionState();
   private modelState: VimModelState;
   private handlerState: HandlerState = { ...initialHandlerState };
@@ -140,15 +164,17 @@ export class Vim {
   // root handler (which resolves against the live Vim mode) and the executor's
   // command callback.
   private dispatchWhenEvaluator: WhenEvaluator = alwaysActiveWhenEvaluator;
-  private searchOriginMode: VimMode | undefined;
-  // The framework `/`?` prompt's editable query while in `search` mode. Created
-  // by the executor mode transition ([enterModeFromExecutor]) and cleared on
-  // exit; injected into the search-mode grammar via [searchRootHandler].
-  private activeSearch: PendingSearch | undefined;
-  // The framework `:` prompt's editable command line while in `command` mode.
-  // Created by the executor mode transition ([enterModeFromExecutor]) and cleared
-  // on exit; injected into the command-mode grammar via [commandRootHandler].
-  private activeCommand: CommandLine | undefined;
+  // Convenience views of the [session] payloads (see [ModeSession]): defined
+  // exactly while the corresponding prompt mode is active, by construction.
+  private get searchOriginMode(): VimMode | undefined {
+    return this.session.mode === "search" ? this.session.origin : undefined;
+  }
+  private get activeSearch(): PendingSearch | undefined {
+    return this.session.mode === "search" ? this.session.search : undefined;
+  }
+  private get activeCommand(): CommandLine | undefined {
+    return this.session.mode === "command" ? this.session.command : undefined;
+  }
   private insertRepeatCount = 1;
   private insertRepeatText = "";
   // Zed: `Vim::replacements` — what replace mode overwrote, for backspace.
@@ -470,6 +496,45 @@ export class Vim {
     return this.syncFromEditorState();
   }
 
+  // Test-harness invariant check, run by [runKeys], the Neovim fixture runner,
+  // and the controller-simulation helper after every key. The mode FSM
+  // ([modeState]) and the per-mode session state are owned separately: mode
+  // *entry* paths deliberately adopt pre-built session state (`gv`/`gn` hand a
+  // prepared selection to visual mode), so a command that leaves a mode without
+  // tearing its session down does not fail immediately — it plants a ghost that
+  // resurfaces on the next entry (the `Vgq` → stale-visual regression). This
+  // assertion makes that contract violation fail at the key that broke it.
+  assertModeStateInvariants(context: string): void {
+    const failures: string[] = [];
+    const visualSession = this.visualMode.currentMode();
+    if (isVisualModeKind(this.modeState) && visualSession === undefined) {
+      failures.push(`mode is ${this.modeState} but VisualMode has no session`);
+    }
+    // A visual session may outlive the visual mode only where a flow keeps the
+    // selection on purpose: a `/`?` prompt opened from visual mode (the search
+    // extends the selection), and an insert-mode excursion that returns to a
+    // visual-derived state (`I`/`A` multiline insert).
+    const visualSessionAllowed =
+      isVisualModeKind(this.modeState)
+      || this.modeState === "search"
+      || (this.modeState === "insert" && this.insertOrigin !== undefined && isVisualModeKind(this.insertOrigin));
+    if (visualSession !== undefined && !visualSessionAllowed) {
+      failures.push(
+        `mode is ${this.modeState} but VisualMode still has a ${visualSession} session — a command that left visual mode did not tear its session down`
+      );
+    }
+    // The prompt-session invariants ("in `search` mode iff a PendingSearch
+    // exists", same for `command`) are structural now: the prompts are
+    // payloads of the [ModeSession] union, so the inconsistent combinations do
+    // not typecheck and need no runtime check. The visual-session invariant
+    // above stays runtime-checked: [VisualMode] owns its state as mutable data
+    // (and legitimately spans the search mode), which the type system cannot
+    // relate to the mode FSM.
+    if (failures.length > 0) {
+      throw new Error(`mode/session-state invariant violated ${context}:\n- ${failures.join("\n- ")}`);
+    }
+  }
+
   private clearPendingForModelSwitch(): void {
     this.clearPendingGrammar({ closeSearchHighlights: false });
   }
@@ -481,22 +546,41 @@ export class Vim {
   private clearPendingGrammar({ closeSearchHighlights }: { closeSearchHighlights: boolean }): void {
     this.easyMotion.clear(this.editor);
     this.clearPendingRemaps();
-    // Tear down the framework `/`?` prompt's editor preview and drop its query.
-    const frameworkSearch = this.activeSearch;
-    if (frameworkSearch !== undefined) {
-      this.globalState.search.clearPending(this.editor, frameworkSearch, { restoreViewport: closeSearchHighlights });
-      this.activeSearch = undefined;
-    }
-    // The framework `:` command line has no editor preview to tear down; just
-    // drop the in-flight input (an escape/external cancel discards it).
-    this.activeCommand = undefined;
-    this.searchOriginMode = undefined;
+    this.dismissPromptSession({ closeSearchHighlights });
     this.handlerState.register = undefined;
     this.handlerState.countText = "";
-    if (closeSearchHighlights && frameworkSearch !== undefined) {
-      this.editor.clearSearchHighlights();
-    }
     this.normalMode.clearPending();
+  }
+
+  // Abort an in-flight `/`?` or `:` prompt: record the aborted input in the
+  // history (Vim `:h cmdline-history`), tear down the search preview, and
+  // transition to the prompt's base mode. Under [ModeSession] the payload
+  // cannot be dropped without choosing a successor, so the abort decision is
+  // explicit here: a search opened from visual mode returns to that visual
+  // kind (the selection is still alive — Neovim keeps it), everything else
+  // returns to normal. No-op outside the prompt modes.
+  private dismissPromptSession({ closeSearchHighlights }: { closeSearchHighlights: boolean }): void {
+    const session = this.session;
+    switch (session.mode) {
+      case "search": {
+        this.globalState.search.recordHistory(session.search);
+        this.globalState.search.clearPending(this.editor, session.search, { restoreViewport: closeSearchHighlights });
+        if (closeSearchHighlights) this.editor.clearSearchHighlights();
+        if (isVisualModeKind(session.origin) && this.visualMode.currentMode() !== undefined) {
+          this.setMode(session.origin);
+        } else {
+          this.setMode("normal");
+        }
+        return;
+      }
+      case "command": {
+        this.globalState.commandHistory.add(session.command.value());
+        this.setMode("normal");
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   private isPending(): boolean {
@@ -617,6 +701,7 @@ export class Vim {
         mode: this.modeState,
         editor: this.editor,
         registers: this.globalState.registers,
+        configuration: this.configuration,
         visual: this.visualMode,
         repeatState: this.globalState.repeat,
         // [search] is injected so visual-mode `gn`/`gN`/`n`/`N` can extend the
@@ -711,11 +796,14 @@ export class Vim {
       });
     }
     if (mode === "search" && this.modeState !== "search") {
-      // Start the incremental prompt; the search-mode grammar drives it from here.
-      this.searchOriginMode = this.modeState;
-      this.activeSearch = this.globalState.search.start(opts?.search?.backwards ?? false, this.editor);
-      this.setMode("search");
-      // Rebuild the executor handlers now that [activeSearch] exists so the next
+      // Start the incremental prompt; the search-mode grammar drives it from
+      // here. The prompt and its origin ride in the session payload.
+      this.setSession({
+        mode: "search",
+        search: this.globalState.search.start(opts?.search?.backwards ?? false, this.editor),
+        origin: this.modeState,
+      });
+      // Rebuild the executor handlers now that the prompt exists so the next
       // key routes to [searchRootHandler] (which [executorHandlers] gates on it).
       this.keyExecutor.reset("search");
     }
@@ -730,20 +818,15 @@ export class Vim {
         this.visualMode.exit();
         input = "'<,'>";
       }
-      this.activeCommand = new CommandLine(input);
-      this.setMode("command");
-      // Rebuild the executor handlers now that [activeCommand] exists so the next
-      // key routes to [commandRootHandler].
+      this.setSession({ mode: "command", command: new CommandLine(input, this.globalState.commandHistory) });
+      // Rebuild the executor handlers now that the command line exists so the
+      // next key routes to [commandRootHandler].
       this.keyExecutor.reset("command");
     }
     // Leaving `search` for another mode (the `enter` completion; the effect
     // already applied the motion — a cursor move for a normal-origin search, a
-    // selection extension for a visual-origin one): tear down the prompt session.
-    // The mode-specific branches below return to the origin mode.
-    if (mode !== "search" && this.modeState === "search") {
-      this.activeSearch = undefined;
-      this.searchOriginMode = undefined;
-    }
+    // selection extension for a visual-origin one): the transition below
+    // replaces the session, which necessarily drops the prompt payload.
     if (mode === "normal" && this.modeState === "search") {
       this.setMode("normal");
     }
@@ -753,9 +836,10 @@ export class Vim {
     // `:normal`/`:g` command that re-enters [onKey] runs its keys synchronously
     // rather than queuing them behind the in-flight effect. Escape cancels via
     // the central escape handling instead, which never reaches this path.
-    if (mode === "normal" && this.modeState === "command") {
-      const command = this.activeCommand?.value() ?? "";
-      this.activeCommand = undefined;
+    const sessionBeforeTransition = this.session;
+    if (mode === "normal" && sessionBeforeTransition.mode === "command") {
+      const command = sessionBeforeTransition.command.value();
+      this.globalState.commandHistory.add(command);
       this.setMode("normal");
       executeCommand(this.editor, command, {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
@@ -906,6 +990,7 @@ export class Vim {
         mode: "normal",
         editor: this.editor,
         registers: this.globalState.registers,
+        configuration: this.configuration,
         marks: this.modelState.marks,
         find: this.globalState.find,
         changeList: this.modelState.changeList,
@@ -1363,7 +1448,13 @@ export class Vim {
   }
 
   private handleEscapeKey(): void {
+    // Escaping a prompt: [dismissPromptSession] (via the clear below) chooses
+    // the successor mode itself — a visual-origin search returns to the visual
+    // kind with the selection intact, like Neovim. Stop there: falling through
+    // would treat the restored visual mode as the thing being escaped.
+    const wasPrompt = this.modeState === "search" || this.modeState === "command";
     this.clearPendingStateForEscape();
+    if (wasPrompt) return;
     if (this.isVisualMode()) {
       const selection = this.editor.getSelections()[0];
       if (selection !== undefined) this.modelState.marks.setVisualSelectionMarks(this.editor, selection);
@@ -1373,10 +1464,6 @@ export class Vim {
     }
     if (this.modeState === "normal" && this.hasMultipleCursorsOrSelection()) {
       this.collapseToFirstCursor();
-      return;
-    }
-    if (this.modeState === "search" || this.modeState === "command") {
-      this.setMode("normal");
       return;
     }
     if (this.modeState !== "normal") {
@@ -1516,17 +1603,24 @@ export class Vim {
     this.setMode("replace");
   }
 
-  private setMode(mode: VimMode): void {
+  // Payload-less mode transitions. Entering `search`/`command` must construct
+  // the session payload through [setSession]; the parameter type rejects them
+  // here, so a prompt mode cannot be entered without its prompt.
+  private setMode(mode: Exclude<VimMode, "search" | "command">): void {
+    this.setSession({ mode });
+  }
+
+  private setSession(session: ModeSession): void {
     const previous = this.modeState;
-    this.modeState = mode;
+    this.session = session;
     // Keep the executor in sync across transitions to/from the framework-owned
     // non-normal modes (`search`, visual kinds), so it builds the right per-mode
     // handlers. Owner-side paths (legacy entry like `gv`/mouse, escape, the
     // legacy visual-search exit) change the mode without an executor action;
     // framework actions already set the executor's mode, so [syncMode] no-ops for
     // them (entering `search` rebuilds explicitly once the prompt exists).
-    if (isExecutorOwnedNonNormalMode(previous) || isExecutorOwnedNonNormalMode(mode)) {
-      this.keyExecutor.syncMode(mode);
+    if (isExecutorOwnedNonNormalMode(previous) || isExecutorOwnedNonNormalMode(session.mode)) {
+      this.keyExecutor.syncMode(session.mode);
     }
   }
 
@@ -1795,5 +1889,6 @@ function commandArgs(command: { args?: unknown | unknown[] }): readonly unknown[
 export function runKeys(vim: Vim, keys: readonly string[]): void {
   for (const key of keys) {
     vim.onKey(key);
+    vim.assertModeStateInvariants(`after key "${key}"`);
   }
 }

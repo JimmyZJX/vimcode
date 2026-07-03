@@ -116,6 +116,10 @@ export interface VimEditorCapabilities {
   /** Model rows currently visible in the host viewport (both inclusive), or
       undefined when the host has no viewport. Used by `H`/`M`/`L`. */
   visibleRowRange(): { top: number; bottom: number } | undefined;
+  /** The host's vertical ruler columns (VSCode `editor.rulers`, resolved for
+      the editor's language), in configuration order. The first ruler is the
+      `gq`/`gw` format width when `vim.textwidth` is not set. */
+  rulerColumns(): readonly number[];
 
   // Zed: `normal::search` integrates with `BufferSearchBar` so search motions,
   // highlights, and find-widget state share one source of truth. Locally, the
@@ -185,6 +189,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private viewportLines: number | undefined;
   private viewportScrolloff = 0;
   private viewportTopRow = 0;
+  private rulers: readonly number[] = [];
   private readonlyForTest = false;
   public readonly nativeCommands: { command: string; args: readonly unknown[] }[] = [];
 
@@ -607,6 +612,15 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   configureViewportForTest({ lines, scrolloff }: { lines?: number; scrolloff?: number }): void {
     if (lines !== undefined) this.viewportLines = lines;
     if (scrolloff !== undefined) this.viewportScrolloff = scrolloff;
+  }
+
+  rulerColumns(): readonly number[] {
+    return this.rulers;
+  }
+
+  // Test-only stand-in for VSCode's `editor.rulers`.
+  configureRulersForTest(rulers: readonly number[]): void {
+    this.rulers = rulers;
   }
 
   private viewportHeight(): number | undefined {
