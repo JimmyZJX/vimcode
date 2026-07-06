@@ -4,6 +4,7 @@
 // - translated concepts: editor operations are mediated through a testable host interface
 // - intentional differences: VSCode and fake editors implement this capability interface directly
 
+import { graphemeStart } from "./grapheme.js";
 import {
   CursorStyle,
   Position,
@@ -152,9 +153,12 @@ export function normalCursorPosition(
   pos: Position
 ): Position {
   const clipped = clipPosition(editor, pos);
-  const lineLength = editor.lineLength(clipped.row);
-  if (lineLength === 0) return { row: clipped.row, column: 0 };
-  return { row: clipped.row, column: Math.min(clipped.column, lineLength - 1) };
+  const line = editor.line(clipped.row);
+  if (line.length === 0) return { row: clipped.row, column: 0 };
+  // A normal-mode cursor sits on a character cell: snap into the containing
+  // grapheme cluster (the last cell starts at the final cluster's boundary,
+  // not at length - 1, which can be mid-cluster).
+  return { row: clipped.row, column: graphemeStart(line, Math.min(clipped.column, line.length - 1)) };
 }
 
 export function rangeText(editor: VimEditorCapabilities, range: TextRange): string {

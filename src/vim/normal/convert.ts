@@ -5,6 +5,7 @@
 // - intentional differences: this slice only handles simple model-buffer characterwise
 //   normal-mode conversion; motion/object/visual conversions remain future work.
 
+import { nextGraphemeBoundary } from "../grapheme.js";
 import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
 import type { ResolvedTarget } from "../operator_target.js";
 import { TextEdit, TextRange, VimSelection, charwiseSelection, selectionHead } from "../state.js";
@@ -45,12 +46,11 @@ export function toggleCaseCharacters(editor: VimEditorCapabilities, count: numbe
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
     const line = editor.line(head.row);
-    // Vim: the count is in characters; astral characters span two UTF-16
-    // columns (`4~` over `C😀é1` toggles all four characters).
+    // Vim: the count is in character cells; clusters (astral characters,
+    // combining accents, flags) span multiple UTF-16 columns.
     let endColumn = head.column;
     for (let index = 0; index < count && endColumn < line.length; index++) {
-      const code = line.charCodeAt(endColumn);
-      endColumn += code >= 0xd800 && code <= 0xdbff ? 2 : 1;
+      endColumn = nextGraphemeBoundary(line, endColumn);
     }
     if (head.column >= endColumn) {
       selectionsAfter.push(charwiseSelection(head));

@@ -5,6 +5,7 @@
 // - intentional differences: this first slice is model-buffer only and omits undo-stack
 //   restoration for replace-mode backspace.
 
+import { nextGraphemeBoundary } from "./grapheme.js";
 import { ApplyEditsOptions, VimEditorCapabilities } from "./editor.js";
 import { firstNonWhitespaceColumn } from "./motion.js";
 import { Position, TextEdit, VimSelection, charwiseSelection, selectionHead } from "./state.js";
@@ -19,7 +20,16 @@ export function replaceCharacters(
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
     const replacement = text === "enter" ? "\n" : text;
-    if (head.column + count > editor.lineLength(head.row)) {
+    // The count is in character cells; step cluster boundaries and fail when
+    // fewer than [count] cells remain (Vim rejects the whole replace).
+    const line = editor.line(head.row);
+    let cellsEnd = head.column;
+    let cells = 0;
+    while (cells < count && cellsEnd < line.length) {
+      cellsEnd = nextGraphemeBoundary(line, cellsEnd);
+      cells++;
+    }
+    if (cells < count) {
       selectionsAfter.push(charwiseSelection(head));
       continue;
     }
@@ -28,17 +38,18 @@ export function replaceCharacters(
       // break; the remainder's leading white space collapses, the new line
       // takes the original line's indentation, and the cursor lands on the
       // last indent character (verified against Neovim).
-      const line = editor.line(head.row);
       const indent = line.slice(0, firstNonWhitespaceColumn(line));
-      let endColumn = head.column + count;
+      let endColumn = cellsEnd;
       while (endColumn < line.length && (line[endColumn] === " " || line[endColumn] === "\t")) endColumn++;
       edits.push({ range: { start: head, end: { row: head.row, column: endColumn } }, text: `\n${indent}` });
       selectionsAfter.push(charwiseSelection({ row: head.row + 1, column: Math.max(0, indent.length - 1) }));
       continue;
     }
-    const end = endPositionForReplace(editor, head, count);
-    edits.push({ range: { start: head, end }, text: replacement.repeat(count) });
-    selectionsAfter.push(charwiseSelection(cursorAfterReplace(head, count)));
+    const end = { row: head.row, column: cellsEnd };
+    const inserted = replacement.repeat(count);
+    edits.push({ range: { start: head, end }, text: inserted });
+    // Cursor on the last replacement character.
+    selectionsAfter.push(charwiseSelection({ row: head.row, column: head.column + Math.max(0, inserted.length - replacement.length) }));
   }
   editor.applyEdits(edits, selectionsAfter);
 }
@@ -77,10 +88,6 @@ function endPositionForReplace(editor: VimEditorCapabilities, start: Position, c
     row: start.row,
     column: Math.min(start.column + count, editor.lineLength(start.row)),
   };
-}
-
-function cursorAfterReplace(start: Position, count: number): Position {
-  return { row: start.row, column: start.column + Math.max(0, count - 1) };
 }
 
 function positionAfterInsertedText(start: Position, text: string): Position {

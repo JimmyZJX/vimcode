@@ -68,9 +68,20 @@ export class Registers {
 
   async refreshSystemClipboardRegister(name: RegisterName | undefined): Promise<void> {
     if (!this.usesSystemClipboardRegister(name) || this.activeClipboard === undefined) return;
+    // Clipboard round trips (browser clipboard services, remote bridging,
+    // external apps) can deliver Windows line endings. The model is \n-only —
+    // a stray `\r` surviving into a paste is rendered by the host as an extra
+    // line break (`Vyp` through the system clipboard pasted a ghost empty
+    // line: "aaa\r\n" minus the stripped `\n` left "aaa\r").
+    const text = (await this.activeClipboard.readText()).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    // Unchanged since Vim last wrote it: keep the register as-is (kind and
+    // multicursor parts still describe the text).
+    if (this.systemClipboard !== undefined && this.systemClipboard.text === text) return;
+    // The text changed externally: the stored kind/parts no longer apply.
+    // Trailing-newline text pastes linewise, like Vim's plain-text heuristic.
     this.systemClipboard = {
-      text: await this.activeClipboard.readText(),
-      kind: this.systemClipboard?.kind ?? "characterwise",
+      text,
+      kind: text.endsWith("\n") ? "linewise" : "characterwise",
     };
   }
 

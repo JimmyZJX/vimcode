@@ -5,6 +5,7 @@
 // - intentional differences: this is still a small subset of Zed paste behavior; visual,
 //   counts, multicursor details, and auto-indent are future work.
 
+import { previousGraphemeBoundary } from "../grapheme.js";
 import { VimEditorCapabilities } from "../editor.js";
 import { positionAfterInsertedText } from "../insert.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers } from "../registers.js";
@@ -140,9 +141,11 @@ function cursorAtEndOfInsertedText(start: ReturnType<typeof selectionHead>, text
   const after = positionAfterInsertedText(start, text);
   if (text.length === 0) return start;
   // Vim: pasting multi-line charwise text leaves the cursor on the first
-  // pasted character; single-line charwise paste leaves it on the last.
+  // pasted character; single-line charwise paste leaves it on the last
+  // character *cell* (cluster start).
   if (text.includes("\n")) return start;
-  return { row: after.row, column: Math.max(start.column, after.column - 1) };
+  void after;
+  return { row: start.row, column: Math.max(start.column, start.column + previousGraphemeBoundary(text, text.length)) };
 }
 
 function pasteBlockwise(

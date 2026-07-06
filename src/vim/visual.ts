@@ -7,6 +7,7 @@
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
+import { nextGraphemeBoundary, previousGraphemeBoundary } from "./grapheme.js";
 import { VimConfiguration } from "./config.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { VimEditorCapabilities, VimUndoTransaction, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
@@ -579,7 +580,7 @@ export class VisualMode {
         && comparePositions(inclusiveHeadForRangeEnd(this.editor, range), selectionEnd) === 0) {
         const requery = reversed
           ? state.head
-          : { row: selectionEnd.row, column: Math.min(selectionEnd.column + 1, this.editor.lineLength(selectionEnd.row)) };
+          : { row: selectionEnd.row, column: nextGraphemeBoundary(this.editor.line(selectionEnd.row), selectionEnd.column) };
         const expanded = textObjectRange(this.editor, requery, object, { around, count });
         if (!rangeIsEmpty(expanded)) return charwiseStateForRange(this.editor, expanded);
         return state;
@@ -1105,8 +1106,8 @@ function charwiseStateAfterMotion(
 }
 
 function charwiseRight(editor: VimEditorCapabilities, head: Position): Position {
-  const lineLength = editor.lineLength(head.row);
-  if (head.column < lineLength) return { row: head.row, column: head.column + 1 };
+  const line = editor.line(head.row);
+  if (head.column < line.length) return { row: head.row, column: nextGraphemeBoundary(line, head.column) };
   return head;
 }
 
@@ -1347,11 +1348,12 @@ function rawVisualAnchor(state: VisualState): Position {
 }
 
 function inclusiveHeadForRangeEnd(editor: VimEditorCapabilities, range: TextRange): Position {
+  const endLine = editor.line(range.end.row);
   if (range.end.row === range.start.row) {
-    return { row: range.end.row, column: Math.max(range.start.column, range.end.column - 1) };
+    return { row: range.end.row, column: Math.max(range.start.column, previousGraphemeBoundary(endLine, range.end.column)) };
   }
   if (range.end.column > 0) {
-    return { row: range.end.row, column: range.end.column - 1 };
+    return { row: range.end.row, column: previousGraphemeBoundary(endLine, range.end.column) };
   }
   return { row: range.end.row, column: 0 };
 }
@@ -1944,7 +1946,10 @@ function cursorAtEndOfInsertedText(start: Position, text: string): Position {
   const after = positionAfterInsertedText(start, text);
   if (text.length === 0) return start;
   const lines = text.split("\n");
-  if (lines.length === 1) return { row: after.row, column: Math.max(start.column, after.column - 1) };
-  const lastLineLength = lines[lines.length - 1].length;
-  return { row: after.row, column: Math.max(0, lastLineLength - 1) };
+  // The cursor lands on the last pasted character *cell* (cluster start).
+  if (lines.length === 1) {
+    return { row: after.row, column: Math.max(start.column, start.column + previousGraphemeBoundary(text, text.length)) };
+  }
+  const lastLine = lines[lines.length - 1];
+  return { row: after.row, column: lastLine.length === 0 ? 0 : previousGraphemeBoundary(lastLine, lastLine.length) };
 }

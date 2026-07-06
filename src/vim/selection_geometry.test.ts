@@ -14,6 +14,7 @@ import { Position, VimSelection, comparePositions } from "./state.js";
 
 function editorOf(lines: readonly string[]): CharacterCellEditor {
   return {
+    line: row => lines[row] ?? "",
     lineLength: row => lines[row]?.length ?? 0,
     lineCount: () => lines.length,
   };

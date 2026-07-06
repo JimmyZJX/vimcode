@@ -25,6 +25,7 @@ import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
 import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
+import { installVSCodeGraphemeProvider } from './vscodeGrapheme.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
 const VimEnabledContext = new RawContextKey<boolean>('vim.enabled', false, true);
@@ -128,6 +129,9 @@ export class VimController extends Disposable {
 		private readonly logService: ILogService
 	) {
 		super();
+		// Align the core's character-cell boundaries with the host's own
+		// character-column mapping (idempotent).
+		installVSCodeGraphemeProvider();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
 		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message));
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration(), VimController.globalState);

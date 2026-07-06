@@ -5,6 +5,7 @@
 // - intentional differences: this first slice uses simple text ranges and the unnamed
 //   clipboard string; linewise, register, visual, and multicursor fidelity are incomplete.
 
+import { nextGraphemeBoundary, previousGraphemeBoundary } from "../grapheme.js";
 import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
 import { lineRange, linewiseCursorAfterDelete } from "../motion.js";
 import type { CharwiseTarget, ResolvedTarget, RowRange } from "../operator_target.js";
@@ -144,9 +145,11 @@ export function deleteCharactersBefore(
     registerName,
     editor.getSelections().map(selection => {
       const head = selectionHead(selection);
-      const range = head.column === 0
-        ? { start: head, end: head }
-        : { start: { row: head.row, column: Math.max(0, head.column - count) }, end: head };
+      let startColumn = head.column;
+      for (let step = 0; step < count && startColumn > 0; step++) {
+        startColumn = previousGraphemeBoundary(editor.line(head.row), startColumn);
+      }
+      const range = { start: { row: head.row, column: startColumn }, end: head };
       return { head, range };
     }),
     (_editor, range, head) => ({ row: head.row, column: range.start.column }),
@@ -168,11 +171,14 @@ export function deleteCharacters(
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
-    const oldLineLength = editor.lineLength(head.row);
-    const end = {
-      row: head.row,
-      column: Math.min(head.column + count, oldLineLength),
-    };
+    const line = editor.line(head.row);
+    const oldLineLength = line.length;
+    // The count is in character cells (grapheme clusters), not code units.
+    let endColumn = head.column;
+    for (let step = 0; step < count && endColumn < line.length; step++) {
+      endColumn = nextGraphemeBoundary(line, endColumn);
+    }
+    const end = { row: head.row, column: endColumn };
     const range = orderedRange(head, end);
     const deletedColumns = Math.max(0, range.end.column - range.start.column);
     const newLineLength = oldLineLength - deletedColumns;

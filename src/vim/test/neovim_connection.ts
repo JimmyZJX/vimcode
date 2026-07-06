@@ -88,7 +88,10 @@ function luaScript(parsed: ParsedMarkedText, input: string, readRegisters: reado
   return `
 local lines = ${luaStringArray(parsed.text.split("\n"))}
 vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
-vim.api.nvim_win_set_cursor(0, { ${parsed.row + 1}, ${parsed.column} })
+-- The marked-text column is a UTF-16 index; Neovim's cursor wants bytes.
+local start_line = lines[${parsed.row + 1}] or ""
+local byteindex_ok, start_col = pcall(vim.str_byteindex, start_line, ${parsed.column}, true)
+vim.api.nvim_win_set_cursor(0, { ${parsed.row + 1}, byteindex_ok and start_col or ${parsed.column} })
 for _, command in ipairs(${luaStringArray(setup)}) do
   vim.cmd(command)
 end
@@ -98,10 +101,15 @@ local registers = {}
 for _, register in ipairs(${luaStringArray(readRegisters)}) do
   registers[register] = vim.fn.getreg(register)
 end
+-- Report the cursor column as a UTF-16 index (what the JS side uses), not
+-- Neovim's byte index — they diverge on any non-ASCII line.
+local cursor = vim.api.nvim_win_get_cursor(0)
+local cursor_line = vim.api.nvim_buf_get_lines(0, cursor[1] - 1, cursor[1], false)[1] or ""
+local utf16_ok, _, cursor_utf16 = pcall(vim.str_utfindex, cursor_line, cursor[2])
 local result = {
   mode = vim.api.nvim_get_mode().mode,
   lines = vim.api.nvim_buf_get_lines(0, 0, -1, false),
-  cursor = vim.api.nvim_win_get_cursor(0),
+  cursor = { cursor[1], utf16_ok and cursor_utf16 or cursor[2] },
   registers = registers,
 }
 io.stdout:write("NVIM_RESULT:" .. vim.fn.json_encode(result) .. "\\n")

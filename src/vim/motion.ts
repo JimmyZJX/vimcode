@@ -5,6 +5,7 @@
 // - intentional differences: this first slice implements model-position motions only;
 //   display-line and fold-aware movement will be adapter capabilities.
 
+import { nextGraphemeBoundary, previousGraphemeBoundary } from "./grapheme.js";
 import {
   Position,
   TextRange,
@@ -188,14 +189,14 @@ function charAt(editor: VimEditorCapabilities, pos: Position): string | undefine
 }
 
 function nextPosition(editor: VimEditorCapabilities, pos: Position): Position | undefined {
-  const lineLength = editor.lineLength(pos.row);
-  if (pos.column < lineLength) return { row: pos.row, column: pos.column + 1 };
+  const line = editor.line(pos.row);
+  if (pos.column < line.length) return { row: pos.row, column: nextGraphemeBoundary(line, pos.column) };
   if (pos.row + 1 < editor.lineCount()) return { row: pos.row + 1, column: 0 };
   return undefined;
 }
 
 function previousPosition(editor: VimEditorCapabilities, pos: Position): Position | undefined {
-  if (pos.column > 0) return { row: pos.row, column: pos.column - 1 };
+  if (pos.column > 0) return { row: pos.row, column: previousGraphemeBoundary(editor.line(pos.row), pos.column) };
   if (pos.row > 0) return { row: pos.row - 1, column: editor.lineLength(pos.row - 1) };
   return undefined;
 }
@@ -365,13 +366,13 @@ export function applyMotionOnce(
   const clipped = clipPosition(editor, start);
   switch (motion.type) {
     case "left":
-      return normalCursorPosition(editor, { row: clipped.row, column: clipped.column - 1 });
+      return normalCursorPosition(editor, { row: clipped.row, column: previousGraphemeBoundary(editor.line(clipped.row), clipped.column) });
     case "wrappingLeft":
-      if (clipped.column > 0) return normalCursorPosition(editor, { row: clipped.row, column: clipped.column - 1 });
+      if (clipped.column > 0) return normalCursorPosition(editor, { row: clipped.row, column: previousGraphemeBoundary(editor.line(clipped.row), clipped.column) });
       if (clipped.row > 0) return normalCursorPosition(editor, { row: clipped.row - 1, column: editor.lineLength(clipped.row - 1) });
       return normalCursorPosition(editor, clipped);
     case "right":
-      return normalCursorPosition(editor, { row: clipped.row, column: clipped.column + 1 });
+      return normalCursorPosition(editor, { row: clipped.row, column: nextGraphemeBoundary(editor.line(clipped.row), clipped.column) });
     case "wrappingRight":
       return wrappingRight(editor, clipped);
     case "up":
@@ -672,14 +673,14 @@ export function motionRange(
       // motion); `dv%` deletes the same inclusive range as `d%`.
       return range;
     }
+    const endLine = editor.line(range.end.row);
     if (isInclusiveMotion(inner)) {
-      const end = { row: range.end.row, column: Math.max(0, range.end.column - 1) };
+      const end = { row: range.end.row, column: previousGraphemeBoundary(endLine, range.end.column) };
       return { start: range.start, end: comparePositions(end, range.start) < 0 ? range.start : end };
     }
-    const endLineLength = editor.lineLength(range.end.row);
     return {
       start: range.start,
-      end: { row: range.end.row, column: Math.min(range.end.column + 1, endLineLength) },
+      end: { row: range.end.row, column: range.end.column < endLine.length ? nextGraphemeBoundary(endLine, range.end.column) : endLine.length },
     };
   }
   // Vim `c<BS>`/`d<BS>`: backspace is an exclusive motion to the previous
@@ -688,7 +689,12 @@ export function motionRange(
   // normal-mode cursor cell.
   if (motion.type === "wrappingLeft") {
     if (start.column > 0) {
-      return { start: { row: start.row, column: Math.max(0, start.column - count) }, end: start };
+      const line = editor.line(start.row);
+      let startColumn = start.column;
+      for (let step = 0; step < count && startColumn > 0; step++) {
+        startColumn = previousGraphemeBoundary(line, startColumn);
+      }
+      return { start: { row: start.row, column: startColumn }, end: start };
     }
     if (start.row > 0) {
       return { start: { row: start.row - 1, column: editor.lineLength(start.row - 1) }, end: start };
@@ -697,10 +703,12 @@ export function motionRange(
   }
   const end = applyMotion(editor, start, motion, count);
   if (motion.type === "right") {
-    return {
-      start,
-      end: { row: start.row, column: Math.min(start.column + count, editor.lineLength(start.row)) },
-    };
+    const line = editor.line(start.row);
+    let endColumn = start.column;
+    for (let step = 0; step < count && endColumn < line.length; step++) {
+      endColumn = nextGraphemeBoundary(line, endColumn);
+    }
+    return { start, end: { row: start.row, column: endColumn } };
   }
   if (motion.type === "endOfLine") {
     return orderedRange(start, { row: end.row, column: editor.lineLength(end.row) });

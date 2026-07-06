@@ -2493,6 +2493,45 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("seed\none\nred");
   });
 
+  it("Vyp through a CRLF-normalizing clipboard does not paste an extra empty line", async () => {
+    // Some clipboard services (browser/remote bridges, external apps) round-
+    // trip "aaa\n" as "aaa\r\n"; the stray \r used to survive into the paste
+    // and render as a ghost empty line.
+    const editor = new InMemoryVimEditor("aaa\nbbb");
+    const vim = new Vim(editor, { useSystemClipboard: true });
+    const clipboard = new FakeAsyncClipboard("");
+    const crlfClipboard: VimSystemClipboard = {
+      readText: async () => (await clipboard.readText()).replace(/\n/g, "\r\n"),
+      writeText: text => clipboard.writeText(text),
+    };
+
+    await runKeysAsync(vim, ["V", "y", "p"], crlfClipboard);
+    expect(editor.getText()).toBe("aaa\naaa\nbbb");
+  });
+
+  it("external CRLF clipboard text pastes linewise without carriage returns", async () => {
+    const editor = new InMemoryVimEditor("seed");
+    const vim = new Vim(editor, { useSystemClipboard: true });
+    const clipboard = new FakeAsyncClipboard("one\r\ntwo\r\n");
+
+    await runKeysAsync(vim, ["p"], clipboard);
+    expect(editor.getText()).toBe("seed\none\ntwo");
+  });
+
+  it("an external clipboard change reclassifies the register kind", async () => {
+    const editor = new InMemoryVimEditor("seed line");
+    const vim = new Vim(editor, { useSystemClipboard: true });
+    const clipboard = new FakeAsyncClipboard("");
+
+    // Linewise yank, then an external charwise copy: the stale linewise kind
+    // must not turn the external text into a line paste.
+    await runKeysAsync(vim, ["y", "y"], clipboard);
+    clipboard.text = "word";
+    await runKeysAsync(vim, ["p"], clipboard);
+    // Charwise paste after the cursor character — not a line paste.
+    expect(editor.getText()).toBe("swordeed line");
+  });
+
   it("reads system clipboard registers asynchronously only when they are used", async () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor);
