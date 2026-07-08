@@ -45,6 +45,19 @@ const VimNativePassthroughCommands = new Set([
 	'showPrevParameterHint',
 ]);
 
+/**
+ * A keybinding whose `when` clause references Vim's own context keys (for
+ * example leaderkey's `vim.mode == 'Normal'`) is deliberately scoped to Vim
+ * state, so it cannot collide with Vim by accident. Such bindings preempt Vim
+ * even when they are default keybindings from VSCode core or a built-in
+ * extension, which Vim otherwise overrides. Checking [isBuiltinExtension]
+ * alone is not enough: installing a gallery update of a built-in extension
+ * keeps the running copy flagged as built-in.
+ */
+function whenClauseIsVimAware(when: ContextKeyExpression | undefined): boolean {
+	return when !== undefined && when.keys().some(key => key.startsWith('vim.') || key.startsWith('vimcode.'));
+}
+
 let vimRemapCommandRegistered = false;
 
 function registerVimRemapCommandOnce(): void {
@@ -524,6 +537,7 @@ export class VimController extends Disposable {
 				return false;
 			}
 			return VimNativePassthroughCommands.has(keybinding.command)
+				|| whenClauseIsVimAware(keybinding.when)
 				|| !keybinding.isDefault
 				|| (keybinding.extensionId !== null && !keybinding.isBuiltinExtension);
 		});
