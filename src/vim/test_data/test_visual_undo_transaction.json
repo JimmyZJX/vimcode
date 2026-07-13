@@ -1,0 +1,100 @@
+{"Put":{"state":"ˇabc def"}}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"r"}
+{"Key":"x"}
+{"Get":{"state":"ˇxxc def","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇxc def","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇxxc def","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇabc def","mode":"Normal"}}
+{"Put":{"state":"ˇabc def"}}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"~"}
+{"Get":{"state":"ˇABc def","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇBc def","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇABc def","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇabc def","mode":"Normal"}}
+{"Put":{"state":"ˇabc def"}}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"shift-u"}
+{"Get":{"state":"ˇABc def","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇBc def","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇABc def","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇabc def","mode":"Normal"}}
+{"Put":{"state":"ˇABC DEF"}}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"u"}
+{"Get":{"state":"ˇabC DEF","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇbC DEF","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇabC DEF","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇABC DEF","mode":"Normal"}}
+{"Put":{"state":"ˇabc def"}}
+{"Key":"y"}
+{"Key":"l"}
+{"Key":"w"}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"p"}
+{"Get":{"state":"abc ˇaf","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"abc ˇf","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"abc ˇaf","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"abc ˇdef","mode":"Normal"}}
+{"Put":{"state":"aˇaa\nbbb\nccc"}}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"j"}
+{"Key":"shift-v"}
+{"Key":"p"}
+{"Get":{"state":"aaa\nˇaaa\nccc","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"aaa\nˇaa\nccc","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"aaa\nˇaaa\nccc","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"aaa\nˇbbb\nccc","mode":"Normal"}}
+{"Put":{"state":"ˇabc\ndef\nghi"}}
+{"Key":"y"}
+{"Key":"l"}
+{"Key":"ctrl-v"}
+{"Key":"j"}
+{"Key":"p"}
+{"Get":{"state":"ˇabc\naef\nghi","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇbc\naef\nghi","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇabc\naef\nghi","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ˇabc\ndef\nghi","mode":"Normal"}}
+{"Put":{"state":"ˇab cd\nef gh"}}
+{"Key":"ctrl-v"}
+{"Key":"j"}
+{"Key":"y"}
+{"Key":"w"}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"p"}
+{"Get":{"state":"ab ˇa\nef egh","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"abˇ \nef egh","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ab ˇa\nef egh","mode":"Normal"}}
+{"Key":"u"}
+{"Get":{"state":"ab ˇcd\nef gh","mode":"Normal"}}
