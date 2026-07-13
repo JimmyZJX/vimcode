@@ -7,6 +7,7 @@
 //   Vim-specific direction and repeat metadata.
 
 import { VimEditorCapabilities } from "../editor.js";
+import { isEscapeKey } from "../key_handler.js";
 import { Motion } from "../motion.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "../prompt_history.js";
 import { Registers } from "../registers.js";
@@ -45,9 +46,7 @@ export function isSearchInputKey(key: string): boolean {
     || key === "enter"
     || key === "ctrl-v"
     || key === "ctrl-y"
-    || key === "<escape>"
-    || key === "escape"
-    || key === "ctrl-["
+    || isEscapeKey(key)
     || singleLineEditorKey(key) !== undefined
     || historyNavigationKey(key) !== undefined;
 }

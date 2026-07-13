@@ -18,6 +18,7 @@ import {
   effect,
   handler,
   invalid,
+  isEscapeKey,
   mapHandler,
   unhandled,
 } from "./key_handler.js";
@@ -539,10 +540,6 @@ function dotRepeatHandler(key: string, state: HandlerState): HandleResult<void> 
   });
 }
 
-function isEscapeKey(key: string): boolean {
-  return key === "escape" || key === "<escape>" || key === "ctrl-[";
-}
-
 // Leaf normal-mode actions that take no motion/object operand: the single-key
 // `x`/`X`/`~`/`J`/`ctrl-a`/`ctrl-x`/`p`/`P`, and the char-input `r{char}`. Each
 // applies immediately; dot-repeat/macros replay the recorded keys.
@@ -558,7 +555,9 @@ function simpleActionHandler(key: string, state: HandlerState): HandleResult<voi
 }
 
 // The char after `r`: a literal replacement, or `ctrl-k` to begin a digraph.
+// Escape abandons the replace (Vim `r<Esc>`).
 function replaceCharWaiter(char: string, state: HandlerState): HandleResult<void> {
+  if (isEscapeKey(char)) return invalid();
   if (char === "ctrl-k") {
     return handler([{ handler: digraphWaiter(replaceWith), state: deeper(state) }]);
   }
@@ -577,6 +576,10 @@ export function digraphWaiter(
   first?: string
 ): Handler<void> {
   return (char, state) => {
+    // Deliberate divergence: Neovim resolves `ctrl-k ... <Esc>` by committing
+    // a literal ^K; typing a control character into the buffer on Escape is
+    // worse than cancelling in an editor host.
+    if (isEscapeKey(char)) return invalid();
     if (first === undefined) {
       return handler([{ handler: digraphWaiter(onResolved, keyForInput(char)), state: deeper(state) }]);
     }

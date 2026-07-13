@@ -8,6 +8,7 @@
 //   commands, marks, regex conversion, and async UI completion.
 
 import { VimEditorCapabilities } from "./editor.js";
+import { isEscapeKey } from "./key_handler.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "./prompt_history.js";
 import { Registers, parseRegisterName } from "./registers.js";
 import { translateVimRegex } from "./search.js";
@@ -64,9 +65,7 @@ export function isCommandInputKey(key: string): boolean {
     key === "space" ||
     key === "enter" ||
     key === "backspace" ||
-    key === "<escape>" ||
-    key === "escape" ||
-    key === "ctrl-[" ||
+    isEscapeKey(key) ||
     historyNavigationKey(key) !== undefined
   );
 }

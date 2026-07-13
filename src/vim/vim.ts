@@ -14,7 +14,7 @@ import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMu
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, insertTextForKey, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
-import { initialHandlerState, unhandled } from "./key_handler.js";
+import { initialHandlerState, isEscapeKey, unhandled } from "./key_handler.js";
 import type { HandleResult, Handler, HandlerEnv, HandlerState } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { Motion } from "./motion.js";
@@ -397,7 +397,7 @@ export class Vim {
     }
     // Unclaimed keys follow the terminal-fallback policy (see [dispatchKey]).
     // Escape is the one cross-mode command still dispatched owner-side.
-    if (this.isEscape(key)) return this.shouldHandleEscapeKey() ? "owned" : null;
+    if (isEscapeKey(key)) return this.shouldHandleEscapeKey() ? "owned" : null;
     if (this.modeState === "normal" || this.isVisualMode()) {
       // An unbound key rings the bell: Vim owns it so the host does not act on
       // it. Unbound ctrl chords stay native unless they are gated-in builtins.
@@ -1094,7 +1094,7 @@ export class Vim {
       // escape (e.g. `ctrl-a`, function keys) is not ours — let the host handle
       // it without disturbing the prompt or recording it. Escape falls through to
       // the legacy escape handling below, which cancels the prompt.
-      if (this.activeSearch !== undefined && !this.isEscape(key)) return "native";
+      if (this.activeSearch !== undefined && !isEscapeKey(key)) return "native";
       // Clear the executor's now-stale continuation *before* running the
       // terminal fallback: escape handling can re-enter the executor, which
       // would otherwise be misrouted into the leftover continuation.
@@ -1277,7 +1277,7 @@ export class Vim {
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
 
-      if (this.isEscape(key)) {
+      if (isEscapeKey(key)) {
         if (!this.shouldHandleEscapeKey()) return "native";
         this.recordEscapeKey();
         this.handleEscapeKey();
@@ -1841,9 +1841,6 @@ export class Vim {
     return isVisualModeKind(this.modeState);
   }
 
-  private isEscape(key: string): boolean {
-    return key === "<escape>" || key === "escape" || key === "ctrl-[";
-  }
 }
 
 function isCtrlKey(key: string): boolean {

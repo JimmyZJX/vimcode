@@ -23,7 +23,7 @@ import {
   insertText,
 } from "./insert.js";
 import type { HandleResult, Handler, HandlerState } from "./key_handler.js";
-import { cloneHandlerState, effect, invalid, run, unhandled } from "./key_handler.js";
+import { cloneHandlerState, effect, invalid, isEscapeKey, run, unhandled } from "./key_handler.js";
 import { parseRegisterName } from "./registers.js";
 
 // The non-text half of the insert-mode passthrough whitelist: editing/navigation
@@ -69,7 +69,7 @@ export function isPassthroughReplaceKey(key: string): boolean {
 
 export function insertModeHandler(key: string, state: HandlerState): HandleResult<void> {
   // Escape leaves insert mode via the owner's central escape handling.
-  if (isEscape(key)) return unhandled();
+  if (isEscapeKey(key)) return unhandled();
   // Passthrough input is claimed as a `typed` marker (the owner records it and
   // reproduces/skips the edit; see [EffectMeta.insertTyped]).
   if (isPassthroughInsertKey(key)) {
@@ -137,7 +137,7 @@ const applyReplaceResolvedText: ApplyResolvedText = (state, text) => {
 // First digraph char: remember it and wait for the second. Escape cancels.
 function digraphFirstWaiter(applyText: ApplyResolvedText): Handler<void> {
   return (key, state) => {
-    if (isEscape(key)) return invalid();
+    if (isEscapeKey(key)) return invalid();
     return waitFor(state, digraphSecondWaiter(applyText, keyForInput(key)));
   };
 }
@@ -147,7 +147,7 @@ function digraphFirstWaiter(applyText: ApplyResolvedText): Handler<void> {
 // the count-repeat session text (`3i…ctrl-k a :…<esc>`).
 function digraphSecondWaiter(applyText: ApplyResolvedText, first: string): Handler<void> {
   return (key, state) => {
-    if (isEscape(key)) return invalid();
+    if (isEscapeKey(key)) return invalid();
     return effect(state.mode, () => {
       applyText(state, lookupDigraph(first, keyForInput(key)));
     });
@@ -159,7 +159,7 @@ function digraphSecondWaiter(applyText: ApplyResolvedText, first: string): Handl
 // waiter). The inserted text intentionally does not join the count-repeat
 // session text, matching the legacy behavior.
 function insertRegisterWaiter(key: string, state: HandlerState): HandleResult<void> {
-  if (isEscape(key)) return invalid();
+  if (isEscapeKey(key)) return invalid();
   const editor = state.editor;
   const registers = state.registers;
   if (editor === undefined || registers === undefined) return invalid();
@@ -251,7 +251,7 @@ function literalCodepointText(codepoint: number): string {
 function literalTextForKey(key: string): string {
   if (key === "tab") return "\t";
   if (key === "enter") return "\n";
-  if (key === "escape" || key === "<escape" || key === "<escape>") return "\u001b";
+  if (isEscapeKey(key)) return "\u001b";
   const control = /^ctrl-(.)$/.exec(key);
   if (control !== null) {
     if (control[1] === "j") return "\u0000";
@@ -272,7 +272,7 @@ function keyForInput(key: string): string {
 // navigation keys pass through (recorded as `typed`, like insert mode).
 export function replaceModeHandler(key: string, state: HandlerState): HandleResult<void> {
   // Escape leaves replace mode via the owner's central escape handling.
-  if (isEscape(key)) return unhandled();
+  if (isEscapeKey(key)) return unhandled();
   if (isPassthroughReplaceKey(key)) {
     return effect(state.mode, () => {}, { insertTyped: true });
   }
@@ -302,8 +302,4 @@ export function replaceEntryHandler(key: string, state: HandlerState): HandleRes
     enterInsert: { count: state.repeat, separator: "" },
     dotRepeatable: true,
   });
-}
-
-function isEscape(key: string): boolean {
-  return key === "escape" || key === "<escape>" || key === "ctrl-[";
 }

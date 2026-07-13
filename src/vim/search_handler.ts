@@ -14,6 +14,7 @@ import {
   effect,
   handler,
   invalid,
+  isEscapeKey,
   unhandled,
 } from "./key_handler.js";
 import type { Motion } from "./motion.js";
@@ -61,7 +62,7 @@ export function searchModeHandler(
     return unhandled();
   }
   // Escape cancels via the owner's escape handling; unknown keys go to the host.
-  if (!isSearchInputKey(key) || isSearchEscape(key)) return unhandled();
+  if (!isSearchInputKey(key) || isEscapeKey(key)) return unhandled();
   if (key === "enter") {
     // A `/`?` started from visual mode extends the live selection to the match
     // and returns to that visual kind; from normal mode it moves the cursor and
@@ -91,10 +92,6 @@ export function searchModeHandler(
   return effect("search", () => {
     search.handleKey(pending, key, registers, editor);
   });
-}
-
-function isSearchEscape(key: string): boolean {
-  return key === "<escape>" || key === "escape" || key === "ctrl-[";
 }
 
 // Search as an operator operand (`d/`/`c/`/`y/`). Unlike the standalone `search`
@@ -141,7 +138,7 @@ function searchOperandWaiter(
       return invalid();
     // Escape aborts the operator (no edit) and tears down the prompt preview.
     // Vim: the aborted query still enters the search history.
-    if (isSearchEscape(key)) {
+    if (isEscapeKey(key)) {
       return effect("normal", () => {
         search.recordHistory(pending);
         search.clearPending(editor, pending, { restoreViewport: true });

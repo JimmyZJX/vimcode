@@ -9,7 +9,7 @@
 
 import { isCommandInputKey } from "./command.js";
 import type { HandleResult, HandlerState } from "./key_handler.js";
-import { effect, unhandled } from "./key_handler.js";
+import { effect, isEscapeKey, unhandled } from "./key_handler.js";
 import { historyNavigationKey } from "./prompt_history.js";
 
 // `:` enters command mode. Like the `/`?` search prompt the effect only targets
@@ -32,7 +32,7 @@ export function commandPromptHandler(key: string, _state: HandlerState): HandleR
 export function commandModeHandler(key: string, state: HandlerState): HandleResult<void> {
   const command = state.activeCommand;
   if (command === undefined) return unhandled();
-  if (!isCommandInputKey(key) || isCommandEscape(key)) return unhandled();
+  if (!isCommandInputKey(key) || isEscapeKey(key)) return unhandled();
   if (key === "enter") {
     return effect("normal", () => {}, { dotRepeatable: false });
   }
@@ -50,8 +50,4 @@ export function commandModeHandler(key: string, state: HandlerState): HandleResu
     );
   }
   return effect("command", () => command.append(key), { dotRepeatable: false });
-}
-
-function isCommandEscape(key: string): boolean {
-  return key === "<escape>" || key === "escape" || key === "ctrl-[";
 }

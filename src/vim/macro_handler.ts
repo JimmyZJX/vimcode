@@ -23,6 +23,7 @@ import {
   effect,
   handler,
   invalid,
+  isEscapeKey,
   unhandled,
 } from "./key_handler.js";
 
@@ -56,7 +57,7 @@ export function macroControlHandler(key: string, state: HandlerState): HandleRes
 
 // The register name after `q`: start recording into it. Escape cancels.
 function recordRegisterWaiter(key: string, state: HandlerState): HandleResult<void> {
-  if (isEscape(key)) return invalid();
+  if (isEscapeKey(key)) return invalid();
   return effect("normal", () => state.macro?.startRecording(key), { preservesDotRepeat: true });
 }
 
@@ -64,7 +65,7 @@ function recordRegisterWaiter(key: string, state: HandlerState): HandleResult<vo
 // [count] times. Escape cancels.
 function replayRegisterWaiter(count: number): Handler<void> {
   return (key, state) => {
-    if (isEscape(key)) return invalid();
+    if (isEscapeKey(key)) return invalid();
     return effect("normal", () => state.requestMacroReplay?.(key, count), { preservesDotRepeat: true });
   };
 }
@@ -74,8 +75,4 @@ function replayRegisterWaiter(count: number): Handler<void> {
 // surfaces in the status.
 function deeper(state: HandlerState): HandlerState {
   return { ...cloneHandlerState(state), operatorDepth: state.operatorDepth + 1 };
-}
-
-function isEscape(key: string): boolean {
-  return key === "escape" || key === "<escape>" || key === "ctrl-[";
 }

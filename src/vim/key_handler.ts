@@ -397,6 +397,16 @@ export function invalid<T>(): HandleResult<T> {
   return { type: "invalid" };
 }
 
+// Every spelling of the Escape key a handler can see: tests type "escape",
+// the VSCode controller emits "<escape>" (see [keyFromEvent]), and `ctrl-[`
+// is Vim's escape synonym. A pending waiter that should be cancelled by
+// Escape must check this predicate — not one spelling — and return
+// [invalid], so the key abandons the chord instead of being committed as
+// input.
+export function isEscapeKey(key: string): boolean {
+  return key === "escape" || key === "<escape>" || key === "ctrl-[";
+}
+
 function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
   return (
     value !== null &&

@@ -20,6 +20,7 @@ import {
   cloneHandlerState,
   effect,
   handler,
+  isEscapeKey,
   unhandled,
 } from "./key_handler.js";
 
@@ -37,7 +38,7 @@ export function easyMotionHandler(key: string, state: HandlerState): HandleResul
   // Escape is not an easyMotion key: decline so the owner's escape handling
   // cancels the overlay (clearing markers + pending). Matches the legacy
   // dispatcher, where escape was intercepted before easyMotion saw it.
-  if (isEscape(key)) return unhandled();
+  if (isEscapeKey(key)) return unhandled();
 
   const outcome = easyMotion.decide(editor, configuration, key);
   if (outcome === undefined) return unhandled();
@@ -67,8 +68,4 @@ export function easyMotionHandler(key: string, state: HandlerState): HandleResul
         { preservesDotRepeat: true }
       );
   }
-}
-
-function isEscape(key: string): boolean {
-  return key === "escape" || key === "<escape>" || key === "ctrl-[";
 }

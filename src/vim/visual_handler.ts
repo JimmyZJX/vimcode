@@ -7,7 +7,7 @@
 //   read back from the [VisualKeyResult]/[VisualMode] after the effect runs
 //   (a dynamic target mode) rather than predicted per key.
 
-import { cloneHandlerState, combineHandleResults, dynamicModeEffect, effect, handler, invalid, unhandled } from "./key_handler.js";
+import { cloneHandlerState, combineHandleResults, dynamicModeEffect, effect, handler, invalid, isEscapeKey, unhandled } from "./key_handler.js";
 import type { Handler, HandleResult, HandlerState } from "./key_handler.js";
 import type { RepeatState } from "./normal/repeat.js";
 import { bracketChordHandler, ctrlWHandler, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
@@ -227,7 +227,7 @@ function visualTagEntry(state: HandlerState, collected: string): HandleResult<vo
     {
       handler: (key, entryState) => {
         if (entryState.visual === undefined) return invalid();
-        if (key === "escape" || key === "<escape>" || key === "ctrl-[") return invalid();
+        if (isEscapeKey(key)) return invalid();
         if (key === ">" || key === "enter") {
           const tagBody = collected;
           return visualResultEffect(entryState, visual => visual.addTagSurround(tagBody));
@@ -253,7 +253,7 @@ function visualReplaceHandler(key: string, state: HandlerState): HandleResult<vo
 
 function visualReplaceContinuation(key: string, state: HandlerState): HandleResult<void> {
   if (state.visual === undefined) return invalid();
-  if (key === "escape") return invalid();
+  if (isEscapeKey(key)) return invalid();
   if (key === "ctrl-k") {
     return handler([{ handler: digraphWaiter(visualReplaceWith), state: visualDeeper(state) }]);
   }
