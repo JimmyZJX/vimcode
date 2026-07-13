@@ -7,7 +7,7 @@
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
-import { nextGraphemeBoundary, previousGraphemeBoundary } from "./grapheme.js";
+import { graphemeStart, nextGraphemeBoundary, previousGraphemeBoundary } from "./grapheme.js";
 import { VimConfiguration } from "./config.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { VimEditorCapabilities, VimUndoTransaction, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
@@ -623,8 +623,9 @@ export class VisualMode {
       const edits: TextEdit[] = [];
       const copied: string[] = [];
       for (let row = startRow; row <= endRow; row++) {
-        const start = { row, column: Math.min(startColumn, this.editor.lineLength(row)) };
-        const end = { row, column: this.editor.lineLength(row) };
+        const line = this.editor.line(row);
+        const start = { row, column: blockStartColumnForLine(line, startColumn) };
+        const end = { row, column: line.length };
         edits.push({ range: { start, end }, text: "" });
         copied.push(rangeText(this.editor, { start, end }));
       }
@@ -768,7 +769,7 @@ export class VisualMode {
     const cursor = normalCursorPosition(this.editor, ranges[0]?.start ?? visualAnchorPosition(state));
     const edits: TextEdit[] = ranges.map(range => ({
       range,
-      text: replacement.repeat(range.end.column - range.start.column),
+      text: replacement.repeat(graphemeCellCount(this.editor.line(range.start.row), range.start.column, range.end.column)),
     }));
     withVisualUndoTransaction(this.editor, state, () =>
       this.editor.applyEdits(edits, [charwiseSelection(cursor)]));
@@ -1426,17 +1427,8 @@ function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState):
       const { startLine, endLine } = lineBounds(state);
       return [{ start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } }];
     }
-    case "blockwise": {
-      const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
-      const ranges = [];
-      for (let row = startRow; row <= endRow; row++) {
-        ranges.push({
-          start: { row, column: Math.min(startColumn, editor.lineLength(row)) },
-          end: { row, column: Math.min(endColumn + 1, editor.lineLength(row)) },
-        });
-      }
-      return ranges;
-    }
+    case "blockwise":
+      return blockRanges(editor, state);
   }
 }
 
@@ -1445,6 +1437,21 @@ function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState):
 // cases can return a multi-line range), every range here stays within one line,
 // so replacing its text with a repeated char preserves the line breaks between
 // them.
+// The number of grapheme cells between two columns of [line]: `v_r` writes
+// one replacement character per selected cell, not per UTF-16 unit (an emoji
+// becomes one `x`, not two).
+function graphemeCellCount(line: string, startColumn: number, endColumn: number): number {
+  let cells = 0;
+  let column = startColumn;
+  while (column < endColumn) {
+    const next = nextGraphemeBoundary(line, column);
+    if (next <= column) break;
+    column = next;
+    cells++;
+  }
+  return cells;
+}
+
 function replaceRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
   switch (state.kind) {
     case "charwise":
@@ -1896,10 +1903,11 @@ function blockInsertSelections(
   const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
   const selections: VimSelection[] = [];
   for (let row = startRow; row <= endRow; row++) {
+    const line = editor.line(row);
     const column = side === "start"
-      ? startColumn
-      : state.goal?.type === "endOfLine" ? editor.lineLength(row) : endColumn + 1;
-    selections.push(charwiseSelection({ row, column: Math.min(column, editor.lineLength(row)) }));
+      ? blockStartColumnForLine(line, startColumn)
+      : state.goal?.type === "endOfLine" ? line.length : blockEndColumnForLine(line, endColumn);
+    selections.push(charwiseSelection({ row, column }));
   }
   return selections;
 }
@@ -1915,13 +1923,28 @@ function blockRanges(editor: VimEditorCapabilities, state: BlockwiseVisualState)
 
 function blockRangeForRow(editor: VimEditorCapabilities, state: BlockwiseVisualState, row: number): TextRange {
   const { startColumn, endColumn } = blockBounds(state);
-  const lineLength = editor.lineLength(row);
+  const line = editor.line(row);
+  const start = blockStartColumnForLine(line, startColumn);
+  const end = state.goal?.type === "endOfLine" ? line.length : blockEndColumnForLine(line, endColumn);
   return {
-    start: { row, column: Math.min(startColumn, lineLength) },
-    end: { row, column: state.goal?.type === "endOfLine"
-      ? lineLength
-      : Math.min(endColumn + 1, lineLength) },
+    start: { row, column: start },
+    end: { row, column: Math.max(start, end) },
   };
+}
+
+// Cluster-snapped block geometry: block cell columns are UTF-16 unit columns
+// taken from the anchor/head rows, so on another row they can land inside a
+// grapheme cluster (an emoji is one cell but several units). The block covers
+// whole clusters — an edit must never split a surrogate pair or strip a
+// combining mark.
+function blockStartColumnForLine(line: string, startColumn: number): number {
+  return graphemeStart(line, Math.min(startColumn, line.length));
+}
+
+// The end of the cluster containing the block's last cell column (exclusive).
+function blockEndColumnForLine(line: string, endColumn: number): number {
+  if (endColumn >= line.length) return line.length;
+  return nextGraphemeBoundary(line, graphemeStart(line, endColumn));
 }
 
 function blockwiseText(editor: VimEditorCapabilities, state: BlockwiseVisualState): string {

@@ -58,6 +58,29 @@ describe("flag emoji as one character cell (VSCode-faithful)", () => {
     const result = edit(`${FLAG}abc`, ["d", "l"]);
     expect(result.text).toBe("abc");
   });
+
+  it("visual v r replaces the whole flag with one character", () => {
+    // nvim writes one char per screen cell (two for a flag); one glyph is one
+    // cell here. The nvim-agreeing v_r cases (😀, decomposed é) are pinned by
+    // the recorded test_visual_replace_multibyte fixture.
+    expect(edit(`${FLAG}abc`, ["v", "r", "x"]).text).toBe("xabc");
+  });
+
+  it("blockwise ctrl-v r replaces one emoji cell per row", () => {
+    // Terminal nvim fills the block's *screen* width (😀 spans two terminal
+    // cells → xx per row); vimcode's block is one glyph cell wide.
+    expect(edit("😀ab\n😀cd", ["ctrl-v", "j", "r", "x"]).text).toBe("xab\nxcd");
+  });
+
+  it("blockwise ctrl-v d deletes whole emoji cells, never surrogate halves", () => {
+    expect(edit("a😀b\na😀b", ["l", "ctrl-v", "j", "d"]).text).toBe("ab\nab");
+  });
+
+  it("yl p on a flag pastes after the whole flag cell", () => {
+    // nvim treats the flag as two characters (yl would yank half of it);
+    // vimcode's cell covers the whole cluster.
+    expect(edit(`a${FLAG}b`, ["l", "y", "l", "p"]).text).toBe(`a${FLAG}${FLAG}b`);
+  });
 });
 
 describe("grapheme provider seam", () => {

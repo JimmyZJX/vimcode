@@ -5,7 +5,7 @@
 // - intentional differences: this is still a small subset of Zed paste behavior; visual,
 //   counts, multicursor details, and auto-indent are future work.
 
-import { previousGraphemeBoundary } from "../grapheme.js";
+import { nextGraphemeBoundary, previousGraphemeBoundary } from "../grapheme.js";
 import { VimEditorCapabilities } from "../editor.js";
 import { positionAfterInsertedText } from "../insert.js";
 import { RegisterContent, RegisterName, RegisterPart, Registers } from "../registers.js";
@@ -126,9 +126,11 @@ function pushCharacterwisePasteEdit(
   { before, cursorAfter }: { before: boolean; cursorAfter: boolean }
 ): void {
   const head = selectionHead(selection);
+  // `p` inserts after the cursor *cell*: the end of the cluster under the
+  // cursor, never inside a surrogate pair.
   const insertAt = before
     ? head
-    : { row: head.row, column: Math.min(head.column + 1, editor.lineLength(head.row)) };
+    : { row: head.row, column: nextGraphemeBoundary(editor.line(head.row), head.column) };
   edits.push({ range: { start: insertAt, end: insertAt }, text });
   // `gp`/`gP`: the cursor lands on the character just after the pasted text.
   const cursor = cursorAfter
@@ -173,13 +175,17 @@ function pushBlockwisePasteEdits(
 ): void {
   const blockLines = Array(count).fill(text).join("\n").split("\n");
   const head = selectionHead(selection);
-  const column = before ? head.column : head.column;
+  const headLine = editor.line(head.row);
+  // `p` starts the block after the cursor cell (cluster end), `P` at the
+  // cursor column; the cursor lands on the block's first pasted character
+  // (nvim-verified by test_paste_multibyte and test_paste_visual_block).
+  const column = before ? head.column : nextGraphemeBoundary(headLine, head.column);
   for (let index = 0; index < blockLines.length; index++) {
     const row = Math.min(head.row + index, editor.lineCount() - 1);
     const insertAt = { row, column: Math.min(column, editor.lineLength(row)) };
     edits.push({ range: { start: insertAt, end: insertAt }, text: blockLines[index] });
   }
-  selectionsAfter.push(charwiseSelection({ row: head.row, column: head.column + (blockLines[0]?.length ?? 0) }));
+  selectionsAfter.push(charwiseSelection({ row: head.row, column: Math.min(column, headLine.length) }));
 }
 
 function pasteLinewise(
