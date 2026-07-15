@@ -7,7 +7,6 @@
 //   the ex-command execution is owner-side (Vim), because it re-enters the key
 //   pipeline (`:normal`/`:g`) and must run after the effect queue has drained.
 
-import { isCommandInputKey } from "./command.js";
 import type { HandleResult, HandlerState } from "./key_handler.js";
 import { effect, isEscapeKey, unhandled } from "./key_handler.js";
 import { historyNavigationKey } from "./prompt_history.js";
@@ -22,22 +21,22 @@ export function commandPromptHandler(key: string, _state: HandlerState): HandleR
   return effect("command", () => {}, { dotRepeatable: false });
 }
 
-// The `command` mode grammar: drive the `:` command line. `enter` submits and
-// targets normal mode — the owner runs the accumulated command when it applies
-// that transition, *after* the effect queue drains, so a `:normal`/`:g` command
-// that re-enters the key pipeline runs its keys synchronously (like the legacy
-// path). `backspace` deletes the last char; any other input key appends to the
-// line. Escape and unknown (non-input) keys are declined so the owner cancels
-// the prompt (escape) or leaves them to the host.
+// The `command` mode grammar: drive the `:` command-line mini-buffer. `enter`
+// submits and targets normal mode — the owner runs the accumulated command
+// when it applies that transition, *after* the effect queue drains, so a
+// `:normal`/`:g` command that re-enters the key pipeline runs its keys
+// synchronously (like the legacy path). [SingleLineEditor] keys move the
+// cursor and edit around it; `<Up>`/`<Down>`/`<C-p>`/`<C-n>` recall history.
+// Escape is declined so the owner cancels the prompt. Every other key is
+// *swallowed* — an open prompt owns the keyboard; forwarding stray keys to the
+// host (or a later mode) turns typos into editor actions — and reported so the
+// host can show a warning.
 export function commandModeHandler(key: string, state: HandlerState): HandleResult<void> {
   const command = state.activeCommand;
   if (command === undefined) return unhandled();
-  if (!isCommandInputKey(key) || isEscapeKey(key)) return unhandled();
+  if (isEscapeKey(key)) return unhandled();
   if (key === "enter") {
     return effect("normal", () => {}, { dotRepeatable: false });
-  }
-  if (key === "backspace") {
-    return effect("command", () => command.backspace(), { dotRepeatable: false });
   }
   // `<Up>`/`<Down>`/`<C-p>`/`<C-n>`: recall through the command history.
   if (historyNavigationKey(key) !== undefined) {
@@ -49,5 +48,14 @@ export function commandModeHandler(key: string, state: HandlerState): HandleResu
       { dotRepeatable: false }
     );
   }
-  return effect("command", () => command.append(key), { dotRepeatable: false });
+  if (key.length === 1) {
+    return effect("command", () => command.insert(key), { dotRepeatable: false });
+  }
+  return effect(
+    "command",
+    () => {
+      if (!command.tryKey(key)) state.reportSwallowedPromptKey?.(key);
+    },
+    { dotRepeatable: false }
+  );
 }

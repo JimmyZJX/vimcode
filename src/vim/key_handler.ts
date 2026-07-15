@@ -92,6 +92,10 @@ export type HandlerState = {
   // recorded keys back through the dispatcher and each must fully apply before
   // the next. [count]/[register] carry the `3.` / `"a.` overrides.
   requestDotReplay?: (count: number | undefined, register: RegisterName | undefined) => void;
+  // A prompt (`/`?` search, the `:` command line, or an operator's search
+  // operand) swallowed a key it does not understand. The owner surfaces a
+  // transient warning so the swallow is loud rather than a silent no-op.
+  reportSwallowedPromptKey?: (key: string) => void;
   // Vim `i_CTRL-O`: leave insert mode for exactly one normal-mode command. The
   // owner finishes the insert session, enters normal mode, and flags the
   // excursion so the next completed command returns to insert. Injected live

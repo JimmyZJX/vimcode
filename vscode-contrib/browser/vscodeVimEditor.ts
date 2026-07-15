@@ -1,5 +1,5 @@
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
+import { diffInserted, editorBackground, editorFindMatchHighlight } from '../../../../platform/theme/common/colorRegistry.js';
 import { registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
@@ -13,6 +13,7 @@ import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
+import type { SubstitutePreview } from '../common/command.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions, translateVimRegex } from '../common/search.js';
@@ -56,12 +57,32 @@ registerThemingParticipant((theme, collector) => {
 			opacity: 0;
 		}
 	`);
+	// Live `:s` preview: matches use the find-match highlight; once the
+	// replacement section is typed the original is struck through and the
+	// resolved replacement shows as injected text with an "inserted" tint
+	// (VSCodeVim/Neovim 'inccommand'-style).
+	const findMatch = theme.getColor(editorFindMatchHighlight);
+	const inserted = theme.getColor(diffInserted);
+	collector.addRule(`
+		.monaco-editor .vim-substitute-match {
+			background-color: ${findMatch ?? 'rgba(234, 92, 0, 0.33)'};
+		}
+		.monaco-editor .vim-substitute-match-replaced {
+			background-color: ${findMatch ?? 'rgba(234, 92, 0, 0.33)'};
+			text-decoration: line-through;
+			opacity: 0.6;
+		}
+		.monaco-editor .vim-substitute-replacement {
+			background-color: ${inserted ?? 'rgba(155, 185, 85, 0.2)'};
+		}
+	`);
 });
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
 	private readonly insertPendingDecorations: IEditorDecorationsCollection;
 	private readonly easyMotionDecorations: IEditorDecorationsCollection;
+	private readonly substitutePreviewDecorations: IEditorDecorationsCollection;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
@@ -86,6 +107,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.visualLineDecorations = editor.createDecorationsCollection();
 		this.insertPendingDecorations = editor.createDecorationsCollection();
 		this.easyMotionDecorations = editor.createDecorationsCollection();
+		this.substitutePreviewDecorations = editor.createDecorationsCollection();
 	}
 
 	lineCount(): number {
@@ -241,6 +263,55 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	clearEasyMotionMarkers(): void {
 		this.easyMotionDecorations.clear();
+	}
+
+	updateSubstitutePreview(previews: readonly SubstitutePreview[]): void {
+		if (!this.editor.hasModel()) {
+			this.substitutePreviewDecorations.clear();
+			return;
+		}
+		const decorations: IModelDeltaDecoration[] = previews.map(preview => {
+			const range = new Range(
+				preview.range.start.row + 1,
+				preview.range.start.column + 1,
+				preview.range.end.row + 1,
+				preview.range.end.column + 1,
+			);
+			if (preview.replacement === undefined) {
+				return {
+					range,
+					options: {
+						description: 'vim-substitute-preview',
+						inlineClassName: 'vim-substitute-match',
+						showIfCollapsed: true,
+					},
+				};
+			}
+			return {
+				range,
+				options: {
+					description: 'vim-substitute-preview',
+					inlineClassName: 'vim-substitute-match-replaced',
+					showIfCollapsed: true,
+					...(preview.replacement.length > 0
+						? {
+							after: {
+								// Injected text must stay single-line; a `\r`
+								// replacement renders its break as a return symbol.
+								content: preview.replacement.replace(/\n/g, '\u23ce'),
+								inlineClassName: 'vim-substitute-replacement',
+								cursorStops: InjectedTextCursorStops.None,
+							},
+						}
+						: {}),
+				},
+			};
+		});
+		this.substitutePreviewDecorations.set(decorations);
+	}
+
+	clearSubstitutePreview(): void {
+		this.substitutePreviewDecorations.clear();
 	}
 
 	beginUndoTransaction(selectionsBefore: readonly VimSelection[]): VimUndoTransaction {

@@ -21,7 +21,7 @@ import type { Motion } from "./motion.js";
 import { applyMotion } from "./motion.js";
 import { applyMotionResults } from "./motion_handler.js";
 import type { PendingSearch, SearchState } from "./normal/search.js";
-import { isSearchInputKey, searchUnderCursorMotion } from "./normal/search.js";
+import { searchUnderCursorMotion } from "./normal/search.js";
 import type { Registers } from "./registers.js";
 import { isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
 import type { VimMode } from "./state.js";
@@ -61,8 +61,8 @@ export function searchModeHandler(
   ) {
     return unhandled();
   }
-  // Escape cancels via the owner's escape handling; unknown keys go to the host.
-  if (!isSearchInputKey(key) || isEscapeKey(key)) return unhandled();
+  // Escape cancels via the owner's escape handling.
+  if (isEscapeKey(key)) return unhandled();
   if (key === "enter") {
     // A `/`?` started from visual mode extends the live selection to the match
     // and returns to that visual kind; from normal mode it moves the cursor and
@@ -71,13 +71,13 @@ export function searchModeHandler(
     if (origin !== undefined && isVisualModeKind(origin)) {
       const visual = state.visual;
       return effect(origin, () => {
-        const motion = search.handleKey(pending, "enter", registers, editor);
+        const motion = search.handleKey(pending, "enter", registers, editor).motion;
         if (motion !== undefined) visual?.applyMotion(motion, 1);
         editor.clearSearchHighlights();
       });
     }
     return effect("normal", () => {
-      const motion = search.handleKey(pending, "enter", registers, editor);
+      const motion = search.handleKey(pending, "enter", registers, editor).motion;
       if (motion === undefined) return;
       applyMotionResults(
         editor,
@@ -88,9 +88,14 @@ export function searchModeHandler(
       editor.clearSearchHighlights();
     });
   }
-  // A query/edit key: update the prompt + incsearch preview, stay in search mode.
+  // A query/edit key: update the prompt + incsearch preview, stay in search
+  // mode. A key the mini-buffer does not understand is swallowed, loudly: an
+  // open prompt owns the keyboard, and forwarding stray keys to the host would
+  // turn typos into editor actions.
   return effect("search", () => {
-    search.handleKey(pending, key, registers, editor);
+    if (!search.handleKey(pending, key, registers, editor).handled) {
+      state.reportSwallowedPromptKey?.(key);
+    }
   });
 }
 
@@ -144,10 +149,13 @@ function searchOperandWaiter(
         search.clearPending(editor, pending, { restoreViewport: true });
       });
     }
-    if (!isSearchInputKey(key)) return invalid();
     if (key !== "enter") {
-      // A query edit: update the incsearch preview as a deferred effect and keep
-      // waiting for the next key. The body stays pure.
+      // A query edit: update the incsearch preview as a deferred effect and
+      // keep waiting for the next key (the body stays pure). A key the
+      // mini-buffer does not understand is swallowed and reported, and the
+      // operand prompt keeps waiting, like the standalone search prompt;
+      // aborting the pending operator over a stray key would be worse than
+      // ignoring it.
       return handler(
         [
           {
@@ -157,7 +165,9 @@ function searchOperandWaiter(
         ],
         {
           effect: () => {
-            search.handleKey(pending, key, registers, editor);
+            if (!search.handleKey(pending, key, registers, editor).handled) {
+              state.reportSwallowedPromptKey?.(key);
+            }
           },
         }
       );

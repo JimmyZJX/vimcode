@@ -8,39 +8,47 @@
 //   commands, marks, regex conversion, and async UI completion.
 
 import { VimEditorCapabilities } from "./editor.js";
-import { isEscapeKey } from "./key_handler.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "./prompt_history.js";
 import { Registers, parseRegisterName } from "./registers.js";
 import { translateVimRegex } from "./search.js";
+import { SingleLineEditor } from "./single_line_editor.js";
 import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
 
-// The in-flight `:` command-line input, held while in `command` mode. A small
-// string accumulator (append typed keys, `backspace` removes the last char,
-// `space` inserts a space), mirroring the legacy command line; unlike the search
-// prompt it has no cursor navigation. Owned by [Vim] (mode entry constructs it,
-// prefilling `'<,'>` from a visual selection) and injected live into the pure
-// command-mode grammar. [history] is the global command history; `<Up>`/`<C-p>`
-// recall through it (see [PromptHistory]).
+// The in-flight `:` command-line input, held while in `command` mode. The
+// same [SingleLineEditor] mini-buffer as the `/`?` search prompt: typed keys
+// insert at the cursor, `<Left>`/`<Right>`/`<Home>`/`<End>` move it, and
+// `backspace`/`delete` (and the ctrl word variants) edit around it. Owned by
+// [Vim] (mode entry constructs it, prefilling `'<,'>` from a visual
+// selection) and injected live into the pure command-mode grammar. [history]
+// is the global command history; `<Up>`/`<C-p>` recall through it (see
+// [PromptHistory]).
 export class CommandLine {
-  private text: string;
+  private readonly input: SingleLineEditor;
   private nav: HistoryNavigation | undefined;
 
   constructor(initial = "", private readonly history: PromptHistory = new PromptHistory()) {
-    this.text = initial;
+    this.input = new SingleLineEditor(initial);
   }
 
   value(): string {
-    return this.text;
+    return this.input.value();
   }
 
-  append(key: string): void {
-    this.text += key === "space" ? " " : key;
+  cursorPosition(): number {
+    return this.input.cursorPosition();
+  }
+
+  insert(key: string): void {
+    this.input.insert(key === "space" ? " " : key);
     this.nav = undefined;
   }
 
-  backspace(): void {
-    this.text = this.text.slice(0, -1);
+  // An editing key (cursor movement, deletes); false for keys the mini-buffer
+  // does not understand — the grammar swallows those.
+  tryKey(key: string): boolean {
+    if (!this.input.tryKey(key)) return false;
     this.nav = undefined;
+    return true;
   }
 
   // `<Up>`/`<Down>`/`<C-p>`/`<C-n>`: recall through the command history.
@@ -48,26 +56,11 @@ export class CommandLine {
   historyKey(key: string): boolean {
     const step = historyNavigationKey(key);
     if (step === undefined) return false;
-    if (this.nav === undefined) this.nav = { prefix: this.text, index: undefined };
+    if (this.nav === undefined) this.nav = { prefix: this.input.value(), index: undefined };
     const recalled = this.history.navigate(this.nav, step);
-    if (recalled !== undefined) this.text = recalled;
+    if (recalled !== undefined) this.input.reset(recalled);
     return true;
   }
-}
-
-// Keys the `:` command line consumes: printable characters, space, enter,
-// backspace, and escape (which cancels via the central escape handling). Used by
-// [Vim.keyOwnership] so VSCode does not intercept them while the prompt is open, and
-// by the command-mode grammar to bound the keys it accepts.
-export function isCommandInputKey(key: string): boolean {
-  return (
-    key.length === 1 ||
-    key === "space" ||
-    key === "enter" ||
-    key === "backspace" ||
-    isEscapeKey(key) ||
-    historyNavigationKey(key) !== undefined
-  );
 }
 
 export type CommandOptions = {
@@ -781,10 +774,7 @@ function substitute(editor: VimEditorCapabilities, range: LineRange, command: st
   if (parsed === undefined) return;
   if (parsed.flags.includes("n")) return;
 
-  // Vim `:h gdefault` / `:h :s_g`: every `g` flag toggles whole-line
-  // replacement; `gdefault` flips the starting state.
-  const gParity = [...parsed.flags].filter(flag => flag === "g").length % 2 === 1;
-  const global = gdefault ? !gParity : gParity;
+  const global = substituteIsGlobal(parsed.flags, gdefault);
 
   const edits: TextEdit[] = [];
   for (let row = range.startRow; row <= range.endRowInclusive; row++) {
@@ -810,6 +800,126 @@ function substitute(editor: VimEditorCapabilities, range: LineRange, command: st
       }),
     ]);
   }
+}
+
+export type SubstitutePreview = {
+  /** The matched text the substitute would replace. */
+  range: TextRange;
+  /** The resolved replacement for this match; undefined while the command
+      line has no replacement section yet (`:s/foo`) or with the `n`
+      (count-only) flag, where only the matches are highlighted. */
+  replacement: string | undefined;
+};
+
+// Live highlights get expensive on huge files, so the preview is best-effort
+// (the substitute itself is unaffected):
+// - at most this many matches are decorated — a degenerate pattern like
+//   `:%s/./…` would otherwise decorate every character (VSCode's own find
+//   widget caps matches the same way, see its MATCHES_LIMIT);
+const substitutePreviewCap = 200;
+// - at most this much text is scanned per keystroke — a *rare* pattern never
+//   hits the match cap, and without a scan budget each prompt key would
+//   regex-walk the whole buffer.
+const substitutePreviewScanBudgetChars = 1_000_000;
+
+// Live `:s` preview (Neovim 'inccommand', VSCodeVim's substitute preview):
+// leniently parse the in-flight `:` line and return the matches the
+// substitute would touch, with their resolved replacement texts. Undefined
+// when the line is not a substitute command, or its pattern is empty or (still)
+// an invalid regex — e.g. half-typed `[` — so the host shows nothing.
+export function substitutePreviews(
+  editor: VimEditorCapabilities,
+  rawCommand: string,
+  options: CommandOptions = {}
+): readonly SubstitutePreview[] | undefined {
+  const command = rawCommand.trimStart();
+  if (command.length === 0) return undefined;
+  const { range, rest } = parseRange(editor, command, options);
+  const parsed = parseSubstituteLoose(rest.trim());
+  if (parsed === undefined || parsed.pattern.length === 0) return undefined;
+
+  let regexp: RegExp;
+  try {
+    const translated = translateVimRegex(parsed.pattern);
+    // Always global: the exec loop below walks every match and applies the
+    // g-parity itself (first match per line when not global).
+    regexp = new RegExp(translated.source, `g${translated.forceCase === "ignore" ? "i" : ""}`);
+  } catch {
+    return undefined;
+  }
+  const global = substituteIsGlobal(parsed.flags, options.exOptions?.gdefault ?? false);
+  const countOnly = parsed.flags.includes("n");
+
+  const previews: SubstitutePreview[] = [];
+  const lineRange = range ?? currentLineRange(editor, 1);
+  const endRow = Math.min(lineRange.endRowInclusive, editor.lineCount() - 1);
+  let scannedChars = 0;
+  for (let row = lineRange.startRow; row <= endRow; row++) {
+    const line = editor.line(row);
+    scannedChars += line.length;
+    if (scannedChars > substitutePreviewScanBudgetChars) break;
+    regexp.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regexp.exec(line)) !== null) {
+      const replacement =
+        parsed.replacement === undefined || countOnly
+          ? undefined
+          : expandReplacement(parsed.replacement, match[0], match.slice(1));
+      previews.push({
+        range: { start: { row, column: match.index }, end: { row, column: match.index + match[0].length } },
+        replacement,
+      });
+      if (previews.length >= substitutePreviewCap) return previews;
+      if (!global) break;
+      // A zero-length match (e.g. `x*`) never advances [lastIndex] on its own.
+      if (match[0].length === 0) regexp.lastIndex++;
+    }
+  }
+  return previews;
+}
+
+// Vim `:h gdefault` / `:h :s_g`: every `g` flag toggles whole-line
+// replacement; `gdefault` flips the starting state.
+function substituteIsGlobal(flags: string, gdefault: boolean): boolean {
+  const gParity = [...flags].filter(flag => flag === "g").length % 2 === 1;
+  return gdefault ? !gParity : gParity;
+}
+
+// The lenient counterpart of [parseSubstitute] for the live preview: the
+// pattern may still be unterminated (`:s/foo`), and [replacement] is undefined
+// until its section exists (the second delimiter was typed).
+function parseSubstituteLoose(command: string): { pattern: string; replacement: string | undefined; flags: string } | undefined {
+  if (!command.startsWith("s")) return undefined;
+  const delimiter = command[1];
+  if (delimiter === undefined || /[A-Za-z0-9\s]/.test(delimiter)) return undefined;
+  const pattern = readSectionLoose(command, delimiter, 2);
+  if (!pattern.closed) return { pattern: pattern.value, replacement: undefined, flags: "" };
+  const replacement = readSectionLoose(command, delimiter, pattern.nextIndex);
+  return { pattern: pattern.value, replacement: replacement.value, flags: command.slice(replacement.nextIndex) };
+}
+
+function readSectionLoose(
+  command: string,
+  delimiter: string,
+  start: number
+): { value: string; nextIndex: number; closed: boolean } {
+  let value = "";
+  let escaped = false;
+  for (let index = start; index < command.length; index++) {
+    const char = command[index];
+    if (escaped) {
+      value += `\\${char}`;
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (char === delimiter) {
+      return { value, nextIndex: index + 1, closed: true };
+    } else {
+      value += char;
+    }
+  }
+  if (escaped) value += "\\";
+  return { value, nextIndex: command.length, closed: false };
 }
 
 function parseSubstitute(command: string): { pattern: string; replacement: string; flags: string } | undefined {

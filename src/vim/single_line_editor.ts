@@ -15,19 +15,6 @@ function findWordBoundary(text: string, direction: "left" | "right"): number {
   return match[1].length + match[2].length;
 }
 
-export type SingleLineEditorKey =
-  | "left"
-  | "right"
-  | "ctrl-left"
-  | "ctrl-right"
-  | "home"
-  | "end"
-  | "space"
-  | "backspace"
-  | "delete"
-  | "ctrl-backspace"
-  | "ctrl-delete";
-
 export class SingleLineEditor {
   private input: string;
   private cursor: number;
@@ -58,49 +45,57 @@ export class SingleLineEditor {
     this.cursor = this.input.length;
   }
 
-  tryKey(key: SingleLineEditorKey): "handled" | undefined {
+  /** Handle an editing key (cursor movement, deletes, space); false means the
+      mini-buffer does not understand the key. The switch below is the single
+      definition of which keys those are; prompts simply try the key and act
+      on the verdict. */
+  tryKey(key: string): boolean {
     switch (key) {
       case "left":
         this.moveCursor(-1);
-        return "handled";
+        return true;
       case "right":
         this.moveCursor(1);
-        return "handled";
+        return true;
       case "ctrl-left":
         this.cursor = this.edit(lr => findWordBoundary(lr.l, "left"));
-        return "handled";
+        return true;
       case "ctrl-right":
         this.cursor += this.edit(lr => findWordBoundary(lr.r, "right"));
-        return "handled";
+        return true;
       case "home":
         this.cursor = 0;
-        return "handled";
+        return true;
       case "end":
         this.cursor = this.input.length;
-        return "handled";
+        return true;
       case "space":
         this.insert(" ");
-        return "handled";
+        return true;
       case "backspace":
         this.edit(lr => {
           lr.l = lr.l.slice(0, -1);
         });
-        return "handled";
+        return true;
       case "delete":
         this.edit(lr => {
           lr.r = lr.r.slice(1);
         });
-        return "handled";
+        return true;
+      // Vim `c_CTRL-W`: delete the word before the cursor.
+      case "ctrl-w":
       case "ctrl-backspace":
         this.edit(lr => {
           lr.l = lr.l.slice(0, findWordBoundary(lr.l, "left"));
         });
-        return "handled";
+        return true;
       case "ctrl-delete":
         this.edit(lr => {
           lr.r = lr.r.slice(findWordBoundary(lr.r, "right"));
         });
-        return "handled";
+        return true;
+      default:
+        return false;
     }
   }
 

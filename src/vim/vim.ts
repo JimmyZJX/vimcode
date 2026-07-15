@@ -5,7 +5,7 @@
 // - intentional differences: GPUI action registration is replaced by direct key dispatch
 //   from the VSCode patch / tests.
 
-import { CommandLine, LineRange, executeCommand } from "./command.js";
+import { CommandLine, LineRange, executeCommand, substitutePreviews } from "./command.js";
 import { commandModeHandler } from "./command_handler.js";
 import { RemapTimeoutKey, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
 import type { NormalizedRemapping, WhenEvaluator, VimCommandMapping, VimConfiguration } from "./config.js";
@@ -55,6 +55,10 @@ export type VimStatus = {
   macroRecording: MacroRecordingStatus | undefined;
   readonlyWarning: boolean;
   readonlyWarningRemainingMs: number | undefined;
+  /** A prompt (`/`?`/`:`) swallowed this key (display-formatted); shown as a
+      transient warning (see [swallowedKeyWarningRemainingMs]). */
+  swallowedKeyWarning: string | undefined;
+  swallowedKeyWarningRemainingMs: number | undefined;
 };
 
 function statusText(mode: VimMode, chord: string, macroRecording: MacroRecordingStatus | undefined): string {
@@ -122,13 +126,15 @@ type ModeSession =
       origin: VimMode;
     }
   // The `:` command line (prefilled with `'<,'>` from a visual origin, which
-  // exits visual on entry — so no origin needs restoring here).
+  // exits visual on entry — a deliberate simplification of Neovim, which keeps
+  // the selection highlighted until the command line is first edited).
   | { mode: "command"; command: CommandLine };
 
 
 
 ;
 const readonlyWarningDurationMs = 2000;
+const swallowedKeyWarningDurationMs = 2000;
 export { VimGlobalState, VimModelState };
 
 // Zed: `vim::Vim`. This class is the local main state holder; GPUI
@@ -185,6 +191,8 @@ export class Vim {
   // insert mode, then back to insert.
   private temporaryNormal = false;
   private readonlyWarningUntil = 0;
+  private swallowedKeyWarning: string | undefined = undefined;
+  private swallowedKeyWarningUntil = 0;
 
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
@@ -253,6 +261,7 @@ export class Vim {
     const macroRecording = this.globalState.macro.recordingStatus();
     const text = statusText(mode, chord, macroRecording);
     const readonlyWarningRemainingMs = this.readonlyWarningRemainingMs();
+    const swallowedKeyWarningRemainingMs = this.swallowedKeyWarningRemainingMs();
     return {
       mode,
       pending: this.isPending(),
@@ -270,6 +279,8 @@ export class Vim {
       macroRecording,
       readonlyWarning: readonlyWarningRemainingMs !== undefined,
       readonlyWarningRemainingMs,
+      swallowedKeyWarning: swallowedKeyWarningRemainingMs !== undefined ? this.swallowedKeyWarning : undefined,
+      swallowedKeyWarningRemainingMs,
     };
   }
 
@@ -575,12 +586,29 @@ export class Vim {
       }
       case "command": {
         this.globalState.commandHistory.add(session.command.value());
+        this.editor.clearSubstitutePreview();
         this.setMode("normal");
         return;
       }
       default:
         return;
     }
+  }
+
+  // Live `:s` preview (Neovim 'inccommand'): while the `:` line holds a
+  // substitute command, the host highlights its matches and shows the resolved
+  // replacements inline. Recomputed after every command-line key; cleared when
+  // the line stops being a substitute or the prompt closes.
+  private syncSubstitutePreview(): void {
+    const command = this.activeCommand;
+    const previews = command === undefined
+      ? undefined
+      : substitutePreviews(this.editor, command.value(), {
+          exOptions: this.globalState.exOptions,
+          markLine: name => this.modelState.marks.position(name)?.row,
+        });
+    if (previews === undefined) this.editor.clearSubstitutePreview();
+    else this.editor.updateSubstitutePreview(previews);
   }
 
   private isPending(): boolean {
@@ -612,7 +640,11 @@ export class Vim {
     // Everything else renders the showcmd buffer: the literal keys typed for
     // the command in flight.
     if (this.activeSearch !== undefined) return this.globalState.search.pendingChord(this.activeSearch);
-    if (this.activeCommand !== undefined) return `:${this.activeCommand.value()}`;
+    if (this.activeCommand !== undefined) {
+      const value = this.activeCommand.value();
+      const cursor = this.activeCommand.cursorPosition();
+      return `:${value.slice(0, cursor)}|${value.slice(cursor)}`;
+    }
     if (this.easyMotion.isPending()) return this.easyMotion.pendingChord();
     return this.isPending() ? this.showcmdKeys.join("") : "";
   }
@@ -739,6 +771,7 @@ export class Vim {
         activeSearch: this.activeSearch,
         searchOrigin: this.searchOriginMode,
         visual: this.visualMode,
+        reportSwallowedPromptKey: swallowedKey => this.reportSwallowedPromptKey(swallowedKey),
       };
       return searchModeHandler(key, liveState);
     };
@@ -755,6 +788,7 @@ export class Vim {
         mode: "command",
         editor: this.editor,
         activeCommand: this.activeCommand,
+        reportSwallowedPromptKey: swallowedKey => this.reportSwallowedPromptKey(swallowedKey),
       };
       return commandModeHandler(key, liveState);
     };
@@ -840,6 +874,9 @@ export class Vim {
     if (mode === "normal" && sessionBeforeTransition.mode === "command") {
       const command = sessionBeforeTransition.command.value();
       this.globalState.commandHistory.add(command);
+      // The preview decorations must not survive into (or interleave with) the
+      // command's own edits.
+      this.editor.clearSubstitutePreview();
       this.setMode("normal");
       executeCommand(this.editor, command, {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
@@ -1013,6 +1050,9 @@ export class Vim {
         requestDotReplay: (count, register) => {
           this.pendingDotReplay = { count, register };
         },
+        // The `d/`/`c/`/`y/` search-operand waiter clones this state and
+        // reports its swallowed keys through it.
+        reportSwallowedPromptKey: swallowedKey => this.reportSwallowedPromptKey(swallowedKey),
       };
       return this.normalGrammar(key, liveState);
     };
@@ -1072,6 +1112,10 @@ export class Vim {
         // must revert to normal with a warning, like the legacy [dispatchKey]
         // finally.
         this.ensureNormalModeForReadonlyDocument();
+        // Live `:s` preview: refresh after every command-line key, and tear it
+        // down on the key that leaves command mode (escape tears down through
+        // [dismissPromptSession] instead — it never reaches this branch).
+        if (this.modeState === "command" || modeBefore === "command") this.syncSubstitutePreview();
         // A `@`/`Q` (or `.`) that requested a replay runs it here — after the
         // executor's effect drain, so each replayed key is fed back through
         // [onKey] outside the drain and fully applies before the next.
@@ -1556,6 +1600,18 @@ export class Vim {
   private readonlyWarningRemainingMs(): number | undefined {
     const remaining = this.readonlyWarningUntil - Date.now();
     return remaining > 0 ? remaining : undefined;
+  }
+
+  private swallowedKeyWarningRemainingMs(): number | undefined {
+    const remaining = this.swallowedKeyWarningUntil - Date.now();
+    return remaining > 0 ? remaining : undefined;
+  }
+
+  // A prompt swallowed a key it does not understand: keep it (display
+  // formatted) visible in the status for a moment so the no-op is loud.
+  private reportSwallowedPromptKey(key: string): void {
+    this.swallowedKeyWarning = keyForStatus(key);
+    this.swallowedKeyWarningUntil = Date.now() + swallowedKeyWarningDurationMs;
   }
 
   private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode; count?: number; separator?: string }): void {

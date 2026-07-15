@@ -7,49 +7,16 @@
 //   Vim-specific direction and repeat metadata.
 
 import { VimEditorCapabilities } from "../editor.js";
-import { isEscapeKey } from "../key_handler.js";
 import { Motion } from "../motion.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "../prompt_history.js";
 import { Registers } from "../registers.js";
 import { SearchOffset, SearchOptions, parseSearchOffset, searchOptionsForQuery } from "../search.js";
-import {
-  SingleLineEditor,
-  SingleLineEditorKey,
-} from "../single_line_editor.js";
+import { SingleLineEditor } from "../single_line_editor.js";
 import { TextRange, selectionHead } from "../state.js";
 
 // [nav] is the in-flight history-navigation session (`<Up>`/`<C-p>`), created
 // on the first history key and dropped when the query is edited.
 export type PendingSearch = { type: "search"; backwards: boolean; input: SingleLineEditor; nav?: HistoryNavigation };
-
-function singleLineEditorKey(key: string): SingleLineEditorKey | undefined {
-  switch (key) {
-    case "left":
-    case "right":
-    case "ctrl-left":
-    case "ctrl-right":
-    case "home":
-    case "end":
-    case "space":
-    case "backspace":
-    case "delete":
-    case "ctrl-backspace":
-    case "ctrl-delete":
-      return key;
-    default:
-      return undefined;
-  }
-}
-
-export function isSearchInputKey(key: string): boolean {
-  return key.length === 1
-    || key === "enter"
-    || key === "ctrl-v"
-    || key === "ctrl-y"
-    || isEscapeKey(key)
-    || singleLineEditorKey(key) !== undefined
-    || historyNavigationKey(key) !== undefined;
-}
 
 // Split a typed search input into its pattern and (optional) offset. The offset
 // follows the first unescaped separator (`/` for a forward search, `?` for a
@@ -184,20 +151,23 @@ export class SearchState {
     return true;
   }
 
+  // Handle a prompt key. [handled] is false for keys the prompt does not
+  // understand (the grammar swallows them and warns); [motion] is the resolved
+  // search motion on `enter`.
   handleKey(
     pending: PendingSearch,
     key: string,
     registers: Registers,
     editor: VimEditorCapabilities
-  ): Motion | undefined {
+  ): { handled: boolean; motion?: Motion } {
     if (key === "ctrl-v" || key === "ctrl-y") {
       this.appendText(pending, registers.read("+"), editor);
-      return undefined;
+      return { handled: true };
     }
 
     if (this.navigateHistory(pending, key)) {
       this.updatePendingSearchUi(pending, editor);
-      return undefined;
+      return { handled: true };
     }
 
     if (key === "enter") {
@@ -209,32 +179,30 @@ export class SearchState {
       const backwards = pending.backwards;
       editor.endSearchPreview({ restoreViewport: false });
       if (rawInput.length === 0) {
-        if (this.last === undefined) return undefined;
-        return this.setLast(this.last.query, backwards, registers, editor, this.last.options, this.last.offset);
+        if (this.last === undefined) return { handled: true };
+        return { handled: true, motion: this.setLast(this.last.query, backwards, registers, editor, this.last.options, this.last.offset) };
       }
       // Split off a trailing `search-offset` (`/pat/e`, `?pat?s-1`). An
       // offset-only input (`/e`, i.e. empty pattern) reuses the last pattern.
       const { pattern, offset } = splitSearchOffset(rawInput, backwards ? "?" : "/");
       const query = pattern.length > 0 ? pattern : this.last?.query;
-      if (query === undefined || query.length === 0) return undefined;
+      if (query === undefined || query.length === 0) return { handled: true };
       const options =
         pattern.length > 0
           ? searchOptionsForQuery(query)
           : this.last?.options ?? searchOptionsForQuery(query);
-      return this.setLast(query, backwards, registers, editor, options, offset);
+      return { handled: true, motion: this.setLast(query, backwards, registers, editor, options, offset) };
     }
 
-    const editorKey = singleLineEditorKey(key);
-    if (editorKey !== undefined) {
-      pending.input.tryKey(editorKey);
-    } else if (key.length === 1) {
+    if (!pending.input.tryKey(key)) {
+      if (key.length !== 1) return { handled: false };
       pending.input.insert(key);
     }
     // An edit ends the history-navigation session: the next `<Up>` matches
     // against the edited text.
     pending.nav = undefined;
     this.updatePendingSearchUi(pending, editor);
-    return undefined;
+    return { handled: true };
   }
 
   private updatePendingSearchUi(pending: PendingSearch, editor: VimEditorCapabilities): void {

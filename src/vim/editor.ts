@@ -4,6 +4,7 @@
 // - translated concepts: editor operations are mediated through a testable host interface
 // - intentional differences: VSCode and fake editors implement this capability interface directly
 
+import type { SubstitutePreview } from "./command.js";
 import { graphemeStart } from "./grapheme.js";
 import {
   CursorStyle,
@@ -135,6 +136,12 @@ export interface VimEditorCapabilities {
   updateSearch(query: string, direction: SearchDirection, options?: SearchOptions): void;
   findSearchMatch(query: string, start: Position, direction: SearchDirection, options?: SearchOptions): SearchMatch | undefined;
   clearSearchHighlights(): void;
+
+  // Live `:s` preview (see [substitutePreviews]): the host highlights each
+  // match and shows its resolved replacement inline while the command line is
+  // being typed. Cleared when the prompt closes (submit or escape).
+  updateSubstitutePreview(previews: readonly SubstitutePreview[]): void;
+  clearSubstitutePreview(): void;
 }
 
 // Zed: clipping is usually handled by display-map/editor helpers such as
@@ -216,6 +223,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.pendingUndoSelectionsBefore = undefined;
     this.undoTransactionDepth = 0;
     this.easyMotionMarkers = [];
+    this.substitutePreview = undefined;
     this.viewportTopRow = 0;
     this.readonlyForTest = false;
     this.setSelections(selections);
@@ -673,6 +681,17 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   clearSearchHighlights(): void {}
+
+  /** The last live `:s` preview, or undefined when cleared (for tests). */
+  public substitutePreview: readonly SubstitutePreview[] | undefined = undefined;
+
+  updateSubstitutePreview(previews: readonly SubstitutePreview[]): void {
+    this.substitutePreview = previews;
+  }
+
+  clearSubstitutePreview(): void {
+    this.substitutePreview = undefined;
+  }
 
   private undo(): void {
     this.finishUndoTransaction();

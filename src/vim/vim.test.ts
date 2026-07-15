@@ -274,13 +274,13 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.wouldHandleKeyForTest("ctrl-u")).toBe(false);
   });
 
-  it("owns search-prompt keys exactly as the search grammar claims them", () => {
+  it("owns every decodable search-prompt key (unknown keys are swallowed)", () => {
     const vim = new Vim(new InMemoryVimEditor("one two"));
     runKeys(vim, ["/"]);
     expect(vim.wouldHandleKeyForTest("a")).toBe(true);
     expect(vim.wouldHandleKeyForTest("enter")).toBe(true);
     expect(vim.wouldHandleKeyForTest("escape")).toBe(true);
-    expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(false);
+    expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(true);
     runKeys(vim, ["escape"]);
   });
 
@@ -2726,15 +2726,18 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.searchPreviewEndOptions).toContainEqual({ restoreViewport: true });
   });
 
-  it("lets unknown ctrl chords fall through in search mode", () => {
+  it("swallows unknown ctrl chords in search mode instead of forwarding them", () => {
     const editor = new InMemoryVimEditor("foo");
     const vim = new Vim(editor);
 
     runKeys(vim, ["/"]);
 
-    expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(false);
-    expect(vim.onKey("ctrl-a")).toBe("native");
+    // The prompt owns the keyboard: the key is claimed, ignored, and reported
+    // as a transient warning (see prompt_minibuffer.test.ts).
+    expect(vim.wouldHandleKeyForTest("ctrl-a")).toBe(true);
+    expect(vim.onKey("ctrl-a")).toBe("handled");
     expect(vim.status.chord).toBe("/|");
+    expect(vim.status.swallowedKeyWarning).toBe("<ctrl-a>");
   });
 
   it("shows unfinished chords using Vim keys rather than semantic names", () => {

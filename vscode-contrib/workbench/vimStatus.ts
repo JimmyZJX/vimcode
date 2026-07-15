@@ -10,6 +10,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 	static readonly ID = 'workbench.contrib.vimStatusbar';
 
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	private readonly unknownKeyEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly focusedEditorListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly statusListener = this._register(new MutableDisposable<IDisposable>());
 	private readonlyWarningTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -45,6 +46,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		const controller = editor?.getContribution<VimController>(VimController.ID) ?? undefined;
 		if (!controller) {
 			this.statusbarEntry.clear();
+			this.unknownKeyEntry.clear();
 			return;
 		}
 
@@ -57,6 +59,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		this.clearReadonlyWarningTimeout();
 		if (!controller.isVimEnabled()) {
 			this.statusbarEntry.clear();
+			this.unknownKeyEntry.clear();
 			return;
 		}
 		const status = controller.getStatus();
@@ -74,8 +77,33 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		} else {
 			this.statusbarEntry.value = this.statusbarService.addEntry(entry, 'status.vimMode', StatusbarAlignment.LEFT, 100);
 		}
-		if (status.readonlyWarningRemainingMs !== undefined) {
-			this.readonlyWarningTimeout = setTimeout(() => this.updateEntry(controller), Math.max(0, status.readonlyWarningRemainingMs));
+		this.updateUnknownKeyEntry(status);
+		const remainingMs = [status.readonlyWarningRemainingMs, status.swallowedKeyWarningRemainingMs]
+			.filter((ms): ms is number => ms !== undefined);
+		if (remainingMs.length > 0) {
+			this.readonlyWarningTimeout = setTimeout(() => this.updateEntry(controller), Math.max(0, Math.min(...remainingMs)));
+		}
+	}
+
+	// A prompt swallowed a key it does not understand: a transient warning
+	// entry right next to the main Vim one, instead of silently ignoring the
+	// key (it disappears when [swallowedKeyWarningRemainingMs] runs out).
+	private updateUnknownKeyEntry(status: ReturnType<VimController['getStatus']>): void {
+		if (status.swallowedKeyWarning === undefined) {
+			this.unknownKeyEntry.clear();
+			return;
+		}
+		const entry = {
+			name: 'Vim Unknown Key',
+			text: `unknown ${status.swallowedKeyWarning}`,
+			ariaLabel: `The open Vim prompt does not understand ${status.swallowedKeyWarning}; the key was ignored`,
+			tooltip: `The open prompt does not understand ${status.swallowedKeyWarning}; the key was ignored`,
+			kind: 'warning' as const,
+		};
+		if (this.unknownKeyEntry.value) {
+			this.unknownKeyEntry.value.update(entry);
+		} else {
+			this.unknownKeyEntry.value = this.statusbarService.addEntry(entry, 'status.vimUnknownKey', StatusbarAlignment.LEFT, 99);
 		}
 	}
 
