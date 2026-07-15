@@ -103,3 +103,31 @@ describe(":s capture groups and replacement escapes", () => {
     expect(run("keep FOO", "s/foo\\c/bar/").text).toBe("keep bar");
   });
 });
+
+describe("compound host commands run in sequence", () => {
+  // Native commands are asynchronous: if `:wq` fired save and close as two
+  // independent commands, the close would race the in-flight save and VSCode
+  // would still see a dirty editor (and ask for confirmation). The follow-up
+  // command must be chained after the first one completes.
+  it(":wq chains the close after the save", () => {
+    const editor = new InMemoryVimEditor("a");
+    const vim = new Vim(editor);
+    runKeys(vim, cmd("wq"));
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.files.save", args: [] },
+      { command: "workbench.action.closeActiveEditor", args: [] },
+    ]);
+    expect(editor.chainedNativeCommands).toEqual(["workbench.action.closeActiveEditor"]);
+  });
+
+  it(":wqa and :x chain, and split+new chains too", () => {
+    const editor = new InMemoryVimEditor("a");
+    const vim = new Vim(editor);
+    runKeys(vim, [...cmd("wqa"), ...cmd("x"), ...cmd("new")]);
+    expect(editor.chainedNativeCommands).toEqual([
+      "workbench.action.closeAllEditors",
+      "workbench.action.closeActiveEditor",
+      "workbench.action.files.newUntitledFile",
+    ]);
+  });
+});

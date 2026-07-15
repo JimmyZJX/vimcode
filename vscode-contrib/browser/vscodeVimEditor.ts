@@ -435,19 +435,28 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			? visualSemanticSelections(this.lastSetVimSelections)
 			: undefined;
 		this.nativeCommandInProgressDepth++;
-		const commandPromise = this.commandService.executeCommand(command, ...args).finally(() => {
-			this.nativeCommandInProgressDepth = Math.max(0, this.nativeCommandInProgressDepth - 1);
-			if (selectionsToRestore !== undefined) {
-				this.setSelections(selectionsToRestore);
+		const commandPromise = (async () => {
+			try {
+				await this.commandService.executeCommand(command, ...args);
+				// [onResolved] runs strictly after the command *completes*
+				// (`:wq` must not close while the save is still in flight), and
+				// not at all when it fails — a failed save must never take the
+				// editor down with it.
+				options.onResolved?.();
+			} finally {
+				this.nativeCommandInProgressDepth = Math.max(0, this.nativeCommandInProgressDepth - 1);
+				if (selectionsToRestore !== undefined) {
+					this.setSelections(selectionsToRestore);
+				}
+				if (options.selectionsAfter !== undefined) {
+					this.setSelections(options.selectionsAfter);
+				}
 			}
-			if (options.selectionsAfter !== undefined) {
-				this.setSelections(options.selectionsAfter);
-			}
-		});
+		})();
 		if (syncSelectionAfter) {
 			this.pendingNativeSelectionSyncs.push(commandPromise.then(() => undefined, () => undefined));
 		}
-		void commandPromise;
+		void commandPromise.then(undefined, () => undefined);
 	}
 
 	async waitForNativeSelectionSync(): Promise<boolean> {

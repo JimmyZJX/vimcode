@@ -328,19 +328,26 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
   },
 ];
 
+// `:wq`/`:x`: the close must wait for the save to *complete* — fired
+// back-to-back the close races the in-flight save, and VSCode still sees a
+// dirty editor and asks for confirmation.
 function saveAndClose(editor: VimEditorCapabilities): void {
-  editor.executeNativeCommand("workbench.action.files.save");
-  editor.executeNativeCommand("workbench.action.closeActiveEditor");
+  editor.executeNativeCommand("workbench.action.files.save", [], {
+    onResolved: () => editor.executeNativeCommand("workbench.action.closeActiveEditor"),
+  });
 }
 
 function saveAllAndClose(editor: VimEditorCapabilities): void {
-  editor.executeNativeCommand("workbench.action.files.saveAll");
-  editor.executeNativeCommand("workbench.action.closeAllEditors");
+  editor.executeNativeCommand("workbench.action.files.saveAll", [], {
+    onResolved: () => editor.executeNativeCommand("workbench.action.closeAllEditors"),
+  });
 }
 
 function newSplit(editor: VimEditorCapabilities, splitCommand: string): void {
-  editor.executeNativeCommand(splitCommand);
-  editor.executeNativeCommand("workbench.action.files.newUntitledFile");
+  editor.executeNativeCommand(splitCommand, [], {
+    // The untitled file must open in the group the split just created.
+    onResolved: () => editor.executeNativeCommand("workbench.action.files.newUntitledFile"),
+  });
 }
 
 export function executeCommand(editor: VimEditorCapabilities, rawCommand: string, options: CommandOptions = {}): void {
