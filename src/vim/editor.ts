@@ -59,8 +59,11 @@ export type NativeCommandOptions = {
       [executeNativeCommand] calls race: `:wq` firing close while the save is
       still in flight makes VSCode see a dirty editor and ask for
       confirmation. Chaining the follow-up in the callback orders them (and a
-      failed save never closes the editor). */
-  onResolved?: () => void;
+      failed save never closes the editor). A returned promise is awaited: the
+      command counts as in progress — and [syncSelectionAfter] waits — until
+      the callback's own work is done too. (The in-memory test host runs
+      everything synchronously and does not await.) */
+  onResolved?: () => void | Promise<void>;
 };
 
 export type VimUndoTransaction = {
@@ -692,12 +695,14 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       this.setSelections([...options.selectionsAfter]);
     }
     // The in-memory host runs commands synchronously (as no-ops), so the
-    // completion callback fires immediately.
+    // completion callback fires immediately; a returned promise is not
+    // awaited here (this host has no async), so tests should use synchronous
+    // callbacks.
     if (options.onResolved !== undefined) {
       const wasInCallback = this.inNativeCommandCallback;
       this.inNativeCommandCallback = true;
       try {
-        options.onResolved();
+        void options.onResolved();
       } finally {
         this.inNativeCommandCallback = wasInCallback;
       }

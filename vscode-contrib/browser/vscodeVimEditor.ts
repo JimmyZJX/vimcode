@@ -441,8 +441,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				// [onResolved] runs strictly after the command *completes*
 				// (`:wq` must not close while the save is still in flight), and
 				// not at all when it fails — a failed save must never take the
-				// editor down with it.
-				options.onResolved?.();
+				// editor down with it. Awaiting extends the command's own
+				// promise over the callback's async work, so the in-progress
+				// bookkeeping, [syncSelectionAfter], and the cleanup below stay
+				// correct for asynchronous callbacks too.
+				await options.onResolved?.();
 			} finally {
 				this.nativeCommandInProgressDepth = Math.max(0, this.nativeCommandInProgressDepth - 1);
 				if (selectionsToRestore !== undefined) {
