@@ -99,7 +99,9 @@ const simpleCommands: readonly SimpleCommandSpec[] = [
   },
   {
     name: ["w", "rite"],
-    run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.save", [], { syncSelectionAfter: true }),
+    // Background: a save with slow participants (format-on-save, remote FS)
+    // must not freeze typing; Vim state reconciles when the save resolves.
+    run: ({ editor }) => editor.executeNativeCommand("workbench.action.files.save", [], { backgroundSync: true }),
   },
   {
     name: ["q", "uit"],

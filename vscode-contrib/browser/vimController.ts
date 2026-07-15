@@ -147,6 +147,19 @@ export class VimController extends Disposable {
 		installVSCodeGraphemeProvider();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
 		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message));
+		// A background native command (`:w`) completed: selection/content events
+		// were suppressed while it ran ([isExecutingNativeCommand]), so pull one
+		// reconcile — the same path as any external editor change. It is
+		// *enqueued* rather than run from the completion continuation directly:
+		// the promise can resolve while a later key's job is mid-flight, and a
+		// reconcile must never mutate Vim state between a job's dispatch and its
+		// own post-run sync. As the next job in line it runs against settled
+		// state (and after any keys typed during the save).
+		this.vimEditor.onBackgroundNativeCommandSync = () => {
+			void this.asyncKeyQueue
+				.enqueue(async () => this.handleExternalEditorStateChanged('nativeCommand:background'))
+				.then(undefined, () => this.syncStatus());
+		};
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration(), VimController.globalState);
 		this.updateEnabledState();
 		this._register(this.editor.onKeyDown(event => this.handleKeyDown(event)));

@@ -88,6 +88,9 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
 	private searchPreviewViewport: { scrollTop: number; scrollLeft: number } | undefined;
 	private hiddenFindState: FindReplaceState | undefined;
+	/** Set by the controller: reconcile Vim state after a [backgroundSync]
+	    native command completes (see NativeCommandOptions.backgroundSync). */
+	onBackgroundNativeCommandSync: (() => void) | undefined;
 	private hiddenFindModel: FindModelBoundToEditorModel | undefined;
 	private viewportControlledByCommand = false;
 	private appliedCursorStyle: CursorStyle | undefined = undefined;
@@ -458,6 +461,9 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		})();
 		if (syncSelectionAfter) {
 			this.pendingNativeSelectionSyncs.push(commandPromise.then(() => undefined, () => undefined));
+		}
+		if (options.backgroundSync === true) {
+			void commandPromise.then(() => this.onBackgroundNativeCommandSync?.(), () => undefined);
 		}
 		void commandPromise.then(undefined, () => undefined);
 	}

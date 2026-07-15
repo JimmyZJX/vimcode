@@ -131,3 +131,19 @@ describe("compound host commands run in sequence", () => {
     ]);
   });
 });
+
+describe(":w does not hold the key pipeline", () => {
+  // The save's completion promise must not join the awaited selection syncs
+  // (that froze typing under slow save participants); it reconciles in the
+  // background instead. Undo/redo keep the blocking sync — the next key
+  // depends on the restored state.
+  it(":w saves with a background sync", () => {
+    const editor = new InMemoryVimEditor("a");
+    const vim = new Vim(editor);
+    runKeys(vim, cmd("w"));
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.files.save", args: [] },
+    ]);
+    expect(editor.backgroundSyncNativeCommands).toEqual(["workbench.action.files.save"]);
+  });
+});

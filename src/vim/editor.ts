@@ -54,6 +54,16 @@ export type NativeCommandOptions = {
       e.g. the restored cursor after `gcc` runs the native comment toggle over
       a temporary selection. */
   selectionsAfter?: readonly VimSelection[];
+  /** Reconcile Vim state from the editor once the command completes, but
+      *without* holding the key pipeline. [syncSelectionAfter] makes the key's
+      job — and therefore every later keystroke — wait for the command; that
+      is right for undo/redo (the next key depends on the restored state) but
+      froze typing for the duration of `:w` under slow save participants
+      (format-on-save, remote filesystems). Background sync lets keys flow and
+      runs one external-state reconcile when the command resolves (selection
+      events are suppressed while a native command is in flight, so the
+      reconcile cannot be event-driven). */
+  backgroundSync?: boolean;
   /** Runs once the command has *completed successfully* — and not at all when
       it fails. Native commands are asynchronous, so two back-to-back
       [executeNativeCommand] calls race: `:wq` firing close while the save is
@@ -285,6 +295,9 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   /** Commands issued from an [onResolved] callback — i.e. only after the
       previous command completed (for tests: `:wq` must chain, not race). */
   public readonly chainedNativeCommands: string[] = [];
+  /** Commands executed with [backgroundSync] (for tests: `:w` must not hold
+      the key pipeline while the save runs). */
+  public readonly backgroundSyncNativeCommands: string[] = [];
   private inNativeCommandCallback = false;
 
   constructor(text = "") {
@@ -691,6 +704,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   ): void {
     this.nativeCommands.push({ command, args });
     if (this.inNativeCommandCallback) this.chainedNativeCommands.push(command);
+    if (options.backgroundSync === true) this.backgroundSyncNativeCommands.push(command);
     if (options.selectionsAfter !== undefined) {
       this.setSelections([...options.selectionsAfter]);
     }
