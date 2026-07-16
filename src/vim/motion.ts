@@ -49,6 +49,9 @@ export type Motion =
   | { type: "down"; displayLine?: boolean }
   | { type: "startOfLine" }
   | { type: "firstNonWhitespace" }
+  // Vim `_`: [count] - 1 lines downward, then the first non-blank character.
+  // Unlike `^`, this is naturally linewise when used as an operator motion.
+  | { type: "startOfLineDownward" }
   | { type: "lastNonWhitespace" }
   | { type: "middleOfLine" }
   | { type: "endOfLine" }
@@ -130,6 +133,8 @@ export function motionForKey(key: string): Motion | undefined {
       return { type: "endOfDocument" };
     case "^":
       return { type: "firstNonWhitespace" };
+    case "_":
+      return { type: "startOfLineDownward" };
     case "$":
     case "end":
       return { type: "endOfLine" };
@@ -383,6 +388,8 @@ export function applyMotionOnce(
       return { row: clipped.row, column: 0 };
     case "firstNonWhitespace":
       return firstNonWhitespaceOrCurrent(editor, clipped);
+    case "startOfLineDownward":
+      return firstNonWhitespace(editor, clipped.row);
     case "lastNonWhitespace":
       return lastNonWhitespace(editor, clipped.row);
     case "middleOfLine":
@@ -584,7 +591,13 @@ export function applyMotionWithGoal(
     const row = Math.max(0, Math.min(start.row + delta, editor.lineCount() - 1));
     return { position: firstNonWhitespace(editor, row) };
   }
-  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "goToPercentage" || motion.type === "jump" || motion.type === "searchMatch" || motion.type === "goToLine" || motion.type === "goToColumn") {
+  if (motion.type === "startOfLineDownward") {
+    // Zed `Motion::StartOfLineDownward` and Neovim `nv_lineop` both receive
+    // the full count once and move [count] - 1 rows from the original head.
+    const row = Math.min(start.row + count - 1, editor.lineCount() - 1);
+    return { position: firstNonWhitespace(editor, row) };
+  }
+  if (motion.type === "matching" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "goToPercentage" || motion.type === "jump" || motion.type === "searchMatch" || motion.type === "goToLine" || motion.type === "goToColumn") {
     if (motion.type === "nextSentence") return { position: sentenceForward(editor, start, count) };
     if (motion.type === "previousSentence") return { position: sentenceBackward(editor, start, count) };
     if (motion.type === "endOfParagraph") return { position: endOfParagraphMotion(editor, start, count) };
@@ -594,11 +607,16 @@ export function applyMotionWithGoal(
   if (motion.type === "findBackward") {
     return { position: findBackward(editor, start, motion.char, count, { after: motion.after }) };
   }
-  if (motion.type === "searchForward") {
-    return { position: searchForward(editor, start, motion.query, motion.options, motion.offset) ?? start };
-  }
-  if (motion.type === "searchBackward") {
-    return { position: searchBackward(editor, start, motion.query, motion.options, motion.offset) ?? start };
+  if (motion.type === "searchForward" || motion.type === "searchBackward") {
+    let position = start;
+    for (let step = 0; step < count; step++) {
+      const next = motion.type === "searchForward"
+        ? searchForward(editor, position, motion.query, motion.options, motion.offset)
+        : searchBackward(editor, position, motion.query, motion.options, motion.offset);
+      if (next === undefined) break;
+      position = next;
+    }
+    return { position };
   }
   if (motion.type === "up" || motion.type === "down") {
     const nextGoal = goal ?? { type: "modelColumn", column: start.column };
@@ -1077,7 +1095,11 @@ function unmatched(editor: VimEditorCapabilities, start: Position, char: string,
   const pair = pairForTarget(char);
   if (pair === undefined) return start;
   const text = documentText(editor);
-  const startOffset = offsetOfPosition(editor, start);
+  // Neovim's `]}`/`])` and `[{`/`[(` search strictly after/before the
+  // cursor. This also lets generic repeated-motion application advance to
+  // successive unmatched brackets for a count instead of finding the same
+  // bracket again.
+  const startOffset = offsetOfPosition(editor, start) + (direction === "forward" ? 1 : -1);
   const matchOffset = direction === "forward"
     ? unmatchedForwardOffset(text, startOffset, pair)
     : unmatchedBackwardOffset(text, startOffset, pair);
@@ -1085,26 +1107,16 @@ function unmatched(editor: VimEditorCapabilities, start: Position, char: string,
 }
 
 function unmatchedForwardOffset(text: string, startOffset: number, { open, close }: { open: string; close: string }): number | undefined {
-  let depth = unmatchedDepthBefore(text, startOffset, { open, close });
+  let depth = 0;
   for (let offset = startOffset; offset < text.length; offset++) {
     const char = text[offset];
     if (char === open) depth++;
     if (char === close) {
-      if (depth <= 1) return offset;
+      if (depth === 0) return offset;
       depth--;
     }
   }
   return undefined;
-}
-
-function unmatchedDepthBefore(text: string, startOffset: number, { open, close }: { open: string; close: string }): number {
-  let depth = 0;
-  for (let offset = 0; offset < startOffset; offset++) {
-    const char = text[offset];
-    if (char === open) depth++;
-    if (char === close && depth > 0) depth--;
-  }
-  return depth;
 }
 
 function unmatchedBackwardOffset(text: string, startOffset: number, { open, close }: { open: string; close: string }): number | undefined {

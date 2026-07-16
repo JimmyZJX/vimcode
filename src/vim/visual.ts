@@ -1055,37 +1055,35 @@ function stateAfterMotion(
   motion: Motion,
   count: number
 ): VisualState {
-  let current = state;
-  for (let index = 0; index < count; index++) {
-    switch (current.kind) {
-      case "charwise":
-        current = charwiseStateAfterMotion(editor, current, motion);
-        break;
-      case "linewise":
-        current = linewiseStateAfterMotion(editor, current, motion);
-        break;
-      case "blockwise":
-        current = blockwiseStateAfterMotion(editor, current, motion);
-        break;
-    }
+  // Zed's `visual_motion` passes `times` to `Motion::move_point` once. This
+  // leaves each motion responsible for its own count semantics (`_` is
+  // count - 1 rows, while `j` is count rows) instead of encoding them here.
+  switch (state.kind) {
+    case "charwise":
+      return charwiseStateAfterMotion(editor, state, motion, count);
+    case "linewise":
+      return linewiseStateAfterMotion(editor, state, motion, count);
+    case "blockwise":
+      return blockwiseStateAfterMotion(editor, state, motion, count);
   }
-  return current;
 }
 
 function charwiseStateAfterMotion(
   editor: VimEditorCapabilities,
   state: CharwiseVisualState,
-  motion: Motion
+  motion: Motion,
+  count: number
 ): CharwiseVisualState {
   if (motion.type === "right") {
-    const head = charwiseRight(editor, state.head);
+    const head = charwiseRight(editor, state.head, count);
     return { ...state, head, cursor: undefined, goal: undefined };
   }
   if (motion.type === "endOfLine") {
-    const head = { row: state.head.row, column: editor.lineLength(state.head.row) };
+    const row = Math.min(state.head.row + count - 1, editor.lineCount() - 1);
+    const head = { row, column: editor.lineLength(row) };
     return { ...state, head, cursor: undefined, goal: { type: "endOfLine" } };
   }
-  const result = applyMotionWithGoal(editor, state.head, motion, 1, state.goal);
+  const result = applyMotionWithGoal(editor, state.head, motion, count, state.goal);
   return {
     ...state,
     head: result.position,
@@ -1094,28 +1092,34 @@ function charwiseStateAfterMotion(
   };
 }
 
-function charwiseRight(editor: VimEditorCapabilities, head: Position): Position {
+function charwiseRight(editor: VimEditorCapabilities, head: Position, count: number): Position {
   const line = editor.line(head.row);
-  if (head.column < line.length) return { row: head.row, column: nextGraphemeBoundary(line, head.column) };
-  return head;
+  let column = head.column;
+  for (let step = 0; step < count && column < line.length; step++) {
+    column = nextGraphemeBoundary(line, column);
+  }
+  return { row: head.row, column };
 }
 
 function linewiseStateAfterMotion(
   editor: VimEditorCapabilities,
   state: LinewiseVisualState,
-  motion: Motion
+  motion: Motion,
+  count: number
 ): LinewiseVisualState {
   switch (motion.type) {
     case "up":
-      return { ...state, headLine: Math.max(0, state.headLine - 1), goal: undefined };
+      return { ...state, headLine: Math.max(0, state.headLine - count), goal: undefined };
     case "down":
-      return { ...state, headLine: Math.min(editor.lineCount() - 1, state.headLine + 1), goal: undefined };
+      return { ...state, headLine: Math.min(editor.lineCount() - 1, state.headLine + count), goal: undefined };
     case "endOfDocument":
       return { ...state, headLine: editor.lineCount() - 1, goal: undefined };
-    case "endOfLine":
-      return { ...state, headColumn: editor.lineLength(state.headLine) };
+    case "endOfLine": {
+      const headLine = Math.min(state.headLine + count - 1, editor.lineCount() - 1);
+      return { ...state, headLine, headColumn: editor.lineLength(headLine) };
+    }
     default: {
-      const result = applyMotionWithGoal(editor, linewiseCursor(editor, state), motion, 1, state.goal);
+      const result = applyMotionWithGoal(editor, linewiseCursor(editor, state), motion, count, state.goal);
       return { ...state, headLine: result.position.row, headColumn: result.position.column, goal: result.goal };
     }
   }
@@ -1124,13 +1128,14 @@ function linewiseStateAfterMotion(
 function blockwiseStateAfterMotion(
   editor: VimEditorCapabilities,
   state: BlockwiseVisualState,
-  motion: Motion
+  motion: Motion,
+  count: number
 ): BlockwiseVisualState {
   const { position, goal } = applyMotionWithGoal(
     editor,
     state.head,
     motion,
-    1,
+    count,
     state.goal,
     { allowEndOfLine: true }
   );

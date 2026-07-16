@@ -116,6 +116,7 @@ function isLinewiseMotion(motion: Motion): boolean {
     case "up":
     case "down":
     case "startOfDocument":
+    case "startOfLineDownward":
     case "windowLine":
       return true;
     default:
@@ -220,9 +221,9 @@ export function operatorTarget(
         }),
       };
     }
-    // `H`/`M`/`L`: linewise between the cursor row and the window line,
-    // including the same-row case (`dM` on the middle line deletes one line).
-    if (motion.type === "windowLine") {
+    // `_` and `H`/`M`/`L`: linewise between the cursor row and the resolved
+    // target, including the same-row case (`d_` deletes the current line).
+    if (motion.type === "startOfLineDownward" || motion.type === "windowLine") {
       return {
         kind: "linewise",
         rows: heads.map(head => rowRange(head, applyMotion(editor, head, motion, count))),
