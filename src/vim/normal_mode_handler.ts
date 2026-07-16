@@ -888,16 +888,11 @@ function motionChordHandler(
       return searchOperandHandler(state, key === "?", apply);
     }
 
-    // Char-input find motions (`f`/`t`/`F`/`T`) then the target char.
-    const findKind = findKindForKey(key);
-    if (findKind !== undefined) {
-      return handler([
-        {
-          handler: (char, charState) =>
-            char.length === 1 ? apply(findMotionForChar(findKind, char), charState) : invalid(),
-          state: deeper(state),
-        },
-      ]);
+    // Char-input find motions (`f`/`t`/`F`/`T`) then the target char. Reuse
+    // [findHandler] so operator finds decode named input keys (`space`) and
+    // digraphs exactly like bare and visual finds.
+    if (findKindForKey(key) !== undefined) {
+      return findHandler(key, state, (findState, motion) => apply(motion, findState));
     }
 
     // Marks (`` `a ``/`'a`) then the mark name.
