@@ -681,7 +681,16 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.viewportControlledByCommand = true;
 		const lineHeight = this.editor.getOption(EditorOption.fontInfo).lineHeight;
 		const delta = count * lineHeight * (direction === 'down' ? 1 : -1);
-		this.scheduleViewportReveal({ scrollTop: Math.max(0, this.editor.getScrollTop() + delta) });
+		// VSCode's `editorScroll` computes every smooth-scroll target from the
+		// animation's current intermediate position. Under key repeat that keeps
+		// retargeting only one line ahead, whereas j/k advances a full line per
+		// key. Accumulate from the pending animation's final target instead.
+		const scrollTop = this.editor._getViewModel()?.viewLayout.getFutureViewport().top
+			?? this.editor.getScrollTop();
+		this.editor.setScrollPosition(
+			{ scrollTop: Math.max(0, scrollTop + delta) },
+			this.editorScrollType(),
+		);
 	}
 
 	updateSearch(query: string, _direction: SearchDirection, options: SearchOptions = {}): void {
