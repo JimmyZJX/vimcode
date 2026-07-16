@@ -2,10 +2,20 @@ import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
+import { readCompatibilityConfigValue } from '../../../../editor/contrib/vim/browser/vim.contribution.js';
 import { VimController } from '../../../../editor/contrib/vim/browser/vimController.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
+import { ILifecycleService, LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../services/statusbar/browser/statusbar.js';
 
+const VimCodeEnabledContext = new RawContextKey<boolean>('vimcode.enabled', false, true);
+const VimEnabledContext = new RawContextKey<boolean>('vim.enabled', false, true);
+
+// This existing workbench-level contribution also owns global enablement
+// contexts. It starts before views restore, unlike per-editor VimController,
+// so list/tree keybindings never depend on an editor having been created.
 class VimStatusbarContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.vimStatusbar';
 
@@ -13,18 +23,54 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 	private readonly unknownKeyEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly focusedEditorListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly statusListener = this._register(new MutableDisposable<IDisposable>());
+	private readonly vimcodeEnabledContext: IContextKey<boolean>;
+	private vimEnabledContext: IContextKey<boolean> | undefined;
+	private wasEnabled = false;
 	private readonlyWarningTimeout: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		@ICodeEditorService private readonly codeEditorService: ICodeEditorService,
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextKeyService private readonly contextKeyService: IContextKeyService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
-		for (const editor of codeEditorService.listCodeEditors()) {
+		this.vimcodeEnabledContext = VimCodeEnabledContext.bindTo(contextKeyService);
+		this.updateEnabledContexts();
+		this._register(configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration('vim.enabled') || event.affectsConfiguration('vimcode.enabled')) {
+				this.updateEnabledContexts();
+			}
+		}));
+		// Keep the status-bar/editor tracking at its previous AfterRestored timing;
+		// only the tiny global-context initialization belongs on the startup path.
+		void lifecycleService.when(LifecyclePhase.Restored).then(() => this.initializeStatusbar());
+	}
+
+	private initializeStatusbar(): void {
+		for (const editor of this.codeEditorService.listCodeEditors()) {
 			this.registerEditor(editor);
 		}
-		this._register(codeEditorService.onCodeEditorAdd(editor => this.registerEditor(editor)));
+		this._register(this.codeEditorService.onCodeEditorAdd(editor => {
+			this.registerEditor(editor);
+			this.updateFocusedEditor();
+		}));
 		this.updateFocusedEditor();
+	}
+
+	private updateEnabledContexts(): void {
+		const enabled = readCompatibilityConfigValue(this.configurationService, 'enabled') === true;
+		this.vimcodeEnabledContext.set(enabled);
+
+		// `vim.enabled` is shared with VSCodeVim. Preserve the inert disabled
+		// startup path by not creating/writing it unless vimcode has been enabled
+		// during this window's lifetime.
+		if (enabled || this.wasEnabled) {
+			this.vimEnabledContext ??= VimEnabledContext.bindTo(this.contextKeyService);
+			this.vimEnabledContext.set(enabled);
+		}
+		this.wasEnabled = enabled;
 	}
 
 	private registerEditor(editor: ICodeEditor): void {
@@ -115,4 +161,4 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 	}
 }
 
-registerWorkbenchContribution2(VimStatusbarContribution.ID, VimStatusbarContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(VimStatusbarContribution.ID, VimStatusbarContribution, WorkbenchPhase.BlockStartup);

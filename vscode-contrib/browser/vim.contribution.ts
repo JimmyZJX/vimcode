@@ -271,7 +271,7 @@ function vimcodeConfigurationProperties(): Record<string, IConfigurationProperty
 	return Object.fromEntries(Object.entries(vimConfigurationProperties).map(([key, schema]) => [key.replace(/^vim\./, 'vimcode.'), schema]));
 }
 
-function readCompatibilityConfigValue(configurationService: IConfigurationService, key: string): unknown {
+export function readCompatibilityConfigValue(configurationService: IConfigurationService, key: string): unknown {
 	const vimcodeValue = readConfiguredConfigValue(configurationService, `vimcode.${key}`);
 	return vimcodeValue !== undefined ? vimcodeValue : configurationService.getValue<unknown>(`vim.${key}`);
 }

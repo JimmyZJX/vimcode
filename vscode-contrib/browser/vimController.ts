@@ -28,8 +28,6 @@ import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { installVSCodeGraphemeProvider } from './vscodeGrapheme.js';
 import { VSCodeVimEditor } from './vscodeVimEditor.js';
 
-const VimEnabledContext = new RawContextKey<boolean>('vim.enabled', false, true);
-const VimCodeEnabledContext = new RawContextKey<boolean>('vimcode.enabled', false, true);
 const VimActiveContext = new RawContextKey<boolean>('vim.active', false, true);
 const VimModeContext = new RawContextKey<string>('vim.mode', 'Normal', true);
 const VimNormalContext = new RawContextKey<boolean>('vim.normal', true, true);
@@ -267,13 +265,6 @@ export class VimController extends Disposable {
 		return this.readCompatibilityConfigValue('enabled') === true;
 	}
 
-	private setGlobalEnabledContexts(enabled: boolean, options: { mirrorVimEnabled: boolean }): void {
-		void this.commandService.executeCommand('_setContext', VimCodeEnabledContext.key, enabled);
-		if (options.mirrorVimEnabled) {
-			void this.commandService.executeCommand('_setContext', VimEnabledContext.key, enabled);
-		}
-	}
-
 	private ensureVimContextKeys(): VimContextKeys {
 		if (this.vimContexts === undefined) {
 			this.vimContexts = {
@@ -299,12 +290,9 @@ export class VimController extends Disposable {
 			this.rememberNativeCursorAppearance();
 		}
 		this.enabled = enabled;
-		// Keep the default disabled startup path inert for users of the VSCodeVim
-		// extension: do not write the shared `vim.enabled` context key until
-		// vimcode has actually taken ownership. Once vimcode is active, mirror it
-		// for VSCodeVim-compatible when-clauses and clear it when toggling away
-		// from vimcode. Users switching back to VSCodeVim should reload the window.
-		this.setGlobalEnabledContexts(enabled, { mirrorVimEnabled: enabled || wasEnabled });
+		// Global `vimcode.enabled` / compatibility `vim.enabled` contexts are
+		// owned by the block-startup workbench contribution, independently of
+		// whether an editor (and therefore a VimController) has been created.
 		if (enabled) {
 			registerVimRemapCommandOnce();
 			this.attachCurrentModelState();
