@@ -137,7 +137,7 @@ Implemented first-slice behavior:
 - first surround operators: `ys`, `yss`, `ds`, `cs`, and visual `S` for word/motion/quote/bracket ranges
 - first replace/dot-repeat/command slice: `r`, `R`, `.` for simple replace/delete/insert actions, count override for repeated operator motions, `ctrl-a`/`ctrl-x` increment/decrement for decimal/hex/binary numbers, and `:` commands for goto, line offsets, search, join, ranges, matching-line delete, sort, substitute, and a small `:normal I...` subset
 - first macro slice: `q{register}` recording, `@{register}` / `@@` replay, counted replay, and `Q` replay-last for focused fixtures
-- first VSCode-hosted command slice: normal-mode `u`/`ctrl-r`, `ctrl-o`/`ctrl-i`, `gj`/`gk`, folded-line `j`/`k`, `ctrl-y`/`ctrl-e`, and `ctrl-u`/`ctrl-d`/`ctrl-b`/`ctrl-f` delegate to host editor/workbench capabilities
+- first VSCode-hosted command slice: normal-mode `u`/`ctrl-r`, `ctrl-]` definition, `ctrl-o`/`ctrl-t`/`ctrl-i` navigation, `gj`/`gk`, folded-line `j`/`k`, `ctrl-y`/`ctrl-e`, and `ctrl-u`/`ctrl-d`/`ctrl-b`/`ctrl-f` delegate to host editor/workbench capabilities
 - numbered/special register slice: register `0` and `1`-`9` storage/rotation for linewise deletes, small-delete `-`, black-hole `_`, search `/`, uppercase append registers, counted `p`/`P`, and linewise paste repeat basics
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 

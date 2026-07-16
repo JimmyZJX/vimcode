@@ -1915,12 +1915,14 @@ function isBuiltInCtrlKey(key: string): boolean {
     case "ctrl-n":
     case "ctrl-o":
     case "ctrl-r":
+    case "ctrl-t":
     case "ctrl-u":
     case "ctrl-v":
     case "ctrl-w":
     case "ctrl-x":
     case "ctrl-y":
     case "ctrl-[":
+    case "ctrl-]":
     case "ctrl-left":
     case "ctrl-right":
     case "ctrl-home":

@@ -156,9 +156,10 @@ function deeper(state: HandlerState): HandlerState {
 
 // Single-key finite chords that run a native/host command. Shared
 // (normal + visual): `K` (hover), `ctrl-n` (add cursor at next match),
-// `ctrl-pagedown`/`ctrl-pageup` (tabs). Normal-only: `ctrl-o`/`ctrl-i`
-// (jumplist back/forward), `u`/`ctrl-r` (undo/redo) — in visual `u`/`ctrl-r` are
-// not these (visual `u` is convert), so they are declined there.
+// `ctrl-pagedown`/`ctrl-pageup` (tabs). Normal-only: `ctrl-]` (definition),
+// `ctrl-o`/`ctrl-t` (back), `ctrl-i` (forward), and `u`/`ctrl-r` (undo/redo) —
+// in visual `u`/`ctrl-r` are not these (visual `u` is convert), so they are
+// declined there. Vim and VSCodeVim use `ctrl-[` as Escape, not definition.
 export function nativeKeyHandler(key: string, state: HandlerState): HandleResult<void> {
   switch (key) {
     case "K":
@@ -175,7 +176,10 @@ export function nativeKeyHandler(key: string, state: HandlerState): HandleResult
   // The jumplist and undo/redo chords are normal-only.
   if (isVisualModeKind(state.mode)) return unhandled();
   switch (key) {
+    case "ctrl-]":
+      return nativeCommandEffect(state, "editor.action.revealDefinition");
     case "ctrl-o":
+    case "ctrl-t":
       return hostCommandEffect(state, "navigateBack");
     case "ctrl-i":
       return hostCommandEffect(state, "navigateForward");

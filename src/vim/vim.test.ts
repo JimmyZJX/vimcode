@@ -1126,6 +1126,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
   it("normalizes VSCodeVim key notation", () => {
     expect(normalizeKey("<Esc>", "\\")).toBe("<escape>");
     expect(normalizeKey("<C-[>", "\\")).toBe("ctrl-[");
+    expect(normalizeKey("<C-]>", "\\")).toBe("ctrl-]");
     expect(normalizeKey("<C-Right>", "\\")).toBe("ctrl-right");
     expect(normalizeKey("<S-u>", "\\")).toBe("U");
     expect(normalizeKey("<Del>", "\\")).toBe("delete");
@@ -1369,6 +1370,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, [
       "g", "d",
+      "ctrl-]",
       "g", "D",
       "g", "y",
       "g", "I",
@@ -1383,6 +1385,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.modeName).toBe("vim:normal");
     expect(editor.nativeCommands).toEqual([
       { command: "editor.action.revealDefinition", args: [] },
+      { command: "editor.action.revealDefinition", args: [] },
       { command: "editor.action.goToDeclaration", args: [] },
       { command: "editor.action.goToTypeDefinition", args: [] },
       { command: "editor.action.goToImplementation", args: [] },
@@ -1393,6 +1396,17 @@ describe("Zed-inspired Vim core smoke tests", () => {
       { command: "editor.action.rename", args: [] },
       { command: "editor.action.quickFix", args: [] },
     ]);
+  });
+
+  it("supports ctrl-t as the tag-navigation back key", () => {
+    const editor = new InMemoryVimEditor("one");
+    const hostCommands: string[] = [];
+    editor.executeHostCommand = command => hostCommands.push(command);
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["ctrl-o", "ctrl-t", "ctrl-i"]);
+
+    expect(hostCommands).toEqual(["navigateBack", "navigateBack", "navigateForward"]);
   });
 
   it("supports write ex commands", () => {

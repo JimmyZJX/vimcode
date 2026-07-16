@@ -1085,6 +1085,8 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 				return 'ctrl-pagedown';
 			case KeyCode.BracketLeft:
 				return 'ctrl-[';
+			case KeyCode.BracketRight:
+				return 'ctrl-]';
 			// Word deletes are insert-mode passthrough keys (recorded for macros /
 			// dot-repeat); in other modes Vim declines them and they stay native.
 			case KeyCode.Backspace:
