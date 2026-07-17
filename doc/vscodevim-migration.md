@@ -80,6 +80,15 @@ Insert-mode `ctrl-v` paste without changing Visual Block `ctrl-v`.
 `vim.highlightedyank.{enable,color,textColor,duration}` match VSCodeVim
 (disabled by default; yank-only, flashing the yanked ranges for the configured
 duration).
+`vim.statusBarColorControl` + `vim.statusBarColors.{normal,insert,visual,
+visualline,visualblock,replace,commandlineinprogress,searchinprogressmode}`
+match VSCodeVim's defaults and value shapes (background string or
+`[background, foreground]` pair). Deliberate improvement: the colors are
+applied through the *in-memory* configuration layer instead of persisting
+`workbench.colorCustomizations` into settings.json (VSCodeVim's write-through
+is its top jank complaint), so disabling restores the user's own colors and
+no settings file churn occurs. The easymotion/surround-input mode color keys
+are not read (no such modes in vimcode).
 
 ### Supported, different default or semantics
 
@@ -108,7 +117,8 @@ unknown `vim.*` keys at startup as a migration aid):
   `vim.digraphs`, `vim.commandLineModeKeyBindings[NonRecursive]`.
 - **Visual/UI**: `vim.cursorStylePerMode.*`, `vim.searchHighlightColor` (+3
   color settings), `vim.substitutionColor`/`TextColor`,
-  `vim.statusBarColorControl` + `vim.statusBarColors.*` (airline),
+  `vim.statusBarColors.{easymotionmode,easymotioninputmode,surroundinputmode}`
+  (no such modes in vimcode; the other statusBarColors keys are supported),
   `vim.showcmd`/`vim.showmodename` (vimcode always shows),
   easymotion appearance settings (`vim.easymotionDimBackground` — VSCodeVim
   dims surrounding text by default; vimcode doesn't dim,

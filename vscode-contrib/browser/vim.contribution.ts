@@ -175,6 +175,17 @@ registerVimListKeybindings();
 registerVimCompletionKeybindings();
 registerVimNotebookKeybindings();
 
+// A VSCodeVim `vim.statusBarColors.*` entry: a background color string, or a
+// `[background, foreground]` pair.
+function statusBarColorSchema(description: string, defaultValue: [string, string]): IConfigurationPropertySchema {
+	return {
+		type: ['string', 'array'],
+		default: defaultValue,
+		scope: ConfigurationScope.APPLICATION,
+		description,
+	};
+}
+
 const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> = {
 	'vim.enabled': {
 		type: 'boolean',
@@ -262,6 +273,23 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.highlightedyank.duration', "Duration in milliseconds of the yank highlight."),
 	},
+	'vim.statusBarColorControl': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.statusBarColorControl', "Allow vimcode to change the status bar color based on the current Vim mode."),
+	},
+	// VSCodeVim `vim.statusBarColors.*`: either a background color string or a
+	// `[background, foreground]` pair. Defaults match VSCodeVim exactly
+	// (including the odd 5-digit `#00000` Replace default).
+	'vim.statusBarColors.normal': statusBarColorSchema(nls.localize('vim.statusBarColors.normal', "Status bar color when in Normal mode."), ['#005f5f', '#ffffff']),
+	'vim.statusBarColors.insert': statusBarColorSchema(nls.localize('vim.statusBarColors.insert', "Status bar color when in Insert mode."), ['#5f0000', '#ffffff']),
+	'vim.statusBarColors.visual': statusBarColorSchema(nls.localize('vim.statusBarColors.visual', "Status bar color when in Visual mode."), ['#5f00af', '#ffffff']),
+	'vim.statusBarColors.visualline': statusBarColorSchema(nls.localize('vim.statusBarColors.visualline', "Status bar color when in VisualLine mode."), ['#005f87', '#ffffff']),
+	'vim.statusBarColors.visualblock': statusBarColorSchema(nls.localize('vim.statusBarColors.visualblock', "Status bar color when in VisualBlock mode."), ['#86592d', '#ffffff']),
+	'vim.statusBarColors.replace': statusBarColorSchema(nls.localize('vim.statusBarColors.replace', "Status bar color when in Replace mode."), ['#00000', '#ffffff']),
+	'vim.statusBarColors.commandlineinprogress': statusBarColorSchema(nls.localize('vim.statusBarColors.commandlineinprogress', "Status bar color when in CommandLineInProgress mode."), ['#007acc', '#ffffff']),
+	'vim.statusBarColors.searchinprogressmode': statusBarColorSchema(nls.localize('vim.statusBarColors.searchinprogressmode', "Status bar color when in SearchInProgress mode."), ['#007acc', '#ffffff']),
 	'vim.replaceWithRegister': {
 		type: 'boolean',
 		default: false,
