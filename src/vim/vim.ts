@@ -1376,9 +1376,20 @@ export class Vim {
     // recorded keys are replayed through the same key pipeline. Remapped keys are
     // excluded — the remap handler claims them and the expansion is recorded as
     // it flows through this path.
-    const normalContext =
-      this.isExecutorNormalContext() &&
-      !(allowRemap && hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator));
+    // Whether the remap machinery may claim this key, so recording it here
+    // would double-record with the expansion's own re-dispatch. At a fresh
+    // chord root the remap root handler is live, so any key that starts a
+    // mapping is excluded. Mid-chord it only applies while a remap chord is
+    // buffering keys ([remapIsPending]): a pending waiter (the char of
+    // `df<space>`) consumes its key raw — a `<space>` mapping cannot claim it
+    // there, and skipping the recording would drop the char from dot-repeat
+    // and macros.
+    const remapMayClaimKey =
+      allowRemap
+      && (this.keyExecutor.isPending()
+        ? this.remapIsPending()
+        : hasRemapStartingWith(this.remaps, this.currentRemapMode(), key, this.dispatchWhenEvaluator));
+    const normalContext = this.isExecutorNormalContext() && !remapMayClaimKey;
     const recordable = normalContext && !this.globalState.repeat.isReplaying();
     // Commit any in-flight dot-repeat recording before this framework key,
     // mirroring legacy [dispatchKey]. A framework key never reaches

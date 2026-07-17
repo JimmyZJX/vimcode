@@ -763,6 +763,40 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.line(0)).toBe("fofoooZ");
   });
 
+  it("records a waiter char that also starts a remap, for dot-repeat and macros", () => {
+    // Regression: with a `<space>` normal-mode remap configured, the char fed
+    // to the `df<space>` find waiter was excluded from dot-repeat/macro
+    // recording as if the remap had claimed it, so `.` replayed only `df` and
+    // left the find waiter pending.
+    const editor = new InMemoryVimEditor("foo bar baz qux");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [
+        { before: ["<space>"], commands: ["vspacecode.space"] },
+      ],
+    });
+
+    runKeys(vim, ["d", "f", "space"]);
+    expect(editor.line(0)).toBe("bar baz qux");
+
+    runKeys(vim, ["."]);
+    expect(editor.line(0)).toBe("baz qux");
+    expect(vim.status.pending).toBe(false);
+    // The remap must not have fired for the waiter char or the replay.
+    expect(editor.nativeCommands).toEqual([]);
+
+    // Macros record through the same gate: `qa df<space> q` must keep the char.
+    const macroEditor = new InMemoryVimEditor("foo bar baz\nfoo bar baz");
+    const macroVim = new Vim(macroEditor, {
+      normalModeKeyBindingsNonRecursive: [
+        { before: ["<space>"], commands: ["vspacecode.space"] },
+      ],
+    });
+    runKeys(macroVim, ["q", "a", "d", "f", "space", "q"]);
+    expect(macroEditor.line(0)).toBe("bar baz");
+    runKeys(macroVim, ["j", "0", "@", "a"]);
+    expect(macroEditor.line(1)).toBe("bar baz");
+  });
+
   it("records insert-mode navigation keys so dot-repeat replays them", () => {
     const editor = new InMemoryVimEditor("abc\nabc");
     const vim = new Vim(editor);
