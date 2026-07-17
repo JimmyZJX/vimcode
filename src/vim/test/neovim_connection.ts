@@ -143,6 +143,8 @@ function keyToNeovimInput(key: string): string {
       return "<Up>";
     case "down":
       return "<Down>";
+    case "insert":
+      return "<Insert>";
     default:
       break;
   }

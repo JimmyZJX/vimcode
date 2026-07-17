@@ -493,6 +493,9 @@ function insertEntryKindForKey(key: string): InsertEntryKind | undefined {
     case "o":
     case "O":
       return key;
+    case "insert":
+      // Vim `<Insert>` in Normal mode: same as `i` (including a count).
+      return "i";
     default:
       return undefined;
   }
