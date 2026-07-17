@@ -16,6 +16,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorCommand, registerEditorCommand } from '../../../browser/editorExtensions.js';
+import { ICodeEditorService } from '../../../browser/services/codeEditorService.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason, CursorSelectionStartKind, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
@@ -26,7 +27,7 @@ import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js'
 import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { installVSCodeGraphemeProvider } from './vscodeGrapheme.js';
-import { VSCodeVimEditor, YankHighlightOptions } from './vscodeVimEditor.js';
+import { VSCodeVimEditor, VimEasyMotionLabelDecorationTypeKey, YankHighlightOptions } from './vscodeVimEditor.js';
 
 const VimActiveContext = new RawContextKey<boolean>('vim.active', false, true);
 const VimModeContext = new RawContextKey<string>('vim.mode', 'Normal', true);
@@ -137,12 +138,19 @@ export class VimController extends Disposable {
 		private readonly extensionManagementService: IExtensionManagementService,
 		private readonly extensionEnablementService: IGlobalExtensionEnablementService,
 		private readonly notificationService: INotificationService,
-		private readonly logService: ILogService
+		private readonly logService: ILogService,
+		codeEditorService: ICodeEditorService
 	) {
 		super();
 		// Align the core's character-cell boundaries with the host's own
 		// character-column mapping (idempotent).
 		installVSCodeGraphemeProvider();
+		// The easymotion label decorations ([showEasyMotionMarkers]) are
+		// per-label *subtypes* of this parent decoration type; resolving a
+		// subtype resolves its parent, which throws when unregistered. The
+		// registration is refcounted by key across editors and scoped to this
+		// editor's stylesheet (matters for auxiliary windows).
+		this._register(codeEditorService.registerDecorationType('vim-easymotion-label', VimEasyMotionLabelDecorationTypeKey, {}, undefined, editor));
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
 		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message), () => this.yankHighlightOptions());
 		// A background native command (`:w`) completed: selection/content events

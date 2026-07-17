@@ -1,5 +1,5 @@
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { diffInserted, editorBackground, editorFindMatchHighlight } from '../../../../platform/theme/common/colorRegistry.js';
+import { diffInserted, editorFindMatchHighlight } from '../../../../platform/theme/common/colorRegistry.js';
 import { registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
@@ -7,7 +7,7 @@ import { CursorChangeReason } from '../../../common/cursorEvents.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
-import { IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
+import { IDecorationOptions, IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, InjectedTextCursorStops, PositionAffinity } from '../../../common/model.js';
 import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
@@ -32,27 +32,19 @@ type VSCodeUndoTransaction = {
 	hasEdits: boolean;
 };
 
+// Easymotion label decorations are `setDecorationsByType` pseudo-element
+// decorations (see [showEasyMotionMarkers]); this key groups them so a new
+// marker set replaces the previous one and unused label subtypes are dropped.
+// The per-label subtypes the widget registers resolve their *parent* type, so
+// the parent key must be registered with the code editor service before the
+// first [showEasyMotionMarkers] call — the controller owns that registration.
+export const VimEasyMotionLabelDecorationTypeKey = 'vim-easymotion-marker';
+
 registerThemingParticipant((theme, collector) => {
 	// The label replaces the target text visually (VSCodeVim-style): the
-	// character under the marker is hidden (`.vim-easymotion-target` below),
-	// and the label paints on the editor background so a multi-character label
-	// also covers the character it overhangs.
-	const background = theme.getColor(editorBackground);
+	// character under the marker is hidden and the label pseudo-element (see
+	// [showEasyMotionMarkers]) paints on the editor background over it.
 	collector.addRule(`
-		.monaco-editor .vim-easymotion-marker {
-			color: #ff0000;
-			background-color: ${background ?? 'transparent'};
-			font-weight: bold;
-			font-style: normal;
-			position: absolute;
-			display: inline-block;
-			width: max-content;
-			min-width: max-content;
-			overflow: visible;
-			height: 100%;
-			margin: 0 -1ch 0 0;
-			z-index: 10;
-		}
 		.monaco-editor .vim-easymotion-target {
 			opacity: 0;
 		}
@@ -258,37 +250,70 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void {
 		if (!this.editor.hasModel()) {
-			this.easyMotionDecorations.clear();
+			this.clearEasyMotionMarkers();
 			return;
 		}
 		const model = this.model();
-		const decorations: IModelDeltaDecoration[] = [];
+		// The label must NOT be injected text: injected text occupies columns in
+		// the view line's character mapping, and the monospace fast path computes
+		// x-offsets arithmetically from that mapping — a zero-width (absolutely
+		// positioned) injected label therefore shifted the cursor right by the
+		// label width for every marker before it on the same line (and the block
+		// cursor painted a duplicate of its character there). Instead the label
+		// is a CSS `::before` pseudo-element (`setDecorationsByType`, the same
+		// mechanism VSCodeVim's easymotion decorations use), which the character
+		// mapping never sees; the pseudo-element leaves the layout flow via
+		// VSCodeVim's margin recipe below, so the real text does not shift
+		// either. The character under the marker is hidden with a pure CSS class
+		// (`.vim-easymotion-target`), which also has no layout effect.
+		const hideDecorations: IModelDeltaDecoration[] = [];
+		const labelDecorations: IDecorationOptions[] = [];
 		for (const marker of markers) {
 			const lineNumber = marker.position.row + 1;
 			const column = marker.position.column + 1;
-			// Cover the character under the marker so the label replaces it
-			// visually (`.vim-easymotion-target` hides it); at end-of-line there
-			// is no character and the range stays collapsed (label only).
-			const endColumn = Math.min(column + 1, model.getLineMaxColumn(lineNumber));
-			decorations.push({
-				range: new Range(lineNumber, column, lineNumber, endColumn),
-				options: {
-					description: 'vim-easymotion-marker',
-					before: {
-						content: marker.label,
-						inlineClassName: 'vim-easymotion-marker',
-						cursorStops: InjectedTextCursorStops.Right,
+			// The label is a transparent overlay: hide as many characters as the
+			// label covers so a multi-character label does not overlap visible
+			// text; at end-of-line there may be fewer (or no) characters to hide.
+			const endColumn = Math.min(column + marker.label.length, model.getLineMaxColumn(lineNumber));
+			if (endColumn > column) {
+				hideDecorations.push({
+					range: new Range(lineNumber, column, lineNumber, endColumn),
+					options: {
+						description: 'vim-easymotion-target',
+						inlineClassName: 'vim-easymotion-target',
 					},
-					inlineClassName: 'vim-easymotion-target',
-					showIfCollapsed: true,
+				});
+			}
+			labelDecorations.push({
+				range: new Range(lineNumber, column, lineNumber, column),
+				renderOptions: {
+					before: {
+						contentText: marker.label,
+						color: '#ff0000',
+						fontWeight: 'bold',
+						height: '100%',
+						// VSCodeVim's recipe (easymotion.ts `firstCharRenderOptions`):
+						// the decoration API has no fields for positioning, so the
+						// margin value carries the extra properties into the generated
+						// rule. `position: absolute` takes the label out of the layout
+						// flow, drawing it over the hidden characters without a
+						// backing box.
+						margin: `0 -1ch 0 0;
+						position: absolute;
+						z-index: 10;
+						width: max-content;
+						font-style: normal;`,
+					},
 				},
 			});
 		}
-		this.easyMotionDecorations.set(decorations);
+		this.easyMotionDecorations.set(hideDecorations);
+		this.editor.setDecorationsByType('vim-easymotion-marker', VimEasyMotionLabelDecorationTypeKey, labelDecorations);
 	}
 
 	clearEasyMotionMarkers(): void {
 		this.easyMotionDecorations.clear();
+		this.editor.removeDecorationsByType(VimEasyMotionLabelDecorationTypeKey);
 	}
 
 	// VSCodeVim `highlightedyank` (`BaseOperator.highlightYankedRanges`): flash

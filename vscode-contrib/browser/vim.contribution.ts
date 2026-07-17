@@ -14,6 +14,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorContributionInstantiation, ServicesAccessor, registerEditorContribution } from '../../../browser/editorExtensions.js';
+import { ICodeEditorService } from '../../../browser/services/codeEditorService.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { defaultVimHandleKeys } from '../common/config.js';
 import { VimController } from './vimController.js';
@@ -407,9 +408,10 @@ class VimContribution extends VimController implements IEditorContribution {
 		@IExtensionManagementService extensionManagementService: IExtensionManagementService,
 		@IGlobalExtensionEnablementService extensionEnablementService: IGlobalExtensionEnablementService,
 		@INotificationService notificationService: INotificationService,
-		@ILogService logService: ILogService
+		@ILogService logService: ILogService,
+		@ICodeEditorService codeEditorService: ICodeEditorService
 	) {
-		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, extensionEnablementService, notificationService, logService);
+		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, extensionEnablementService, notificationService, logService, codeEditorService);
 	}
 }
 
