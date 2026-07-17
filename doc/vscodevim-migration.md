@@ -68,7 +68,7 @@ wins when set), so existing settings.json files partially "just work".
 ### Supported, compatible
 
 `vim.leader`, `vim.useCtrlKeys`, `vim.handleKeys` (same default map),
-`vim.timeout`, `vim.replaceWithRegister` (default false), `vim.easymotion`, `vim.easymotionKeys`,
+`vim.timeout`, `vim.replaceWithRegister` (default false), `vim.easymotionKeys`,
 `vim.easymotionJumpToAnywhereRegex`, and all eight remapping arrays
 (`normal/insert/visual/operatorPending` × recursive/non-recursive) with
 `before`/`after`/`commands` (string or `{command, args}`, `:`-commands run
@@ -95,6 +95,7 @@ are not read (no such modes in vimcode).
 | Setting | VSCodeVim | vimcode | Impact |
 |---|---|---|---|
 | `vim.useSystemClipboard` | default false | default **true** (VSCode-native feel) | migrated users get clipboard-as-unnamed unless set; decide one default for rollout |
+| `vim.easymotion` | default false | default **true** | with the default `\` leader the `<leader><leader>` prefix sits on an otherwise-unbound key, so enabling is free; avoids `<leader><leader>s` silently degrading into plain `s`. Users with a leader on a bound key (e.g. space) get chord-vs-motion timeout semantics on it unless they disable |
 | `vim.textwidth` | default 80 | 0 → first `editor.rulers` → 79 | `gq` width differs when unset; ruler detection is arguably better — document |
 | enable/disable | `vim.disableExtension` (default false) | `vim.enabled` (default false) | **inverted opt-in**; migration must set `vim.enabled` |
 

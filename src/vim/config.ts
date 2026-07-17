@@ -75,7 +75,11 @@ export const defaultVimConfiguration: VimConfiguration = {
   // VSCodeVim compatibility: the `gr` plugin is opt-in; when disabled the
   // Neovim-style grr/grn/gra LSP bindings own the prefix.
   replaceWithRegister: false,
-  easymotion: false,
+  // Deliberate divergence from VSCodeVim (default false): with the default `\`
+  // leader the `<leader><leader>` prefix sits on an otherwise-unbound key, so
+  // enabling costs nothing — and a disabled easymotion silently degrades
+  // `<leader><leader>s` into plain `s`, which is a confusing failure mode.
+  easymotion: true,
   easymotionKeys: "hklyuiopnm,qwertzxcvbasdgjf;",
   easymotionJumpToAnywhereRegex: "\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]",
   textwidth: 0,

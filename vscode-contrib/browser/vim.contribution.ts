@@ -299,7 +299,9 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 	},
 	'vim.easymotion': {
 		type: 'boolean',
-		default: false,
+		// Deliberate divergence from VSCodeVim (default false); see
+		// [defaultVimConfiguration.easymotion].
+		default: true,
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.easymotion', "Enable VSCodeVim-compatible EasyMotion commands."),
 	},
