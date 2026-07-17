@@ -348,10 +348,13 @@ subsystems (waiting input, insert/replace, char-input waiters) are ported into
   - convert operators `gu`/`gU`/`g~`/`g?` (g-prefixed operators reusing the
     operand grammar, incl. the `guu`/`gugu` doubling and `dotRepeatable`);
   - cumulative increment `g ctrl-a`/`g ctrl-x` and `gJ` (simple actions);
-  - native editor/LSP commands `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[` and the
-    `g r` chord (`g r r`/`g r n`/`g r a`), as `effect`s that call
-    `editor.executeNativeCommand` and declare `syncAfter` (the executor reports
-    it via `lastEffectSyncAfter`, and `routeKeyThroughExecutor` runs the
+  - ReplaceWithRegister `gr{motion}`/`grr`, a settings-gated range operator
+    that reuses the operand grammar and preserves the source register; when it
+    is disabled, `grr`/`grn`/`gra` dispatch to native LSP commands instead;
+  - native editor/LSP commands `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[`, as
+    `effect`s that call `editor.executeNativeCommand` and declare `syncAfter`
+    (the executor reports it via `lastEffectSyncAfter`, and
+    `routeKeyThroughExecutor` runs the
     post-command `syncFromEditorState`, mirroring the legacy `native` action);
   - multicursor `gl`/`gL`/`g>`/`g<`/`ga` (count repeats of the VSCode command,
     which reconciles via `syncSelectionAfter`);
@@ -641,8 +644,9 @@ points:
 
 ### Dot-repeat (`.`) and macros — both key-based
 
-Both `.` and named macros record **keystrokes** and replay them back through
-`onKey`. This mirrors Vim, where the two are distinct char buffers (`redobuff`
+Both `.` and named macros record **keystrokes** and replay them through internal
+key plans (the direct core fallback uses `onKey`). This mirrors Vim, where the
+two are distinct char buffers (`redobuff`
 for `.`, `recordbuff` for `q`) that are both replayed by feeding their chars into
 the input stream. An earlier iteration recorded dot-repeat as a re-runnable
 `RepeatableCommand` action; that was removed in favor of the simpler key-based
@@ -653,7 +657,7 @@ The two buffers differ in *what* they record, exactly as in Vim:
 
 - **Macros** (`MacroState`) are a verbatim transcript. While a register is
   recording, every key is appended to `currentKeys` (`recordKey`), stored on
-  `stopRecording`, and replayed via `runKey = onKey`, `count` times. Counts,
+  `stopRecording`, and replayed via the shared execution context, `count` times. Counts,
   motions, and mistakes are all captured as typed.
 - **Dot-repeat** (`RepeatState`) records only the last *change*. The **command
   declares** whether it is dot-repeatable, like Vim's `prep_redo` — not a key
@@ -695,12 +699,15 @@ Recording is wired in `Vim`:
   `g`-chords, visual-entry). It shrinks to nothing as commands migrate and
   disappears with `dispatchKey`.
 
-**Replay serialization.** Replay re-dispatches keys through `onKey`. The editor
-contract is synchronous (`applyEdits`/`setSelections`/`editText` return `void`;
-only the clipboard is async, pre-loaded by the `withSystemClipboard` wrapper
-around the whole `.` dispatch), and the synchronous-until-async effect queue runs
-each key's effect inline, so a `.`/macro replay completes each key before the
-next without a deferred replayer.
+**Replay serialization and register reads.** Register-reading effects declare
+`registerToRead`; `KeyExecutor.beforeEffect` refreshes clipboard-backed contents
+immediately before the effect runs. Macro/dot replay feeds each recorded key
+through an internal `KeyPlan`, shares the root clipboard transaction, and awaits
+that plan before the next key. Remap-emitted keys are likewise queued one at a
+time so an async paste finishes before a following motion. The transaction
+caches one external clipboard snapshot for the root action, preserving both
+ordering and performance. Direct core calls without a host clipboard remain
+synchronous for tests and non-hosted use.
 
 ### Temporary count/register bridge (`Vim.bridgePendingPrefixToLegacy`)
 
@@ -715,12 +722,11 @@ values, so a count typed directly into legacy via `d2w` is never clobbered).
 
 This is a **temporary migration bridge**, to be deleted once the remaining
 normal-mode commands are migrated (at which point counted/registered operations
-never fall through). Reads that happen *before* the yield (the system-clipboard
-register refresh in `handleKey.run`, the dot-repeat seed in
-`normalPendingChordForRepeat`) consult `Vim.effectiveRegister` /
-`KeyExecutor.currentParserState`, so a framework-pending register/count is
-visible to them; `pendingDepth`/`isPending` still read `handlerState` directly so
-the framework state is not double-counted with the executor's own pending flag.
+never fall through). Clipboard-backed reads no longer inspect key shapes before
+yielding: the completed leaf effect carries its selected register in
+`registerToRead`, including a framework-pending prefix. `pendingDepth`/`isPending`
+still read `handlerState` directly so the framework state is not double-counted
+with the executor's own pending flag.
 
 ### The idle-gate migration strategy
 

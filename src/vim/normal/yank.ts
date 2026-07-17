@@ -33,7 +33,12 @@ export function yankTargets(
   registerName: RegisterName | undefined,
   targets: readonly CharwiseTarget[]
 ): void {
-  const copied = targets.map(({ range }) => rangeText(editor, range));
+  const copied = targets
+    .filter(target =>
+      target.cancelled !== true
+      && (target.range.start.row !== target.range.end.row
+        || target.range.start.column !== target.range.end.column))
+    .map(({ range }) => rangeText(editor, range));
 
   if (copied.length > 0) {
     registers.writeYank(

@@ -163,6 +163,13 @@ export type EffectMeta = {
   // instead of a separate key list; motions/yank/marks leave it false. Defaults
   // to false when omitted.
   dotRepeatable?: boolean;
+  // A register the completed action will read. The executor refreshes
+  // clipboard-backed contents immediately before the effect runs. The object
+  // wrapper distinguishes an unnamed register from no read.
+  registerToRead?: { registerName: RegisterName | undefined };
+  // `i_CTRL-O p`: resume Insert after the pasted cursor cell rather than at its
+  // Normal-mode cell start.
+  temporaryInsertAfter?: boolean;
   // Whether the owner should reconcile Vim state from the editor after the
   // effect runs (the legacy `syncFromEditorState`). Native commands that move
   // the cursor/open a different editor (`gd`, `gh`, …) set this; the
@@ -223,7 +230,10 @@ export type HandlerEnv<T> = {
 // search operand: update the incsearch preview, then wait for the next key) can
 // keep its body pure and put the side effect here. Purely a side effect: it
 // carries no value and does not transition mode (the chord stays pending).
-export type PendingEffect = () => QueuedRunResult<void>;
+export type PendingEffect = {
+  run: () => QueuedRunResult<void>;
+  registerToRead?: { registerName: RegisterName | undefined };
+};
 
 export type HandleResult<T> =
   | { type: "run"; action: KeyAction<T> }
@@ -336,11 +346,14 @@ export function combineHandleResults<T>(results: readonly HandleResult<T>[]): Ha
 function combineEffects(effects: readonly PendingEffect[]): PendingEffect | undefined {
   if (effects.length === 0) return undefined;
   if (effects.length === 1) return effects[0];
-  return () =>
-    effects.reduce<QueuedRunResult<void>>(
-      (previous, next) => (isPromiseLike(previous) ? Promise.resolve(previous).then(() => next()) : next()),
-      undefined
-    );
+  return {
+    registerToRead: effects.find(effect => effect.registerToRead !== undefined)?.registerToRead,
+    run: () =>
+      effects.reduce<QueuedRunResult<void>>(
+        (previous, next) => (isPromiseLike(previous) ? Promise.resolve(previous).then(() => next.run()) : next.run()),
+        undefined
+      ),
+  };
 }
 
 export function run<T>(action: KeyAction<T>): HandleResult<T> {

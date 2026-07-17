@@ -214,8 +214,10 @@ describe("KeyExecutor", () => {
         return {
           type: "handler",
           handlerEnvs: [{ handler: waiter, state }],
-          effect: () => {
-            log.push("preview");
+          effect: {
+            run: () => {
+              log.push("preview");
+            },
           },
         };
       };
@@ -467,7 +469,7 @@ describe("KeyExecutor", () => {
       expect(log).toEqual(["first", "second"]);
     });
 
-    it("keeps draining the queue after an effect throws", async () => {
+    it("rejects the queue and drops queued work after an effect throws", async () => {
       const log: string[] = [];
       const errors: unknown[] = [];
       const handler: Handler<void> = key => {
@@ -504,10 +506,13 @@ describe("KeyExecutor", () => {
         })
       );
       executor.handle("boom");
-      executor.handle("ok");
-      await flush();
-      expect(log).toEqual(["ok"]);
+      await expect(executor.whenIdle()).rejects.toThrow("boom");
+      expect(log).toEqual([]);
       expect(errors.length).toBe(1);
+
+      executor.handle("ok");
+      await executor.whenIdle();
+      expect(log).toEqual(["ok"]);
     });
   });
 
@@ -588,7 +593,9 @@ describe("KeyExecutor", () => {
       };
       const executor = new KeyExecutor(
         singleHandlerOptions(emitHandler, {
-          redispatch: (key, allowRemap) => redispatched.push({ key, allowRemap }),
+          redispatch: (key, allowRemap) => {
+            redispatched.push({ key, allowRemap });
+          },
         })
       );
 
@@ -614,7 +621,12 @@ describe("KeyExecutor", () => {
             ],
             log
           ),
-          { ...timer.options, redispatch: key => redispatched.push(key) }
+          {
+            ...timer.options,
+            redispatch: key => {
+              redispatched.push(key);
+            },
+          }
         )
       );
 

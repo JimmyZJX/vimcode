@@ -10,7 +10,7 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { Motion, applyMotionWithGoal, hostViewLineSelectionsForMotion } from "./motion.js";
-import { RegisterName, isSystemClipboardRegister } from "./registers.js";
+import type { RegisterName } from "./registers.js";
 import { charwiseSelection, selectionHead } from "./state.js";
 
 type CountState = {
@@ -35,15 +35,6 @@ export class NormalMode {
 
   isPending(): boolean {
     return this.countState.get().length > 0;
-  }
-
-  systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
-    if (key !== "p" && key !== "P") return undefined;
-    const registerName = this.registerSelection.get();
-    if (registerName === undefined || isSystemClipboardRegister(registerName)) {
-      return { registerName };
-    }
-    return undefined;
   }
 
   clearPending(): void {

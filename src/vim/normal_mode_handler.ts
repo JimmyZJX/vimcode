@@ -42,6 +42,7 @@ import {
 } from "./operator_target.js";
 import { lookupDigraph } from "./digraph.js";
 import { textObjectForKey, textObjectRange } from "./object.js";
+import { replaceWithRegisterWouldEdit } from "./normal/replace_with_register.js";
 import { SimpleAction, applySimpleAction, simpleActionForKey } from "./normal/simple_action.js";
 import { addSurrounds, addTagSurrounds, changeSurrounds, changeSurroundsToTag, deleteSurrounds } from "./surrounds.js";
 import { TextRange, VimMode, charwiseSelection, selectionHead } from "./state.js";
@@ -127,6 +128,13 @@ function gContinuation(key: string, state: HandlerState): HandleResult<void> {
     return operandGrammar({ key, operator: { type: "convert", target: convertTarget }, forChange: false, gPrefixed: true }, state);
   }
 
+  // VSCodeVim ReplaceWithRegister: when enabled, `gr{motion}` / `grr` owns the
+  // prefix. Its VSCodeVim-compatible default is off, leaving `grr`/`grn`/`gra`
+  // to the LSP chord below.
+  if (key === "r" && state.configuration?.replaceWithRegister === true) {
+    return operandGrammar(REPLACE_WITH_REGISTER_OPERATOR, state);
+  }
+
   // Format operators `gq`/`gw` (`gw` keeps the cursor): g-prefixed operators
   // over linewise motion operands, with the usual doublings (`gqq`/`gqgq`,
   // `gww`/`gwgw`).
@@ -155,8 +163,8 @@ function gContinuation(key: string, state: HandlerState): HandleResult<void> {
   if (key === "ctrl-x") return applySimpleActionEffect(state, { type: "increment", direction: "decrement", cumulative: true });
   if (key === "J") return applySimpleActionEffect(state, { type: "joinLines", withSpace: false });
 
-  // Editor-level `g`-chords shared with visual mode: `g r` (refs/rename/quick
-  // fix), native `gd`/`gh`/…, multicursor `gl`/…, tabs `gt`/`gT`, change list
+  // Editor-level `g`-chords shared with visual mode: the settings-gated `g r`
+  // LSP chord, native `gd`/`gh`/…, multicursor `gl`/…, tabs `gt`/`gT`, change list
   // `g;`/`g,`.
   const editorGChord = editorGChordHandler(key, state);
   if (editorGChord !== undefined) return editorGChord;
@@ -176,13 +184,16 @@ function gContinuation(key: string, state: HandlerState): HandleResult<void> {
 
 // Editor-level `g`-chords that behave identically in normal and visual mode:
 // they run editor/LSP commands and keep the current Vim mode (the leaf effects
-// target [state.mode]). `g r` (references/rename/quick fix), native
-// `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[`, multicursor `gl`/`gL`/`g>`/`g<`/`ga`,
+// target [state.mode]). The `g r` family is active only when
+// ReplaceWithRegister is disabled; native `gd`/`gD`/`gy`/`gI`/`gh`/`gx`/`g]`/`g[`,
+// multicursor `gl`/`gL`/`g>`/`g<`/`ga`,
 // tabs `gt`/`gT`, change list `g;`/`g,`. Returns undefined for keys that are not
 // editor `g`-chords, so the caller can try its mode-specific chords. Shared by
 // [gContinuation] and the visual `g`-chord continuation.
 export function editorGChordHandler(key: string, state: HandlerState): HandleResult<void> | undefined {
-  if (key === "r") return handler([{ handler: gReplaceChord, state: deeper(state) }]);
+  if (key === "r" && state.configuration?.replaceWithRegister !== true) {
+    return handler([{ handler: gReplaceChord, state: deeper(state) }]);
+  }
   const nativeCommand = gChordNativeCommand(key);
   if (nativeCommand !== undefined) return nativeCommandEffect(state, nativeCommand);
   const multiCursorCommand = gChordMultiCursorCommand(key);
@@ -213,8 +224,8 @@ export function restoreVisualSelectionHandler(state: HandlerState): HandleResult
   );
 }
 
-// The key after `g r`: `g r r` (find references), `g r n` (rename), `g r a`
-// (quick fix). All are native commands; an unrecognized key cancels the chord.
+// The key after `g r` while ReplaceWithRegister is disabled: Neovim 0.11's
+// default `grr` references, `grn` rename, and `gra` code-action bindings.
 function gReplaceChord(key: string, state: HandlerState): HandleResult<void> {
   switch (key) {
     case "r":
@@ -595,6 +606,9 @@ function applySimpleActionEffect(state: HandlerState, action: SimpleAction): Han
   const count = state.repeat;
   return effect(state.mode, () => applySimpleAction(editor, registers, register, count, action), {
     dotRepeatable: true,
+    registerToRead: action.type === "paste" ? { registerName: register } : undefined,
+    temporaryInsertAfter:
+      action.type === "paste" && registers.readContent(register).kind === "characterwise",
   });
 }
 
@@ -722,6 +736,11 @@ type OperatorSpec = {
 const CHANGE_OPERATOR: OperatorSpec = { key: "c", operator: { type: "change" }, forChange: true };
 const DELETE_OPERATOR: OperatorSpec = { key: "d", operator: { type: "delete" }, forChange: false };
 const YANK_OPERATOR: OperatorSpec = { key: "y", operator: { type: "yank" }, forChange: false };
+const REPLACE_WITH_REGISTER_OPERATOR: OperatorSpec = {
+  key: "r",
+  operator: { type: "replaceWithRegister" },
+  forChange: false,
+};
 
 function operatorForKey(key: string): OperatorSpec | undefined {
   switch (key) {
@@ -1015,14 +1034,27 @@ function applyOperator(spec: OperatorSpec, state: HandlerState, target: Operator
       : target;
   const resolved = resolveTarget(editor, effectiveTarget, state.repeat, { hasCount, forChange: spec.forChange });
   const mode = spec.forChange && changeEntersInsert(resolved) ? "insert" : state.mode;
-  // Every operator but yank modifies the buffer, so only yank is not
-  // dot-repeatable (`.` repeats the last *change*).
+  const operator: RangeOperator = spec.operator.type === "replaceWithRegister"
+    ? {
+        ...spec.operator,
+        lineAction: target.kind === "line",
+        multilineObject: target.kind === "object" && target.object.type === "surround",
+      }
+    : spec.operator;
+  const replacementWillEdit = operator.type !== "replaceWithRegister"
+    || replaceWithRegisterWouldEdit(editor, registers, register, resolved);
+  // Every successful operator but yank modifies the buffer. A failed
+  // ReplaceWithRegister (missing/empty register or cancelled target) must not
+  // overwrite the previous dot-repeat action.
   return effect(
     mode,
     () => {
-      applyOperatorToTarget(editor, registers, register, spec.operator, resolved);
+      applyOperatorToTarget(editor, registers, register, operator, resolved);
     },
-    { dotRepeatable: spec.operator.type !== "yank" }
+    {
+      dotRepeatable: operator.type !== "yank" && replacementWillEdit,
+      registerToRead: operator.type === "replaceWithRegister" ? { registerName: register } : undefined,
+    }
   );
 }
 

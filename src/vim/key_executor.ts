@@ -1,9 +1,12 @@
 import type { VimCommandMapping } from "./config.js";
 import {
+  EffectMeta,
   HandleResult,
   HandlerEnv,
   HandlerState,
   KeyAction,
+  KeyToDispatch,
+  PendingEffect,
   QueuedRunResult,
   cloneHandlerState,
   combineHandleResults,
@@ -35,7 +38,13 @@ export type KeyExecutorLog = {
 
 export type KeyExecutorOptions = {
   handlersForState: KeyExecutorHandlers;
-  executeCommand?: (command: VimCommandMapping) => void;
+  executeCommand?: (command: VimCommandMapping) => QueuedRunResult<void>;
+  /** Resolve execution-time dependencies (notably clipboard-backed registers)
+      immediately before an effect runs. */
+  beforeEffect?: (meta: EffectMeta) => QueuedRunResult<void>;
+  /** Owner postprocessing that must run after the effect body, including when
+      the action was reached through queued redispatch. */
+  afterEffect?: (meta: EffectMeta) => void;
   /**
    * How to dispatch a key emitted by an accepted action (a `keys` action) or
    * replayed after an ambiguous conflict resolves. It represents the owner's
@@ -45,14 +54,14 @@ export type KeyExecutorOptions = {
    * to any not-yet-migrated dispatcher. The executor itself knows nothing about
    * that fallback.
    */
-  redispatch?: (key: string, allowRemap: boolean) => void;
+  redispatch?: (key: string, allowRemap: boolean) => QueuedRunResult<void>;
   /**
    * Apply the Vim mode an accepted action targets (the [mode] on the action /
    * effect). The executor owns mode transitions: after running an action it
    * reports the target mode here so the owner can transition (e.g. a `change`
-   * action targets insert mode). Called synchronously after the action runs, not
-   * inside its (possibly async) effect callback — keys are dispatched
-   * synchronously, so the transition must be observable immediately. The owner
+   * action targets insert mode). Usually called synchronously after the action
+   * runs. A dynamic visual action reached through queued redispatch transitions
+   * after its effect, because its resulting mode depends on that effect. The owner
    * decides what an entry means (e.g. entering insert starts an insert session);
    * a target mode equal to the current mode is a no-op.
    */
@@ -90,6 +99,7 @@ export class KeyExecutor {
 
   /** [syncAfter] of the effect run during the current/last [handle]. */
   private lastSyncAfter = false;
+  private lastTemporaryInsertAfter = false;
 
   /** [insertTyped] of the effect run during the current/last [handle]. */
   private lastInsertTyped = false;
@@ -114,6 +124,7 @@ export class KeyExecutor {
   /** Resolves when the queue drains; replaced whenever draining (re)starts. */
   private idle: Promise<void> = Promise.resolve();
   private resolveIdle: (() => void) | undefined;
+  private rejectIdle: ((error: unknown) => void) | undefined;
   /** Shared parser environment visible to newly-created default handlers. */
   private state: HandlerState;
 
@@ -183,6 +194,10 @@ export class KeyExecutor {
     return this.lastSyncAfter;
   }
 
+  lastEffectTemporaryInsertAfter(): boolean {
+    return this.lastTemporaryInsertAfter;
+  }
+
   /** Whether the effect run during the most recent [handle] was a passthrough
       insert/replace-mode character (see [EffectMeta.insertTyped]): the owner
       records it as a `typed` key and reproduces the edit via the default
@@ -218,6 +233,37 @@ export class KeyExecutor {
   /** Promise that resolves once all currently-queued effect actions have run. */
   whenIdle(): Promise<void> {
     return this.idle;
+  }
+
+  hasQueuedWork(): boolean {
+    return this.draining || this.effectQueue.length > 0;
+  }
+
+  /** Run a deliberately re-entrant key while suspending already queued work,
+      then drain only the effects produced by that key. */
+  runReentrant(run: () => void): void {
+    const suspended = this.effectQueue.splice(0);
+    try {
+      run();
+      this.drainReentrantEffects();
+    } finally {
+      this.effectQueue.unshift(...suspended);
+    }
+  }
+
+  /** Drain effects queued by a deliberately re-entrant command such as
+      `:normal`. Its root action preloads register dependencies, so nested leaf
+      effects must remain synchronous; encountering async work is an invariant
+      violation rather than silently reordering subsequent keys/rows. */
+  drainReentrantEffects(): void {
+    while (this.effectQueue.length > 0) {
+      const run = this.effectQueue.shift();
+      if (run === undefined) return;
+      const result = run();
+      if (isPromiseLike(result)) {
+        throw new Error("re-entrant key execution produced an asynchronous effect");
+      }
+    }
   }
 
   /**
@@ -282,6 +328,7 @@ export class KeyExecutor {
     // completed dot-repeatable / non-repeatable command.
     this.lastDotRepeatable = undefined;
     this.lastSyncAfter = false;
+    this.lastTemporaryInsertAfter = false;
     this.lastInsertTyped = false;
     this.lastHandleCancelled = false;
     this.lastPreservesDotRepeat = false;
@@ -308,7 +355,7 @@ export class KeyExecutor {
         // key is accepted (e.g. update the `d/` incsearch preview, then keep
         // waiting). It is a plain side effect — no mode transition — so it goes
         // straight onto the effect queue and does not touch [lastDotRepeatable].
-        if (result.effect !== undefined) this.enqueueRun(result.effect);
+        if (result.effect !== undefined) this.enqueuePendingEffect(result.effect);
         this.logDebug(
           `key=[${key}] pending handlers=${this.handlerEnvs.length}`
         );
@@ -318,7 +365,7 @@ export class KeyExecutor {
         this.pending = true;
         this.lastPreservesDotRepeat = result.preservesDotRepeat === true;
         this.setConflict({ accepted: result.accepted, replaySuffix: [] });
-        if (result.effect !== undefined) this.enqueueRun(result.effect);
+        if (result.effect !== undefined) this.enqueuePendingEffect(result.effect);
         this.logDebug(
           `key=[${key}] conflict pending=${this.handlerEnvs.length}`
         );
@@ -360,7 +407,7 @@ export class KeyExecutor {
     return true;
   }
 
-  /** Run the accepted shorter action, then synchronously replay buffered suffix keys. */
+  /** Run the accepted shorter action, then replay buffered suffix keys in queue order. */
   private executeConflict(
     conflict: KeyExecutorConflict,
     replayKeys: readonly string[]
@@ -369,7 +416,7 @@ export class KeyExecutor {
     this.executeAction(conflict.accepted, replayKeys);
   }
 
-  /** Accept an action: switch mode/handlers synchronously, execute action, then replay keys. */
+  /** Accept an action, preserving effect/replay order across async dependencies. */
   private executeAction(
     action: KeyAction<void>,
     replayKeys: readonly string[] = []
@@ -378,26 +425,48 @@ export class KeyExecutor {
     this.pending = false;
     this.state = { ...cloneHandlerState(this.state), mode: action.mode };
     this.handlerEnvs = this.options.handlersForState(this.state);
+    if (action.type === "effect" && this.draining) {
+      this.lastDotRepeatable = action.dotRepeatable === true;
+      this.lastSyncAfter = action.syncAfter === true;
+      this.lastTemporaryInsertAfter = action.temporaryInsertAfter === true;
+      this.lastInsertTyped = action.insertTyped === true;
+      this.lastPreservesDotRepeat = action.preservesDotRepeat === true;
+                  this.enqueueEffect(action, () => {
+        this.options.onEnterMode?.(action.resolveMode?.() ?? action.mode, {
+          enterInsert: action.enterInsert,
+          search: action.search,
+        });
+        this.options.afterEffect?.(action);
+        this.replayKeys(replayKeys);
+      });
+;
+      return;
+    }
+
+    if (replayKeys.length > 0) {
+      const replay = () => this.replayKeys(replayKeys);
+      if (action.type === "keys") {
+        this.enqueueRedispatchedKeys(action.keys, 0, replay);
+        return;
+      }
+      if (action.type === "commands") {
+        this.enqueueCommands(action.commands, 0, replay);
+        return;
+      }
+      if (action.type === "sequence") {
+        this.enqueueActionSequence(action.actions, 0, replay);
+        return;
+      }
+    }
+
     this.runAction(action);
-    // The executor owns the mode transition: report the action's target mode so
-    // the owner can transition (e.g. `change` -> insert). Done synchronously
-    // after [runAction] (so a synchronous editor edit has already applied),
-    // never inside the effect callback. Only [effect] actions carry a meaningful
-    // target mode set by the handler; [keys]/[sequence]/[commands] actions
-    // (remap expansions) take their mode from the leaf effects they redispatch,
-    // which fire [onEnterMode] themselves — reporting the capture-time mode here
-    // would clobber a transition those leaves just made (e.g. an insert-mode
-    // remap expanding to `<Esc>` would be forced back into insert).
     if (action.type === "effect") {
       this.lastDotRepeatable = action.dotRepeatable === true;
       this.lastSyncAfter = action.syncAfter === true;
+      this.lastTemporaryInsertAfter = action.temporaryInsertAfter === true;
       this.lastInsertTyped = action.insertTyped === true;
       this.lastPreservesDotRepeat = action.preservesDotRepeat === true;
-      // [resolveMode], when present, computes the true target mode after [run]
-      // has executed (e.g. a visual command whose resulting kind depends on the
-      // selection); the static [mode] is the best-guess parser mode used above.
-      const targetMode =
-        action.resolveMode !== undefined ? action.resolveMode() : action.mode;
+      const targetMode = action.resolveMode !== undefined ? action.resolveMode() : action.mode;
       this.options.onEnterMode?.(targetMode, {
         enterInsert: action.enterInsert,
         search: action.search,
@@ -412,21 +481,13 @@ export class KeyExecutor {
         this.enqueueEffect(action);
         break;
       case "keys":
-        for (const { key, allowRemap } of action.keys)
-          this.redispatch(key, allowRemap);
+        this.enqueueRedispatchedKeys(action.keys);
         break;
       case "commands":
-        for (const command of action.commands)
-          this.options.executeCommand?.(command);
+        this.enqueueCommands(action.commands);
         break;
       case "sequence":
-        // Run nested actions without re-resetting per action: the enclosing
-        // [executeAction] already reset once, and a nested action may leave the
-        // executor pending (e.g. a remap expanding to `d`, which becomes a
-        // pending operator). Re-running [executeAction] here would clear that
-        // pending state when a later nested action (e.g. an empty `commands`)
-        // resets it.
-        for (const nested of action.actions) this.runAction(nested);
+        this.enqueueActionSequence(action.actions);
         break;
     }
   }
@@ -439,9 +500,46 @@ export class KeyExecutor {
    * the asynchronous tail.
    */
   private enqueueEffect(
-    action: Extract<KeyAction<void>, { type: "effect" }>
+    action: Extract<KeyAction<void>, { type: "effect" }>,
+    onComplete: () => void = () => {}
   ): void {
-    this.enqueueRun(() => action.run());
+    this.enqueueRun(() => {
+      const runEffect = (): QueuedRunResult<void> => {
+        const finish = () => onComplete();
+        const result = action.run();
+        if (isPromiseLike(result)) return Promise.resolve(result).then(finish);
+        finish();
+      };
+      const before = this.options.beforeEffect?.(action);
+      return isPromiseLike(before)
+        ? Promise.resolve(before).then(runEffect)
+        : runEffect();
+    });
+  }
+
+  private enqueuePendingEffect(effect: PendingEffect): void {
+    this.enqueueRun(() => {
+      const run = (): QueuedRunResult<void> => {
+        try {
+          const result = effect.run();
+          if (isPromiseLike(result)) {
+            return Promise.resolve(result).finally(() => this.stateGeneration++);
+          }
+          this.stateGeneration++;
+          return;
+        } catch (error) {
+          this.stateGeneration++;
+          throw error;
+        }
+      };
+      const before = this.options.beforeEffect?.(effect);
+      return isPromiseLike(before)
+        ? Promise.resolve(before).then(run, error => {
+            this.stateGeneration++;
+            throw error;
+          })
+        : run();
+    });
   }
 
   /**
@@ -454,8 +552,9 @@ export class KeyExecutor {
     if (this.draining) return;
     this.draining = true;
     if (this.resolveIdle === undefined) {
-      this.idle = new Promise((resolve) => {
+      this.idle = new Promise((resolve, reject) => {
         this.resolveIdle = resolve;
+        this.rejectIdle = reject;
       });
     }
     this.drainEffects();
@@ -475,20 +574,32 @@ export class KeyExecutor {
       try {
         result = run();
       } catch (error) {
-        this.logError("queued run failed", error);
-        continue;
+        this.failEffects(error);
+        return;
       }
       if (isPromiseLike(result)) {
-        void Promise.resolve(result)
-          .catch((error) => this.logError("queued run failed", error))
-          .then(() => this.drainEffects());
+        void Promise.resolve(result).then(
+          () => this.drainEffects(),
+          error => this.failEffects(error)
+        );
         return;
       }
     }
     this.draining = false;
     const resolveIdle = this.resolveIdle;
     this.resolveIdle = undefined;
+    this.rejectIdle = undefined;
     resolveIdle?.();
+  }
+
+  private failEffects(error: unknown): void {
+    this.logError("queued run failed", error);
+    this.effectQueue.length = 0;
+    this.draining = false;
+    const rejectIdle = this.rejectIdle;
+    this.resolveIdle = undefined;
+    this.rejectIdle = undefined;
+    rejectIdle?.(error);
   }
 
   private setConflict(conflict: KeyExecutorConflict): void {
@@ -527,9 +638,79 @@ export class KeyExecutor {
     this.conflictTimer = undefined;
   }
 
-  /** Re-dispatch replayed suffix keys synchronously through the owner pipeline. */
+  private enqueueActionSequence(
+    actions: readonly KeyAction<void>[],
+    index = 0,
+    onComplete: () => void = () => {}
+  ): void {
+    const action = actions[index];
+    if (action === undefined) {
+      onComplete();
+      return;
+    }
+    const next = () => this.enqueueActionSequence(actions, index + 1, onComplete);
+    switch (action.type) {
+      case "keys":
+        this.enqueueRedispatchedKeys(action.keys, 0, next);
+        return;
+      case "commands":
+        this.enqueueCommands(action.commands, 0, next);
+        return;
+      case "sequence":
+        // Flattening preserves order; remap-generated sequences contain keys
+        // and commands, but nested sequences are valid in the generic action type.
+        this.enqueueActionSequence([...action.actions, ...actions.slice(index + 1)], 0, onComplete);
+        return;
+      case "effect":
+        this.enqueueEffect(action, next);
+        return;
+    }
+  }
+
+  /** Re-dispatch emitted keys one at a time. A key's queued effects are inserted
+      before the next redispatch, preserving order across async dependencies. */
+  private enqueueRedispatchedKeys(
+    keys: readonly KeyToDispatch[],
+    index = 0,
+    onComplete: () => void = () => {}
+  ): void {
+    const key = keys[index];
+    if (key === undefined) {
+      onComplete();
+      return;
+    }
+    this.enqueueRun(() => {
+      const result = this.redispatch(key.key, key.allowRemap);
+      if (isPromiseLike(result)) {
+        return Promise.resolve(result).then(() => this.enqueueRedispatchedKeys(keys, index + 1, onComplete));
+      }
+      this.enqueueRedispatchedKeys(keys, index + 1, onComplete);
+      return;
+    });
+  }
+
   private replayKeys(keys: readonly string[]): void {
-    for (const key of keys) this.redispatch(key, true);
+    this.enqueueRedispatchedKeys(keys.map(key => ({ key, allowRemap: true })));
+  }
+
+  private enqueueCommands(
+    commands: readonly VimCommandMapping[],
+    index = 0,
+    onComplete: () => void = () => {}
+  ): void {
+    const command = commands[index];
+    if (command === undefined) {
+      onComplete();
+      return;
+    }
+    this.enqueueRun(() => {
+      const result = this.options.executeCommand?.(command);
+      if (result !== undefined && typeof (result as Promise<void>).then === "function") {
+        return Promise.resolve(result).then(() => this.enqueueCommands(commands, index + 1, onComplete));
+      }
+      this.enqueueCommands(commands, index + 1, onComplete);
+      return;
+    });
   }
 
   /**
@@ -537,10 +718,9 @@ export class KeyExecutor {
    * pipeline when configured, otherwise re-enters this executor. The executor
    * does not know what (if anything) the owner does beyond this executor.
    */
-  private redispatch(key: string, allowRemap: boolean): void {
-    if (this.options.redispatch !== undefined)
-      this.options.redispatch(key, allowRemap);
-    else this.handle(key, allowRemap);
+  private redispatch(key: string, allowRemap: boolean): QueuedRunResult<void> {
+    if (this.options.redispatch !== undefined) return this.options.redispatch(key, allowRemap);
+    this.handle(key, allowRemap);
   }
 
   private logDebug(message: string): void {

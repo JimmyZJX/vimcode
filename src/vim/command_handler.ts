@@ -7,6 +7,7 @@
 //   the ex-command execution is owner-side (Vim), because it re-enters the key
 //   pipeline (`:normal`/`:g`) and must run after the effect queue has drained.
 
+import { commandRegisterToRead } from "./command.js";
 import type { HandleResult, HandlerState } from "./key_handler.js";
 import { effect, isEscapeKey, unhandled } from "./key_handler.js";
 import { historyNavigationKey } from "./prompt_history.js";
@@ -36,7 +37,13 @@ export function commandModeHandler(key: string, state: HandlerState): HandleResu
   if (command === undefined) return unhandled();
   if (isEscapeKey(key)) return unhandled();
   if (key === "enter") {
-    return effect("normal", () => {}, { dotRepeatable: false });
+    const editor = state.editor;
+    const registerToRead = editor === undefined
+      ? undefined
+      : commandRegisterToRead(editor, command.value(), {
+          markLine: name => state.marks?.position(name)?.row,
+        });
+    return effect("normal", () => {}, { dotRepeatable: false, registerToRead });
   }
   // `<Up>`/`<Down>`/`<C-p>`/`<C-n>`: recall through the command history.
   if (historyNavigationKey(key) !== undefined) {

@@ -68,7 +68,7 @@ wins when set), so existing settings.json files partially "just work".
 ### Supported, compatible
 
 `vim.leader`, `vim.useCtrlKeys`, `vim.handleKeys` (same default map),
-`vim.timeout`, `vim.easymotion`, `vim.easymotionKeys`,
+`vim.timeout`, `vim.replaceWithRegister` (default false), `vim.easymotion`, `vim.easymotionKeys`,
 `vim.easymotionJumpToAnywhereRegex`, and all eight remapping arrays
 (`normal/insert/visual/operatorPending` × recursive/non-recursive) with
 `before`/`after`/`commands` (string or `{command, args}`, `:`-commands run
@@ -110,7 +110,7 @@ unknown `vim.*` keys at startup as a migration aid):
   dims surrounding text by default; vimcode doesn't dim,
   `vim.easymotionMarker*` colors/weight).
 - **Plugins** (see below): `vim.sneak*`, `vim.camelCaseMotion.enable`,
-  `vim.replaceWithRegister`, `vim.surround` (vimcode surround is always-on,
+  `vim.surround` (vimcode surround is always-on,
   no off-switch), `vim.argumentObject*`, `vim.visualstar`.
 - **Platform/exotic**: `vim.overrideCopy`, `vim.foldfix`,
   `vim.autoSwitchInputMethod.*`, `vim.vimrc.{enable,path}`,
@@ -142,11 +142,12 @@ is from the README plus known majors and may miss minor keys.
 - ~~Argument objects `ia`/`aa`.~~ Done — delimiters hardcoded to VSCodeVim's
   defaults (`(`/`[`, `,`); the `vim.argumentObject*` settings are not read.
 - ~~`ae`/`ie` entire-buffer objects.~~ Done.
-- ReplaceWithRegister `gr{motion}`/`grr` — **deliberately not implemented**:
-  vimcode's `gr` chord carries Neovim 0.11's default LSP mappings (`grr`
-  references, `grn` rename, `gra` code action), and ReplaceWithRegister is
-  opt-in-off in VSCodeVim. Users who want it can remap; taking `gr` would
-  trade an nvim-faithful default for an off-by-default emulation.
+- ~~ReplaceWithRegister `gr{motion}`/`grr`/visual `gr`.~~ Done behind the
+  VSCodeVim-compatible `vim.replaceWithRegister` setting (default false):
+  replacing preserves the source register and supports counts, named registers,
+  linewise targets, multicursor register parts, and dot repeat. Enabling it gives
+  `gr` to the plugin; disabling it keeps Neovim 0.11's `grr` references / `grn`
+  rename / `gra` code-action defaults.
 - `af` visual expand-selection (VSCodeVim special) — still open; the natural
   shape is the host's `editor.action.smartSelect.expand` plus adopting the
   grown selection into the visual session after the async command completes

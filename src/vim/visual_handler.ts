@@ -10,6 +10,7 @@
 import { cloneHandlerState, combineHandleResults, dynamicModeEffect, effect, handler, invalid, isEscapeKey, unhandled } from "./key_handler.js";
 import type { Handler, HandleResult, HandlerState } from "./key_handler.js";
 import type { RepeatState } from "./normal/repeat.js";
+import type { RegisterName } from "./registers.js";
 import { bracketChordHandler, ctrlWHandler, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
 import type { FindApplier } from "./normal_mode_handler.js";
 import { configuredTextwidth, convertTargetForKey, digraphWaiter, editorGChordHandler, findHandler, gChordMotion, keyForInput, lineMotionForKey, repeatFindHandler, resolveMotion, restoreVisualSelectionHandler } from "./normal_mode_handler.js";
@@ -66,7 +67,13 @@ function rawVisualModeHandler(): Handler<void> {
 function visualResultEffect(
   state: HandlerState,
   run: (visual: VisualMode) => VisualKeyResult,
-  { dotRepeatable = false }: { dotRepeatable?: boolean } = {}
+  {
+    dotRepeatable = false,
+    registerToRead,
+  }: {
+    dotRepeatable?: boolean;
+    registerToRead?: { registerName: RegisterName | undefined };
+  } = {}
 ): HandleResult<void> {
   const visual = state.visual;
   if (visual === undefined) return invalid();
@@ -80,7 +87,7 @@ function visualResultEffect(
       target = visualResultMode(result, state.mode, visual);
     },
     () => target,
-    { dotRepeatable }
+    { dotRepeatable, registerToRead }
   );
 }
 
@@ -121,7 +128,11 @@ function visualCommandHandler(key: string, state: HandlerState): HandleResult<vo
   const command = visualCommandForKey(key);
   if (command === undefined) return unhandled();
   if (state.visual === undefined) return invalid();
-  return visualResultEffect(state, visual => visual.handleCommand(command, state.register));
+  return visualResultEffect(
+    state,
+    visual => visual.handleCommand(command, state.register),
+    { registerToRead: command.type === "paste" ? { registerName: state.register } : undefined }
+  );
 }
 
 function visualCommandForKey(key: string): VisualCommand | undefined {
@@ -162,7 +173,7 @@ function visualCommandForKey(key: string): VisualCommand | undefined {
       return { type: "otherEnd", rowAware: false };
     case "p":
     case "P":
-      return { type: "paste" };
+      return { type: "paste", preserveSourceRegister: key === "P" };
     case "I":
       return { type: "insertAtSelection", side: "start" };
     case "A":
@@ -293,7 +304,8 @@ function visualToggleHandler(key: string, state: HandlerState): HandleResult<voi
 
 // The `g`-chord prefix in visual mode. The dedicated visual continuation handles
 // the chords whose visual semantics differ from normal mode — g-motions extend
-// the selection, `gu`/`gU`/`g~`/`g?` convert the selection, `gJ` joins it,
+// the selection, `gr` replaces it with a register, `gu`/`gU`/`g~`/`g?`
+// convert the selection, `gJ` joins it,
 // `g ctrl-a`/`g ctrl-x` increment it, `gv` swaps to the last selection, `gn`/`gN`
 // extend to a search match — reusing the shared leaf helpers
 // ([gChordMotion]/[convertTargetForKey]/[restoreVisualSelectionHandler]/
@@ -309,6 +321,18 @@ function visualGChordHandler(key: string, state: HandlerState): HandleResult<voi
 function visualGContinuation(key: string, state: HandlerState): HandleResult<void> {
   const visual = state.visual;
   if (visual === undefined) return invalid();
+
+  // VSCodeVim ReplaceWithRegister: when enabled, visual `gr` replaces the
+  // selected character or line range immediately. VSCodeVim does not define it
+  // for visual block; when disabled the shared `g r` LSP chord handles the key.
+  if (key === "r" && state.configuration?.replaceWithRegister === true) {
+    if (state.mode === "visualBlock") return invalid();
+    return visualResultEffect(
+      state,
+      live => live.handleCommand({ type: "replaceWithRegister" }, state.register),
+      { registerToRead: { registerName: state.register } }
+    );
+  }
 
   // g-motions extend the live selection (`gg`/`gj`/`gk`/`g_`/`gM`/`ge`/`gE`).
   const motion = gChordMotion(key);

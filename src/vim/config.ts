@@ -40,6 +40,7 @@ export type VimConfiguration = {
   useSystemClipboard: boolean;
   timeout: number;
   visualMultilineInsert: boolean;
+  replaceWithRegister: boolean;
   easymotion: boolean;
   easymotionKeys: string;
   easymotionJumpToAnywhereRegex: string;
@@ -69,6 +70,9 @@ export const defaultVimConfiguration: VimConfiguration = {
   useSystemClipboard: false,
   timeout: 1000,
   visualMultilineInsert: true,
+  // VSCodeVim compatibility: the `gr` plugin is opt-in; when disabled the
+  // Neovim-style grr/grn/gra LSP bindings own the prefix.
+  replaceWithRegister: false,
   easymotion: false,
   easymotionKeys: "hklyuiopnm,qwertzxcvbasdgjf;",
   easymotionJumpToAnywhereRegex: "\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]",

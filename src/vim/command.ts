@@ -9,7 +9,7 @@
 
 import { VimEditorCapabilities } from "./editor.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "./prompt_history.js";
-import { Registers, parseRegisterName } from "./registers.js";
+import { RegisterName, Registers, parseRegisterName } from "./registers.js";
 import { translateVimRegex } from "./search.js";
 import { SingleLineEditor } from "./single_line_editor.js";
 import { TextEdit, TextRange, charwiseSelection, selectionHead } from "./state.js";
@@ -350,6 +350,31 @@ function newSplit(editor: VimEditorCapabilities, splitCommand: string): void {
     // The untitled file must open in the group the split just created.
     onResolved: () => editor.executeNativeCommand("workbench.action.files.newUntitledFile"),
   });
+}
+
+export function commandRunsNormalKeys(command: string): boolean {
+  return /^norm(?:al)?!?(\s|$)/.test(command)
+    || /^[gv].*\bnorm(?:al)?!?(\s|$)/.test(command);
+}
+
+export function commandRegisterToRead(
+  editor: VimEditorCapabilities,
+  rawCommand: string,
+  options: CommandOptions = {}
+): { registerName: RegisterName | undefined } | undefined {
+  const command = rawCommand.trimStart();
+  if (command.length === 0) return undefined;
+  const { rest } = parseRange(editor, command, options);
+  const trimmedRest = rest.trim();
+  const put = parsePut(trimmedRest);
+  if (put !== undefined) {
+    return { registerName: put.registerKey === undefined ? undefined : parseRegisterName(put.registerKey) };
+  }
+  // `:normal` and `:global ... normal` re-enter the key pipeline and may read
+  // any clipboard-backed register. Refresh once for the root Ex command; the
+  // transaction then supplies that snapshot to all nested keys.
+  if (commandRunsNormalKeys(trimmedRest)) return { registerName: "+" };
+  return undefined;
 }
 
 export function executeCommand(editor: VimEditorCapabilities, rawCommand: string, options: CommandOptions = {}): void {

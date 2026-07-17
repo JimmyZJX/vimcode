@@ -68,6 +68,7 @@ export function changeLineRange(
     selectionsAfter.push({ type: "charwise" as const, anchor: { row: startRow, column: indent.length }, head: { row: startRow, column: indent.length } });
   }
 
+  editor.applyEdits(edits, selectionsAfter, keepUndoTransactionOpen());
   if (copied.length > 0) {
     registers.writeDelete(
       registerName,
@@ -76,7 +77,6 @@ export function changeLineRange(
       copied.map(text => ({ text, kind: "linewise" }))
     );
   }
-  editor.applyEdits(edits, selectionsAfter, keepUndoTransactionOpen());
   return true;
 }
 

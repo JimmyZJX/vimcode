@@ -345,6 +345,8 @@ function bracketContinuation(bracket: "]" | "["): Handler<void> {
       const before = bracket === "[" || key === "P";
       return effect(state.mode, () => paste(editor, registers, register, { before, count, adjustIndent: true }), {
         dotRepeatable: true,
+        registerToRead: { registerName: register },
+        temporaryInsertAfter: true,
       });
     }
 

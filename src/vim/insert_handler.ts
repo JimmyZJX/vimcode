@@ -163,10 +163,12 @@ function insertRegisterWaiter(key: string, state: HandlerState): HandleResult<vo
   const editor = state.editor;
   const registers = state.registers;
   if (editor === undefined || registers === undefined) return invalid();
+  const registerName = parseRegisterName(key);
   return effect(state.mode, () => {
-    const registerName = parseRegisterName(key);
     if (registerName === undefined) return;
     insertText(editor, registers.read(registerName), keepUndoTransactionOpen());
+  }, {
+    registerToRead: registerName === undefined ? undefined : { registerName },
   });
 }
 

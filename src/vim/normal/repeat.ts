@@ -33,6 +33,41 @@ export function typedKey(key: string): RecordedKey {
   return { kind: "typed", key };
 }
 
+type ReplayResult = void | Promise<void>;
+
+function isPromiseLike(value: ReplayResult): value is Promise<void> {
+  return value !== undefined && typeof (value as Promise<void>).then === "function";
+}
+
+function runSequentially<T>(
+  values: readonly T[],
+  run: (value: T) => ReplayResult,
+  shouldStop: () => boolean = () => false,
+  index = 0
+): ReplayResult {
+  for (let current = index; current < values.length; current++) {
+    if (shouldStop()) return;
+    const result = run(values[current]);
+    if (isPromiseLike(result)) {
+      return result.then(() => runSequentially(values, run, shouldStop, current + 1));
+    }
+  }
+}
+
+function finishReplay(result: ReplayResult, cleanup: () => void): ReplayResult {
+  if (isPromiseLike(result)) return result.finally(cleanup);
+  cleanup();
+}
+
+function runReplayWithCleanup(run: () => ReplayResult, cleanup: () => void): ReplayResult {
+  try {
+    return finishReplay(run(), cleanup);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
 function isShortcutKey(entry: RecordedKey | undefined, key: string): boolean {
   return entry?.kind === "shortcut" && entry.key === key;
 }
@@ -50,7 +85,8 @@ export type RecordedSelection =
 export type VisualRepeatAction =
   | { type: "indent"; direction: IndentDirection }
   | { type: "delete" }
-  | { type: "change"; insertedText: string };
+  | { type: "change"; insertedText: string }
+  | { type: "replaceWithRegister"; registerName?: RegisterName };
 
 export type RepeatAction =
   | { type: "keys"; keys: readonly RecordedKey[] }
@@ -138,34 +174,34 @@ export class RepeatState {
   replay(
     count: number | undefined,
     { runKey, runVisualAction, registerName }: {
-      runKey: (entry: RecordedKey) => void;
-      runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => void;
+      runKey: (entry: RecordedKey) => ReplayResult;
+      runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => ReplayResult;
       registerName?: RegisterName;
     }
-  ): void {
-    if (this.last === undefined) return;
+  ): ReplayResult {
+    const last = this.last;
+    if (last === undefined) return;
     this.replaying = true;
-    try {
-      switch (this.last.type) {
-        case "keys": {
-          const countedKeys = count === undefined ? this.last.keys : keysWithCountOverride(this.last.keys, count);
-          const registerKeys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
-          const keys = advanceNumberedPasteRepeat(registerKeys);
-          for (const entry of keys) {
-            if (this.abortRequested) break;
-            runKey(entry);
-          }
-          if (count !== undefined || keys !== this.last.keys) this.last = { type: "keys", keys: [...keys] };
-          break;
-        }
-        case "visual":
-          runVisualAction(this.last.selection, this.last.action);
-          break;
-      }
-    } finally {
+    const cleanup = () => {
       this.replaying = false;
       this.abortRequested = false;
-    }
+    };
+    return runReplayWithCleanup(() => {
+      switch (last.type) {
+        case "keys": {
+          const countedKeys = count === undefined ? last.keys : keysWithCountOverride(last.keys, count);
+          const registerKeys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
+          const keys = advanceNumberedPasteRepeat(registerKeys);
+          const result = runSequentially(keys, runKey, () => this.abortRequested);
+          const updateLast = () => {
+            if (count !== undefined || keys !== last.keys) this.last = { type: "keys", keys: [...keys] };
+          };
+          return isPromiseLike(result) ? result.then(updateLast) : updateLast();
+        }
+        case "visual":
+          return runVisualAction(last.selection, last.action);
+      }
+    }, cleanup);
   }
 }
 
@@ -227,30 +263,31 @@ export class MacroState {
     return true;
   }
 
-  replayRegisterKey(key: string, count: number, runKey: (entry: RecordedKey) => void): void {
+  replayRegisterKey(key: string, count: number, runKey: (entry: RecordedKey) => ReplayResult): ReplayResult {
     const register = key === "@" ? this.lastReplayRegister : key;
     if (register === undefined) return;
-    this.replay(register, count, runKey);
+    return this.replay(register, count, runKey);
   }
 
-  replayLast(count: number, runKey: (entry: RecordedKey) => void): void {
+  replayLast(count: number, runKey: (entry: RecordedKey) => ReplayResult): ReplayResult {
     const register = this.lastRecordedRegister;
     if (register === undefined) return;
-    this.replay(register, count, runKey);
+    return this.replay(register, count, runKey);
   }
 
-  private replay(register: string, count: number, runKey: (entry: RecordedKey) => void): void {
+  private replay(register: string, count: number, runKey: (entry: RecordedKey) => ReplayResult): ReplayResult {
     const keys = this.recorded.get(register);
     if (keys === undefined) return;
     this.lastReplayRegister = register;
     this.replaying = true;
-    try {
-      for (let index = 0; index < count; index++) {
-        for (const entry of keys) runKey(entry);
-      }
-    } finally {
+    const runCount = (index: number): ReplayResult => {
+      if (index >= count) return;
+      const result = runSequentially(keys, runKey);
+      return isPromiseLike(result) ? result.then(() => runCount(index + 1)) : runCount(index + 1);
+    };
+    return runReplayWithCleanup(() => runCount(0), () => {
       this.replaying = false;
-    }
+    });
   }
 }
 

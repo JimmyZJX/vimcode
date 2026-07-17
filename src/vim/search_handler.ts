@@ -96,6 +96,8 @@ export function searchModeHandler(
     if (!search.handleKey(pending, key, registers, editor).handled) {
       state.reportSwallowedPromptKey?.(key);
     }
+  }, {
+    registerToRead: key === "ctrl-v" || key === "ctrl-y" ? { registerName: "+" } : undefined,
   });
 }
 
@@ -127,7 +129,7 @@ export function searchOperandHandler(
         },
       },
     ],
-    { effect: () => search.beginPreview(pending, editor) }
+    { effect: { run: () => search.beginPreview(pending, editor) } }
   );
 }
 
@@ -164,10 +166,13 @@ function searchOperandWaiter(
           },
         ],
         {
-          effect: () => {
-            if (!search.handleKey(pending, key, registers, editor).handled) {
-              state.reportSwallowedPromptKey?.(key);
-            }
+          effect: {
+            run: () => {
+              if (!search.handleKey(pending, key, registers, editor).handled) {
+                state.reportSwallowedPromptKey?.(key);
+              }
+            },
+            registerToRead: key === "ctrl-v" || key === "ctrl-y" ? { registerName: "+" } : undefined,
           },
         }
       );

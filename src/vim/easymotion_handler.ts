@@ -49,7 +49,7 @@ export function easyMotionHandler(key: string, state: HandlerState): HandleResul
       // effect and keep waiting for the next key. The body stays pure.
       return handler(
         [{ handler: easyMotionHandler, state: cloneHandlerState(state) }],
-        { effect: () => easyMotion.commit(editor, outcome), preservesDotRepeat: true }
+        { effect: { run: () => easyMotion.commit(editor, outcome) }, preservesDotRepeat: true }
       );
     case "clear":
       // End the overlay without moving (invalid trigger / no match / empty input).

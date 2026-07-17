@@ -25,6 +25,7 @@ import { ConvertTarget, applyConvert } from "./normal/convert.js";
 import { applyDelete } from "./normal/delete.js";
 import { applyFormat } from "./normal/format.js";
 import { IndentDirection, applyIndent } from "./normal/indent.js";
+import { applyReplaceWithRegister } from "./normal/replace_with_register.js";
 import { paragraphObjectCancelled } from "./normal/object.js";
 import { applyYank } from "./normal/yank.js";
 import { TextObject, argumentObjectFound, blankLineAroundWordRows, surroundObjectFound, tagObjectFound, textObjectRange } from "./object.js";
@@ -33,6 +34,8 @@ import { Position, TextRange, selectionHead } from "./state.js";
 
 export type RowRange = {
   startRow: number;
+  /** Original editor selection index; preserved when failed targets are dropped. */
+  selectionIndex?: number;
   endRow: number;
   /** Cursor column to restore after the operation. */
   column: number;
@@ -45,6 +48,8 @@ export type RowRange = {
 
 export type CharwiseTarget = {
   range: TextRange;
+  /** Original editor selection index; used for distributed register parts. */
+  selectionIndex?: number;
   /** The cursor position the target was produced from. Application modules use
       it for cursor-after-operation rules (e.g. yank keeps the cursor in place
       unless the range starts before it; `:h quote_quote` cursor semantics). */
@@ -105,7 +110,10 @@ export type RangeOperator =
   | { type: "format"; keepCursor: boolean; textwidth: number }
   // `gc` (line) / `gC` (block): toggle comments via the host's native
   // commenting commands (vim-commentary / VSCodeVim compat).
-  | { type: "comment"; block: boolean };
+  | { type: "comment"; block: boolean }
+  // VSCodeVim ReplaceWithRegister: replace a motion/object/line target with
+  // the selected register without overwriting that register.
+  | { type: "replaceWithRegister"; lineAction?: boolean; multilineObject?: boolean };
 
 export type OperatorOutcome = { enterInsert: boolean };
 
@@ -124,9 +132,10 @@ function isLinewiseMotion(motion: Motion): boolean {
   }
 }
 
-function rowRange(head: Position, target: Position): RowRange {
+function rowRange(head: Position, target: Position, selectionIndex?: number): RowRange {
   return {
     startRow: Math.min(head.row, target.row),
+    selectionIndex,
     endRow: Math.max(head.row, target.row),
     column: head.column,
   };
@@ -148,7 +157,7 @@ export function operatorTarget(
   if (forcedMotion === "linewise") {
     return {
       kind: "linewise",
-      rows: heads.map(head => rowRange(head, applyMotion(editor, head, motion, count))),
+      rows: heads.map((head, selectionIndex) => rowRange(head, applyMotion(editor, head, motion, count), selectionIndex)),
     };
   }
 
@@ -166,9 +175,9 @@ export function operatorTarget(
         const verticalMotion = motion;
         return {
           kind: "linewise",
-          rows: heads.map(selectionHead => {
+          rows: heads.map((selectionHead, selectionIndex) => {
             const targetPosition = applyMotion(editor, selectionHead, verticalMotion, count);
-            return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column });
+            return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column }, selectionIndex);
           }),
         };
       }
@@ -190,9 +199,9 @@ export function operatorTarget(
       && head.column <= firstNonWhitespaceColumn(editor.line(head.row))) {
       return {
         kind: "linewise",
-        rows: heads.map(selectionHead => {
+        rows: heads.map((selectionHead, selectionIndex) => {
           const targetPosition = applyMotion(editor, selectionHead, motion, count);
-          return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column });
+          return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column }, selectionIndex);
         }),
       };
     }
@@ -207,7 +216,7 @@ export function operatorTarget(
         rows: heads.flatMap((head, index) => {
           const target = selectionHead(hostSelections[index] ?? selections[index]);
           // Vim: `j`/`k` that cannot move (first/last line) fails the operation.
-          return target.row === head.row ? [] : [rowRange(head, target)];
+          return target.row === head.row ? [] : [rowRange(head, target, index)];
         }),
       };
     }
@@ -215,9 +224,9 @@ export function operatorTarget(
       const rowDelta = motion.type === "up" ? -count : count;
       return {
         kind: "linewise",
-        rows: heads.flatMap(head => {
+        rows: heads.flatMap((head, selectionIndex) => {
           const targetRow = Math.max(0, Math.min(head.row + rowDelta, editor.lineCount() - 1));
-          return targetRow === head.row ? [] : [rowRange(head, { row: targetRow, column: head.column })];
+          return targetRow === head.row ? [] : [rowRange(head, { row: targetRow, column: head.column }, selectionIndex)];
         }),
       };
     }
@@ -226,20 +235,20 @@ export function operatorTarget(
     if (motion.type === "startOfLineDownward" || motion.type === "windowLine") {
       return {
         kind: "linewise",
-        rows: heads.map(head => rowRange(head, applyMotion(editor, head, motion, count))),
+        rows: heads.map((head, selectionIndex) => rowRange(head, applyMotion(editor, head, motion, count), selectionIndex)),
       };
     }
     // `gg`: linewise between the cursor row and the (counted) target line,
     // including the same-row case.
     return {
       kind: "linewise",
-      rows: heads.map(head => rowRange(head, { row: Math.min(count - 1, editor.lineCount() - 1), column: head.column })),
+      rows: heads.map((head, selectionIndex) => rowRange(head, { row: Math.min(count - 1, editor.lineCount() - 1), column: head.column }, selectionIndex)),
     };
   }
 
   return {
     kind: "charwise",
-    targets: heads.map(head => {
+    targets: heads.map((head, selectionIndex) => {
       // Vim: `cw` on a word acts like `ce` (`:h cw`); the adjustment lives
       // behind [forChange] (Zed: change's expanded word range).
       const range = forChange ? changeMotionRange(editor, head, motion, count) : motionRange(editor, head, motion, count);
@@ -253,7 +262,7 @@ export function operatorTarget(
       })()
         ? true
         : undefined;
-      return { head, range, cancelled };
+      return { head, range, cancelled, selectionIndex };
     }),
   };
 }
@@ -290,14 +299,14 @@ export function textObjectOperatorTarget(
   if (object.type === "paragraph" || object.type === "indent" || object.type === "entire") {
     const rows: RowRange[] = [];
     const charwise: CharwiseTarget[] = [];
-    for (const selection of selections) {
+    for (const [selectionIndex, selection] of selections.entries()) {
       const head = selectionHead(selection);
       const range = textObjectRange(editor, head, object, { around, count });
       if (object.type === "paragraph" && paragraphObjectCancelled(editor, head, range, { around })) {
-        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined });
+        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined, selectionIndex });
         continue;
       }
-      rows.push({ startRow: range.start.row, endRow: range.end.row, column: head.column });
+      rows.push({ startRow: range.start.row, endRow: range.end.row, column: head.column, selectionIndex });
     }
     if (rows.length === 0) return { kind: "charwise", targets: charwise };
     return { kind: "linewise", rows };
@@ -308,18 +317,18 @@ export function textObjectOperatorTarget(
   if (object.type === "word" && around) {
     const rows: RowRange[] = [];
     const charwise: CharwiseTarget[] = [];
-    for (const selection of selections) {
+    for (const [selectionIndex, selection] of selections.entries()) {
       const head = selectionHead(selection);
       const blankRows = count === 1 ? blankLineAroundWordRows(editor, head) : undefined;
       if (blankRows === "cancelled") {
-        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined });
+        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined, selectionIndex });
         continue;
       }
       if (blankRows !== undefined) {
-        rows.push({ ...blankRows, column: head.column });
+        rows.push({ ...blankRows, column: head.column, selectionIndex });
         continue;
       }
-      charwise.push({ head, range: textObjectRange(editor, head, object, { around, count }) });
+      charwise.push({ head, range: textObjectRange(editor, head, object, { around, count }), selectionIndex });
     }
     if (rows.length > 0) return { kind: "linewise", rows };
     return { kind: "charwise", targets: charwise };
@@ -327,7 +336,7 @@ export function textObjectOperatorTarget(
 
   return {
     kind: "charwise",
-    targets: selections.map(selection => {
+    targets: selections.map((selection, selectionIndex) => {
       const head = selectionHead(selection);
       const range = textObjectRange(editor, head, object, { around, count });
       // Vim: a surround/tag object with no pair at the cursor fails the
@@ -339,7 +348,7 @@ export function textObjectOperatorTarget(
         || (object.type === "argument" && !argumentObjectFound(editor, head))
           ? true
           : undefined;
-      return { head, range, cancelled };
+      return { head, range, cancelled, selectionIndex };
     }),
   };
 }
@@ -349,10 +358,11 @@ export function textObjectOperatorTarget(
 export function lineOperatorTarget(editor: VimEditorCapabilities, count: number): ResolvedTarget {
   return {
     kind: "linewise",
-    rows: editor.getSelections().map(selection => {
+    rows: editor.getSelections().map((selection, selectionIndex) => {
       const head = selectionHead(selection);
       return {
         startRow: head.row,
+        selectionIndex,
         endRow: Math.min(head.row + count - 1, editor.lineCount() - 1),
         column: head.column,
       };
@@ -429,6 +439,12 @@ export function applyOperatorToTarget(
       return { enterInsert: false };
     case "comment":
       applyComment(editor, target, { block: operator.block });
+      return { enterInsert: false };
+    case "replaceWithRegister":
+      applyReplaceWithRegister(editor, registers, registerName, target, {
+        lineAction: operator.lineAction ?? false,
+        multilineObject: operator.multilineObject ?? false,
+      });
       return { enterInsert: false };
   }
 }

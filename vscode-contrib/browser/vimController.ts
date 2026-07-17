@@ -208,7 +208,10 @@ export class VimController extends Disposable {
 			throw new Error("vim.remap requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]");
 		}
 		void this.asyncKeyQueue.enqueue(async () => {
-			this.vim.executeExternalRemap(remap);
+			const clipboard = new ClipboardTransaction(this.vimClipboard);
+			await clipboard.with(async () => {
+				await this.vim.executeExternalRemap(remap, clipboard);
+			});
 			if (!this.vim.status.pending) {
 				this.vimEditor.revealPrimaryCursorIfOutsideViewport();
 				this.syncEditorState();
@@ -355,6 +358,7 @@ export class VimController extends Disposable {
 		const timeout = this.readCompatibilityConfigValue('timeout');
 		const textwidth = this.readCompatibilityConfigValue('textwidth');
 		const visualMultilineInsert = this.readCompatibilityConfigValue('visualMultilineInsert');
+		const replaceWithRegister = this.readCompatibilityConfigValue('replaceWithRegister');
 		const easymotion = this.readCompatibilityConfigValue('easymotion');
 		const easymotionKeys = this.readCompatibilityConfigValue('easymotionKeys');
 		const easymotionJumpToAnywhereRegex = this.readCompatibilityConfigValue('easymotionJumpToAnywhereRegex');
@@ -366,6 +370,7 @@ export class VimController extends Disposable {
 			timeout: typeof timeout === 'number' ? timeout : undefined,
 			textwidth: typeof textwidth === 'number' ? textwidth : undefined,
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean' ? visualMultilineInsert : undefined,
+			replaceWithRegister: typeof replaceWithRegister === 'boolean' ? replaceWithRegister : undefined,
 			easymotion: typeof easymotion === 'boolean' ? easymotion : undefined,
 			easymotionKeys: typeof easymotionKeys === 'string' ? easymotionKeys : undefined,
 			easymotionJumpToAnywhereRegex: typeof easymotionJumpToAnywhereRegex === 'string' ? easymotionJumpToAnywhereRegex : undefined,

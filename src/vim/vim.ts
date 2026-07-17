@@ -5,17 +5,18 @@
 // - intentional differences: GPUI action registration is replaced by direct key dispatch
 //   from the VSCode patch / tests.
 
-import { CommandLine, LineRange, executeCommand, substitutePreviews } from "./command.js";
+import { CommandLine, LineRange, commandRegisterToRead, executeCommand, substitutePreviews } from "./command.js";
 import { commandModeHandler } from "./command_handler.js";
 import { RemapTimeoutKey, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
 import type { NormalizedRemapping, WhenEvaluator, VimCommandMapping, VimConfiguration } from "./config.js";
 import { EasyMotionState } from "./easymotion.js";
+import { nextGraphemeBoundary } from "./grapheme.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, insertTextForKey, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
 import { initialHandlerState, isEscapeKey, unhandled } from "./key_handler.js";
-import type { HandleResult, Handler, HandlerEnv, HandlerState } from "./key_handler.js";
+import type { HandleResult, Handler, HandlerEnv, HandlerState, QueuedRunResult } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { Motion } from "./motion.js";
 import { NormalMode } from "./normal.js";
@@ -24,10 +25,10 @@ import { easyMotionHandler } from "./easymotion_handler.js";
 import { insertModeHandler, replaceModeHandler } from "./insert_handler.js";
 import { searchModeHandler } from "./search_handler.js";
 import { visualModeHandler } from "./visual_handler.js";
-import { RangeOperator } from "./operator_target.js";
+import { RangeOperator, applyOperatorToTarget } from "./operator_target.js";
 import { MacroRecordingStatus, RecordedKey, RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
 import type { PendingSearch } from "./normal/search.js";
-import { RegisterName, isSystemClipboardRegister, parseRegisterName } from "./registers.js";
+import { RegisterName, Registers } from "./registers.js";
 import { DebugRemapConflict, createRemaps, debugRemapConflicts, handleKeyOverride as remapKeyOverride, hasRemapStartingWith, pendingRemapInsertText, remapHandler } from "./remap.js";
 import type { Remaps } from "./remap.js";
 import type { VimSystemClipboard } from "./registers.js";
@@ -94,9 +95,18 @@ export type EditorSyncResult = {
 // re-parses against the fresh state (see [KeyExecutor.currentGeneration]).
 type PreParsedKey = { result: HandleResult<void>; claimed: boolean; generation: number };
 
+type VimExecutionContext = {
+  clipboard: VimSystemClipboard | undefined;
+  whenEvaluator: WhenEvaluator;
+};
+
 export type KeyPlan = {
   passthrough: boolean;
-  run: (env?: { clipboard?: VimSystemClipboard }) => Promise<void>;
+  run: (env?: {
+    clipboard?: VimSystemClipboard;
+    replay?: boolean;
+    executionContext?: VimExecutionContext;
+  }) => Promise<void>;
 };
 
 const alwaysActiveWhenEvaluator: WhenEvaluator = () => true;
@@ -135,6 +145,14 @@ type ModeSession =
 ;
 const readonlyWarningDurationMs = 2000;
 const swallowedKeyWarningDurationMs = 2000;
+
+function finishQueued(result: QueuedRunResult<void>, cleanup: () => void): QueuedRunResult<void> {
+  if (result !== undefined && typeof (result as Promise<void>).then === "function") {
+    return Promise.resolve(result).finally(cleanup);
+  }
+  cleanup();
+}
+
 export { VimGlobalState, VimModelState };
 
 // Zed: `vim::Vim`. This class is the local main state holder; GPUI
@@ -162,14 +180,37 @@ export class Vim {
   // itself has no knowledge of that fallback.
   private readonly keyExecutor: KeyExecutor = new KeyExecutor({
     handlersForState: state => this.executorHandlers(state),
-    redispatch: (key, allowRemap) => this.dispatchThroughPipeline(key, allowRemap),
+    redispatch: (key, allowRemap) => this.redispatchThroughExecutionContext(key, allowRemap),
     executeCommand: command => this.executeMappedCommand(command),
+    beforeEffect: action => {
+      this.effectChangeSnapshots.set(action, {
+        version: this.editor.documentVersion(),
+        mode: this.modeState,
+      });
+      const registerToRead = action.registerToRead;
+      return registerToRead === undefined
+        ? undefined
+        : this.registers.refreshSystemClipboardRegister(registerToRead.registerName);
+    },
+    afterEffect: action => {
+      const snapshot = this.effectChangeSnapshots.get(action);
+      if (snapshot !== undefined && this.editor.documentVersion() !== snapshot.version) {
+        this.modelState.changeList.record(this.editor, { insertMode: snapshot.mode === "insert" });
+        this.lastEffectRecordedChangeVersion = this.editor.documentVersion();
+      }
+      this.runPendingReplaysWhenReady();
+      if (action.temporaryInsertAfter) this.prepareTemporaryInsertAfter();
+      this.finishTemporaryNormalCommand();
+    },
     onEnterMode: (mode, opts) => this.enterModeFromExecutor(mode, opts),
   });
   // The when-evaluator for the in-flight top-level dispatch, read by the remap
   // root handler (which resolves against the live Vim mode) and the executor's
   // command callback.
   private dispatchWhenEvaluator: WhenEvaluator = alwaysActiveWhenEvaluator;
+  private activeExecutionContext: VimExecutionContext | undefined;
+  private readonly effectChangeSnapshots = new WeakMap<object, { version: number; mode: VimMode }>();
+  private lastEffectRecordedChangeVersion: number | undefined;
   // Convenience views of the [session] payloads (see [ModeSession]): defined
   // exactly while the corresponding prompt mode is active, by construction.
   private get searchOriginMode(): VimMode | undefined {
@@ -190,10 +231,13 @@ export class Vim {
   // Vim `i_CTRL-O` (Zed: `Vim::temp_mode`): one normal-mode command from
   // insert mode, then back to insert.
   private temporaryNormal = false;
+  private deferTemporaryNormalCompletion = 0;
   private readonlyWarningUntil = 0;
   private swallowedKeyWarning: string | undefined = undefined;
   private swallowedKeyWarningUntil = 0;
 
+  private readonly registers: Registers;
+  private pendingCompositeUndoTransaction: ReturnType<VimEditorCapabilities["beginUndoTransaction"]> | undefined;
   private readonly normalMode: NormalMode;
   private readonly visualMode: VisualMode;
 
@@ -204,12 +248,13 @@ export class Vim {
     modelState: VimModelState = new VimModelState()
   ) {
     this.modelState = modelState;
+    this.registers = globalState.registers.scoped();
     this.configuration = mergeVimConfiguration(configuration);
     this.remaps = createRemaps(this.configuration);
-    this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
+    this.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.editor.setCursorStyle("block");
     this.handlerState.editor = editor;
-    this.handlerState.registers = this.globalState.registers;
+    this.handlerState.registers = this.registers;
     this.normalMode = new NormalMode(editor, {
       get: () => this.effectiveRegister(),
       take: () => this.takeSelectedRegister(),
@@ -220,7 +265,7 @@ export class Vim {
       take: defaultValue => defaultValue === undefined ? this.takeCount(undefined) : this.takeCount(defaultValue),
       clear: () => this.clearCount(),
     });
-    this.visualMode = new VisualMode(editor, this.globalState.registers, {
+    this.visualMode = new VisualMode(editor, this.registers, {
       get: () => this.effectiveRegister(),
       take: () => this.takeSelectedRegister(),
       clear: () => this.clearSelectedRegister(),
@@ -242,7 +287,7 @@ export class Vim {
     this.configuration = mergeVimConfiguration(configuration);
     this.remaps = createRemaps(this.configuration);
     this.clearPendingRemaps();
-    this.globalState.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
+    this.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.visualMode.setConfiguration(this.configuration);
   }
 
@@ -293,7 +338,7 @@ export class Vim {
   }
 
   readRegister(name: RegisterName | undefined): string {
-    return this.globalState.registers.read(name);
+    return this.registers.read(name);
   }
 
   private takeSelectedRegister(): RegisterName | undefined {
@@ -341,7 +386,8 @@ export class Vim {
     // The remap-timeout pseudo-key never reaches the grammar ([dispatchTypedKey]
     // intercepts it); it is owned exactly while a remap chord is pending.
     if (key === RemapTimeoutKey) {
-      return this.remapIsPending() ? this.keyPlan(key, whenEvaluator, false, undefined) : null;
+      const pendingWhenEvaluator = this.keyExecutor.currentParserState().whenEvaluator;
+      return this.remapIsPending() ? this.keyPlan(key, pendingWhenEvaluator, false, undefined) : null;
     }
     const override = this.handleKeyOverride(key);
     if (override === false) return null;
@@ -365,17 +411,107 @@ export class Vim {
   private keyPlan(key: string, whenEvaluator: WhenEvaluator, passthrough: boolean, preParsed: PreParsedKey | undefined): KeyPlan {
     return {
       passthrough,
-      run: async ({ clipboard }: { clipboard?: VimSystemClipboard } = {}) => {
-        await this.globalState.registers.withSystemClipboard(clipboard, async () => {
-          await this.refreshSystemClipboardRegisterForKey(key);
-          this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator, passthrough, preParsed });
-          // Drain any effect actions the executor queued. With a synchronous
-          // editor these have already run inline; this awaits the tail when an
-          // effect was genuinely asynchronous (e.g. real editor edits).
-          await this.keyExecutor.whenIdle();
-        });
+      run: async ({
+        clipboard,
+        replay = false,
+        executionContext,
+      }: {
+        clipboard?: VimSystemClipboard;
+        replay?: boolean;
+        executionContext?: VimExecutionContext;
+      } = {}) => {
+        const ownsExecutionContext = executionContext === undefined;
+        const context = executionContext ?? { clipboard, whenEvaluator };
+        try {
+          await this.registers.withSystemClipboard(context.clipboard, async () => {
+            const previousContext = this.activeExecutionContext;
+            this.activeExecutionContext = context;
+            try {
+              let parsedAtRun = key === RemapTimeoutKey
+                ? undefined
+                : this.preParsedKeyAtRun(key, whenEvaluator, preParsed);
+              const registerToRead = this.registerReadFromParsed(parsedAtRun);
+              if (registerToRead !== undefined) {
+                await this.registers.refreshSystemClipboardRegister(registerToRead.registerName);
+                // Register availability can affect command metadata such as dot
+                // repeatability, so rebuild the pure action against fresh state.
+                parsedAtRun = this.parseKeyAtRun(key, whenEvaluator);
+              }
+              const undoTransaction = this.compositeUndoTransaction(parsedAtRun);
+              try {
+                this.dispatchTypedKey(key, {
+                  allowRemap: true,
+                  whenEvaluator,
+                  passthrough: replay ? false : passthrough,
+                  preParsed: parsedAtRun,
+                });
+                await this.keyExecutor.whenIdle();
+                if (ownsExecutionContext) await this.drainPendingReplays(context);
+              } finally {
+                if (undoTransaction !== undefined) {
+                  if (this.modeState === "insert" || this.modeState === "replace") {
+                    this.pendingCompositeUndoTransaction?.finish(this.editor.getSelections());
+                    this.pendingCompositeUndoTransaction = undoTransaction;
+                  } else {
+                    undoTransaction.finish(this.editor.getSelections());
+                  }
+                }
+              }
+            } finally {
+              this.activeExecutionContext = previousContext;
+            }
+          });
+        } catch (error) {
+          this.keyExecutor.reset(this.modeState);
+          this.finishTemporaryNormalCommand();
+          throw error;
+        }
       },
     };
+  }
+
+  private preParsedKeyAtRun(
+    key: string,
+    whenEvaluator: WhenEvaluator,
+    preParsed: PreParsedKey | undefined
+  ): PreParsedKey {
+    return preParsed !== undefined && preParsed.generation === this.keyExecutor.currentGeneration()
+      ? preParsed
+      : this.parseKeyAtRun(key, whenEvaluator);
+  }
+
+  private parseKeyAtRun(key: string, whenEvaluator: WhenEvaluator, allowRemap = true): PreParsedKey {
+    const previousWhenEvaluator = this.dispatchWhenEvaluator;
+    this.dispatchWhenEvaluator = whenEvaluator;
+    try {
+      return this.keyExecutor.parse(key, allowRemap);
+    } finally {
+      this.dispatchWhenEvaluator = previousWhenEvaluator;
+    }
+  }
+
+  private registerReadFromParsed(parsed: PreParsedKey | undefined): { registerName: RegisterName | undefined } | undefined {
+    return parsed?.claimed === true
+      && parsed.result.type === "run"
+      && parsed.result.action.type === "effect"
+      ? parsed.result.action.registerToRead
+      : undefined;
+  }
+
+  private compositeUndoTransaction(
+    parsed: PreParsedKey | undefined
+  ): ReturnType<VimEditorCapabilities["beginUndoTransaction"]> | undefined {
+    if (this.keyExecutor.pendingConflict() !== undefined) {
+      return this.editor.beginUndoTransaction(this.editor.getSelections());
+    }
+    if (
+      parsed?.claimed !== true
+      || parsed.result.type !== "run"
+      || parsed.result.action.type === "effect"
+    ) {
+      return undefined;
+    }
+    return this.editor.beginUndoTransaction(this.editor.getSelections());
   }
 
   // How Vim relates to [key], given the grammar's verdict from [parse]:
@@ -422,15 +558,61 @@ export class Vim {
     return null;
   }
 
-  executeExternalRemap(mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] }): void {
-    for (const key of mapping.after ?? []) {
-      this.routeKeyThroughExecutor(normalizeKey(key, this.configuration.leader), {
-        allowRemap: true,
-        whenEvaluator: alwaysActiveWhenEvaluator,
-      });
+  executeExternalRemap(
+    mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] },
+    clipboard?: VimSystemClipboard
+  ): QueuedRunResult<void> {
+    if (clipboard === undefined) {
+      for (const key of mapping.after ?? []) {
+        this.routeKeyThroughExecutor(normalizeKey(key, this.configuration.leader), {
+          allowRemap: true,
+          whenEvaluator: alwaysActiveWhenEvaluator,
+        });
+      }
+      for (const command of mapping.commands ?? []) this.executeMappedCommand(command);
+      this.ensureNormalModeForReadonlyDocument();
+      return;
     }
-    for (const command of mapping.commands ?? []) this.executeMappedCommand(command);
-    this.ensureNormalModeForReadonlyDocument();
+    return this.executeExternalRemapWithClipboard(mapping, clipboard);
+  }
+
+  private async executeExternalRemapWithClipboard(
+    mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] },
+    clipboard: VimSystemClipboard
+  ): Promise<void> {
+    const context: VimExecutionContext = {
+      clipboard,
+      whenEvaluator: alwaysActiveWhenEvaluator,
+    };
+    const undoTransaction = this.editor.beginUndoTransaction(this.editor.getSelections());
+    try {
+      await this.registers.withSystemClipboard(clipboard, async () => {
+        const previousContext = this.activeExecutionContext;
+        this.activeExecutionContext = context;
+        try {
+          for (const key of mapping.after ?? []) {
+            const plan = this.handleKey(normalizeKey(key, this.configuration.leader));
+            if (plan !== null) await plan.run({ executionContext: context, replay: true });
+          }
+          for (const command of mapping.commands ?? []) await this.executeMappedCommand(command);
+          await this.keyExecutor.whenIdle();
+          await this.drainPendingReplays(context);
+          this.ensureNormalModeForReadonlyDocument();
+        } finally {
+          this.activeExecutionContext = previousContext;
+        }
+      });
+    } catch (error) {
+      this.keyExecutor.reset(this.modeState);
+      throw error;
+    } finally {
+      if (this.modeState === "insert" || this.modeState === "replace") {
+        this.pendingCompositeUndoTransaction?.finish(this.editor.getSelections());
+        this.pendingCompositeUndoTransaction = undoTransaction;
+      } else {
+        undoTransaction.finish(this.editor.getSelections());
+      }
+    }
   }
 
   hasActiveRemapStartingWithOrPending(key: string, whenEvaluator: WhenEvaluator = alwaysActiveWhenEvaluator): boolean {
@@ -732,7 +914,7 @@ export class Vim {
         ...state,
         mode: this.modeState,
         editor: this.editor,
-        registers: this.globalState.registers,
+        registers: this.registers,
         configuration: this.configuration,
         visual: this.visualMode,
         repeatState: this.globalState.repeat,
@@ -766,7 +948,7 @@ export class Vim {
         ...state,
         mode: "search",
         editor: this.editor,
-        registers: this.globalState.registers,
+        registers: this.registers,
         search: this.globalState.search,
         activeSearch: this.activeSearch,
         searchOrigin: this.searchOriginMode,
@@ -882,7 +1064,7 @@ export class Vim {
         runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
         exOptions: this.globalState.exOptions,
         markLine: name => this.modelState.marks.position(name)?.row,
-        registers: this.globalState.registers,
+        registers: this.registers,
       });
     }
     // Visual mode transitions (the framework targets only these three kinds):
@@ -971,7 +1153,7 @@ export class Vim {
         ...state,
         mode: this.modeState,
         editor: this.editor,
-        registers: this.globalState.registers,
+        registers: this.registers,
         enterTemporaryNormal: () => {
           this.enterTemporaryNormalMode();
         },
@@ -1027,7 +1209,7 @@ export class Vim {
         ...state,
         mode: "normal",
         editor: this.editor,
-        registers: this.globalState.registers,
+        registers: this.registers,
         configuration: this.configuration,
         marks: this.modelState.marks,
         find: this.globalState.find,
@@ -1094,6 +1276,7 @@ export class Vim {
     const previousWhenEvaluator = this.dispatchWhenEvaluator;
     this.dispatchWhenEvaluator = whenEvaluator;
     const versionBefore = this.editor.documentVersion();
+    this.lastEffectRecordedChangeVersion = undefined;
     const modeBefore = this.modeState;
     const temporaryNormalBefore = this.temporaryNormal;
     try {
@@ -1101,7 +1284,10 @@ export class Vim {
         // A framework command that edited the buffer must update the change list
         // (`g;`/`g,`), mirroring the legacy [dispatchKey] bookkeeping — framework
         // commands never reach [dispatchKey].
-        if (this.editor.documentVersion() !== versionBefore) {
+        if (
+          this.editor.documentVersion() !== versionBefore
+          && this.lastEffectRecordedChangeVersion !== this.editor.documentVersion()
+        ) {
           this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
         }
         // A framework native command (`gd`/`gh`/...) that may have moved the
@@ -1116,21 +1302,14 @@ export class Vim {
         // down on the key that leaves command mode (escape tears down through
         // [dismissPromptSession] instead — it never reaches this branch).
         if (this.modeState === "command" || modeBefore === "command") this.syncSubstitutePreview();
-        // A `@`/`Q` (or `.`) that requested a replay runs it here — after the
-        // executor's effect drain, so each replayed key is fed back through
-        // [onKey] outside the drain and fully applies before the next.
-        this.runPendingMacroReplay();
-        this.runPendingDotReplay();
+        this.runPendingReplaysWhenReady();
         // Vim `i_CTRL-O`: once the one normal-mode command completes, return to
         // insert (mirrors the legacy [dispatchKey] finally for framework-handled
         // keys). Visual mode extends the excursion; entering another mode
         // (`ctrl-o cw`) ends it.
-        if (temporaryNormalBefore && this.temporaryNormal) {
-          if (this.modeState === "normal" && !this.isPending()) {
-            this.returnFromTemporaryNormal();
-          } else if (this.modeState !== "normal" && !this.isVisualMode()) {
-            this.temporaryNormal = false;
-          }
+        if (temporaryNormalBefore && !this.keyExecutor.hasQueuedWork()) {
+          if (this.keyExecutor.lastEffectTemporaryInsertAfter()) this.prepareTemporaryInsertAfter();
+          this.finishTemporaryNormalCommand();
         }
         return "handled";
       }
@@ -1147,6 +1326,32 @@ export class Vim {
     } finally {
       this.dispatchWhenEvaluator = previousWhenEvaluator;
     }
+  }
+
+  private redispatchThroughExecutionContext(key: string, allowRemap: boolean): QueuedRunResult<void> {
+    const context = this.activeExecutionContext;
+    const clipboard = context?.clipboard;
+    if (context === undefined || clipboard === undefined) {
+      this.dispatchThroughPipeline(key, allowRemap);
+      return;
+    }
+
+    const whenEvaluator = context.whenEvaluator;
+    let parsed = this.parseKeyAtRun(key, whenEvaluator, allowRemap);
+    const registerToRead = this.registerReadFromParsed(parsed);
+    if (registerToRead === undefined) {
+      this.dispatchTypedKey(key, { allowRemap, whenEvaluator, preParsed: parsed });
+      return;
+    }
+    const refresh = this.registers.refreshSystemClipboardRegister(registerToRead.registerName);
+    if (refresh === undefined) {
+      this.dispatchTypedKey(key, { allowRemap, whenEvaluator, preParsed: parsed });
+      return;
+    }
+    return refresh.then(() => {
+      parsed = this.parseKeyAtRun(key, whenEvaluator, allowRemap);
+      this.dispatchTypedKey(key, { allowRemap, whenEvaluator, preParsed: parsed });
+    });
   }
 
   // Re-dispatch keys the executor emits (remap expansions) or replays
@@ -1167,7 +1372,7 @@ export class Vim {
     // A key the framework claims in normal context never reaches [dispatchKey],
     // so the per-key recording the legacy dispatcher does (macro + dot-repeat)
     // is mirrored here. Both dot-repeat and macros are keystroke-based: the
-    // recorded keys are replayed back through [onKey]. Remapped keys are
+    // recorded keys are replayed through the same key pipeline. Remapped keys are
     // excluded — the remap handler claims them and the expansion is recorded as
     // it flows through this path.
     const normalContext =
@@ -1278,40 +1483,6 @@ export class Vim {
     return claimed;
   }
 
-  private async refreshSystemClipboardRegisterForKey(key: string): Promise<void> {
-    const registerToRead = this.systemClipboardRegisterToReadForKey(key);
-    if (registerToRead !== undefined) await this.globalState.registers.refreshSystemClipboardRegister(registerToRead.registerName);
-  }
-
-  private systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
-    // A pending insert-mode framework chord can be the `ctrl-r` register waiter,
-    // whose next key names the register to insert; refresh the OS clipboard for
-    // `+`/`*` before it reads. (Slightly over-approximate — any pending insert
-    // chord with a register-shaped next key triggers the refresh — but the
-    // refresh is a harmless read.)
-    if (this.modeState === "insert" && this.keyExecutor.isPending()) {
-      const registerName = parseRegisterName(key);
-      return isSystemClipboardRegister(registerName) ? { registerName } : undefined;
-    }
-    if (this.modeState === "search" && (key === "ctrl-v" || key === "ctrl-y")) {
-      return { registerName: "+" };
-    }
-
-    if (this.modeState === "normal") {
-      // Paste reads its register; refresh the OS clipboard first when it targets
-      // `+`/`*`. The register is framework-owned now (the executor's prefix), so
-      // read it via [effectiveRegister] rather than the legacy [normalMode]
-      // state, which is empty for a framework-typed `"+p`.
-      if (key === "p" || key === "P") {
-        const registerName = this.effectiveRegister();
-        return registerName === undefined || isSystemClipboardRegister(registerName) ? { registerName } : undefined;
-      }
-      return this.normalMode.systemClipboardRegisterToReadForKey(key);
-    }
-    if (this.isVisualMode()) return this.visualMode.systemClipboardRegisterToReadForKey(key);
-    return undefined;
-  }
-
   private dispatchKey(key: string): KeyDispatchResult {
     // Cheap content stamp, not the document text: snapshotting/comparing the
     // whole document here made every keypress O(file size) on large files.
@@ -1380,12 +1551,35 @@ export class Vim {
   // register/search input win while recording) but before macro key recording
   // (so the `q` that stops a recording is not recorded into it).
 
-  private replayMacro(run: () => void): void {
+  private async drainPendingReplays(context: VimExecutionContext): Promise<void> {
+    while (this.pendingMacroReplay !== undefined || this.pendingDotReplay !== undefined) {
+      await this.runPendingMacroReplay(context);
+      await this.runPendingDotReplay(context);
+      await this.keyExecutor.whenIdle();
+    }
+  }
+
+  private runPendingReplaysWhenReady(): void {
+    const context = this.activeExecutionContext;
+    if (context !== undefined && !this.registers.hasFreshActiveClipboard()) return;
+    const macro = this.runPendingMacroReplay(context);
+    const dot = this.runPendingDotReplay(context);
+    if (
+      (macro !== undefined && typeof (macro as Promise<void>).then === "function")
+      || (dot !== undefined && typeof (dot as Promise<void>).then === "function")
+    ) {
+      throw new Error("unexpected async replay at a synchronous replay boundary");
+    }
+  }
+
+  private replayMacro(run: () => QueuedRunResult<void>): QueuedRunResult<void> {
     const undoTransaction = this.editor.beginUndoTransaction(this.editor.getSelections());
+    const finish = () => undoTransaction.finish(this.editor.getSelections());
     try {
-      run();
-    } finally {
-      undoTransaction.finish(this.editor.getSelections());
+      return finishQueued(run(), finish);
+    } catch (error) {
+      finish();
+      throw error;
     }
   }
 
@@ -1396,14 +1590,15 @@ export class Vim {
   // physically typed key.
   private pendingMacroReplay: { register: string | undefined; count: number } | undefined;
 
-  private runPendingMacroReplay(): void {
+  private runPendingMacroReplay(context: VimExecutionContext | undefined): QueuedRunResult<void> {
     const pending = this.pendingMacroReplay;
     if (pending === undefined) return;
     this.pendingMacroReplay = undefined;
-    this.replayMacro(() => {
-      const runKey = (entry: RecordedKey): void => this.replayRecordedKey(entry);
-      if (pending.register === undefined) this.globalState.macro.replayLast(pending.count, runKey);
-      else this.globalState.macro.replayRegisterKey(pending.register, pending.count, runKey);
+    return this.replayMacro(() => {
+      const runKey = (entry: RecordedKey) => this.replayRecordedKey(entry, context);
+      return pending.register === undefined
+        ? this.globalState.macro.replayLast(pending.count, runKey)
+        : this.globalState.macro.replayRegisterKey(pending.register, pending.count, runKey);
     });
   }
 
@@ -1414,7 +1609,7 @@ export class Vim {
   // its own undo unit, exactly as it did when first typed.
   private pendingDotReplay: { count: number | undefined; register: RegisterName | undefined } | undefined;
 
-  private runPendingDotReplay(): void {
+  private runPendingDotReplay(context: VimExecutionContext | undefined): QueuedRunResult<void> {
     const pending = this.pendingDotReplay;
     if (pending === undefined) return;
     this.pendingDotReplay = undefined;
@@ -1424,33 +1619,34 @@ export class Vim {
     // advance). Without this, the dangling `[3]` would be committed as the
     // last change by the next key's [maybeFinish].
     this.globalState.repeat.cancelCurrent();
-    this.globalState.repeat.replay(pending.count, {
+    return this.globalState.repeat.replay(pending.count, {
       registerName: pending.register,
-      runKey: entry => this.replayRecordedKey(entry),
+      runKey: entry => this.replayRecordedKey(entry, context),
       runVisualAction: (selection, repeatAction) => this.replayVisualAction(selection, repeatAction),
     });
   }
 
-  // Replay one recorded key from a dot-repeat / macro sequence. A [shortcut]
-  // (Vim dispatched it originally) is fed back through [onKey], the same
-  // mechanism physically typed keys use. (The insert-mode migration will add a
-  // [typed] variant that replays through the VSCode default handler.)
-  private replayRecordedKey(entry: RecordedKey): void {
-    // Both kinds are fed back through the dispatcher, like Vim's register
-    // replay: the grammar routes a `typed` entry to the insert-mode typed path,
-    // which reproduces the edit through the host default handler
-    // ([applyInsertTypedKey] — replay is never passthrough). Routing through
-    // [onKey] (rather than applying directly) keeps replay coherent when a
-    // replayed chord left a char-input waiter pending (`ctrl-v 1 2` completed by
-    // a typed key) and lets insert-mode mappings apply, as they do live.
-    switch (entry.kind) {
-      case "shortcut":
+  // Replay one recorded key from a dot-repeat / macro sequence. Hosted replay
+  // uses an internal KeyPlan sharing the root clipboard transaction; direct
+  // core use without a clipboard keeps the synchronous [onKey] path.
+  private replayRecordedKey(
+    entry: RecordedKey,
+    context: VimExecutionContext | undefined
+  ): QueuedRunResult<void> {
+    // Replayed keys use ordinary plans, but with native passthrough suppressed:
+    // the host did not physically type this key, so Vim reproduces typed edits.
+    // Awaiting each plan keeps macro/dot order correct across async register reads.
+    // Once the root transaction has a fresh snapshot, replay remains synchronous.
+    if (context === undefined || context.clipboard === undefined || this.registers.hasFreshActiveClipboard()) {
+      if (this.keyExecutor.hasQueuedWork()) {
+        this.keyExecutor.runReentrant(() => this.onKey(entry.key));
+      } else {
         this.onKey(entry.key);
-        break;
-      case "typed":
-        this.onKey(entry.key);
-        break;
+      }
+      return;
     }
+    const plan = this.handleKey(entry.key);
+    if (plan !== null) return plan.run({ executionContext: context, replay: true });
   }
 
   // Handle one passthrough insert character, both when freshly typed (via
@@ -1523,7 +1719,10 @@ export class Vim {
       this.insertOrigin = undefined;
       this.setMode("normal");
       if (modeBeforeEscape === "insert" || modeBeforeEscape === "replace") {
-        this.editor.finishUndoTransaction(this.editor.getSelections());
+        const composite = this.pendingCompositeUndoTransaction;
+        this.pendingCompositeUndoTransaction = undefined;
+        if (composite !== undefined) composite.finish(this.editor.getSelections());
+        else this.editor.finishUndoTransaction(this.editor.getSelections());
       }
     }
   }
@@ -1565,6 +1764,26 @@ export class Vim {
     this.editor.finishUndoTransaction(this.editor.getSelections());
     this.temporaryNormal = true;
     return "handled";
+  }
+
+  private prepareTemporaryInsertAfter(): void {
+    if (!this.temporaryNormal) return;
+    const selection = this.editor.getSelections()[0];
+    if (selection === undefined || selection.type !== "charwise") return;
+    const head = selectionHead(selection);
+    const line = this.editor.line(head.row);
+    this.editor.setSelections([
+      charwiseSelection({ row: head.row, column: nextGraphemeBoundary(line, head.column) }),
+    ]);
+  }
+
+  private finishTemporaryNormalCommand(): void {
+    if (!this.temporaryNormal || this.deferTemporaryNormalCompletion > 0) return;
+    if (this.modeState === "normal" && !this.isPending()) {
+      this.returnFromTemporaryNormal();
+    } else if (this.modeState !== "normal" && !this.isVisualMode()) {
+      this.temporaryNormal = false;
+    }
   }
 
   private returnFromTemporaryNormal(): void {
@@ -1751,18 +1970,52 @@ export class Vim {
     });
   }
 
-  private executeMappedCommand(command: NormalizedRemapping["commands"][number]): void {
-    if (typeof command === "string") {
-      if (command.startsWith(":")) executeCommand(this.editor, command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions, markLine: name => this.modelState.marks.position(name)?.row, registers: this.globalState.registers });
-      else this.editor.executeNativeCommand(command, [], { preserveVisualSelection: this.isVisualMode() });
-      return;
+  private executeMappedCommand(command: NormalizedRemapping["commands"][number]): QueuedRunResult<void> {
+    const versionBefore = this.editor.documentVersion();
+    const modeBefore = this.modeState;
+    const finish = () => {
+      if (this.editor.documentVersion() !== versionBefore) {
+        this.modelState.changeList.record(this.editor, { insertMode: modeBefore === "insert" });
+      }
+      this.finishTemporaryNormalCommand();
+    };
+    const finishResult = (result: QueuedRunResult<void>): QueuedRunResult<void> => {
+      if (result !== undefined && typeof (result as Promise<void>).then === "function") {
+        return Promise.resolve(result).then(finish);
+      }
+      finish();
+    };
+
+    const commandText = typeof command === "string" ? command : command.command;
+    if (!commandText.startsWith(":")) {
+      this.editor.executeNativeCommand(
+        commandText,
+        typeof command === "string" ? [] : commandArgs(command),
+        { preserveVisualSelection: this.isVisualMode() }
+      );
+      return finishResult(undefined);
     }
 
-    if (command.command.startsWith(":")) {
-      executeCommand(this.editor, command.command.slice(1), { runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range), exOptions: this.globalState.exOptions, markLine: name => this.modelState.marks.position(name)?.row });
-    } else {
-      this.editor.executeNativeCommand(command.command, commandArgs(command), { preserveVisualSelection: this.isVisualMode() });
-    }
+    const exCommand = commandText.slice(1);
+    const options = {
+      runNormalKeys: (keys: readonly string[], range: LineRange | undefined) => this.runNormalKeysForCommand(keys, range),
+      exOptions: this.globalState.exOptions,
+      markLine: (name: string) => this.modelState.marks.position(name)?.row,
+      registers: this.registers,
+    };
+    const run = () => {
+      const defersTemporaryNormal = /\bnorm(?:al)?!?\b/.test(exCommand);
+      if (defersTemporaryNormal) this.deferTemporaryNormalCompletion++;
+      try {
+        executeCommand(this.editor, exCommand, options);
+      } finally {
+        if (defersTemporaryNormal) this.deferTemporaryNormalCompletion--;
+      }
+    };
+    const registerToRead = commandRegisterToRead(this.editor, exCommand, options);
+    if (registerToRead === undefined) return finishResult(run());
+    const refresh = this.registers.refreshSystemClipboardRegister(registerToRead.registerName);
+    return refresh === undefined ? finishResult(run()) : refresh.then(run).then(finish);
   }
 
   private collapseToFirstCursor(): void {
@@ -1779,12 +2032,18 @@ export class Vim {
     const target = range ?? { startRow: currentRow, endRowInclusive: currentRow };
     for (let row = target.startRow; row <= target.endRowInclusive; row++) {
       this.editor.setSelections([{ type: "charwise", anchor: { row, column: 0 }, head: { row, column: 0 } }]);
-      for (const key of keys) this.onKey(key);
-      if (this.modeState === "insert") this.onKey("<escape>");
+      for (const key of keys) {
+        this.onKey(key);
+        this.keyExecutor.drainReentrantEffects();
+      }
+      if (this.modeState === "insert") {
+        this.onKey("<escape>");
+        this.keyExecutor.drainReentrantEffects();
+      }
     }
   }
 
-  private replayVisualAction(selection: RecordedSelection, action: VisualRepeatAction): void {
+  private replayVisualAction(selection: RecordedSelection, action: VisualRepeatAction): QueuedRunResult<void> {
     switch (action.type) {
       case "indent": {
         const startRow = selectionHead(this.editor.getSelections()[0]).row;
@@ -1812,6 +2071,30 @@ export class Vim {
         if (range === undefined) return;
         this.editor.applyEdits([{ range, text: action.insertedText }], [charwiseSelection(range.start)]);
         return;
+      }
+      case "replaceWithRegister": {
+        const apply = () => {
+          const range = this.rangeForRecordedSelection(selection);
+          if (range === undefined) return;
+          const target = selection.type === "visualLine"
+            ? {
+                kind: "linewise" as const,
+                rows: [{ startRow: range.start.row, endRow: range.end.row, column: range.start.column }],
+              }
+            : {
+                kind: "charwise" as const,
+                targets: [{ range, head: range.start }],
+              };
+          applyOperatorToTarget(
+            this.editor,
+            this.registers,
+            action.registerName,
+            { type: "replaceWithRegister" },
+            target
+          );
+        };
+        const refresh = this.registers.refreshSystemClipboardRegister(action.registerName);
+        return refresh === undefined ? apply() : refresh.then(apply);
       }
     }
   }

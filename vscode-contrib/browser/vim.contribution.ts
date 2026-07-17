@@ -232,6 +232,12 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.visualMultilineInsert', "Use VSCodeVim-compatible multi-cursor insertion for I/A in Visual and Visual Line modes."),
 	},
+	'vim.replaceWithRegister': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.replaceWithRegister', "Enable VSCodeVim ReplaceWithRegister (`gr{motion}` / `grr` / visual `gr`) instead of the `gr` LSP bindings."),
+	},
 	'vim.easymotion': {
 		type: 'boolean',
 		default: false,
