@@ -93,6 +93,20 @@ export function keepUndoTransactionOpen(
 // The text a printable insert-mode key inserts, or [undefined] for a key that
 // is not plain typed input (a bare `backspace`, a ctrl-chord, …). Shared by the
 // Vim core (dispatch/ownership) and the in-memory editor's [replayInsertKey].
+export function normalViewLineColumnForGoal(
+  goal: VimSelectionGoal,
+  { minColumn, maxColumn }: { minColumn: number; maxColumn: number }
+): number {
+  // Host view positions are 1-based and [maxColumn] is one past the final
+  // character. Normal-mode display-line movement must not return that boundary:
+  // at a soft wrap it converts to the first character of the next view line.
+  const maxCursorColumn = Math.max(minColumn, maxColumn - 1);
+  if (goal.type === "endOfLine") return maxCursorColumn;
+  const requestedColumn =
+    goal.type === "viewColumn" ? goal.column : goal.column + 1;
+  return Math.max(minColumn, Math.min(requestedColumn, maxCursorColumn));
+}
+
 export function insertTextForKey(key: string): string | undefined {
   if (key === "space") return " ";
   if (key === "enter") return "\n";
@@ -159,7 +173,7 @@ export interface VimEditorCapabilities {
     command: string,
     args?: readonly unknown[],
     options?: NativeCommandOptions
-  ): void;
+  ): void | Promise<void>;
   isExecutingNativeCommand?(): boolean;
   revealPrimaryCursorIfOutsideViewport(): void;
   revealRange(range: TextRange): void;

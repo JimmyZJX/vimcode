@@ -14,7 +14,7 @@ import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
 import type { SubstitutePreview } from '../common/command.js';
-import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition } from '../common/editor.js';
+import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition, normalViewLineColumnForGoal } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
 import { SearchDirection, SearchMatch, SearchOptions, translateVimRegex } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
@@ -432,7 +432,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 	}
 
-	executeNativeCommand(command: string, args: readonly unknown[] = [], options: NativeCommandOptions = {}): void {
+	executeNativeCommand(command: string, args: readonly unknown[] = [], options: NativeCommandOptions = {}): void | Promise<void> {
 		const syncSelectionAfter = options.syncSelectionAfter === true || command === 'undo' || command === 'redo';
 		const selectionsToRestore = options.preserveVisualSelection === true
 			? visualSemanticSelections(this.lastSetVimSelections)
@@ -466,6 +466,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			void commandPromise.then(() => this.onBackgroundNativeCommandSync?.(), () => undefined);
 		}
 		void commandPromise.then(undefined, () => undefined);
+		return syncSelectionAfter ? commandPromise : undefined;
 	}
 
 	async waitForNativeSelectionSync(): Promise<boolean> {
@@ -629,7 +630,10 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
 				const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
 				goal = viewGoalForSelection(selection.goal, viewPosition);
-				const viewColumn = viewColumnForGoal(viewModel, viewLine, goal);
+				const viewColumn = normalViewLineColumnForGoal(goal, {
+					minColumn: viewModel.getLineMinColumn(viewLine),
+					maxColumn: viewModel.getLineMaxColumn(viewLine),
+				});
 				const target = converter.convertViewPositionToModelPosition(new VSCodePosition(viewLine, viewColumn));
 				const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
 				const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
@@ -1057,8 +1061,6 @@ function inclusiveVisualAnchor(
 		: selection.anchor;
 }
 
-type ViewModelLike = NonNullable<ReturnType<ICodeEditor['_getViewModel']>>;
-
 function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: VSCodePosition): VimSelectionGoal {
 	if (goal?.type === 'endOfLine') {
 		return goal;
@@ -1137,15 +1139,6 @@ function foldedLineTarget(
 		line = candidate;
 	}
 	return line;
-}
-
-function viewColumnForGoal(viewModel: ViewModelLike, viewLine: number, goal: VimSelectionGoal): number {
-	const minColumn = viewModel.getLineMinColumn(viewLine);
-	const maxColumn = viewModel.getLineMaxColumn(viewLine);
-	if (goal.type === 'endOfLine') {
-		return Math.max(minColumn, maxColumn - 1);
-	}
-	return Math.max(minColumn, Math.min(goal.column, maxColumn));
 }
 
 function foldCommandId(command: HostFoldCommand): string {

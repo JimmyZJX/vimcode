@@ -7,6 +7,7 @@
 //   source of truth for which tests exist.
 
 import { RemapTimeoutKey } from "../config.js";
+import type { VimConfiguration } from "../config.js";
 import { parseRegisterName } from "../registers.js";
 import { Vim, runKeys } from "../vim.js";
 import { InMemoryVimEditor } from "../editor.js";
@@ -21,6 +22,15 @@ export type SharedState = {
     registers: Record<string, string>;
   };
 };
+
+function configurationForFixture(testCaseId: string): Partial<VimConfiguration> {
+  // Product compatibility defaults Insert-mode ctrl-v to native paste, while
+  // these fixtures intentionally compare against Neovim literal insertion.
+  return {
+    insertModeCtrlVAsPaste: false,
+    ...fixtureConfigurations[testCaseId],
+  };
+}
 
 export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
   let editor: InMemoryVimEditor | undefined;
@@ -37,7 +47,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       if (editor === undefined || vim === undefined) {
         // Some Zed fixtures configure key remappings in the test body rather
         // than the fixture file; mirror that setup here.
-        ({ editor, vim } = editorFromMarkedText(entry.Put.state, fixtureConfigurations[fixture.testCaseId] ?? {}));
+        ({ editor, vim } = editorFromMarkedText(entry.Put.state, configurationForFixture(fixture.testCaseId)));
         editor.configureViewportForTest(viewportOptions);
       } else {
         resetEditorFromMarkedText(editor, vim, entry.Put.state);
@@ -50,7 +60,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       // Some fixtures type setup commands (`:set gdefault`) before the first
       // Put; run them against an empty scratch buffer.
       if (vim === undefined) {
-        ({ editor, vim } = editorFromMarkedText("ˇ", fixtureConfigurations[fixture.testCaseId] ?? {}));
+        ({ editor, vim } = editorFromMarkedText("ˇ", configurationForFixture(fixture.testCaseId)));
       }
       const localKey = keyForLocalVim(entry.Key);
       // Insert/replace-mode navigation keys used to be host-native and needed

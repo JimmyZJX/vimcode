@@ -792,7 +792,7 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
   it("replays a ctrl-v code completed by a typed key coherently in macros", () => {
     const editor = new InMemoryVimEditor("x\nx");
-    const vim = new Vim(editor);
+    const vim = new Vim(editor, { insertModeCtrlVAsPaste: false });
 
     // `ctrl-v 6 5` is completed by the typed `Z`, which is recorded as typed and
     // must feed the pending literal waiter again on replay.
@@ -801,6 +801,27 @@ describe("Zed-inspired Vim core smoke tests", () => {
 
     runKeys(vim, ["j", "@", "a"]);
     expect(editor.line(1)).toBe("xAZ");
+  });
+
+  it("optionally runs native paste for insert-mode ctrl-v", () => {
+    const literalEditor = new InMemoryVimEditor("");
+    const literalVim = new Vim(literalEditor, { insertModeCtrlVAsPaste: false });
+    runKeys(literalVim, ["i", "ctrl-v", "a", "escape"]);
+    expect(literalEditor.getText()).toBe("a");
+    expect(literalEditor.nativeCommands).toEqual([]);
+
+    const pasteEditor = new InMemoryVimEditor("x\ny");
+    const pasteVim = new Vim(pasteEditor);
+    runKeys(pasteVim, ["q", "a", "i", "ctrl-v", "escape", "q", "j", "@", "a"]);
+    expect(pasteEditor.nativeCommands).toEqual([
+      { command: "editor.action.clipboardPasteAction", args: [] },
+      { command: "editor.action.clipboardPasteAction", args: [] },
+    ]);
+
+    const blockEditor = new InMemoryVimEditor("x\ny");
+    const blockVim = new Vim(blockEditor, { insertModeCtrlVAsPaste: true });
+    runKeys(blockVim, ["ctrl-v", "j"]);
+    expect(blockVim.mode).toBe("visualBlock");
   });
 
   it("cancels the insert ctrl-r register waiter with escape without leaving insert", () => {

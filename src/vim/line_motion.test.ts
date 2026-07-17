@@ -2,7 +2,7 @@
 // (lineMotionForKey in normal_mode_handler.ts). There is no Neovim fixture for a
 // bare `G` key or for visual `+`/`-`/`G`, so these integration tests pin the
 // behavior — including that the operator target path (`dG`) is unchanged.
-import { InMemoryVimEditor } from "./editor.js";
+import { InMemoryVimEditor, normalViewLineColumnForGoal } from "./editor.js";
 import type { HostDirection } from "./editor.js";
 import { Vim, runKeys } from "./vim.js";
 import type { VimSelection } from "./state.js";
@@ -13,6 +13,23 @@ function head(editor: InMemoryVimEditor) {
 }
 function cursor(editor: InMemoryVimEditor) {
   return (editor.getSelections()[0] as { cursor: { row: number; column: number } }).cursor;
+}
+
+class WrappedLineEditor extends InMemoryVimEditor {
+  readonly verticalMoves: { direction: HostDirection; count: number; displayLine: boolean }[] = [];
+
+  override moveByViewLines(
+    direction: HostDirection,
+    count: number,
+    options: { displayLine: boolean; extend: boolean }
+  ): readonly VimSelection[] | undefined {
+    this.verticalMoves.push({ direction, count, displayLine: options.displayLine });
+    // One display-line step remains on the same wrapped model line. Logical
+    // movement crosses to the neighboring model line.
+    return options.displayLine
+      ? this.getSelections()
+      : super.moveByViewLines(direction, count, options);
+  }
 }
 
 class FoldAwareEditor extends InMemoryVimEditor {
@@ -175,7 +192,45 @@ describe("fold-aware vertical motions", () => {
   });
 });
 
+describe("operators over wrapped lines", () => {
+  it("dj uses logical-line movement from the first display line", () => {
+    const editor = new WrappedLineEditor("above\nwrapped-long-line\nbelow\nafter");
+    const vim = new Vim(editor);
+    runKeys(vim, ["j", "d", "j"]);
+
+    expect(editor.getText()).toBe("above\nafter");
+    expect(editor.verticalMoves[editor.verticalMoves.length - 1]).toEqual({
+      direction: "down",
+      count: 1,
+      displayLine: false,
+    });
+  });
+
+  it("dk uses logical-line movement from the last display line", () => {
+    const editor = new WrappedLineEditor("above\nwrapped-long-line\nbelow\nafter");
+    const vim = new Vim(editor);
+    runKeys(vim, ["j", "d", "k"]);
+
+    expect(editor.getText()).toBe("below\nafter");
+    expect(editor.verticalMoves[editor.verticalMoves.length - 1]).toEqual({
+      direction: "up",
+      count: 1,
+      displayLine: false,
+    });
+  });
+});
+
 describe("viewColumn selection goals (host view-line movements)", () => {
+  it("clamps a gj/gk goal to the last character before a soft wrap", () => {
+    // `abc<wrap>def`: VS Code reports column 4 as the position after `c`.
+    // Converting that boundary back to a model position selects `d`, so a
+    // normal-mode display-line cursor must stop at column 3 instead.
+    expect(normalViewLineColumnForGoal(
+      { type: "viewColumn", column: 5 },
+      { minColumn: 1, maxColumn: 4 }
+    )).toBe(3);
+  });
+
   // The VSCode adapter's view-line movements (`ctrl-d`/`ctrl-u`, `gj`/`gk`)
   // stamp the resulting selection with a 1-based *view*-column goal. A
   // following model-space vertical motion (`j`/`k`) must convert that back to

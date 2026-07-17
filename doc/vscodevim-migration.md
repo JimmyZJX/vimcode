@@ -74,7 +74,9 @@ wins when set), so existing settings.json files partially "just work".
 `before`/`after`/`commands` (string or `{command, args}`, `:`-commands run
 through the ex executor), `silent`, plus vimcode extras VSCodeVim lacks:
 per-mapping `recursive` override and `when` clauses. `vim.remap` command and
-`toggleVim` command ids match.
+`toggleVim` command ids match. vimcode also provides
+`vim.insertModeCtrlVAsPaste` (default true) to opt into VS Code's native
+Insert-mode `ctrl-v` paste without changing Visual Block `ctrl-v`.
 
 ### Supported, different default or semantics
 

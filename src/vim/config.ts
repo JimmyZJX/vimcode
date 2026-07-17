@@ -40,6 +40,7 @@ export type VimConfiguration = {
   useSystemClipboard: boolean;
   timeout: number;
   visualMultilineInsert: boolean;
+  insertModeCtrlVAsPaste: boolean;
   replaceWithRegister: boolean;
   easymotion: boolean;
   easymotionKeys: string;
@@ -70,6 +71,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   useSystemClipboard: false,
   timeout: 1000,
   visualMultilineInsert: true,
+  insertModeCtrlVAsPaste: true,
   // VSCodeVim compatibility: the `gr` plugin is opt-in; when disabled the
   // Neovim-style grr/grn/gra LSP bindings own the prefix.
   replaceWithRegister: false,

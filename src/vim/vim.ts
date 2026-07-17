@@ -1154,6 +1154,7 @@ export class Vim {
         mode: this.modeState,
         editor: this.editor,
         registers: this.registers,
+        configuration: this.configuration,
         enterTemporaryNormal: () => {
           this.enterTemporaryNormalMode();
         },

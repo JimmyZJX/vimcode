@@ -358,6 +358,7 @@ export class VimController extends Disposable {
 		const timeout = this.readCompatibilityConfigValue('timeout');
 		const textwidth = this.readCompatibilityConfigValue('textwidth');
 		const visualMultilineInsert = this.readCompatibilityConfigValue('visualMultilineInsert');
+		const insertModeCtrlVAsPaste = this.readCompatibilityConfigValue('insertModeCtrlVAsPaste');
 		const replaceWithRegister = this.readCompatibilityConfigValue('replaceWithRegister');
 		const easymotion = this.readCompatibilityConfigValue('easymotion');
 		const easymotionKeys = this.readCompatibilityConfigValue('easymotionKeys');
@@ -370,6 +371,7 @@ export class VimController extends Disposable {
 			timeout: typeof timeout === 'number' ? timeout : undefined,
 			textwidth: typeof textwidth === 'number' ? textwidth : undefined,
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean' ? visualMultilineInsert : undefined,
+			insertModeCtrlVAsPaste: typeof insertModeCtrlVAsPaste === 'boolean' ? insertModeCtrlVAsPaste : undefined,
 			replaceWithRegister: typeof replaceWithRegister === 'boolean' ? replaceWithRegister : undefined,
 			easymotion: typeof easymotion === 'boolean' ? easymotion : undefined,
 			easymotionKeys: typeof easymotionKeys === 'string' ? easymotionKeys : undefined,
@@ -556,8 +558,16 @@ export class VimController extends Disposable {
 		});
 		if (await this.vimEditor.waitForNativeSelectionSync()) {
 			this.vimEditor.invalidateCachedSelections();
-			const result = this.vim.syncFromEditorState({ canonicalizeVisualSelection: true });
-			this.logVisualSyncDecision('nativeCommand', result);
+			// Same policy as [handleCursorSelectionChanged]: while insert/replace
+			// mode intentionally lets VSCode own the cursor, the native selection
+			// left by the command is authoritative and must not be reconciled back
+			// into normal mode (e.g. the optional insert-mode ctrl-v paste, or a
+			// `ctrl-o` excursion that returned to insert).
+			const mode = this.vim.mode;
+			if (mode !== 'insert' && mode !== 'replace') {
+				const result = this.vim.syncFromEditorState({ canonicalizeVisualSelection: true });
+				this.logVisualSyncDecision('nativeCommand', result);
+			}
 		}
 		if (!this.vim.status.pending) {
 			this.vimEditor.revealPrimaryCursorIfOutsideViewport();

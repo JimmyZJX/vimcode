@@ -106,6 +106,21 @@ export function insertModeHandler(key: string, state: HandlerState): HandleResul
       // Vim `i_CTRL-R`: insert a register's contents.
       return waitFor(state, insertRegisterWaiter);
     case "ctrl-v":
+      if (state.configuration?.insertModeCtrlVAsPaste === true) {
+        if (editor === undefined) return invalid();
+        // VSCodeVim compatibility option: run VS Code's native paste action,
+        // keeping Visual Block `ctrl-v` and the default Vim literal waiter
+        // unchanged. This must be `editor.action.clipboardPasteAction` (the
+        // action Ctrl+V is natively bound to, which reads the clipboard); the
+        // lower-level `paste` handler command expects the clipboard text as an
+        // argument and inserts nothing without it. Selection sync also makes
+        // the async command an ordered key-plan boundary before a following
+        // key executes.
+        return effect(state.mode, () =>
+          editor.executeNativeCommand("editor.action.clipboardPasteAction", [], {
+            syncSelectionAfter: true,
+          }));
+      }
       // Vim `i_CTRL-V`: insert the next key literally, or a decimal (`123`) /
       // hex (`x..`/`u....`/`U........`) character code.
       return waitFor(state, literalPlainWaiter);

@@ -232,6 +232,12 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.visualMultilineInsert', "Use VSCodeVim-compatible multi-cursor insertion for I/A in Visual and Visual Line modes."),
 	},
+	'vim.insertModeCtrlVAsPaste': {
+		type: 'boolean',
+		default: true,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.insertModeCtrlVAsPaste', "Use VS Code's native paste command for Ctrl+V in Insert mode instead of Vim literal insertion."),
+	},
 	'vim.replaceWithRegister': {
 		type: 'boolean',
 		default: false,
