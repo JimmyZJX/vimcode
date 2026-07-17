@@ -19,14 +19,13 @@ import {
   handler,
   invalid,
   isEscapeKey,
-  mapHandler,
   unhandled,
 } from "./key_handler.js";
 import type { ChangeListDirection } from "./normal/change_list.js";
 import type { ConvertTarget } from "./normal/convert.js";
-import type { FindMotion, Motion, MotionResult } from "./motion.js";
-import { applyMotion, bracketMotion, lineRange, motionForKey } from "./motion.js";
-import { applyMotionResults, motionHandler } from "./motion_handler.js";
+import type { FindMotion, Motion } from "./motion.js";
+import { applyMotion, applyMotionWithGoal, bracketMotion, hostViewLineSelectionsForMotion, lineRange, motionForKey } from "./motion.js";
+import { applyMotionResults } from "./motion_handler.js";
 import { bracketChordHandler, ctrlWHandler, editorTabEffect, multiCursorEffect, nativeCommandEffect, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
 import { replaceEntryHandler } from "./insert_handler.js";
@@ -397,10 +396,25 @@ function applyResolvedMotion(state: HandlerState, motion: Motion, recordFind?: F
   const editor = state.editor;
   if (editor === undefined) return invalid();
   return effect(state.mode, () => {
-    const results: MotionResult[] = editor.getSelections().map(selection => ({
-      position: applyMotion(editor, selectionHead(selection), motion, state.repeat),
-    }));
-    applyMotionResults(editor, results);
+    const hostSelections = hostViewLineSelectionsForMotion(editor, motion, state.repeat, {
+      displayLine: false,
+      extend: false,
+    });
+    if (hostSelections !== undefined) {
+      editor.setSelections(hostSelections);
+    } else {
+      applyMotionResults(
+        editor,
+        editor.getSelections().map(selection =>
+          applyMotionWithGoal(
+            editor,
+            selectionHead(selection),
+            motion,
+            state.repeat,
+            selection.goal
+          ))
+      );
+    }
     if (recordFind !== undefined) state.find?.record(recordFind);
   });
 }
@@ -671,43 +685,8 @@ function lineMotionHandler(key: string, state: HandlerState): HandleResult<void>
 export function movementHandler(key: string, state: HandlerState): HandleResult<void> {
   const motion = resolveMotion(key, state);
   if (motion === undefined) return unhandled();
-  const result = mapHandler(
-    motionHandlerForMotion(motion),
-    (results, state) => {
-      const editor = state.editor;
-      if (editor === undefined) return;
-      applyMotionResults(editor, results);
-    }
-  )(key, state);
   // Motions are not dot-repeatable; macros replay them via their recorded keys.
-  return result;
-}
-
-// Wrap a resolved [Motion] in a [motionHandler]-style effect over the live
-// selections. Unlike [motionHandler] (which re-resolves the key), this uses the
-// already-resolved motion so count-sensitive keys (`%`) move correctly.
-function motionHandlerForMotion(motion: Motion): Handler<readonly MotionResult[]> {
-  // [motionHandler] resolves the key itself via [motionForKey]; for the
-  // count-baked motions (`%` go-to-percentage, `|` go-to-column) that key
-  // resolution would drop the count, so apply the motion we already computed.
-  if (motion.type === "goToPercentage" || motion.type === "goToColumn") {
-    return (_key, state) =>
-      effect(state.mode, () => {
-        const editor = state.editor;
-        if (editor === undefined) return [];
-        return editor.getSelections().map((selection) => {
-          const start = selectionHead(selection);
-          return { position: applyMotion(editor, start, motion, state.repeat), goal: undefined };
-        });
-      });
-  }
-  return motionHandler((state) => {
-    const selections = state.editor?.getSelections() ?? [];
-    return {
-      starts: selections.map(selectionHead),
-      goal: selections[0]?.goal,
-    };
-  });
+  return applyResolvedMotion(state, motion);
 }
 
 // ---------------------------------------------------------------------------

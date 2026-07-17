@@ -3,14 +3,43 @@
 // bare `G` key or for visual `+`/`-`/`G`, so these integration tests pin the
 // behavior — including that the operator target path (`dG`) is unchanged.
 import { InMemoryVimEditor } from "./editor.js";
+import type { HostDirection } from "./editor.js";
 import { Vim, runKeys } from "./vim.js";
-import { selectionHead } from "./state.js";
+import type { VimSelection } from "./state.js";
+import { charwiseSelection, selectionHead } from "./state.js";
 
 function head(editor: InMemoryVimEditor) {
   return selectionHead(editor.getSelections()[0]);
 }
 function cursor(editor: InMemoryVimEditor) {
   return (editor.getSelections()[0] as { cursor: { row: number; column: number } }).cursor;
+}
+
+class FoldAwareEditor extends InMemoryVimEditor {
+  readonly verticalMoves: { direction: HostDirection; count: number; displayLine: boolean }[] = [];
+
+  override moveByViewLines(
+    direction: HostDirection,
+    count: number,
+    { displayLine }: { displayLine: boolean; extend: boolean }
+  ): readonly VimSelection[] {
+    this.verticalMoves.push({ direction, count, displayLine });
+    const selection = this.getSelections()[0];
+    const start = selectionHead(selection);
+    let row = start.row;
+    for (let step = 0; step < count; step++) {
+      if (direction === "down") {
+        row = row === 1 ? 4 : Math.min(row + 1, this.lineCount() - 1);
+      } else {
+        row = row === 4 ? 1 : Math.max(row - 1, 0);
+      }
+    }
+    const column = Math.min(start.column, Math.max(0, this.lineLength(row) - 1));
+    return [{
+      ...charwiseSelection({ row, column }),
+      goal: selection.goal ?? { type: "modelColumn", column: start.column },
+    }];
+  }
 }
 
 
@@ -108,6 +137,41 @@ describe("line motions G / + / - via framework", () => {
     const vim = new Vim(editor);
     runKeys(vim, ["d", "5", "|"]); // delete cols 0..3 (to column 5 exclusive)
     expect(editor.getText()).toBe("o world");
+  });
+});
+
+describe("fold-aware vertical motions", () => {
+  it("normal j/k cross a closed fold through the host motion capability", () => {
+    // Rows 2-3 are hidden behind the fold header on row 1. A model-row `j`
+    // would land on hidden row 2 and make VSCode unfold it; the host reports
+    // the next visible logical row instead.
+    const editor = new FoldAwareEditor("zero\nfold\nhidden-a\nhidden-b\nfour\nfive");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["j", "j"]);
+    expect(head(editor)).toEqual({ row: 4, column: 0 });
+    runKeys(vim, ["k"]);
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
+    runKeys(vim, ["2", "k"]);
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+    expect(editor.verticalMoves).toEqual([
+      { direction: "down", count: 1, displayLine: false },
+      { direction: "down", count: 1, displayLine: false },
+      { direction: "up", count: 1, displayLine: false },
+      { direction: "up", count: 2, displayLine: false },
+    ]);
+  });
+
+  it("gj/gk request display-line rather than logical-line movement", () => {
+    const editor = new FoldAwareEditor("zero\nfold\nhidden-a\nhidden-b\nfour");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["j", "g", "j", "g", "k"]);
+    expect(editor.verticalMoves.map(({ direction, displayLine }) => ({ direction, displayLine }))).toEqual([
+      { direction: "down", displayLine: false },
+      { direction: "down", displayLine: true },
+      { direction: "up", displayLine: true },
+    ]);
   });
 });
 

@@ -606,9 +606,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	moveByViewLines(direction: HostDirection, count: number, { displayLine, extend }: { displayLine: boolean; extend: boolean }): readonly VimSelection[] {
-		// This is a pure query over VSCode's internal view model. It uses the same
-		// model<->view coordinate conversion that native cursor movement uses, so
-		// folded ranges and soft wraps are represented without moving the live cursor.
+		// This is a pure query over VSCode's internal view model. Logical-line
+		// movement (`j`/`k`) uses hidden model ranges so it skips closed folds but
+		// does not stop on soft-wrapped segments. Display-line movement (`gj`/`gk`)
+		// instead walks view lines. This mirrors VSCode's CursorMove units
+		// `foldedLine` and `wrappedLine` without moving the live cursor mid-dispatch.
 		const before = this.getSelections();
 		const viewModel = this.editor._getViewModel();
 		if (viewModel === null) {
@@ -616,18 +618,29 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 		const converter = viewModel.coordinatesConverter;
 		const lineCount = viewModel.model.getLineCount();
+		const hiddenAreas = viewModel.getHiddenAreas();
 		const result = before.map(selection => {
 			const head = selection.cursor ?? selectionHead(selection);
 			const modelPosition = new VSCodePosition(head.row + 1, head.column + 1);
 			const viewPosition = converter.convertModelPositionToViewPosition(modelPosition, PositionAffinity.None, false, direction === 'down');
-			const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
-			const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
-			const goal = viewGoalForSelection(selection.goal, viewPosition);
-			const viewColumn = viewColumnForGoal(viewModel, viewLine, goal);
-			const target = converter.convertViewPositionToModelPosition(new VSCodePosition(viewLine, viewColumn));
-			const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
-			const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
-			const targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
+			let goal: VimSelectionGoal;
+			let targetPosition: VimPosition;
+			if (displayLine) {
+				const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
+				const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
+				goal = viewGoalForSelection(selection.goal, viewPosition);
+				const viewColumn = viewColumnForGoal(viewModel, viewLine, goal);
+				const target = converter.convertViewPositionToModelPosition(new VSCodePosition(viewLine, viewColumn));
+				const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
+				const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
+				targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
+			} else {
+				goal = modelGoalForSelection(selection.goal, head);
+				const targetLineNumber = foldedLineTarget(head.row + 1, direction, count, hiddenAreas, lineCount);
+				const maxColumn = Math.max(1, viewModel.model.getLineMaxColumn(targetLineNumber) - 1);
+				const targetColumn = modelColumnForGoal(goal, maxColumn);
+				targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
+			}
 			if (extend) {
 				switch (selection.type) {
 					case 'charwise':
@@ -1057,6 +1070,73 @@ function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: 
 		return { type: 'viewColumn', column: goal.column + 1 };
 	}
 	return { type: 'viewColumn', column: viewPosition.column };
+}
+
+function modelGoalForSelection(goal: VimSelectionGoal | undefined, head: VimPosition): VimSelectionGoal {
+	if (goal?.type === 'endOfLine' || goal?.type === 'modelColumn') {
+		return goal;
+	}
+	if (goal?.type === 'viewColumn') {
+		return { type: 'modelColumn', column: Math.max(0, goal.column - 1) };
+	}
+	return { type: 'modelColumn', column: head.column };
+}
+
+function modelColumnForGoal(goal: VimSelectionGoal, maxColumn: number): number {
+	if (goal.type === 'endOfLine') {
+		return maxColumn;
+	}
+	return Math.max(1, Math.min(goal.column + 1, maxColumn));
+}
+
+// VSCode `CursorMoveCommands._targetFolded{Down,Up}` semantics: hidden areas
+// contain the folded rows after the visible fold header, so crossing one jumps
+// to the first row after it (or back to its header) and consumes one movement.
+function foldedLineTarget(
+	startLine: number,
+	direction: HostDirection,
+	count: number,
+	hiddenAreas: readonly Range[],
+	lineCount: number
+): number {
+	let line = startLine;
+	if (direction === 'down') {
+		let hiddenIndex = 0;
+		while (hiddenIndex < hiddenAreas.length && hiddenAreas[hiddenIndex].endLineNumber < line + 1) {
+			hiddenIndex++;
+		}
+		for (let step = 0; step < count; step++) {
+			if (line >= lineCount) return lineCount;
+			let candidate = line + 1;
+			while (hiddenIndex < hiddenAreas.length && hiddenAreas[hiddenIndex].endLineNumber < candidate) {
+				hiddenIndex++;
+			}
+			if (hiddenIndex < hiddenAreas.length && hiddenAreas[hiddenIndex].startLineNumber <= candidate) {
+				candidate = hiddenAreas[hiddenIndex].endLineNumber + 1;
+			}
+			if (candidate > lineCount) return line;
+			line = candidate;
+		}
+		return line;
+	}
+
+	let hiddenIndex = hiddenAreas.length - 1;
+	while (hiddenIndex >= 0 && hiddenAreas[hiddenIndex].startLineNumber > line - 1) {
+		hiddenIndex--;
+	}
+	for (let step = 0; step < count; step++) {
+		if (line <= 1) return 1;
+		let candidate = line - 1;
+		while (hiddenIndex >= 0 && hiddenAreas[hiddenIndex].startLineNumber > candidate) {
+			hiddenIndex--;
+		}
+		if (hiddenIndex >= 0 && hiddenAreas[hiddenIndex].endLineNumber >= candidate) {
+			candidate = hiddenAreas[hiddenIndex].startLineNumber - 1;
+		}
+		if (candidate < 1) return line;
+		line = candidate;
+	}
+	return line;
 }
 
 function viewColumnForGoal(viewModel: ViewModelLike, viewLine: number, goal: VimSelectionGoal): number {
