@@ -238,6 +238,30 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.insertModeCtrlVAsPaste', "Use VS Code's native paste command for Ctrl+V in Insert mode instead of Vim literal insertion."),
 	},
+	'vim.highlightedyank.enable': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.enable', "Enable highlighting when yanking."),
+	},
+	'vim.highlightedyank.color': {
+		type: 'string',
+		default: 'rgba(250, 240, 170, 0.5)',
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.color', "Background color of yanked text. The color must not be opaque so as not to hide underlying decorations."),
+	},
+	'vim.highlightedyank.textColor': {
+		type: 'string',
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.textColor', "Foreground color of yanked text."),
+	},
+	'vim.highlightedyank.duration': {
+		type: 'number',
+		default: 200,
+		minimum: 1,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.duration', "Duration in milliseconds of the yank highlight."),
+	},
 	'vim.replaceWithRegister': {
 		type: 'boolean',
 		default: false,

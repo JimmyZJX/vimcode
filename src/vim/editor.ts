@@ -145,6 +145,11 @@ export interface VimEditorCapabilities {
   setInsertPendingText(text: string | undefined): void;
   showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void;
   clearEasyMotionMarkers(): void;
+  /** Every yank reports the yanked ranges here; the host renders a transient
+      highlight when the user opted in (VSCodeVim `vim.highlightedyank.*` —
+      `BaseOperator.highlightYankedRanges`). Rendering (color, text color,
+      duration, enablement) is entirely a host concern. */
+  highlightYankedRanges(ranges: readonly TextRange[]): void;
 
   applyEdits(
     edits: readonly TextEdit[],
@@ -306,6 +311,8 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     command: string;
     args: readonly unknown[];
   }[] = [];
+  /** Ranges reported through [highlightYankedRanges], one entry per yank. */
+  public readonly yankHighlights: TextRange[][] = [];
   /** Commands issued from an [onResolved] callback — i.e. only after the
       previous command completed (for tests: `:wq` must chain, not race). */
   public readonly chainedNativeCommands: string[] = [];
@@ -465,6 +472,13 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void {
     this.easyMotionMarkers = markers.map((marker) => ({ ...marker }));
+  }
+
+  highlightYankedRanges(ranges: readonly TextRange[]): void {
+    this.yankHighlights.push(ranges.map((range) => ({
+      start: { ...range.start },
+      end: { ...range.end },
+    })));
   }
 
   clearEasyMotionMarkers(): void {

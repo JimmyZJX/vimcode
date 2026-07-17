@@ -2396,6 +2396,40 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 0, column: 0 });
   });
 
+  it("reports yanked ranges to the host for the highlightedyank flash", () => {
+    // `yw`: one charwise range covering the yanked word.
+    const editor = new InMemoryVimEditor("one two\nthree four");
+    const vim = new Vim(editor);
+    runKeys(vim, ["y", "w"]);
+    expect(editor.yankHighlights).toEqual([
+      [{ start: { row: 0, column: 0 }, end: { row: 0, column: 4 } }],
+    ]);
+
+    // `yy`: the whole line, to its end (VSCodeVim linewise highlight shape).
+    runKeys(vim, ["j", "y", "y"]);
+    expect(editor.yankHighlights[1]).toEqual([
+      { start: { row: 1, column: 0 }, end: { row: 1, column: 10 } },
+    ]);
+
+    // Visual charwise `y`.
+    runKeys(vim, ["g", "g", "v", "l", "y"]);
+    expect(editor.yankHighlights[2]).toEqual([
+      { start: { row: 0, column: 0 }, end: { row: 0, column: 2 } },
+    ]);
+
+    // Visual block `y`: one range per block row.
+    runKeys(vim, ["ctrl-v", "j", "l", "y"]);
+    expect(editor.yankHighlights[3]).toEqual([
+      { start: { row: 0, column: 0 }, end: { row: 0, column: 2 } },
+      { start: { row: 1, column: 0 }, end: { row: 1, column: 2 } },
+    ]);
+
+    // Deletes and changes do not flash (VSCodeVim highlights yanks only).
+    runKeys(vim, ["d", "w"]);
+    runKeys(vim, ["c", "w", "escape"]);
+    expect(editor.yankHighlights).toHaveLength(4);
+  });
+
   it("yanks with ctrl-c in visual modes", () => {
     for (const keys of [
       ["v", "e"],

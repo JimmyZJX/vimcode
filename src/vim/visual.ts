@@ -636,10 +636,14 @@ export class VisualMode {
         applyOperatorToTarget(this.editor, this.registers, registerName, { type: "yank" }, visualLinewiseTarget(state, { column: 0 }));
         break;
       case "blockwise": {
-        const parts = blockRanges(this.editor, state)
+        const ranges = blockRanges(this.editor, state);
+        const parts = ranges
           .map(range => ({ text: rangeText(this.editor, range), kind: "blockwise" as const }));
         if (parts.some(part => part.text.length > 0)) {
           this.registers.writeYank(registerName, parts.map(part => part.text).join("\n"), "blockwise", parts);
+          // VSCodeVim `highlightedyank` (`YankVisualBlockMode.run`): one
+          // highlight per block row.
+          this.editor.highlightYankedRanges(ranges);
         }
         break;
       }
@@ -655,6 +659,11 @@ export class VisualMode {
       lines.push(this.editor.line(row));
     }
     this.registers.writeYank(registerName, `${lines.join("\n")}\n`, "linewise");
+    // VSCodeVim `highlightedyank`: linewise yanks highlight the full lines.
+    this.editor.highlightYankedRanges([{
+      start: { row: bounds.startRow, column: 0 },
+      end: { row: bounds.endRow, column: this.editor.lineLength(bounds.endRow) },
+    }]);
     return { row: bounds.startRow, column: 0 };
   }
 

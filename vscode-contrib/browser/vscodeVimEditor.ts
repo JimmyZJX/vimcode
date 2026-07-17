@@ -61,6 +61,15 @@ registerThemingParticipant((theme, collector) => {
 	// replacement section is typed the original is struck through and the
 	// resolved replacement shows as injected text with an "inserted" tint
 	// (VSCodeVim/Neovim 'inccommand'-style).
+	// VSCodeVim `vim.highlightedyank.*`: the colors are user-configured strings,
+	// applied per-flash as CSS variables on the editor container (see
+	// [highlightYankedRanges]); the rule itself is static.
+	collector.addRule(`
+		.monaco-editor .vim-highlighted-yank {
+			background-color: var(--vim-highlighted-yank-background, rgba(250, 240, 170, 0.5));
+			color: var(--vim-highlighted-yank-foreground, inherit);
+		}
+	`);
 	const findMatch = theme.getColor(editorFindMatchHighlight);
 	const inserted = theme.getColor(diffInserted);
 	collector.addRule(`
@@ -78,11 +87,21 @@ registerThemingParticipant((theme, collector) => {
 	`);
 });
 
+/** Rendering options for the VSCodeVim `vim.highlightedyank.*` compatibility
+    feature; undefined when the highlight is disabled. */
+export type YankHighlightOptions = {
+	color: string;
+	textColor: string | undefined;
+	durationMs: number;
+};
+
 export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
 	private readonly insertPendingDecorations: IEditorDecorationsCollection;
 	private readonly easyMotionDecorations: IEditorDecorationsCollection;
 	private readonly substitutePreviewDecorations: IEditorDecorationsCollection;
+	private readonly yankHighlightDecorations: IEditorDecorationsCollection;
+	private yankHighlightTimer: ReturnType<typeof setTimeout> | undefined;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
@@ -105,12 +124,16 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	constructor(
 		private readonly editor: ICodeEditor,
 		private readonly commandService: ICommandService,
-		private readonly logUndo: (message: string) => void = () => undefined
+		private readonly logUndo: (message: string) => void = () => undefined,
+		// The controller reads the live configuration; undefined disables the
+		// yank highlight (the default).
+		private readonly yankHighlightOptions: () => YankHighlightOptions | undefined = () => undefined
 	) {
 		this.visualLineDecorations = editor.createDecorationsCollection();
 		this.insertPendingDecorations = editor.createDecorationsCollection();
 		this.easyMotionDecorations = editor.createDecorationsCollection();
 		this.substitutePreviewDecorations = editor.createDecorationsCollection();
+		this.yankHighlightDecorations = editor.createDecorationsCollection();
 	}
 
 	lineCount(): number {
@@ -266,6 +289,37 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	clearEasyMotionMarkers(): void {
 		this.easyMotionDecorations.clear();
+	}
+
+	// VSCodeVim `highlightedyank` (`BaseOperator.highlightYankedRanges`): flash
+	// the yanked ranges for the configured duration. A new yank replaces any
+	// still-visible flash and restarts the timer.
+	highlightYankedRanges(ranges: readonly TextRange[]): void {
+		const options = this.yankHighlightOptions();
+		if (options === undefined || ranges.length === 0 || !this.editor.hasModel()) {
+			return;
+		}
+		const containerStyle = this.editor.getContainerDomNode().style;
+		containerStyle.setProperty('--vim-highlighted-yank-background', options.color);
+		if (options.textColor !== undefined) {
+			containerStyle.setProperty('--vim-highlighted-yank-foreground', options.textColor);
+		} else {
+			containerStyle.removeProperty('--vim-highlighted-yank-foreground');
+		}
+		this.yankHighlightDecorations.set(ranges.map(range => ({
+			range: toRange(range),
+			options: {
+				description: 'vim-highlighted-yank',
+				inlineClassName: 'vim-highlighted-yank',
+			},
+		})));
+		if (this.yankHighlightTimer !== undefined) {
+			clearTimeout(this.yankHighlightTimer);
+		}
+		this.yankHighlightTimer = setTimeout(() => {
+			this.yankHighlightTimer = undefined;
+			this.yankHighlightDecorations.clear();
+		}, options.durationMs);
 	}
 
 	updateSubstitutePreview(previews: readonly SubstitutePreview[]): void {
@@ -792,6 +846,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.clearSearchHighlights();
 		this.setInsertPendingText(undefined);
 		this.clearEasyMotionMarkers();
+		if (this.yankHighlightTimer !== undefined) {
+			clearTimeout(this.yankHighlightTimer);
+			this.yankHighlightTimer = undefined;
+		}
+		this.yankHighlightDecorations.clear();
 		this.closeUndoTransaction({ pushUndoStop: false });
 		this.invalidateCachedSelections();
 		this.rememberedSelectionGoals.clear();

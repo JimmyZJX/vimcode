@@ -26,7 +26,7 @@ import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js'
 import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { installVSCodeGraphemeProvider } from './vscodeGrapheme.js';
-import { VSCodeVimEditor } from './vscodeVimEditor.js';
+import { VSCodeVimEditor, YankHighlightOptions } from './vscodeVimEditor.js';
 
 const VimActiveContext = new RawContextKey<boolean>('vim.active', false, true);
 const VimModeContext = new RawContextKey<string>('vim.mode', 'Normal', true);
@@ -144,7 +144,7 @@ export class VimController extends Disposable {
 		// character-column mapping (idempotent).
 		installVSCodeGraphemeProvider();
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
-		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message));
+		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message), () => this.yankHighlightOptions());
 		// A background native command (`:w`) completed: selection/content events
 		// were suppressed while it ran ([isExecutingNativeCommand]), so pull one
 		// reconcile — the same path as any external editor change. It is
@@ -391,6 +391,24 @@ export class VimController extends Disposable {
 	private readCompatibilityConfigValue(key: string): unknown {
 		const vimcodeValue = this.readConfiguredConfigValue(`vimcode.${key}`);
 		return vimcodeValue !== undefined ? vimcodeValue : this.configurationService.getValue<unknown>(`vim.${key}`);
+	}
+
+	// VSCodeVim `vim.highlightedyank.*`: undefined when disabled; otherwise the
+	// rendering options for the transient yank highlight, with the VSCodeVim
+	// defaults filled in. Read lazily on each yank so setting changes apply
+	// without a reload.
+	private yankHighlightOptions(): YankHighlightOptions | undefined {
+		if (this.readCompatibilityConfigValue('highlightedyank.enable') !== true) {
+			return undefined;
+		}
+		const color = this.readCompatibilityConfigValue('highlightedyank.color');
+		const textColor = this.readCompatibilityConfigValue('highlightedyank.textColor');
+		const duration = this.readCompatibilityConfigValue('highlightedyank.duration');
+		return {
+			color: typeof color === 'string' && color.length > 0 ? color : 'rgba(250, 240, 170, 0.5)',
+			textColor: typeof textColor === 'string' && textColor.length > 0 ? textColor : undefined,
+			durationMs: typeof duration === 'number' && duration >= 1 ? duration : 200,
+		};
 	}
 
 	private readConfiguredConfigSection(section: string): Record<string, unknown> {

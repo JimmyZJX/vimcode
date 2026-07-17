@@ -77,6 +77,9 @@ per-mapping `recursive` override and `when` clauses. `vim.remap` command and
 `toggleVim` command ids match. vimcode also provides
 `vim.insertModeCtrlVAsPaste` (default true) to opt into VS Code's native
 Insert-mode `ctrl-v` paste without changing Visual Block `ctrl-v`.
+`vim.highlightedyank.{enable,color,textColor,duration}` match VSCodeVim
+(disabled by default; yank-only, flashing the yanked ranges for the configured
+duration).
 
 ### Supported, different default or semantics
 
@@ -105,7 +108,6 @@ unknown `vim.*` keys at startup as a migration aid):
   `vim.digraphs`, `vim.commandLineModeKeyBindings[NonRecursive]`.
 - **Visual/UI**: `vim.cursorStylePerMode.*`, `vim.searchHighlightColor` (+3
   color settings), `vim.substitutionColor`/`TextColor`,
-  `vim.highlightedyank.{enable,color,duration}`,
   `vim.statusBarColorControl` + `vim.statusBarColors.*` (airline),
   `vim.showcmd`/`vim.showmodename` (vimcode always shows),
   easymotion appearance settings (`vim.easymotionDimBackground` — VSCodeVim
@@ -230,8 +232,8 @@ command-line-mode remaps, `vim.visualstar`, quickpick cmdline, `ctrl-w`
 5. ~~Text objects wave: `it`/`at` (+surround `t`), `ii`/`ai`, `ia`/`aa`,
    `ae`/`ie`.~~ Done.
 6. Tier-2 ex commands and paste variants: `:m`/`:t`/`:pu` + `gp`-family done;
-   `:reg`/`:marks`/`:sort` flags, highlightedyank, `cursorStylePerMode` still
-   open.
+   highlightedyank done; `:reg`/`:marks`/`:sort` flags, `cursorStylePerMode`
+   still open.
 7. Publish a "differences from VSCodeVim" page from the divergences section;
    collect dogfooder feedback before broad rollout.
 
