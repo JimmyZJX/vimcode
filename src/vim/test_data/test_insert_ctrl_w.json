@@ -1,0 +1,35 @@
+{"Put":{"state":"foo.baˇr"}}
+{"Key":"A"}
+{"Key":"ctrl-w"}
+{"Key":"escape"}
+{"Get":{"state":"fooˇ.","mode":"normal"}}
+{"Put":{"state":"foo..ˇ."}}
+{"Key":"A"}
+{"Key":"ctrl-w"}
+{"Key":"escape"}
+{"Get":{"state":"foˇo","mode":"normal"}}
+{"Put":{"state":"foo bar ˇ  "}}
+{"Key":"A"}
+{"Key":"ctrl-w"}
+{"Key":"escape"}
+{"Get":{"state":"fooˇ ","mode":"normal"}}
+{"Put":{"state":"first line\nˇsecond"}}
+{"Key":"i"}
+{"Key":"ctrl-w"}
+{"Key":"escape"}
+{"Get":{"state":"first linˇesecond","mode":"normal"}}
+{"Put":{"state":"first line\n  ˇindented"}}
+{"Key":"i"}
+{"Key":"ctrl-w"}
+{"Key":"escape"}
+{"Get":{"state":"first line\nˇindented","mode":"normal"}}
+{"Put":{"state":"foo.ˇbar"}}
+{"Key":"i"}
+{"Key":"ctrl-w"}
+{"Key":"escape"}
+{"Get":{"state":"foˇobar","mode":"normal"}}
+{"Put":{"state":"foo_barˇ1"}}
+{"Key":"A"}
+{"Key":"ctrl-w"}
+{"Key":"escape"}
+{"Get":{"state":"ˇ","mode":"normal"}}

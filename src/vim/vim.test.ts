@@ -1947,21 +1947,25 @@ describe("Zed-inspired Vim core smoke tests", () => {
   });
 
   it("supports insert-mode ctrl-w across line boundaries", () => {
+    // Neovim-verified: at the start of a line ctrl-w deletes just the line
+    // break; it never deletes words on the previous line.
     const bolEditor = new InMemoryVimEditor("hello\nworld");
     const bolVim = new Vim(bolEditor);
 
     runKeys(bolVim, ["j", "I", "ctrl-w", "<escape>"]);
 
-    expect(bolEditor.getText()).toBe("world");
-    expect(head(bolEditor)).toEqual({ row: 0, column: 0 });
+    expect(bolEditor.getText()).toBe("helloworld");
+    expect(head(bolEditor)).toEqual({ row: 0, column: 4 });
 
+    // Neovim-verified: a leading-whitespace run is deleted line-locally; the
+    // scan does not continue onto the previous line.
     const indentedEditor = new InMemoryVimEditor("hello  \n  world");
     const indentedVim = new Vim(indentedEditor);
 
     runKeys(indentedVim, ["j", "I", "ctrl-w", "<escape>"]);
 
-    expect(indentedEditor.getText()).toBe("world");
-    expect(head(indentedEditor)).toEqual({ row: 0, column: 0 });
+    expect(indentedEditor.getText()).toBe("hello  \nworld");
+    expect(head(indentedEditor)).toEqual({ row: 1, column: 0 });
   });
 
   it("supports counted insert and replace sessions", () => {

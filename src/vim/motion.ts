@@ -183,7 +183,7 @@ function isWord(char: string): boolean {
   return /\w/.test(char);
 }
 
-function charClass(char: string, bigWord: boolean): "whitespace" | "word" | "other" {
+export function charClass(char: string, bigWord: boolean): "whitespace" | "word" | "other" {
   if (isWhitespace(char)) return "whitespace";
   if (bigWord || isWord(char)) return "word";
   return "other";

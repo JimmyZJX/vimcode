@@ -126,7 +126,12 @@ unknown `vim.*` keys at startup as a migration aid):
   `vim.easymotionMarker*` colors/weight).
 - **Plugins** (see below): `vim.sneak*`, `vim.camelCaseMotion.enable`,
   `vim.surround` (vimcode surround is always-on,
-  no off-switch), `vim.argumentObject*`, `vim.visualstar`.
+  no off-switch), `vim.argumentObject*`, `vim.visualstar`,
+  `vim.targets.*` (targets.vim: the next/last object modifiers `cin(`/`dal"`
+  are missing entirely; the `smartQuotes` open/close pairing and forward seek
+  for plain `i"`/`a"` is already vimcode's built-in Zed-derived behavior, and
+  `aIncludesSurroundingSpaces`/`breakThroughLines` defaults match vimcode's
+  hardcoded stock-Vim semantics).
 - **Platform/exotic**: `vim.overrideCopy`, `vim.foldfix`,
   `vim.autoSwitchInputMethod.*`, `vim.vimrc.{enable,path}`,
   `vim.enableNeovim`/`vim.neovim*` (neovim-backed ex commands), `vim.shell`

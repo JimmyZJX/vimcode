@@ -6,6 +6,7 @@
 //   `VimEditorCapabilities`; production VSCode should usually delegate to native typing.
 
 import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition } from "./editor.js";
+import { charClass } from "./motion.js";
 import {
   Position,
   TextEdit,
@@ -126,23 +127,25 @@ export function enterNormalMode(
   );
 }
 
+// Vim `i_CTRL-W` (Neovim-verified): word-wise and line-local, unlike the `b`
+// motion the previous version approximated with a whitespace-only scan.
+// - At the start of a line, delete just the line break (nvim 'backspace'
+//   includes "eol"), never words on the previous line.
+// - Otherwise skip the whitespace run before the cursor, then delete one run
+//   of same-class characters (keyword vs punctuation, like `b`), stopping at
+//   the line start.
 function previousWordStart(editor: VimEditorCapabilities, head: Position): Position {
-  let row = head.row;
-  let column = head.column;
-
-  while (row > 0 || column > 0) {
-    if (column === 0) {
-      row--;
-      column = editor.lineLength(row);
-    } else if (/\s/.test(editor.line(row)[column - 1])) {
-      column--;
-    } else {
-      break;
-    }
+  if (head.column === 0) {
+    if (head.row === 0) return head;
+    return { row: head.row - 1, column: editor.lineLength(head.row - 1) };
   }
-
-  while (column > 0 && !/\s/.test(editor.line(row)[column - 1])) column--;
-  return { row, column };
+  const line = editor.line(head.row);
+  let column = head.column;
+  while (column > 0 && charClass(line[column - 1], false) === "whitespace") column--;
+  if (column === 0) return { row: head.row, column };
+  const kind = charClass(line[column - 1], false);
+  while (column > 0 && charClass(line[column - 1], false) === kind) column--;
+  return { row: head.row, column };
 }
 
 export function firstNonWhitespace(line: string, row: number): Position {
