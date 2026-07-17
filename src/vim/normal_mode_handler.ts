@@ -893,6 +893,14 @@ function motionChordHandler(
       return findHandler(key, state, (findState, motion) => apply(motion, findState));
     }
 
+    // `;`/`,` as operator operands (`d;`/`c,`): repeat the last find, with the
+    // same repeat semantics as bare `;`/`,` (a repeated till skips an adjacent
+    // match). With no find recorded yet the operator aborts, like Vim.
+    if (key === ";" || key === ",") {
+      const motion = state.find?.repeat(key === ",");
+      return motion === undefined ? invalid() : apply(motion, state);
+    }
+
     // Marks (`` `a ``/`'a`) then the mark name.
     if (key === "`" || key === "'") {
       const line = key === "'";

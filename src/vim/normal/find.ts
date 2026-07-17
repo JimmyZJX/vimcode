@@ -19,6 +19,14 @@ export class FindState {
   // undefined when no find has run yet.
   repeat(reversed: boolean): FindMotion | undefined {
     if (this.lastFind === undefined) return undefined;
-    return reversed ? reverseFindMotion(this.lastFind) : this.lastFind;
+    const motion = reversed ? reverseFindMotion(this.lastFind) : this.lastFind;
+    if (motion.type === "findForward" || motion.type === "findBackward") {
+      // A repeated till must move the cursor even when it already sits next to
+      // a match (Vim 'cpo' without ';'); the flag lets motion application skip
+      // the adjacent match. Zed models the same by wrapping the stored motion
+      // in `RepeatFind`/`RepeatFindReversed`.
+      return { ...motion, repeated: true };
+    }
+    return motion;
   }
 }

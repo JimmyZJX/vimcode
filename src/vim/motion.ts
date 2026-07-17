@@ -20,8 +20,12 @@ import {
 // basic model-position motions; missing Zed variants should be added here with
 // provenance as they are translated.
 export type FindMotion =
-  | { type: "findForward"; before: boolean; char: string }
-  | { type: "findBackward"; after: boolean; char: string }
+  // [repeated] marks a `;`/`,` re-application of the find (Zed: the
+  // `RepeatFind`/`RepeatFindReversed` wrappers around the stored motion): a
+  // repeated till must make progress even when the cursor already sits
+  // adjacent to a match (Vim default 'cpo' without ';', see `:h cpo-;`).
+  | { type: "findForward"; before: boolean; char: string; repeated?: boolean }
+  | { type: "findBackward"; after: boolean; char: string; repeated?: boolean }
   | { type: "searchForward"; query: string; options?: SearchOptions; offset?: SearchOffset }
   | { type: "searchBackward"; query: string; options?: SearchOptions; offset?: SearchOffset };
 
@@ -453,9 +457,9 @@ export function applyMotionOnce(
     case "searchMatch":
       return normalCursorPosition(editor, motion.range.start);
     case "findForward":
-      return findForward(editor, clipped, motion.char, 1, { before: motion.before }) ?? clipped;
+      return findForward(editor, clipped, motion.char, 1, { before: motion.before, repeated: motion.repeated }) ?? clipped;
     case "findBackward":
-      return findBackward(editor, clipped, motion.char, 1, { after: motion.after });
+      return findBackward(editor, clipped, motion.char, 1, { after: motion.after, repeated: motion.repeated });
     case "searchForward":
       return searchForward(editor, clipped, motion.query, motion.options, motion.offset) ?? clipped;
     case "searchBackward":
@@ -537,7 +541,7 @@ export function applyMotionWithGoal(
   { allowEndOfLine = false }: { allowEndOfLine?: boolean } = {}
 ): MotionResult {
   if (motion.type === "findForward") {
-    return { position: findForward(editor, start, motion.char, count, { before: motion.before }) ?? start };
+    return { position: findForward(editor, start, motion.char, count, { before: motion.before, repeated: motion.repeated }) ?? start };
   }
   if (motion.type === "startOfDocument") {
     const row = Math.max(0, Math.min(count - 1, editor.lineCount() - 1));
@@ -605,7 +609,7 @@ export function applyMotionWithGoal(
     return { position: applyMotionOnce(editor, start, motion) };
   }
   if (motion.type === "findBackward") {
-    return { position: findBackward(editor, start, motion.char, count, { after: motion.after }) };
+    return { position: findBackward(editor, start, motion.char, count, { after: motion.after, repeated: motion.repeated }) };
   }
   if (motion.type === "searchForward" || motion.type === "searchBackward") {
     let position = start;
@@ -779,12 +783,18 @@ export function motionRange(
     return motion.range;
   }
   if (motion.type === "findForward") {
-    const target = findForwardTarget(editor, start, motion.char, count);
+    const target = findForwardMotionTarget(editor, start, motion.char, count, {
+      before: motion.before,
+      repeated: motion.repeated === true,
+    });
     if (target === undefined) return { start, end: start };
     return orderedRange(start, motion.before ? target : nextPosition(editor, target) ?? target);
   }
   if (motion.type === "findBackward") {
-    const target = findBackwardTarget(editor, start, motion.char, count);
+    const target = findBackwardMotionTarget(editor, start, motion.char, count, {
+      after: motion.after,
+      repeated: motion.repeated === true,
+    });
     if (target === undefined) return { start, end: start };
     return orderedRange(motion.after ? nextPosition(editor, target) ?? target : target, nextPosition(editor, start) ?? start);
   }
@@ -819,9 +829,9 @@ function findForward(
   start: Position,
   char: string,
   count: number,
-  { before }: { before: boolean }
+  { before, repeated = false }: { before: boolean; repeated?: boolean }
 ): Position | undefined {
-  const target = findForwardTarget(editor, start, char, count);
+  const target = findForwardMotionTarget(editor, start, char, count, { before, repeated });
   if (target === undefined) return undefined;
   if (!before) return target;
   if (target.column > 0) return { row: target.row, column: target.column - 1 };
@@ -833,12 +843,50 @@ function findBackward(
   start: Position,
   char: string,
   count: number,
-  { after }: { after: boolean }
+  { after, repeated = false }: { after: boolean; repeated?: boolean }
 ): Position {
-  const target = findBackwardTarget(editor, start, char, count);
+  const target = findBackwardMotionTarget(editor, start, char, count, { after, repeated });
   if (target === undefined) return start;
   if (!after) return target;
   return { row: target.row, column: Math.min(target.column + 1, Math.max(0, editor.lineLength(target.row) - 1)) };
+}
+
+// The matched-character position for a (possibly repeated) forward find. A
+// repeated till whose match is adjacent would leave the cursor in place, so it
+// skips to the following match instead:
+// - Neovim: search.c `searchc` clears `stop` for a `;`/`,` of a `t` with
+//   count 1 ("Force a move of at least one char", 'cpo' without ';').
+// - Zed: motion.rs `RepeatFind` re-runs `find_forward` with `times + 1` when
+//   the motion landed on the current point. With a count the adjacent match
+//   already counts as the first occurrence and the motion makes progress, so
+//   only the count-1 case can retry — matching Neovim's `count == 1` guard.
+function findForwardMotionTarget(
+  editor: VimEditorCapabilities,
+  start: Position,
+  char: string,
+  count: number,
+  { before, repeated }: { before: boolean; repeated: boolean }
+): Position | undefined {
+  const target = findForwardTarget(editor, start, char, count);
+  if (repeated && before && target !== undefined && target.column === start.column + 1) {
+    return findForwardTarget(editor, start, char, count + 1);
+  }
+  return target;
+}
+
+// Backward counterpart of [findForwardMotionTarget] for repeated `T`.
+function findBackwardMotionTarget(
+  editor: VimEditorCapabilities,
+  start: Position,
+  char: string,
+  count: number,
+  { after, repeated }: { after: boolean; repeated: boolean }
+): Position | undefined {
+  const target = findBackwardTarget(editor, start, char, count);
+  if (repeated && after && target !== undefined && target.column === start.column - 1) {
+    return findBackwardTarget(editor, start, char, count + 1);
+  }
+  return target;
 }
 
 function findForwardTarget(editor: VimEditorCapabilities, start: Position, char: string, count: number): Position | undefined {
