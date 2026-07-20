@@ -51,6 +51,15 @@ RWR-1, RWR-2, and RWR-4 are addressed in the current WIP. RWR-3 and RWR-5 remain
 
 REG-M1 through REG-M5 are addressed in the current WIP: execution state is scoped per Vim facade while values remain shared, explicit/named deletes rotate history, visual put records replaced text while `P` preserves its source, cancelled/no-op operations preserve registers, and uppercase append preserves geometry and multicursor parts. REG-M6 through REG-M10 remain follow-up work.
 
+Second-pass review findings (Neovim-differential, after the WIP landed):
+REG-M11 is fixed with regression coverage; REG-M12 and REG-M13 remain open.
+
+| ID | Severity | Finding | Expected behavior |
+|---|---|---|---|
+| REG-M11 | High (**fixed**) | Explicit-register small deletes clobbered `"-` (`"adw`/`"ax`/`""dw` wrote the small-delete register). | Neovim-verified: `"-` is written only when no register is specified (:h quote-); the `1`-`9` rotation still happens with a named register (`"add` fills `"1`), and visual put records replaced text in `"-` even when reading a named register. `writeDelete` now gates the small-delete branch on an unspecified register. |
+| REG-M12 | Low | `appendRegisterPart` concatenates blockwise+blockwise text directly (`"ab"+"cd"` → `"abcd"`). | Vim stacks appended block rows (`:h quote.`-adjacent behavior); expected `"ab\ncd"`. Obscure corner, unverified against nvim (headless probe pending). |
+| REG-M13 | Low | `readContentIfPresent` for `+`/`*` falls back to `storage.unnamed` when no transaction content or cached clipboard exists. | Masks "clipboard unavailable" as last-yank content. Defensible for the synchronous core, but decide explicitly and comment; a missing clipboard register arguably reports absent (matters for ReplaceWithRegister's missing-register error path). |
+
 | ID | Severity | Finding | Expected behavior |
 |---|---|---|---|
 | REG-M1 | Critical | `Registers` stores the active clipboard transaction globally while controllers have independent queues. Concurrent editors/plans can overwrite each other's active transaction and cached contents. | Make the transaction execution-scoped or globally serialize all roots sharing `VimGlobalState`. |

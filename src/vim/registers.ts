@@ -198,21 +198,27 @@ export class Registers {
     this.write(name, text, kind, parts);
     if (name === '"') this.storage.numbered.set("0", content);
 
-    this.writeDeleteHistoryContent(content);
+    // Neovim-verified asymmetry: the 1-9 rotation happens even when the delete
+    // names a register (`"add` also fills `"1`, :h quote1), but the
+    // small-delete register is written only when NO register was specified
+    // (`"adw`/`""dw` leave `"-` untouched, :h quote-).
+    this.writeDeleteHistoryContent(content, { smallDelete: name === undefined });
   }
 
   /** Update numbered/small-delete history without overwriting the selected
-      source register (Visual `P`). */
+      source register (Visual `P`). The replaced text of a visual put counts as
+      an unspecified-register delete, so it may write `"-` even when the put
+      itself read a named register (Neovim-verified: `viw"ap` fills `"-`). */
   writeDeleteHistory(
     text: string,
     kind: RegisterKind = "characterwise",
     parts?: readonly RegisterPart[]
   ): void {
     const content: RegisterContent = parts === undefined ? { text, kind } : { text, kind, parts };
-    this.writeDeleteHistoryContent(content);
+    this.writeDeleteHistoryContent(content, { smallDelete: true });
   }
 
-  private writeDeleteHistoryContent(content: RegisterContent): void {
+  private writeDeleteHistoryContent(content: RegisterContent, { smallDelete }: { smallDelete: boolean }): void {
     // Classify from real part geometry, not synthetic separators in aggregate
     // multicursor text.
     const multiline = content.kind !== "characterwise"
@@ -220,7 +226,7 @@ export class Registers {
         ? content.text.includes("\n")
         : content.parts.some(part => part.text.includes("\n")));
     if (multiline) this.pushNumberedDelete(content);
-    else this.storage.smallDelete = content;
+    else if (smallDelete) this.storage.smallDelete = content;
   }
 
   writeSearch(query: string): void {

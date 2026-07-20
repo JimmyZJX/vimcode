@@ -101,3 +101,48 @@ describe("register semantics", () => {
     expect(editor.getText()).toBe("one two\nred blue\nonetwo BBB\nredblue DDD");
   });
 });
+
+describe("delete-history register routing (Neovim-verified)", () => {
+  function probe(keys: readonly string[], regs: readonly ("\"" | "-" | "0" | "1" | "a")[]): Record<string, string> {
+    const globalState = new VimGlobalState();
+    for (const r of ["-", "0", "1", "a"] as const) globalState.registers.write(r, "INIT");
+    const editor = new InMemoryVimEditor("alpha one\nbravo two");
+    const vim = new Vim(editor, {}, globalState);
+    runKeys(vim, keys);
+    const out: Record<string, string> = {};
+    for (const r of regs) out[r] = vim.readRegister(r);
+    return out;
+  }
+
+  it("an unspecified-register small delete writes \"-", () => {
+    expect(probe(["d", "w"], ["-", "1"])).toEqual({ "-": "alpha ", "1": "INIT" });
+  });
+
+  it("explicit-register small deletes leave \"- untouched", () => {
+    // :h quote-: `"-` is written "except when the command specifies a register".
+    expect(probe(["\"", "a", "d", "w"], ["-", "1", "a"]))
+      .toEqual({ "-": "INIT", "1": "INIT", "a": "alpha " });
+    expect(probe(["\"", "a", "x"], ["-", "a"])).toEqual({ "-": "INIT", "a": "a" });
+    // Explicit `""` counts as a specified register for `"-` but also fills `"0`.
+    expect(probe(["\"", "\"", "d", "w"], ["-", "0", "1"]))
+      .toEqual({ "-": "INIT", "0": "alpha ", "1": "INIT" });
+  });
+
+  it("named-register line deletes still rotate into \"1", () => {
+    // :h quote1: the rotation happens even when the delete names a register.
+    expect(probe(["\"", "a", "d", "d"], ["-", "1", "a"]))
+      .toEqual({ "-": "INIT", "1": "alpha one\n", "a": "alpha one\n" });
+  });
+
+  it("visual put with a named register still records the replaced text in \"-", () => {
+    const globalState = new VimGlobalState();
+    globalState.registers.write("a", "foo");
+    globalState.registers.write("-", "INIT");
+    const editor = new InMemoryVimEditor("alpha one\nbravo two");
+    const vim = new Vim(editor, {}, globalState);
+    runKeys(vim, ["v", "i", "w", "\"", "a", "p"]);
+    expect(editor.line(0)).toBe("foo one");
+    expect(vim.readRegister("-")).toBe("alpha");
+    expect(vim.readRegister("a")).toBe("foo");
+  });
+});
