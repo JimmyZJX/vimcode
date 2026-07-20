@@ -66,7 +66,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly unknownKeyEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
-	private readonly searchNotFoundEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	private readonly searchStatusEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly focusedEditorListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly statusListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly vimcodeEnabledContext: IContextKey<boolean>;
@@ -152,7 +152,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		if (!controller) {
 			this.statusbarEntry.clear();
 			this.unknownKeyEntry.clear();
-			this.searchNotFoundEntry.clear();
+			this.searchStatusEntry.clear();
 			return;
 		}
 
@@ -166,7 +166,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		if (!controller.isVimEnabled()) {
 			this.statusbarEntry.clear();
 			this.unknownKeyEntry.clear();
-			this.searchNotFoundEntry.clear();
+			this.searchStatusEntry.clear();
 			this.restoreStatusBarColor();
 			return;
 		}
@@ -187,8 +187,8 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 			this.statusbarEntry.value = this.statusbarService.addEntry(entry, 'status.vimMode', StatusbarAlignment.LEFT, 100);
 		}
 		this.updateUnknownKeyEntry(status);
-		this.updateSearchNotFoundEntry(status);
-		const remainingMs = [status.readonlyWarningRemainingMs, status.swallowedKeyWarningRemainingMs, status.searchNotFoundWarningRemainingMs]
+		this.updateSearchStatusEntry(status);
+		const remainingMs = [status.readonlyWarningRemainingMs, status.swallowedKeyWarningRemainingMs, status.searchStatusRemainingMs]
 			.filter((ms): ms is number => ms !== undefined);
 		if (remainingMs.length > 0) {
 			this.readonlyWarningTimeout = setTimeout(() => this.updateEntry(controller), Math.max(0, Math.min(...remainingMs)));
@@ -217,23 +217,34 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		}
 	}
 
-	// Transient warning-background entry for a failed search (Vim E486).
-	private updateSearchNotFoundEntry(status: ReturnType<VimController['getStatus']>): void {
-		if (status.searchNotFoundWarning === undefined) {
-			this.searchNotFoundEntry.clear();
+	// Search feedback entry: the match count (`3 of 12`), or a
+	// warning-background `Pattern not found` (Vim E486).
+	private updateSearchStatusEntry(status: ReturnType<VimController['getStatus']>): void {
+		const search = status.searchStatus;
+		if (search === undefined) {
+			this.searchStatusEntry.clear();
 			return;
 		}
-		const entry = {
-			name: 'Vim Search Not Found',
-			text: 'Pattern not found',
-			ariaLabel: 'The search pattern was not found',
-			tooltip: `The search pattern was not found: ${status.searchNotFoundWarning}`,
-			kind: 'warning' as const,
-		};
-		if (this.searchNotFoundEntry.value) {
-			this.searchNotFoundEntry.value.update(entry);
+		const entry = search.kind === 'notFound'
+			? {
+				name: 'Vim Search',
+				text: 'Pattern not found',
+				ariaLabel: 'The search pattern was not found',
+				tooltip: `The search pattern was not found: ${search.query}`,
+				kind: 'warning' as const,
+			}
+			: {
+				name: 'Vim Search',
+				// A capped scan has an unreliable index; show a placeholder.
+				text: search.capped ? '? of 9999+' : `${search.index} of ${search.total}`,
+				ariaLabel: search.capped ? 'More than 9999 search matches' : `Search match ${search.index} of ${search.total}`,
+				tooltip: 'Current search match',
+				kind: undefined,
+			};
+		if (this.searchStatusEntry.value) {
+			this.searchStatusEntry.value.update(entry);
 		} else {
-			this.searchNotFoundEntry.value = this.statusbarService.addEntry(entry, 'status.vimSearchNotFound', StatusbarAlignment.LEFT, 98);
+			this.searchStatusEntry.value = this.statusbarService.addEntry(entry, 'status.vimSearchStatus', StatusbarAlignment.LEFT, 98);
 		}
 	}
 

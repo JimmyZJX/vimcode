@@ -17,6 +17,16 @@ export type SearchOptions = {
 };
 export type SearchMatch = TextRange;
 
+/** 1-based [index] of a match among [total] document matches; [capped] when
+    the host limited the scan. */
+export type SearchMatchCount = { index: number; total: number; capped: boolean };
+
+/** What the search-status display shows: a match count (Vim `[x/y]`) or a
+    not-found report (Vim E486). */
+export type SearchStatus =
+  | { kind: "count"; index: number; total: number; capped: boolean }
+  | { kind: "notFound"; query: string };
+
 // Vim `search-offset`: an offset typed after the closing separator of a search
 // (`/pat/e`, `?pat?s-1`) moves the cursor relative to the match rather than to
 // its start. `end` targets the last character of the match, `start` (Vim `s` or
@@ -101,6 +111,36 @@ function findLiteralSearchMatchInText(
   direction: SearchDirection,
   options: SearchOptions
 ): { range: SearchMatch; offset: number } | undefined {
+  return findMatchFromMatches(allLiteralSearchMatchesInText(text, query, options), startOffset, direction, options);
+}
+
+function findRegexSearchMatchInText(
+  text: string,
+  query: string,
+  startOffset: number,
+  direction: SearchDirection,
+  options: SearchOptions
+): { range: SearchMatch; offset: number } | undefined {
+  return findMatchFromMatches(allRegexSearchMatchesInText(text, query, options), startOffset, direction, options);
+}
+
+/** All matches in document order (for the match-count status). */
+export function allSearchMatchesInText(
+  text: string,
+  query: string,
+  options: SearchOptions
+): { range: SearchMatch; offset: number; length: number }[] {
+  if (query.length === 0) return [];
+  return options.regex === true
+    ? allRegexSearchMatchesInText(text, query, options)
+    : allLiteralSearchMatchesInText(text, query, options);
+}
+
+function allLiteralSearchMatchesInText(
+  text: string,
+  query: string,
+  options: SearchOptions
+): { range: SearchMatch; offset: number; length: number }[] {
   const searchText = options.caseSensitive === false ? text.toLocaleLowerCase() : text;
   const searchQuery = options.caseSensitive === false ? query.toLocaleLowerCase() : query;
   const matches: { range: SearchMatch; offset: number; length: number }[] = [];
@@ -111,21 +151,18 @@ function findLiteralSearchMatchInText(
     }
     offset = searchText.indexOf(searchQuery, offset + Math.max(1, searchQuery.length));
   }
-  return findMatchFromMatches(matches, startOffset, direction, options);
+  return matches;
 }
 
-function findRegexSearchMatchInText(
+function allRegexSearchMatchesInText(
   text: string,
   query: string,
-  startOffset: number,
-  direction: SearchDirection,
   options: SearchOptions
-): { range: SearchMatch; offset: number } | undefined {
+): { range: SearchMatch; offset: number; length: number }[] {
   const regex = regexForQuery(query, options);
-  if (regex === undefined) return undefined;
-  const matches = regexMatches(text, regex)
+  if (regex === undefined) return [];
+  return regexMatches(text, regex)
     .filter(match => options.wholeWord !== true || isWholeWordMatch(text, match.offset, match.length));
-  return findMatchFromMatches(matches, startOffset, direction, options);
 }
 
 function findMatchFromMatches(

@@ -71,19 +71,19 @@ export function searchModeHandler(
     if (origin !== undefined && isVisualModeKind(origin)) {
       const visual = state.visual;
       return effect(origin, () => {
-        state.setPendingSearchNotFound?.(undefined);
+        state.setPendingSearchStatus?.(undefined);
         const motion = search.handleKey(pending, "enter", registers, editor).motion;
-        if (motion !== undefined && !reportSearchMotionNotFound(state, editor, motion)) {
+        if (motion !== undefined && !reportSearchMotionStatus(state, editor, motion)) {
           visual?.applyMotion(motion, 1);
         }
         editor.clearSearchHighlights();
       });
     }
     return effect("normal", () => {
-      state.setPendingSearchNotFound?.(undefined);
+      state.setPendingSearchStatus?.(undefined);
       const motion = search.handleKey(pending, "enter", registers, editor).motion;
       if (motion === undefined) return;
-      reportSearchMotionNotFound(state, editor, motion);
+      reportSearchMotionStatus(state, editor, motion);
       applyMotionResults(
         editor,
         editor.getSelections().map((selection) => ({
@@ -101,7 +101,7 @@ export function searchModeHandler(
     if (!search.handleKey(pending, key, registers, editor).handled) {
       state.reportSwallowedPromptKey?.(key);
     }
-    state.setPendingSearchNotFound?.(search.pendingNotFoundQuery(pending, editor));
+    state.setPendingSearchStatus?.(search.pendingSearchStatus(pending, editor));
   }, {
     registerToRead: key === "ctrl-v" || key === "ctrl-y" ? { registerName: "+" } : undefined,
   });
@@ -153,7 +153,7 @@ function searchOperandWaiter(
     // Vim: the aborted query still enters the search history.
     if (isEscapeKey(key)) {
       return effect("normal", () => {
-        state.setPendingSearchNotFound?.(undefined);
+        state.setPendingSearchStatus?.(undefined);
         search.recordHistory(pending);
         search.clearPending(editor, pending, { restoreViewport: true });
       });
@@ -178,7 +178,7 @@ function searchOperandWaiter(
               if (!search.handleKey(pending, key, registers, editor).handled) {
                 state.reportSwallowedPromptKey?.(key);
               }
-              state.setPendingSearchNotFound?.(search.pendingNotFoundQuery(pending, editor));
+              state.setPendingSearchStatus?.(search.pendingSearchStatus(pending, editor));
             },
             registerToRead: key === "ctrl-v" || key === "ctrl-y" ? { registerName: "+" } : undefined,
           },
@@ -198,23 +198,25 @@ function searchOperandWaiter(
     }
     return withClearHighlights(
       withSearchCommit(apply(motion, state), () => {
-        state.setPendingSearchNotFound?.(undefined);
+        state.setPendingSearchStatus?.(undefined);
         search.recordHistory(pending);
         search.commitMotion(motion, registers, editor);
         // A missing match aborts the operator; make the abort loud (E486).
-        reportSearchMotionNotFound(state, editor, motion);
+        reportSearchMotionStatus(state, editor, motion, { countOnMatch: false });
       }),
       editor
     );
   };
 }
 
-// Vim E486: report a transient warning when a search motion has no match from
-// the current cursor. Returns whether the pattern was missing.
-export function reportSearchMotionNotFound(
+// Report a search motion's outcome: not-found (Vim E486), or the match count
+// (Vim `[x/y]`) unless [countOnMatch] is false (operator searches edit the
+// buffer, so a count would be stale). Returns whether the pattern was missing.
+export function reportSearchMotionStatus(
   state: HandlerState,
   editor: VimEditorCapabilities,
-  motion: Motion
+  motion: Motion,
+  { countOnMatch = true }: { countOnMatch?: boolean } = {}
 ): boolean {
   if (motion.type !== "searchForward" && motion.type !== "searchBackward") return false;
   const match = editor.findSearchMatch(
@@ -223,9 +225,15 @@ export function reportSearchMotionNotFound(
     motion.type === "searchForward" ? "forward" : "backward",
     motion.options
   );
-  if (match !== undefined) return false;
-  state.reportSearchNotFound?.(motion.query);
-  return true;
+  if (match === undefined) {
+    state.reportSearchStatus?.({ kind: "notFound", query: motion.query });
+    return true;
+  }
+  if (countOnMatch) {
+    const count = editor.searchMatchCount(motion.query, match.start, motion.options);
+    if (count !== undefined) state.reportSearchStatus?.({ kind: "count", ...count });
+  }
+  return false;
 }
 
 // Run [commit] (the deferred search side effects: preview teardown, [last] +
@@ -433,7 +441,7 @@ function searchNavigation(
     () => {
       const motion = resolve(search, editor, registers);
       if (motion === undefined) return;
-      reportSearchMotionNotFound(state, editor, motion);
+      reportSearchMotionStatus(state, editor, motion);
       applyMotionResults(
         editor,
         editor.getSelections().map((selection) => ({

@@ -10,7 +10,7 @@ import { VimEditorCapabilities } from "../editor.js";
 import { Motion } from "../motion.js";
 import { HistoryNavigation, PromptHistory, historyNavigationKey } from "../prompt_history.js";
 import { Registers } from "../registers.js";
-import { SearchOffset, SearchOptions, parseSearchOffset, searchOptionsForQuery } from "../search.js";
+import { SearchOffset, SearchOptions, SearchStatus, parseSearchOffset, searchOptionsForQuery } from "../search.js";
 import { SingleLineEditor } from "../single_line_editor.js";
 import { TextRange, selectionHead } from "../state.js";
 
@@ -229,18 +229,21 @@ export class SearchState {
     if (match !== undefined) editor.revealRange(match);
   }
 
-  // The typed pending query when it has no match from the cursor (for the live
-  // not-found warning); undefined when nothing is typed or a match exists.
-  pendingNotFoundQuery(pending: PendingSearch, editor: VimEditorCapabilities): string | undefined {
+  // Live status for the typed pending query: match count or not-found;
+  // undefined when nothing is typed.
+  pendingSearchStatus(pending: PendingSearch, editor: VimEditorCapabilities): SearchStatus | undefined {
     const query = splitSearchOffset(pending.input.value(), pending.backwards ? "?" : "/").pattern;
     if (query.length === 0) return undefined;
+    const options = searchOptionsForQuery(query);
     const match = editor.findSearchMatch(
       query,
       selectionHead(editor.getSelections()[0]),
       pending.backwards ? "backward" : "forward",
-      searchOptionsForQuery(query)
+      options
     );
-    return match === undefined ? query : undefined;
+    if (match === undefined) return { kind: "notFound", query };
+    const count = editor.searchMatchCount(query, match.start, options);
+    return count === undefined ? { kind: "notFound", query } : { kind: "count", ...count };
   }
 
   setLast(

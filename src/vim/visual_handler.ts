@@ -16,7 +16,7 @@ import type { FindApplier } from "./normal_mode_handler.js";
 import { configuredTextwidth, convertTargetForKey, digraphWaiter, editorGChordHandler, findHandler, gChordMotion, keyForInput, lineMotionForKey, repeatFindHandler, resolveMotion, restoreVisualSelectionHandler } from "./normal_mode_handler.js";
 import { prefixHandler } from "./prefix_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
-import { reportSearchMotionNotFound, searchPromptHandler, searchSelectionHandler, visualSearchUnderCursorHandler } from "./search_handler.js";
+import { reportSearchMotionStatus, searchPromptHandler, searchSelectionHandler, visualSearchUnderCursorHandler } from "./search_handler.js";
 import type { VimMode } from "./state.js";
 import type { VisualKeyResult, VisualMode, VisualCommand, VisualModeKind, VisualSessionEnd } from "./visual.js";
 
@@ -471,7 +471,7 @@ function visualSearchNavHandler(key: string, state: HandlerState): HandleResult<
     () => {
       const motion = search.repeat({ reversed });
       if (motion === undefined) return;
-      if (reportSearchMotionNotFound(state, editor, motion)) return;
+      if (reportSearchMotionStatus(state, editor, motion)) return;
       visual.applyMotion(motion, count);
     },
     { dotRepeatable: false }

@@ -9,7 +9,9 @@ import { graphemeStart } from "./grapheme.js";
 import {
   SearchDirection,
   SearchMatch,
+  SearchMatchCount,
   SearchOptions,
+  allSearchMatchesInText,
   findSearchMatchInText,
 } from "./search.js";
 import {
@@ -224,6 +226,14 @@ export interface VimEditorCapabilities {
     direction: SearchDirection,
     options?: SearchOptions
   ): SearchMatch | undefined;
+  /** Match count for the search-status display: the 1-based index of the match
+      starting at [matchStart] among all document matches, or undefined when
+      nothing matches. */
+  searchMatchCount(
+    query: string,
+    matchStart: Position,
+    options?: SearchOptions
+  ): SearchMatchCount | undefined;
   clearSearchHighlights(): void;
 
   // Live `:s` preview (see [substitutePreviews]): the host highlights each
@@ -929,6 +939,18 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       direction,
       options
     )?.range;
+  }
+
+  searchMatchCount(
+    query: string,
+    matchStart: Position,
+    options: SearchOptions = {}
+  ): SearchMatchCount | undefined {
+    const matches = allSearchMatchesInText(this.getText(), query, options);
+    if (matches.length === 0) return undefined;
+    const target = offsetOfPosition(this, matchStart);
+    const index = matches.findIndex(match => match.offset >= target);
+    return { index: (index < 0 ? matches.length - 1 : index) + 1, total: matches.length, capped: false };
   }
 
   clearSearchHighlights(): void {}

@@ -16,7 +16,7 @@ import { FindReplaceState } from '../../find/browser/findState.js';
 import type { SubstitutePreview } from '../common/command.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition, normalViewLineColumnForGoal } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
-import { SearchDirection, SearchMatch, SearchOptions, translateVimRegex } from '../common/search.js';
+import { SearchDirection, SearchMatch, SearchMatchCount, SearchOptions, translateVimRegex } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
 import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
 
@@ -78,6 +78,10 @@ registerThemingParticipant((theme, collector) => {
 		}
 	`);
 });
+
+// Bounds the match-count scan; when reached ([capped]) the status bar shows a
+// `? of 9999+` placeholder instead of exact numbers.
+const MaxCountedSearchMatches = 10000;
 
 /** Rendering options for the VSCodeVim `vim.highlightedyank.*` compatibility
     feature; undefined when the highlight is disabled. */
@@ -842,6 +846,27 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			? model.findNextMatch(query, startPosition, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false)
 			: model.findPreviousMatch(query, startPosition, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false);
 		return match === null ? undefined : fromRange(match.range);
+	}
+
+	searchMatchCount(rawQuery: string, matchStart: VimPosition, options: SearchOptions = {}): SearchMatchCount | undefined {
+		if (rawQuery.length === 0) {
+			return undefined;
+		}
+		const query = options.regex === true ? translateVimRegex(rawQuery).source : rawQuery;
+		const model = this.model();
+		const wordSeparators = options.wholeWord === true ? this.editor.getOption(EditorOption.wordSeparators) : null;
+		const limit = MaxCountedSearchMatches;
+		const matches = model.findMatches(query, false, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false, limit);
+		if (matches.length === 0) {
+			return undefined;
+		}
+		const target = new VSCodePosition(matchStart.row + 1, matchStart.column + 1);
+		const index = matches.findIndex(match => target.isBeforeOrEqual(match.range.getStartPosition()));
+		return {
+			index: (index < 0 ? matches.length - 1 : index) + 1,
+			total: matches.length,
+			capped: matches.length >= limit,
+		};
 	}
 
 	clearSearchHighlights(): void {

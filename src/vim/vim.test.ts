@@ -279,23 +279,23 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const editor = new InMemoryVimEditor("alpha bravo");
     const vim = new Vim(editor);
     runKeys(vim, ["/", "z", "z", "enter"]);
-    expect(vim.status.searchNotFoundWarning).toBe("zz");
-    expect(vim.status.searchNotFoundWarningRemainingMs).toBeGreaterThan(0);
+    expect(vim.status.searchStatus).toEqual({ kind: "notFound", query: "zz" });
+    expect(vim.status.searchStatusRemainingMs).toBeGreaterThan(0);
     expect(head(editor)).toEqual({ row: 0, column: 0 });
 
-    // A successful search does not warn.
+    // A successful search reports a count instead.
     const okVim = new Vim(new InMemoryVimEditor("alpha bravo"));
     runKeys(okVim, ["/", "b", "r", "enter"]);
-    expect(okVim.status.searchNotFoundWarning).toBeUndefined();
+    expect(okVim.status.searchStatus).toEqual({ kind: "count", index: 1, total: 1, capped: false });
 
     // `n` after the last match was deleted warns too.
     const nEditor = new InMemoryVimEditor("ab");
     const nVim = new Vim(nEditor);
     runKeys(nVim, ["/", "b", "enter"]);
-    expect(nVim.status.searchNotFoundWarning).toBeUndefined();
+    expect(nVim.status.searchStatus).toEqual({ kind: "count", index: 1, total: 1, capped: false });
     runKeys(nVim, ["x"]);
     runKeys(nVim, ["n"]);
-    expect(nVim.status.searchNotFoundWarning).toBe("b");
+    expect(nVim.status.searchStatus).toEqual({ kind: "notFound", query: "b" });
 
     // A failed operator search (`d/zz<enter>`) warns and leaves the buffer
     // unchanged.
@@ -303,36 +303,55 @@ describe("Zed-inspired Vim core smoke tests", () => {
     const dVim = new Vim(dEditor);
     runKeys(dVim, ["d", "/", "z", "z", "enter"]);
     expect(dEditor.getText()).toBe("alpha");
-    expect(dVim.status.searchNotFoundWarning).toBe("zz");
+    expect(dVim.status.searchStatus).toEqual({ kind: "notFound", query: "zz" });
+  });
+
+  it("shows match counts while searching, after enter, and on n/N", () => {
+    const editor = new InMemoryVimEditor("one two one");
+    const vim = new Vim(editor);
+
+    // Sticky count while typing (the previewed match is the current one).
+    runKeys(vim, ["/", "o", "n", "e"]);
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 2, total: 2, capped: false });
+    expect(vim.status.searchStatusRemainingMs).toBeUndefined();
+
+    // Timed count after the commit.
+    runKeys(vim, ["enter"]);
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 2, total: 2, capped: false });
+    expect(vim.status.searchStatusRemainingMs).toBeGreaterThan(0);
+
+    // `n` wraps to the first match and updates the count.
+    runKeys(vim, ["n"]);
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 1, total: 2, capped: false });
   });
 
   it("shows the search-not-found warning live while typing the query", () => {
     const vim = new Vim(new InMemoryVimEditor("alpha"));
 
-    // Sticky (no countdown) while the pending query misses; cleared as soon as
-    // it matches again.
+    // Sticky (no countdown) while the pending query misses; a count again as
+    // soon as it matches.
     runKeys(vim, ["/", "a", "z"]);
-    expect(vim.status.searchNotFoundWarning).toBe("az");
-    expect(vim.status.searchNotFoundWarningRemainingMs).toBeUndefined();
+    expect(vim.status.searchStatus).toEqual({ kind: "notFound", query: "az" });
+    expect(vim.status.searchStatusRemainingMs).toBeUndefined();
     runKeys(vim, ["backspace"]);
-    expect(vim.status.searchNotFoundWarning).toBeUndefined();
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 2, total: 2, capped: false });
 
-    // Cancelling the prompt clears a pending warning.
+    // Cancelling the prompt clears a pending status.
     runKeys(vim, ["z", "escape"]);
-    expect(vim.status.searchNotFoundWarning).toBeUndefined();
+    expect(vim.status.searchStatus).toBeUndefined();
 
     // Committing a missing query converts the sticky warning into a timed one.
     runKeys(vim, ["/", "z", "z", "enter"]);
-    expect(vim.status.searchNotFoundWarning).toBe("zz");
-    expect(vim.status.searchNotFoundWarningRemainingMs).toBeGreaterThan(0);
+    expect(vim.status.searchStatus).toEqual({ kind: "notFound", query: "zz" });
+    expect(vim.status.searchStatusRemainingMs).toBeGreaterThan(0);
 
     // The operand prompt (`d/`) warns live and clears on escape.
     const dVim = new Vim(new InMemoryVimEditor("alpha"));
     runKeys(dVim, ["d", "/", "z"]);
-    expect(dVim.status.searchNotFoundWarning).toBe("z");
-    expect(dVim.status.searchNotFoundWarningRemainingMs).toBeUndefined();
+    expect(dVim.status.searchStatus).toEqual({ kind: "notFound", query: "z" });
+    expect(dVim.status.searchStatusRemainingMs).toBeUndefined();
     runKeys(dVim, ["escape"]);
-    expect(dVim.status.searchNotFoundWarning).toBeUndefined();
+    expect(dVim.status.searchStatus).toBeUndefined();
   });
 
   it("owns every decodable search-prompt key (unknown keys are swallowed)", () => {
