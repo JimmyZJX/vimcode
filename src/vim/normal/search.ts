@@ -269,6 +269,18 @@ export class SearchState {
     };
   }
 
+  // Vim `:h quote/`: `/`, `:g` and `:s` share one last search pattern.
+  lastPattern(): string | undefined {
+    return this.last?.query;
+  }
+
+  // An explicit `:g`/`:s` pattern becomes the last search pattern: `n` follows
+  // it, `@/` holds it and the persistent highlight updates — always forward,
+  // with no search offset.
+  setLastFromExCommand(pattern: string, registers: Registers, editor: VimEditorCapabilities): void {
+    this.setLast(pattern, false, registers, editor);
+  }
+
   repeat({ reversed }: { reversed: boolean }): Motion | undefined {
     if (this.last === undefined) return undefined;
     const backwards = reversed ? !this.last.backwards : this.last.backwards;

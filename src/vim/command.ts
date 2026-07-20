@@ -70,6 +70,13 @@ export type CommandOptions = {
   exOptions?: { gdefault: boolean };
   /** Resolves `'x` mark addresses (`:'<,'>s/...`) to a row. */
   markLine?: (name: string) => number | undefined;
+  /** Vim's shared "last search pattern" (`:h quote/`): an empty `:g`/`:s`
+      pattern reuses it, and explicit patterns set it (even when nothing
+      matches), so a later `n` follows the ex-command's pattern. */
+  lastSearchPattern?: {
+    read(): string | undefined;
+    write(pattern: string): void;
+  };
 };
 
 type VimCommandAbbreviation = readonly [required: string, optional: string];
@@ -445,7 +452,7 @@ export function executeCommand(editor: VimEditorCapabilities, rawCommand: string
   }
 
   if (trimmedRest.startsWith("s")) {
-    substitute(editor, range ?? currentLineRange(editor, 1), trimmedRest, options.exOptions?.gdefault ?? false);
+    substitute(editor, range ?? currentLineRange(editor, 1), trimmedRest, options);
   }
 }
 
@@ -707,7 +714,12 @@ function sortRange(editor: VimEditorCapabilities, range: LineRange): void {
 function matchingLines(editor: VimEditorCapabilities, range: LineRange, command: string, options: CommandOptions): void {
   const parsed = parseMatchingLines(command);
   if (parsed === undefined) return;
-  const translated = translateVimRegex(parsed.pattern);
+  // Vim: `:g//` reuses the last search pattern (E35 without one), and an
+  // explicit pattern becomes the last search pattern even before matching.
+  const pattern = parsed.pattern.length > 0 ? parsed.pattern : options.lastSearchPattern?.read();
+  if (pattern === undefined || pattern.length === 0) return;
+  if (parsed.pattern.length > 0) options.lastSearchPattern?.write(parsed.pattern);
+  const translated = translateVimRegex(pattern);
   const regexp = new RegExp(translated.source, translated.forceCase === "ignore" ? "i" : "");
   const rows: number[] = [];
   for (let row = range.startRow; row <= range.endRowInclusive; row++) {
@@ -718,16 +730,31 @@ function matchingLines(editor: VimEditorCapabilities, range: LineRange, command:
     return;
   }
   // Vim `:g/pat/normal {keys}`: run the normal command on every matched line.
+  // The matched rows are marks that track earlier iterations' edits.
   if (/^norm(?:al)?!?(\s|$)/.test(parsed.command)) {
-    runNormalKeysOnRows(editor, rows, normalCommandKeysText(parsed.command), options);
+    runNormalKeysOnRows(editor, rows, normalCommandKeysText(parsed.command), options, { trackRows: true });
   }
 }
 
+// Vim `:h :global`: `:g[lobal]/pat/cmd` (`:g!` inverts) and `:v[global]`
+// (inverted, no `!` allowed — E477). The delimiter may be any character except
+// alphanumerics, whitespace, `\`, `"`, `|` and `!`.
 function parseMatchingLines(command: string): { invert: boolean; pattern: string; command: string } | undefined {
-  const invert = command.startsWith("v");
-  const rest = command.slice(1);
+  const nameMatch = /^([a-z]+)(!?)/.exec(command);
+  if (nameMatch === null) return undefined;
+  const [full, name, bang] = nameMatch;
+  let invert: boolean;
+  if (matchesVimCommandAbbreviation(name, ["g", "lobal"])) {
+    invert = bang === "!";
+  } else if (matchesVimCommandAbbreviation(name, ["v", "global"])) {
+    if (bang === "!") return undefined;
+    invert = true;
+  } else {
+    return undefined;
+  }
+  const rest = command.slice(full.length);
   const delimiter = rest[0];
-  if (delimiter === undefined) return undefined;
+  if (delimiter === undefined || /[A-Za-z0-9\s\\"|!]/.test(delimiter)) return undefined;
   const pattern = readUntilDelimiter(rest, delimiter, 1, { requireDelimiter: true });
   if (pattern === undefined) return undefined;
   return { invert, pattern: pattern.value, command: rest.slice(pattern.nextIndex).trim() };
@@ -746,11 +773,13 @@ function deleteMatchingRows(editor: VimEditorCapabilities, rows: readonly number
   if (edits.length > 0) editor.applyEdits(edits, [charwiseSelection({ row: nextRow, column: 0 })]);
 }
 
+// Vim `:[range]normal` iterates fixed line numbers (unlike `:g`, which marks
+// the lines first): `:1,2norm oX` re-processes an inserted line at row 2.
 function normalCommand(editor: VimEditorCapabilities, range: LineRange | undefined, command: string, options: CommandOptions): void {
   const targetRange = range ?? currentLineRange(editor, 1);
   const rows: number[] = [];
   for (let row = targetRange.startRow; row <= targetRange.endRowInclusive; row++) rows.push(row);
-  runNormalKeysOnRows(editor, rows, normalCommandKeysText(command), options);
+  runNormalKeysOnRows(editor, rows, normalCommandKeysText(command), options, { trackRows: false });
 }
 
 function normalCommandKeysText(command: string): string {
@@ -758,9 +787,18 @@ function normalCommandKeysText(command: string): string {
 }
 
 // Vim `:h :normal`: replay the keys with the cursor at the start of each
-// line. `I`/`A` prefixes batch into one edit so the whole ranged command is a
-// single undo step (`:g/pat/norm Abar` then `u` restores every line).
-function runNormalKeysOnRows(editor: VimEditorCapabilities, rows: readonly number[], keysText: string, options: CommandOptions): void {
+// line. `I`/`A` prefixes batch into one edit; the general path replays per
+// row inside one undo transaction, so either way the whole ranged command is
+// a single undo step and undo restores the cursor to the first executed line.
+// [trackRows]: `:g` rows are marks that follow edits; `:[range]norm` rows are
+// fixed line numbers.
+function runNormalKeysOnRows(
+  editor: VimEditorCapabilities,
+  rows: readonly number[],
+  keysText: string,
+  options: CommandOptions,
+  { trackRows }: { trackRows: boolean }
+): void {
   if (rows.length === 0 || keysText.length === 0) return;
   if (keysText.startsWith("I")) {
     prependToRows(editor, rows, keysText.slice(1));
@@ -771,8 +809,21 @@ function runNormalKeysOnRows(editor: VimEditorCapabilities, rows: readonly numbe
     return;
   }
   const keys = keysText.split("").map(key => key === " " ? "space" : key);
-  for (const row of rows) {
-    options.runNormalKeys?.(keys, { startRow: row, endRowInclusive: row });
+  editor.setSelections([charwiseSelection({ row: rows[0], column: 0 })]);
+  const transaction = editor.beginUndoTransaction(editor.getSelections());
+  const tracked = trackRows ? editor.trackLines(rows) : undefined;
+  try {
+    // Fixed rows beyond a shrunk buffer clamp to the last line (Vim replays
+    // `:1,3norm dd` on a 3-line buffer down to an empty buffer); the caller's
+    // cursor placement does the clamping.
+    for (let index = 0; index < rows.length; index++) {
+      const row = tracked === undefined ? rows[index] : tracked.currentRow(index);
+      if (row === undefined) continue;
+      options.runNormalKeys?.(keys, { startRow: row, endRowInclusive: row });
+    }
+  } finally {
+    tracked?.dispose();
+    transaction.finish(editor.getSelections());
   }
 }
 
@@ -803,17 +854,22 @@ function appendToRows(editor: VimEditorCapabilities, rows: readonly number[], te
   editor.applyEdits(edits, [charwiseSelection(cursor)]);
 }
 
-function substitute(editor: VimEditorCapabilities, range: LineRange, command: string, gdefault: boolean): void {
+function substitute(editor: VimEditorCapabilities, range: LineRange, command: string, options: CommandOptions): void {
   const parsed = parseSubstitute(command);
   if (parsed === undefined) return;
+  // Vim: `:s//repl/` reuses the last search pattern (E35 without one), and an
+  // explicit pattern becomes the last search pattern even when nothing matches.
+  const pattern = parsed.pattern.length > 0 ? parsed.pattern : options.lastSearchPattern?.read();
+  if (pattern === undefined || pattern.length === 0) return;
+  if (parsed.pattern.length > 0) options.lastSearchPattern?.write(parsed.pattern);
   if (parsed.flags.includes("n")) return;
 
-  const global = substituteIsGlobal(parsed.flags, gdefault);
+  const global = substituteIsGlobal(parsed.flags, options.exOptions?.gdefault ?? false);
 
   const edits: TextEdit[] = [];
   for (let row = range.startRow; row <= range.endRowInclusive; row++) {
     const line = editor.line(row);
-    const replaced = substituteLine(line, parsed.pattern, parsed.replacement, global);
+    const replaced = substituteLine(line, pattern, parsed.replacement, global);
     if (replaced !== line) {
       edits.push({ range: { start: { row, column: 0 }, end: { row, column: editor.lineLength(row) } }, text: replaced });
     }
@@ -870,11 +926,15 @@ export function substitutePreviews(
   if (command.length === 0) return undefined;
   const { range, rest } = parseRange(editor, command, options);
   const parsed = parseSubstituteLoose(rest.trim());
-  if (parsed === undefined || parsed.pattern.length === 0) return undefined;
+  if (parsed === undefined) return undefined;
+  // A (still-)empty pattern previews the last search pattern (`:s//repl/`),
+  // read-only — only committing the command updates it.
+  const pattern = parsed.pattern.length > 0 ? parsed.pattern : options.lastSearchPattern?.read();
+  if (pattern === undefined || pattern.length === 0) return undefined;
 
   let regexp: RegExp;
   try {
-    const translated = translateVimRegex(parsed.pattern);
+    const translated = translateVimRegex(pattern);
     // Always global: the exec loop below walks every match and applies the
     // g-parity itself (first match per line when not global).
     regexp = new RegExp(translated.source, `g${translated.forceCase === "ignore" ? "i" : ""}`);

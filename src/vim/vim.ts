@@ -5,7 +5,7 @@
 // - intentional differences: GPUI action registration is replaced by direct key dispatch
 //   from the VSCode patch / tests.
 
-import { CommandLine, LineRange, commandRegisterToRead, executeCommand, substitutePreviews } from "./command.js";
+import { CommandLine, CommandOptions, LineRange, commandRegisterToRead, executeCommand, substitutePreviews } from "./command.js";
 import { commandModeHandler } from "./command_handler.js";
 import { RemapTimeoutKey, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
 import type { NormalizedRemapping, WhenEvaluator, VimCommandMapping, VimConfiguration } from "./config.js";
@@ -800,10 +800,7 @@ export class Vim {
     const command = this.activeCommand;
     const previews = command === undefined
       ? undefined
-      : substitutePreviews(this.editor, command.value(), {
-          exOptions: this.globalState.exOptions,
-          markLine: name => this.modelState.marks.position(name)?.row,
-        });
+      : substitutePreviews(this.editor, command.value(), this.commandOptions());
     if (previews === undefined) this.editor.clearSubstitutePreview();
     else this.editor.updateSubstitutePreview(previews);
   }
@@ -1078,12 +1075,7 @@ export class Vim {
       // command's own edits.
       this.editor.clearSubstitutePreview();
       this.setMode("normal");
-      executeCommand(this.editor, command, {
-        runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
-        exOptions: this.globalState.exOptions,
-        markLine: name => this.modelState.marks.position(name)?.row,
-        registers: this.registers,
-      });
+      executeCommand(this.editor, command, this.commandOptions());
     }
     // Visual mode transitions (the framework targets only these three kinds):
     if (mode === "visual" || mode === "visualLine" || mode === "visualBlock") {
@@ -2053,12 +2045,7 @@ export class Vim {
     }
 
     const exCommand = commandText.slice(1);
-    const options = {
-      runNormalKeys: (keys: readonly string[], range: LineRange | undefined) => this.runNormalKeysForCommand(keys, range),
-      exOptions: this.globalState.exOptions,
-      markLine: (name: string) => this.modelState.marks.position(name)?.row,
-      registers: this.registers,
-    };
+    const options = this.commandOptions();
     const run = () => {
       const defersTemporaryNormal = /\bnorm(?:al)?!?\b/.test(exCommand);
       if (defersTemporaryNormal) this.deferTemporaryNormalCompletion++;
@@ -2081,6 +2068,22 @@ export class Vim {
 
   private hasMultipleCursorsOrSelection(): boolean {
     return hasMultipleCursorsOrSelection(this.editor.getSelections());
+  }
+
+  // The execution context shared by every ex-command entry point
+  // ([executeCommand], [substitutePreviews], [commandRegisterToRead]).
+  private commandOptions(): CommandOptions {
+    return {
+      runNormalKeys: (keys, range) => this.runNormalKeysForCommand(keys, range),
+      exOptions: this.globalState.exOptions,
+      markLine: (name: string) => this.modelState.marks.position(name)?.row,
+      registers: this.registers,
+      lastSearchPattern: {
+        read: () => this.globalState.search.lastPattern(),
+        write: pattern =>
+          this.globalState.search.setLastFromExCommand(pattern, this.registers, this.editor),
+      },
+    };
   }
 
   private runNormalKeysForCommand(keys: readonly string[], range: LineRange | undefined): void {

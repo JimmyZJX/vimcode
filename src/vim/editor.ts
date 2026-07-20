@@ -6,6 +6,7 @@
 
 import type { SubstitutePreview } from "./command.js";
 import { graphemeStart } from "./grapheme.js";
+import { LineTracker, TrackedLines } from "./line_tracker.js";
 import {
   SearchDirection,
   SearchMatch,
@@ -158,6 +159,10 @@ export interface VimEditorCapabilities {
     selectionsAfter: readonly VimSelection[],
     options?: ApplyEditsOptions
   ): void;
+  /** Track line identities across buffer edits (Vim `:h :global` pass 2: the
+      marked lines shift as earlier iterations add/remove lines, and a deleted
+      line's mark dies). See [LineTracker] for the transform semantics. */
+  trackLines(rows: readonly number[]): TrackedLines;
   beginUndoTransaction(
     selectionsBefore: readonly VimSelection[]
   ): VimUndoTransaction;
@@ -309,6 +314,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private pendingUndoSnapshot: UndoSnapshot | undefined;
   private pendingUndoSelectionsBefore: VimSelection[] | undefined;
   private undoTransactionDepth = 0;
+  private readonly lineTrackers = new Set<LineTracker>();
   public cursorStyle: CursorStyle = "block";
   public insertPendingText: string | undefined;
   public easyMotionMarkers: readonly EasyMotionMarker[] = [];
@@ -659,6 +665,15 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     }
     if (undoStopAfter && snapshotBefore === undefined && !transactionOpenBefore)
       this.finishUndoTransaction();
+  }
+
+  trackLines(rows: readonly number[]): TrackedLines {
+    const tracker = new LineTracker(rows);
+    this.lineTrackers.add(tracker);
+    return {
+      currentRow: index => tracker.currentRow(index),
+      dispose: () => this.lineTrackers.delete(tracker),
+    };
   }
 
   beginUndoTransaction(
@@ -1066,6 +1081,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       clipPosition(this, range.start),
       clipPosition(this, range.end)
     );
+    for (const tracker of this.lineTrackers) tracker.applyChange({ range: ordered, text });
     if (this.getText(ordered) !== text) this.contentVersion++;
     const before = this.line(ordered.start.row).slice(0, ordered.start.column);
     const after = this.line(ordered.end.row).slice(ordered.end.column);

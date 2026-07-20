@@ -5,7 +5,7 @@ import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.j
 import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason } from '../../../common/cursorEvents.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
-import { Range } from '../../../common/core/range.js';
+import { IRange, Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IDecorationOptions, IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, InjectedTextCursorStops, PositionAffinity } from '../../../common/model.js';
@@ -16,6 +16,7 @@ import { FindReplaceState } from '../../find/browser/findState.js';
 import type { SubstitutePreview } from '../common/command.js';
 import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition, normalViewLineColumnForGoal } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
+import { LineTracker, TrackedLines } from '../common/line_tracker.js';
 import { SearchDirection, SearchMatch, SearchMatchCount, SearchOptions, translateVimRegex } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
 import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
@@ -461,6 +462,24 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			if (!this.isUndoTransactionOpen()) this.editor.pushUndoStop();
 		}
 		this.logUndo(`applyEdits end open=${this.isUndoTransactionOpen()} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+	}
+
+	trackLines(rows: readonly number[]): TrackedLines {
+		const tracker = new LineTracker(rows);
+		// Track through model content events rather than [applyEdits]: replayed
+		// insert-mode keys edit through native commands (see [replayInsertKey]),
+		// and the event's change ranges are pre-change coordinates like the
+		// tracker expects. Changes within one event are sorted end-to-start, so
+		// sequential application never invalidates a later change's range.
+		const subscription = this.editor.onDidChangeModelContent(event => {
+			for (const change of event.changes) {
+				tracker.applyChange({ range: fromRange(change.range), text: change.text });
+			}
+		});
+		return {
+			currentRow: index => tracker.currentRow(index),
+			dispose: () => subscription.dispose(),
+		};
 	}
 
 	finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void {
@@ -1305,7 +1324,7 @@ function searchStartPosition(model: ITextModel, position: VimPosition, direction
 	return model.getPositionAt(shiftedOffset);
 }
 
-function fromRange(range: Range): TextRange {
+function fromRange(range: IRange): TextRange {
 	return {
 		start: { row: range.startLineNumber - 1, column: range.startColumn - 1 },
 		end: { row: range.endLineNumber - 1, column: range.endColumn - 1 },

@@ -26,6 +26,16 @@ describe("substitutePreviews (pure)", () => {
     expect(substitutePreviews(editor(), "s/[")).toBeUndefined();
   });
 
+  it("previews the last search pattern while the typed pattern is empty", () => {
+    const options = { lastSearchPattern: { read: () => "foo", write: () => undefined } };
+    expect(substitutePreviews(editor(), "s//X", options)).toEqual([
+      { range: { start: { row: 0, column: 0 }, end: { row: 0, column: 3 } }, replacement: "X" },
+    ]);
+    // Still nothing to preview without a last pattern.
+    const noLast = { lastSearchPattern: { read: () => undefined, write: () => undefined } };
+    expect(substitutePreviews(editor(), "s//X", noLast)).toBeUndefined();
+  });
+
   it("highlights matches on the current line before the replacement exists", () => {
     expect(substitutePreviews(editor(), "s/foo")).toEqual([
       { range: { start: { row: 0, column: 0 }, end: { row: 0, column: 3 } }, replacement: undefined },

@@ -143,6 +143,7 @@ Implemented first-slice behavior:
 - first macro slice: `q{register}` recording, `@{register}` / `@@` replay, counted replay, and `Q` replay-last for focused fixtures
 - first VSCode-hosted command slice: normal-mode `u`/`ctrl-r`, `ctrl-]` definition, `ctrl-o`/`ctrl-t`/`ctrl-i` navigation, `gj`/`gk`, folded-line `j`/`k`, `ctrl-y`/`ctrl-e`, and `ctrl-u`/`ctrl-d`/`ctrl-b`/`ctrl-f` delegate to host editor/workbench capabilities
 - numbered/special register slice: register `0` and `1`-`9` storage/rotation for linewise deletes, small-delete `-`, black-hole `_`, search `/`, uppercase append registers, counted `p`/`P`, and linewise paste repeat basics
+- `:g` framework prerequisites: full `:g[lobal]`/`:g!`/`:v[global]` spellings with Vim's delimiter rules (`:v!` rejected like E477); `:g`/`:s` share the last search pattern with `/` (`:g//`/`:s//` reuse it — E35-quiet without one — and explicit patterns set `@/`, the highlight, and what `n` follows, even matchless); `:g/pat/normal` executes on marks that track edits (Neovim-faithful `LineTracker`: insertions/deletions shift pending marks, deleted or merged lines skip theirs) while `:[range]normal` iterates fixed rows; either form is a single undo step restoring the cursor to the first executed line
 - in-memory editor transactions, selections, clipboard, and cursor style for tests
 
 ## Reference points

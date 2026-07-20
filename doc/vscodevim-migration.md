@@ -178,7 +178,10 @@ is from the README plus known majors and may miss minor keys.
 - Ex: ~~`:m[ove]`, `:t`/`:co[py]`, `:pu[t]`~~ done (`test_ex_move_copy_put`;
   `$`/`0` addresses now parse). Still open: `:reg[isters]`, `:marks`,
   `:delmarks`, `:>`/`:<`, `:sort` flags (`i`, `u`, `n`), `:s` repeat (`:s`,
-  `&`), `:g` with more than `d`/`normal`.
+  `&`), `:g` with more than `d`/`normal`. The `:g` framework prerequisites are
+  in: full `:g[lobal]`/`:g!`/`:v[global]` spellings, `:g`/`:s` sharing the
+  last search pattern with `/` (`:g//`, `:s//`), Neovim-faithful mark-tracked
+  `:g/pat/normal` execution, and single-undo-step ranged `normal`.
 - `U` (undo line) — nvim fixtures already recorded (disabled).
 - Highlightedyank (cheap in-fork decoration; users like the feedback).
 - `vim.cursorStylePerMode`.

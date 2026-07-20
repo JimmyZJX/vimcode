@@ -70,6 +70,23 @@ describe("command mode via framework (clean contexts)", () => {
     runKeys(vim, [":", "4", "backspace", "3", "enter"]);
     expect(head(editor)).toEqual({ row: 2, column: 0 });
   });
+
+  it(":v! is rejected (Vim E477) and :g rejects alphanumeric delimiters", () => {
+    const editor = new InMemoryVimEditor("a1\nb1\na2");
+    const vim = new Vim(editor);
+    runKeys(vim, cmd("v!/a/d"));
+    expect(editor.getText()).toBe("a1\nb1\na2");
+    runKeys(vim, cmd("gxaxd"));
+    expect(editor.getText()).toBe("a1\nb1\na2");
+  });
+
+  it(":g// and :s// without a previous search pattern do nothing (Vim E35)", () => {
+    const editor = new InMemoryVimEditor("a1\nb1\na2");
+    const vim = new Vim(editor);
+    runKeys(vim, cmd("g//d"));
+    runKeys(vim, cmd("s//X/"));
+    expect(editor.getText()).toBe("a1\nb1\na2");
+  });
 });
 
 // `:s` replacement specials and JS capture groups (the pattern language is

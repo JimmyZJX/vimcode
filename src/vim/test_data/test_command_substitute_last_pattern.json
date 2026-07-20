@@ -1,0 +1,29 @@
+{"Put":{"state":"ˇabc abc"}}
+{"Key":"/"}
+{"Key":"a"}
+{"Key":"b"}
+{"Key":"enter"}
+{"Key":":"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"/"}
+{"Key":"X"}
+{"Key":"/"}
+{"Key":"enter"}
+{"Get":{"state":"ˇXc abc","mode":"normal"}}
+{"Put":{"state":"ˇfoo bar\nfoo baz"}}
+{"Key":":"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"f"}
+{"Key":"o"}
+{"Key":"o"}
+{"Key":"/"}
+{"Key":"F"}
+{"Key":"O"}
+{"Key":"O"}
+{"Key":"/"}
+{"Key":"enter"}
+{"Key":"n"}
+{"ReadRegister":{"name":"/","value":"foo"}}
+{"Get":{"state":"FOO bar\nˇfoo baz","mode":"normal"}}
