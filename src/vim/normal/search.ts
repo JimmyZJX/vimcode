@@ -229,6 +229,20 @@ export class SearchState {
     if (match !== undefined) editor.revealRange(match);
   }
 
+  // The typed pending query when it has no match from the cursor (for the live
+  // not-found warning); undefined when nothing is typed or a match exists.
+  pendingNotFoundQuery(pending: PendingSearch, editor: VimEditorCapabilities): string | undefined {
+    const query = splitSearchOffset(pending.input.value(), pending.backwards ? "?" : "/").pattern;
+    if (query.length === 0) return undefined;
+    const match = editor.findSearchMatch(
+      query,
+      selectionHead(editor.getSelections()[0]),
+      pending.backwards ? "backward" : "forward",
+      searchOptionsForQuery(query)
+    );
+    return match === undefined ? query : undefined;
+  }
+
   setLast(
     query: string,
     backwards: boolean,

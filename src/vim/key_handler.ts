@@ -96,6 +96,10 @@ export type HandlerState = {
   // operand) swallowed a key it does not understand. The owner surfaces a
   // transient warning so the swallow is loud rather than a silent no-op.
   reportSwallowedPromptKey?: (key: string) => void;
+  // A search found no match (Vim E486); the owner surfaces a transient warning.
+  reportSearchNotFound?: (query: string) => void;
+  // Live prompt feedback: the pending query has no match (or undefined to clear).
+  setPendingSearchNotFound?: (query: string | undefined) => void;
   // Vim `i_CTRL-O`: leave insert mode for exactly one normal-mode command. The
   // owner finishes the insert session, enters normal mode, and flags the
   // excursion so the next completed command returns to insert. Injected live

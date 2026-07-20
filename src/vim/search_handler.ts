@@ -71,14 +71,19 @@ export function searchModeHandler(
     if (origin !== undefined && isVisualModeKind(origin)) {
       const visual = state.visual;
       return effect(origin, () => {
+        state.setPendingSearchNotFound?.(undefined);
         const motion = search.handleKey(pending, "enter", registers, editor).motion;
-        if (motion !== undefined) visual?.applyMotion(motion, 1);
+        if (motion !== undefined && !reportSearchMotionNotFound(state, editor, motion)) {
+          visual?.applyMotion(motion, 1);
+        }
         editor.clearSearchHighlights();
       });
     }
     return effect("normal", () => {
+      state.setPendingSearchNotFound?.(undefined);
       const motion = search.handleKey(pending, "enter", registers, editor).motion;
       if (motion === undefined) return;
+      reportSearchMotionNotFound(state, editor, motion);
       applyMotionResults(
         editor,
         editor.getSelections().map((selection) => ({
@@ -96,6 +101,7 @@ export function searchModeHandler(
     if (!search.handleKey(pending, key, registers, editor).handled) {
       state.reportSwallowedPromptKey?.(key);
     }
+    state.setPendingSearchNotFound?.(search.pendingNotFoundQuery(pending, editor));
   }, {
     registerToRead: key === "ctrl-v" || key === "ctrl-y" ? { registerName: "+" } : undefined,
   });
@@ -147,6 +153,7 @@ function searchOperandWaiter(
     // Vim: the aborted query still enters the search history.
     if (isEscapeKey(key)) {
       return effect("normal", () => {
+        state.setPendingSearchNotFound?.(undefined);
         search.recordHistory(pending);
         search.clearPending(editor, pending, { restoreViewport: true });
       });
@@ -171,6 +178,7 @@ function searchOperandWaiter(
               if (!search.handleKey(pending, key, registers, editor).handled) {
                 state.reportSwallowedPromptKey?.(key);
               }
+              state.setPendingSearchNotFound?.(search.pendingNotFoundQuery(pending, editor));
             },
             registerToRead: key === "ctrl-v" || key === "ctrl-y" ? { registerName: "+" } : undefined,
           },
@@ -190,12 +198,34 @@ function searchOperandWaiter(
     }
     return withClearHighlights(
       withSearchCommit(apply(motion, state), () => {
+        state.setPendingSearchNotFound?.(undefined);
         search.recordHistory(pending);
         search.commitMotion(motion, registers, editor);
+        // A missing match aborts the operator; make the abort loud (E486).
+        reportSearchMotionNotFound(state, editor, motion);
       }),
       editor
     );
   };
+}
+
+// Vim E486: report a transient warning when a search motion has no match from
+// the current cursor. Returns whether the pattern was missing.
+export function reportSearchMotionNotFound(
+  state: HandlerState,
+  editor: VimEditorCapabilities,
+  motion: Motion
+): boolean {
+  if (motion.type !== "searchForward" && motion.type !== "searchBackward") return false;
+  const match = editor.findSearchMatch(
+    motion.query,
+    selectionHead(editor.getSelections()[0]),
+    motion.type === "searchForward" ? "forward" : "backward",
+    motion.options
+  );
+  if (match !== undefined) return false;
+  state.reportSearchNotFound?.(motion.query);
+  return true;
 }
 
 // Run [commit] (the deferred search side effects: preview teardown, [last] +
@@ -403,6 +433,7 @@ function searchNavigation(
     () => {
       const motion = resolve(search, editor, registers);
       if (motion === undefined) return;
+      reportSearchMotionNotFound(state, editor, motion);
       applyMotionResults(
         editor,
         editor.getSelections().map((selection) => ({

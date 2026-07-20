@@ -66,6 +66,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly unknownKeyEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	private readonly searchNotFoundEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly focusedEditorListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly statusListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly vimcodeEnabledContext: IContextKey<boolean>;
@@ -151,6 +152,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		if (!controller) {
 			this.statusbarEntry.clear();
 			this.unknownKeyEntry.clear();
+			this.searchNotFoundEntry.clear();
 			return;
 		}
 
@@ -164,6 +166,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		if (!controller.isVimEnabled()) {
 			this.statusbarEntry.clear();
 			this.unknownKeyEntry.clear();
+			this.searchNotFoundEntry.clear();
 			this.restoreStatusBarColor();
 			return;
 		}
@@ -184,7 +187,8 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 			this.statusbarEntry.value = this.statusbarService.addEntry(entry, 'status.vimMode', StatusbarAlignment.LEFT, 100);
 		}
 		this.updateUnknownKeyEntry(status);
-		const remainingMs = [status.readonlyWarningRemainingMs, status.swallowedKeyWarningRemainingMs]
+		this.updateSearchNotFoundEntry(status);
+		const remainingMs = [status.readonlyWarningRemainingMs, status.swallowedKeyWarningRemainingMs, status.searchNotFoundWarningRemainingMs]
 			.filter((ms): ms is number => ms !== undefined);
 		if (remainingMs.length > 0) {
 			this.readonlyWarningTimeout = setTimeout(() => this.updateEntry(controller), Math.max(0, Math.min(...remainingMs)));
@@ -210,6 +214,26 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 			this.unknownKeyEntry.value.update(entry);
 		} else {
 			this.unknownKeyEntry.value = this.statusbarService.addEntry(entry, 'status.vimUnknownKey', StatusbarAlignment.LEFT, 99);
+		}
+	}
+
+	// Transient warning-background entry for a failed search (Vim E486).
+	private updateSearchNotFoundEntry(status: ReturnType<VimController['getStatus']>): void {
+		if (status.searchNotFoundWarning === undefined) {
+			this.searchNotFoundEntry.clear();
+			return;
+		}
+		const entry = {
+			name: 'Vim Search Not Found',
+			text: 'Pattern not found',
+			ariaLabel: 'The search pattern was not found',
+			tooltip: `The search pattern was not found: ${status.searchNotFoundWarning}`,
+			kind: 'warning' as const,
+		};
+		if (this.searchNotFoundEntry.value) {
+			this.searchNotFoundEntry.value.update(entry);
+		} else {
+			this.searchNotFoundEntry.value = this.statusbarService.addEntry(entry, 'status.vimSearchNotFound', StatusbarAlignment.LEFT, 98);
 		}
 	}
 

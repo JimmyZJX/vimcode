@@ -16,7 +16,7 @@ import type { FindApplier } from "./normal_mode_handler.js";
 import { configuredTextwidth, convertTargetForKey, digraphWaiter, editorGChordHandler, findHandler, gChordMotion, keyForInput, lineMotionForKey, repeatFindHandler, resolveMotion, restoreVisualSelectionHandler } from "./normal_mode_handler.js";
 import { prefixHandler } from "./prefix_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
-import { searchPromptHandler, searchSelectionHandler, visualSearchUnderCursorHandler } from "./search_handler.js";
+import { reportSearchMotionNotFound, searchPromptHandler, searchSelectionHandler, visualSearchUnderCursorHandler } from "./search_handler.js";
 import type { VimMode } from "./state.js";
 import type { VisualKeyResult, VisualMode, VisualCommand, VisualModeKind, VisualSessionEnd } from "./visual.js";
 
@@ -460,9 +460,10 @@ const visualFindApplier: FindApplier = (state, motion, { record }) => {
 // (the prompt) stay on the legacy dispatcher for now.
 function visualSearchNavHandler(key: string, state: HandlerState): HandleResult<void> {
   if (key !== "n" && key !== "N") return unhandled();
+  const editor = state.editor;
   const visual = state.visual;
   const search = state.search;
-  if (visual === undefined || search === undefined) return invalid();
+  if (editor === undefined || visual === undefined || search === undefined) return invalid();
   const count = state.repeat;
   const reversed = key === "N";
   return effect(
@@ -470,6 +471,7 @@ function visualSearchNavHandler(key: string, state: HandlerState): HandleResult<
     () => {
       const motion = search.repeat({ reversed });
       if (motion === undefined) return;
+      if (reportSearchMotionNotFound(state, editor, motion)) return;
       visual.applyMotion(motion, count);
     },
     { dotRepeatable: false }

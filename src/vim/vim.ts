@@ -60,6 +60,10 @@ export type VimStatus = {
       transient warning (see [swallowedKeyWarningRemainingMs]). */
   swallowedKeyWarning: string | undefined;
   swallowedKeyWarningRemainingMs: number | undefined;
+  /** A search found no match (Vim E486): the failed pattern. Sticky while the
+      prompt is open (remaining ms undefined), timed after a commit. */
+  searchNotFoundWarning: string | undefined;
+  searchNotFoundWarningRemainingMs: number | undefined;
 };
 
 function statusText(mode: VimMode, chord: string, macroRecording: MacroRecordingStatus | undefined): string {
@@ -145,6 +149,7 @@ type ModeSession =
 ;
 const readonlyWarningDurationMs = 2000;
 const swallowedKeyWarningDurationMs = 2000;
+const searchNotFoundWarningDurationMs = 1000;
 
 function finishQueued(result: QueuedRunResult<void>, cleanup: () => void): QueuedRunResult<void> {
   if (result !== undefined && typeof (result as Promise<void>).then === "function") {
@@ -235,6 +240,9 @@ export class Vim {
   private readonlyWarningUntil = 0;
   private swallowedKeyWarning: string | undefined = undefined;
   private swallowedKeyWarningUntil = 0;
+  private searchNotFoundWarning: string | undefined = undefined;
+  /** Undefined = sticky (an open prompt owns the warning). */
+  private searchNotFoundWarningUntil: number | undefined = undefined;
 
   private readonly registers: Registers;
   private pendingCompositeUndoTransaction: ReturnType<VimEditorCapabilities["beginUndoTransaction"]> | undefined;
@@ -307,6 +315,7 @@ export class Vim {
     const text = statusText(mode, chord, macroRecording);
     const readonlyWarningRemainingMs = this.readonlyWarningRemainingMs();
     const swallowedKeyWarningRemainingMs = this.swallowedKeyWarningRemainingMs();
+    const searchNotFoundWarningRemainingMs = this.searchNotFoundWarningRemainingMs();
     return {
       mode,
       pending: this.isPending(),
@@ -326,6 +335,8 @@ export class Vim {
       readonlyWarningRemainingMs,
       swallowedKeyWarning: swallowedKeyWarningRemainingMs !== undefined ? this.swallowedKeyWarning : undefined,
       swallowedKeyWarningRemainingMs,
+      searchNotFoundWarning: this.searchNotFoundWarningVisible() ? this.searchNotFoundWarning : undefined,
+      searchNotFoundWarningRemainingMs,
     };
   }
 
@@ -756,6 +767,7 @@ export class Vim {
     const session = this.session;
     switch (session.mode) {
       case "search": {
+        this.setPendingSearchNotFound(undefined);
         this.globalState.search.recordHistory(session.search);
         this.globalState.search.clearPending(this.editor, session.search, { restoreViewport: closeSearchHighlights });
         if (closeSearchHighlights) this.editor.clearSearchHighlights();
@@ -925,6 +937,7 @@ export class Vim {
         search: this.globalState.search,
         find: this.globalState.find,
         changeList: this.modelState.changeList,
+        reportSearchNotFound: query => this.reportSearchNotFound(query),
       };
       return this.visualGrammar(key, liveState);
     };
@@ -954,6 +967,8 @@ export class Vim {
         searchOrigin: this.searchOriginMode,
         visual: this.visualMode,
         reportSwallowedPromptKey: swallowedKey => this.reportSwallowedPromptKey(swallowedKey),
+        reportSearchNotFound: query => this.reportSearchNotFound(query),
+        setPendingSearchNotFound: query => this.setPendingSearchNotFound(query),
       };
       return searchModeHandler(key, liveState);
     };
@@ -1236,6 +1251,8 @@ export class Vim {
         // The `d/`/`c/`/`y/` search-operand waiter clones this state and
         // reports its swallowed keys through it.
         reportSwallowedPromptKey: swallowedKey => this.reportSwallowedPromptKey(swallowedKey),
+        reportSearchNotFound: query => this.reportSearchNotFound(query),
+        setPendingSearchNotFound: query => this.setPendingSearchNotFound(query),
       };
       return this.normalGrammar(key, liveState);
     };
@@ -1843,6 +1860,29 @@ export class Vim {
   private reportSwallowedPromptKey(key: string): void {
     this.swallowedKeyWarning = keyForStatus(key);
     this.swallowedKeyWarningUntil = Date.now() + swallowedKeyWarningDurationMs;
+  }
+
+  private searchNotFoundWarningRemainingMs(): number | undefined {
+    if (this.searchNotFoundWarningUntil === undefined) return undefined;
+    const remaining = this.searchNotFoundWarningUntil - Date.now();
+    return remaining > 0 ? remaining : undefined;
+  }
+
+  private searchNotFoundWarningVisible(): boolean {
+    if (this.searchNotFoundWarning === undefined) return false;
+    return this.searchNotFoundWarningUntil === undefined || this.searchNotFoundWarningUntil > Date.now();
+  }
+
+  // Keep a failed search pattern visible in the status for a moment (Vim E486).
+  private reportSearchNotFound(query: string): void {
+    this.searchNotFoundWarning = query;
+    this.searchNotFoundWarningUntil = Date.now() + searchNotFoundWarningDurationMs;
+  }
+
+  // Live prompt feedback: show/clear the warning as the pending query changes.
+  private setPendingSearchNotFound(query: string | undefined): void {
+    this.searchNotFoundWarning = query;
+    this.searchNotFoundWarningUntil = undefined;
   }
 
   private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode; count?: number; separator?: string }): void {
