@@ -213,6 +213,10 @@ export interface VimEditorCapabilities {
       the editor's language), in configuration order. The first ruler is the
       `gq`/`gw` format width when `vim.textwidth` is not set. */
   rulerColumns(): readonly number[];
+  /** Columns per indent level (Vim 'shiftwidth'): the host editor's resolved
+      indent size, so `>>`/`<<`/`:>` shift like the editor's own indent
+      commands. */
+  indentWidth(): number;
 
   // Zed: `normal::search` integrates with `BufferSearchBar` so search motions,
   // highlights, and find-widget state share one source of truth. Locally, the
@@ -315,6 +319,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private pendingUndoSelectionsBefore: VimSelection[] | undefined;
   private undoTransactionDepth = 0;
   private readonly lineTrackers = new Set<LineTracker>();
+  private indentWidthValue = 4;
   public cursorStyle: CursorStyle = "block";
   public insertPendingText: string | undefined;
   public easyMotionMarkers: readonly EasyMotionMarker[] = [];
@@ -902,6 +907,16 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   rulerColumns(): readonly number[] {
     return this.rulers;
+  }
+
+  indentWidth(): number {
+    return this.indentWidthValue;
+  }
+
+  // Test-only stand-in for the host's resolved indent size (fixtures record
+  // with `shiftwidth=4`, the default here).
+  configureIndentWidthForTest(width: number): void {
+    this.indentWidthValue = width;
   }
 
   // Test-only stand-in for VSCode's `editor.rulers`.

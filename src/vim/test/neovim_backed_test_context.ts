@@ -37,6 +37,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
   let vim: Vim | undefined;
   const registers: Record<string, string> = {};
   const viewportOptions: { lines?: number; scrolloff?: number } = {};
+  let indentWidth: number | undefined;
 
   let step = 0;
   let currentScenario: string[] = [];
@@ -49,6 +50,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
         // than the fixture file; mirror that setup here.
         ({ editor, vim } = editorFromMarkedText(entry.Put.state, configurationForFixture(fixture.testCaseId)));
         editor.configureViewportForTest(viewportOptions);
+        if (indentWidth !== undefined) editor.configureIndentWidthForTest(indentWidth);
       } else {
         resetEditorFromMarkedText(editor, vim, entry.Put.state);
       }
@@ -79,6 +81,13 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       const scrolloff = /^scrolloff=(\d+)$/.exec(entry.SetOption.value);
       if (scrolloff !== null) viewportOptions.scrolloff = Number(scrolloff[1]);
       editor?.configureViewportForTest(viewportOptions);
+      // `shiftwidth=N` feeds the indent-width capability (Vim 'shiftwidth' =
+      // the host's resolved indent size).
+      const shiftwidth = /^shiftwidth=(\d+)$/.exec(entry.SetOption.value);
+      if (shiftwidth !== null) {
+        indentWidth = Number(shiftwidth[1]);
+        editor?.configureIndentWidthForTest(indentWidth);
+      }
     } else if ("Exec" in entry) {
       // Some Zed fixtures set filetype or other Neovim-local state. The current
       // model-buffer harness ignores those unless a fixture explicitly needs a

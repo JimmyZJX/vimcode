@@ -1,0 +1,31 @@
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"ˇaa\nbb"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":">"}
+{"Get":{"state":"ˇ        aa\nbb","mode":"normal"}}
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"ˇaa\nbb\ncc"}}
+{"Key":"V"}
+{"Key":"j"}
+{"Key":"2"}
+{"Key":">"}
+{"Get":{"state":"ˇ        aa\n        bb\ncc","mode":"normal"}}
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"        ˇaa\nbb"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":"<"}
+{"Get":{"state":"aˇa\nbb","mode":"normal"}}
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"ˇaa\nbb"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":">"}
+{"Key":"j"}
+{"Key":"."}
+{"Get":{"state":"        aa\nˇ        bb","mode":"normal"}}

@@ -49,7 +49,7 @@ export type VisualModeKind = "visual" | "visualLine" | "visualBlock";
 // produced by the typed visual grammar (visual_handler.ts).
 export type VisualCommand =
   | { type: "insertAtSelection"; side: "start" | "end" }
-  | { type: "indent"; key: ">" | "<" | "=" }
+  | { type: "indent"; key: ">" | "<" | "="; count?: number }
   | { type: "convert"; key: "u" | "U" | "~" }
   | { type: "otherEnd"; rowAware: boolean }
   | { type: "yankLinewise" }
@@ -266,7 +266,7 @@ export class VisualMode {
           ? this.insertBeforeOrAtBlockStart(state) ?? handled()
           : this.insertAfterOrAtBlockEnd(state) ?? handled();
       case "indent":
-        return this.indentKey(state, command.key);
+        return this.indentKey(state, command.key, command.count ?? 1);
       case "convert":
         this.convert(state, convertTargetForKey(command.key));
         return handled({ exitVisual: true, nextMode: "normal" });
@@ -362,10 +362,11 @@ export class VisualMode {
     return undefined;
   }
 
-  private indentKey(state: VisualState, key: ">" | "<" | "="): VisualKeyResult {
+  // Vim `v_>`: the count multiplies the shift ("{count} times 'shiftwidth'").
+  private indentKey(state: VisualState, key: ">" | "<" | "=", count: number): VisualKeyResult {
     const direction = indentDirectionForKey(key);
-    const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction);
-    this.indent(state, direction);
+    const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction, count);
+    this.indent(state, direction, count);
     return handled({ exitVisual: true, nextMode: "normal", repeatAction });
   }
 
@@ -868,16 +869,17 @@ export class VisualMode {
     return this.endSession();
   }
 
-  private indent(state: VisualState, direction: IndentDirection): void {
+  private indent(state: VisualState, direction: IndentDirection, count: number): void {
     this.rememberState(state);
-    const cursor = visualIndentCursor(this.editor, state, direction);
+    const cursor = visualIndentCursor(state);
     const { startRow, endRow } = visualLineBounds(this.editor, state);
-    applyOperatorToTarget(this.editor, this.registers, undefined, { type: "indent", direction }, {
+    applyOperatorToTarget(this.editor, this.registers, undefined, { type: "indent", direction, count }, {
       kind: "linewise",
       rows: [{ startRow, endRow, column: cursor.column }],
     });
-    // Vim `v_>`: the cursor lands on the visual start, shifted with the text.
-    this.editor.setSelections([charwiseSelection(cursor)]);
+    // Vim `v_>`: the cursor lands on the visual start, column unshifted but
+    // clamped to the shifted line's last cell.
+    this.editor.setSelections([charwiseSelection(normalCursorPosition(this.editor, cursor))]);
     this.state = undefined;
     this.editor.setCursorStyle("block");
   }
@@ -1399,20 +1401,11 @@ function inclusiveHeadForRangeEnd(editor: VimEditorCapabilities, range: TextRang
   return { row: range.end.row, column: 0 };
 }
 
-function visualIndentCursor(editor: VimEditorCapabilities, state: VisualState, direction: IndentDirection): Position {
-  const start = visualStartPosition(state);
-  switch (direction) {
-    case "in":
-      return { row: start.row, column: start.column + 4 };
-    case "out":
-      return { row: start.row, column: Math.max(0, start.column - Math.min(4, leadingWhitespaceLength(editor.line(start.row)))) };
-    case "auto":
-      return start;
-  }
-}
-
-function leadingWhitespaceLength(line: string): number {
-  return /^\s*/.exec(line)?.[0].length ?? 0;
+// Neovim `v_>` (probed): the cursor lands on the visual start's position with
+// its column unshifted, clamped to the shifted line by the selection
+// write-back — not shifted with the text, and not the first non-blank.
+function visualIndentCursor(state: VisualState): Position {
+  return visualStartPosition(state);
 }
 
 function visualRepeatSelectionForState(
@@ -1441,12 +1434,13 @@ function visualRepeatSelectionForState(
 function visualIndentRepeatActionForState(
   editor: VimEditorCapabilities,
   state: VisualState,
-  direction: IndentDirection
+  direction: IndentDirection,
+  count: number
 ): { selection: RecordedSelection; action: VisualRepeatAction } {
   const { startRow, endRow } = visualLineBounds(editor, state);
   return {
     selection: { type: "visualLine", rows: Math.max(0, endRow - startRow) },
-    action: { type: "indent", direction },
+    action: { type: "indent", direction, count },
   };
 }
 

@@ -781,6 +781,13 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return this.editor.getOption(EditorOption.rulers).map(ruler => ruler.column);
 	}
 
+	indentWidth(): number {
+		// The model's resolved indent size (`editor.indentSize` /
+		// auto-detected indentation), so Vim shifts match the editor's own
+		// indent commands.
+		return this.model().getOptions().indentSize;
+	}
+
 	visibleRowRange(): { top: number; bottom: number } | undefined {
 		// Vim `H`/`M`/`L` target the visible window. Convert the completely
 		// visible view range back to model rows so soft wraps and folds use the

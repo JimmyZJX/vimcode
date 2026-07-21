@@ -146,6 +146,23 @@ test("yss) wraps the trimmed line", () => {
   expect(result.text).toBe("  (aaa bbb)");
 });
 
+// Vim 'shiftwidth' follows the host's resolved indent size, so `>>`/`v>`/`:>`
+// all shift by the same amount as the editor's own indent commands (2-space
+// OCaml files shift by 2, not a hardcoded 4).
+test("indent commands use the editor's indent width", () => {
+  const editor = new InMemoryVimEditor("aa\nbb");
+  editor.configureIndentWidthForTest(2);
+  const vim = new Vim(editor);
+  runKeys(vim, [">", ">"]);
+  expect(editor.getText()).toBe("  aa\nbb");
+  runKeys(vim, ["j", "v", ">"]);
+  expect(editor.getText()).toBe("  aa\n  bb");
+  runKeys(vim, [":", ">", "enter"]);
+  expect(editor.getText()).toBe("  aa\n    bb");
+  runKeys(vim, ["<", "<"]);
+  expect(editor.getText()).toBe("  aa\n  bb");
+});
+
 // vim-surround: charwise wraps strip trailing whitespace — the space stays
 // outside the closing delimiter.
 test("ysw) leaves the w motion's trailing space outside the wrap", () => {

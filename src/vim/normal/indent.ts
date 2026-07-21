@@ -18,11 +18,12 @@ export type IndentDirection = "in" | "out" | "auto";
 export function applyIndent(
   editor: VimEditorCapabilities,
   direction: IndentDirection,
-  target: ResolvedTarget
+  target: ResolvedTarget,
+  count: number = 1
 ): void {
   switch (target.kind) {
     case "charwise":
-      indentRanges(editor, target.targets.map(({ range }) => range), direction);
+      indentRanges(editor, target.targets.map(({ range }) => range), direction, count);
       return;
     case "linewise":
       indentRanges(
@@ -31,7 +32,8 @@ export function applyIndent(
           start: { row: startRow, column: 0 },
           end: { row: endRow, column: editor.lineLength(endRow) },
         })),
-        direction
+        direction,
+        count
       );
       return;
   }
@@ -45,7 +47,10 @@ export function indentRanges(
 ): void {
   const rows = rowsForRanges(ranges, editor.lineCount());
   const edits: TextEdit[] = [];
-  const shiftWidth = 4;
+  // Vim 'shiftwidth' = the host's resolved indent size, so `>>` shifts like
+  // the editor's own indent commands (2-space files shift by 2, not a
+  // hardcoded 4).
+  const shiftWidth = editor.indentWidth();
   const shift = direction === "in" ? shiftWidth * count : direction === "out" ? -shiftWidth * count : 0;
 
   for (const row of rows) {

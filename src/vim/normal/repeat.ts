@@ -83,7 +83,7 @@ export type RecordedSelection =
   | { type: "visualBlock"; rows: number; side: "start" | "end" };
 
 export type VisualRepeatAction =
-  | { type: "indent"; direction: IndentDirection }
+  | { type: "indent"; direction: IndentDirection; count?: number }
   | { type: "delete" }
   | { type: "change"; insertedText: string }
   | { type: "replaceWithRegister"; registerName?: RegisterName };

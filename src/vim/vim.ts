@@ -2145,14 +2145,17 @@ export class Vim {
   private replayVisualAction(selection: RecordedSelection, action: VisualRepeatAction): QueuedRunResult<void> {
     switch (action.type) {
       case "indent": {
-        const startRow = selectionHead(this.editor.getSelections()[0]).row;
+        const start = selectionHead(this.editor.getSelections()[0]);
         const rows = selection.type === "visualLine" ? selection.rows : 0;
-        const endRow = Math.min(this.editor.lineCount() - 1, startRow + rows);
+        const endRow = Math.min(this.editor.lineCount() - 1, start.row + rows);
         indentRanges(
           this.editor,
-          [{ start: { row: startRow, column: 0 }, end: { row: endRow, column: this.editor.lineLength(endRow) } }],
-          action.direction
+          [{ start: { row: start.row, column: 0 }, end: { row: endRow, column: this.editor.lineLength(endRow) } }],
+          action.direction,
+          action.count
         );
+        // Vim `v_>`: the cursor keeps its column, clamped to the shifted line.
+        this.editor.setSelections([charwiseSelection(normalCursorPosition(this.editor, start))]);
         return;
       }
       case "delete": {

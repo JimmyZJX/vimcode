@@ -103,7 +103,7 @@ export type RangeOperator =
   | { type: "change" }
   | { type: "yank" }
   | { type: "convert"; target: ConvertTarget }
-  | { type: "indent"; direction: IndentDirection }
+  | { type: "indent"; direction: IndentDirection; count?: number }
   // `gq`/`gw`; [keepCursor] is `gw`. The effective 'textwidth' is resolved from
   // the configuration when the operator is built (the application modules have
   // no configuration access).
@@ -432,7 +432,7 @@ export function applyOperatorToTarget(
       applyConvert(editor, operator.target, target);
       return { enterInsert: false };
     case "indent":
-      applyIndent(editor, operator.direction, target);
+      applyIndent(editor, operator.direction, target, operator.count);
       return { enterInsert: false };
     case "format":
       applyFormat(editor, target, { textwidth: operator.textwidth, keepCursor: operator.keepCursor });

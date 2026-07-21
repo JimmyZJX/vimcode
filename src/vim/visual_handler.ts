@@ -130,7 +130,11 @@ function visualCommandHandler(key: string, state: HandlerState): HandleResult<vo
   if (state.visual === undefined) return invalid();
   return visualResultEffect(
     state,
-    visual => visual.handleCommand(command, state.register),
+    visual =>
+      visual.handleCommand(
+        command.type === "indent" ? { ...command, count: state.repeat } : command,
+        state.register
+      ),
     { registerToRead: command.type === "paste" ? { registerName: state.register } : undefined }
   );
 }
