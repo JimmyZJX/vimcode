@@ -178,10 +178,25 @@ is from the README plus known majors and may miss minor keys.
 - Ex: ~~`:m[ove]`, `:t`/`:co[py]`, `:pu[t]`~~ done (`test_ex_move_copy_put`;
   `$`/`0` addresses now parse). Still open: `:reg[isters]`, `:marks`,
   `:delmarks`, `:>`/`:<`, `:sort` flags (`i`, `u`, `n`), `:s` repeat (`:s`,
-  `&`), `:g` with more than `d`/`normal`. The `:g` framework prerequisites are
-  in: full `:g[lobal]`/`:g!`/`:v[global]` spellings, `:g`/`:s` sharing the
-  last search pattern with `/` (`:g//`, `:s//`), Neovim-faithful mark-tracked
-  `:g/pat/normal` execution, and single-undo-step ranged `normal`.
+  `&`), ~~`:g` with more than `d`/`normal`~~. The `:g` framework is in: full
+  `:g[lobal]`/`:g!`/`:v[global]` spellings, `:g`/`:s` sharing the last search
+  pattern with `/` (`:g//`, `:s//`), Neovim-faithful mark-tracked execution
+  (single undo step), and generic sub-command dispatch — any ex tail runs per
+  mark with per-mark relative ranges (`:g/pat/s//…/`, `:g/^/m0`, `:g/x/t$`,
+  `:g/x/j`, `:g/x/.,+1d`, `:g/x/pu`). Register collection is in:
+  `:y[ank] [reg] [count]` / `:d [reg] [count]` with Vim's rotation/append
+  semantics (`qaq` + `:g/pat/y A` works; `q` mirrors macros into registers).
+  `:>`/`:<` ex indent is in. Ex outcomes ("3 fewer lines", substitution
+  totals, E486/E35) show in the status bar, and the `:s` live preview extends
+  to `:g`: matched-line highlights, substitute tails on the marked lines, and
+  `:d`-tail deletion previews. Still open: print output for `:g/pat/p` (bare
+  `:g/pat` moves to the last match without output) and batching the `:g`+`:s`
+  edits for very large buffers. Undo after `:g/x/t$` restores the cursor to
+  the first mark, where Neovim clamps to the undone tail — minor known
+  divergence. Another deliberate one: `:g`/`:s` pattern writes update `@/`
+  and `n` but not the visible search highlight (Neovim with 'hlsearch' would
+  re-highlight the pattern whenever its matches reappear, e.g. after undoing
+  the substitute; VSCodeVim's hlsearch default is off too).
 - `U` (undo line) — nvim fixtures already recorded (disabled).
 - Highlightedyank (cheap in-fork decoration; users like the feedback).
 - `vim.cursorStylePerMode`.

@@ -87,6 +87,77 @@ describe("command mode via framework (clean contexts)", () => {
     runKeys(vim, cmd("s//X/"));
     expect(editor.getText()).toBe("a1\nb1\na2");
   });
+
+  it(":g/:s pattern writes do not touch the search highlight", () => {
+    // `:g/pat/s//X/` + undo must not leave the pattern glowing: the editing
+    // command sets `@/` (n follows it) but never the visible highlight.
+    const editor = new InMemoryVimEditor("foo a\nbar\nfoo b");
+    const vim = new Vim(editor);
+    runKeys(vim, cmd("g/foo/s//X/"));
+    expect(editor.getText()).toBe("X a\nbar\nX b");
+    expect(vim.readRegister("/")).toBe("foo");
+    expect(editor.lastSearchHighlightQuery).toBeUndefined();
+    // A real search still updates the highlight.
+    runKeys(vim, ["/", "b", "a", "r", "enter"]);
+    expect(editor.lastSearchHighlightQuery).toBe("bar");
+  });
+
+  it("a nested :g is not executed (Vim global_busy)", () => {
+    const editor = new InMemoryVimEditor("a\nb");
+    const vim = new Vim(editor);
+    runKeys(vim, cmd("g/a/g/b/d"));
+    expect(editor.getText()).toBe("a\nb");
+  });
+
+  it("reports ex-command outcomes in the status (Vim 'report' messages)", () => {
+    // Deleting more than 'report' (2) lines.
+    const vim = new Vim(new InMemoryVimEditor("a1\nb\na2\nc\na3"));
+    runKeys(vim, cmd("g/a/d"));
+    expect(vim.status.commandStatus).toEqual({ kind: "info", message: "3 fewer lines" });
+    expect(vim.status.commandStatusRemainingMs).toBeGreaterThan(0);
+
+    // A single-line delete stays silent.
+    const quietVim = new Vim(new InMemoryVimEditor("a\nb"));
+    runKeys(quietVim, cmd("d"));
+    expect(quietVim.status.commandStatus).toBeUndefined();
+
+    // Substitution totals aggregate across a :g run.
+    const subVim = new Vim(new InMemoryVimEditor("foo foo\nfoo\nbar"));
+    runKeys(subVim, cmd("%s/foo/X/g"));
+    expect(subVim.status.commandStatus).toEqual({ kind: "info", message: "3 substitutions on 2 lines" });
+
+    // The n flag counts without editing and always reports.
+    const countEditor = new InMemoryVimEditor("foo foo\nfoo\nbar");
+    const countVim = new Vim(countEditor);
+    runKeys(countVim, cmd("%s/foo/X/gn"));
+    expect(countVim.status.commandStatus).toEqual({ kind: "info", message: "3 matches on 2 lines" });
+    expect(countEditor.getText()).toBe("foo foo\nfoo\nbar");
+
+    // E486 and E35 surface as errors.
+    const notFoundVim = new Vim(new InMemoryVimEditor("a\nb"));
+    runKeys(notFoundVim, cmd("g/zzz/d"));
+    expect(notFoundVim.status.commandStatus).toEqual({ kind: "error", message: "Pattern not found: zzz" });
+    const subMissVim = new Vim(new InMemoryVimEditor("a"));
+    runKeys(subMissVim, cmd("s/zzz/x/"));
+    expect(subMissVim.status.commandStatus).toEqual({ kind: "error", message: "Pattern not found: zzz" });
+    const noPatternVim = new Vim(new InMemoryVimEditor("a"));
+    runKeys(noPatternVim, cmd("s//X/"));
+    expect(noPatternVim.status.commandStatus).toEqual({ kind: "error", message: "No previous regular expression" });
+
+    // Yanks report their line count past the threshold.
+    const yankVim = new Vim(new InMemoryVimEditor("a\nb\nc\nd"));
+    runKeys(yankVim, cmd("%y"));
+    expect(yankVim.status.commandStatus).toEqual({ kind: "info", message: "4 lines yanked" });
+  });
+
+  it(":g dispatches :pu per marked line", () => {
+    const editor = new InMemoryVimEditor("P\nx1\na\nx2");
+    const vim = new Vim(editor);
+    // yy fills the unnamed register with "P\n" (linewise).
+    runKeys(vim, ["y", "y"]);
+    runKeys(vim, cmd("g/x/pu"));
+    expect(editor.getText()).toBe("P\nx1\nP\na\nx2\nP");
+  });
 });
 
 // `:s` replacement specials and JS capture groups (the pattern language is

@@ -67,6 +67,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly unknownKeyEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly searchStatusEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	private readonly commandStatusEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly focusedEditorListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly statusListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly vimcodeEnabledContext: IContextKey<boolean>;
@@ -153,6 +154,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 			this.statusbarEntry.clear();
 			this.unknownKeyEntry.clear();
 			this.searchStatusEntry.clear();
+			this.commandStatusEntry.clear();
 			return;
 		}
 
@@ -167,6 +169,7 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 			this.statusbarEntry.clear();
 			this.unknownKeyEntry.clear();
 			this.searchStatusEntry.clear();
+			this.commandStatusEntry.clear();
 			this.restoreStatusBarColor();
 			return;
 		}
@@ -188,7 +191,8 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 		}
 		this.updateUnknownKeyEntry(status);
 		this.updateSearchStatusEntry(status);
-		const remainingMs = [status.readonlyWarningRemainingMs, status.swallowedKeyWarningRemainingMs, status.searchStatusRemainingMs]
+		this.updateCommandStatusEntry(status);
+		const remainingMs = [status.readonlyWarningRemainingMs, status.swallowedKeyWarningRemainingMs, status.searchStatusRemainingMs, status.commandStatusRemainingMs]
 			.filter((ms): ms is number => ms !== undefined);
 		if (remainingMs.length > 0) {
 			this.readonlyWarningTimeout = setTimeout(() => this.updateEntry(controller), Math.max(0, Math.min(...remainingMs)));
@@ -245,6 +249,29 @@ class VimStatusbarContribution extends Disposable implements IWorkbenchContribut
 			this.searchStatusEntry.value.update(entry);
 		} else {
 			this.searchStatusEntry.value = this.statusbarService.addEntry(entry, 'status.vimSearchStatus', StatusbarAlignment.LEFT, 98);
+		}
+	}
+
+	// Ex-command outcome entry: Vim's `:h 'report'` messages ("3 fewer lines",
+	// "4 substitutions on 3 lines") and a warning-background "Pattern not
+	// found" / "No previous regular expression".
+	private updateCommandStatusEntry(status: ReturnType<VimController['getStatus']>): void {
+		const command = status.commandStatus;
+		if (command === undefined) {
+			this.commandStatusEntry.clear();
+			return;
+		}
+		const entry = {
+			name: 'Vim Command',
+			text: command.message,
+			ariaLabel: command.message,
+			tooltip: command.message,
+			kind: command.kind === 'error' ? 'warning' as const : undefined,
+		};
+		if (this.commandStatusEntry.value) {
+			this.commandStatusEntry.value.update(entry);
+		} else {
+			this.commandStatusEntry.value = this.statusbarService.addEntry(entry, 'status.vimCommandStatus', StatusbarAlignment.LEFT, 97);
 		}
 	}
 

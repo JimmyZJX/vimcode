@@ -274,11 +274,19 @@ export class SearchState {
     return this.last?.query;
   }
 
-  // An explicit `:g`/`:s` pattern becomes the last search pattern: `n` follows
-  // it, `@/` holds it and the persistent highlight updates — always forward,
-  // with no search offset.
-  setLastFromExCommand(pattern: string, registers: Registers, editor: VimEditorCapabilities): void {
-    this.setLast(pattern, false, registers, editor);
+  // An explicit `:g`/`:s` pattern becomes the last search pattern — `n`
+  // follows it (forward, no offset) and `@/` holds it — but unlike a `/`
+  // search it does NOT touch the visible search highlight: the pattern of an
+  // editing command would otherwise glow whenever its matches (re)appear,
+  // e.g. after `:g/pat/s//X/` + undo.
+  setLastFromExCommand(pattern: string, registers: Registers): void {
+    this.last = {
+      query: pattern,
+      backwards: false,
+      options: searchOptionsForQuery(pattern),
+      offset: undefined,
+    };
+    registers.writeSearch(pattern);
   }
 
   repeat({ reversed }: { reversed: boolean }): Motion | undefined {

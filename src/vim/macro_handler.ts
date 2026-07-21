@@ -26,6 +26,7 @@ import {
   isEscapeKey,
   unhandled,
 } from "./key_handler.js";
+import { parseRegisterName } from "./registers.js";
 
 // `q` (record toggle), `@`/`@@` (replay register), `Q` (replay last).
 export function macroControlHandler(key: string, state: HandlerState): HandleResult<void> {
@@ -35,7 +36,16 @@ export function macroControlHandler(key: string, state: HandlerState): HandleRes
   if (key === "q") {
     if (macro.isRecording()) {
       return effect("normal", () => {
-        macro.stopRecording();
+        const recorded = macro.stopRecording();
+        if (recorded === undefined) return;
+        // Vim keeps macros in the registers: `q` writes the recorded keys, so
+        // `qaq` leaves an *existing* empty register a (the classic clear
+        // before `:g/pat/y A`) and `"ap` pastes the keys. Multi-character key
+        // names use `<>` notation, an approximation of Vim's raw termcodes.
+        const name = parseRegisterName(recorded.register);
+        if (name !== undefined) {
+          state.registers?.write(name, macroKeysText(recorded.keys), "characterwise");
+        }
       }, { preservesDotRepeat: true });
     }
     // Not recording: wait for the register name to record into.
@@ -53,6 +63,12 @@ export function macroControlHandler(key: string, state: HandlerState): HandleRes
   }
 
   return unhandled();
+}
+
+function macroKeysText(keys: readonly { key: string }[]): string {
+  return keys
+    .map(({ key }) => (key === "space" ? " " : key.length === 1 ? key : `<${key}>`))
+    .join("");
 }
 
 // The register name after `q`: start recording into it. Escape cancels.

@@ -1,0 +1,50 @@
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"ˇaa\nbb\ncc"}}
+{"Key":":"}
+{"Key":"1"}
+{"Key":","}
+{"Key":"2"}
+{"Key":">"}
+{"Key":"enter"}
+{"Get":{"state":"    aa\n    ˇbb\ncc","mode":"normal"}}
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"ˇaa\nbb\ncc"}}
+{"Key":":"}
+{"Key":"1"}
+{"Key":","}
+{"Key":"2"}
+{"Key":">"}
+{"Key":">"}
+{"Key":"enter"}
+{"Get":{"state":"        aa\n        ˇbb\ncc","mode":"normal"}}
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"    ˇaa\n        bb"}}
+{"Key":":"}
+{"Key":"%"}
+{"Key":"<"}
+{"Key":"enter"}
+{"Get":{"state":"aa\n    ˇbb","mode":"normal"}}
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"ˇaa\nbb\ncc\ndd"}}
+{"Key":":"}
+{"Key":"1"}
+{"Key":">"}
+{"Key":"space"}
+{"Key":"2"}
+{"Key":"enter"}
+{"Get":{"state":"    aa\n    ˇbb\ncc\ndd","mode":"normal"}}
+{"SetOption":{"value":"shiftwidth=4"}}
+{"SetOption":{"value":"expandtab"}}
+{"Put":{"state":"ˇx1\na\nx2"}}
+{"Key":":"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"x"}
+{"Key":"/"}
+{"Key":">"}
+{"Key":"enter"}
+{"Get":{"state":"    x1\na\n    ˇx2","mode":"normal"}}

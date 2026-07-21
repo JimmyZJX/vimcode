@@ -24,7 +24,7 @@ import {
 import type { ChangeListDirection } from "./normal/change_list.js";
 import type { ConvertTarget } from "./normal/convert.js";
 import type { FindMotion, Motion } from "./motion.js";
-import { applyMotion, applyMotionWithGoal, bracketMotion, hostViewLineSelectionsForMotion, lineRange, motionForKey } from "./motion.js";
+import { applyMotion, applyMotionWithGoal, bracketMotion, hostViewLineSelectionsForMotion, motionForKey } from "./motion.js";
 import { applyMotionResults } from "./motion_handler.js";
 import { bracketChordHandler, ctrlWHandler, editorTabEffect, multiCursorEffect, nativeCommandEffect, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
@@ -1142,13 +1142,17 @@ function surroundPairWaiter(state: HandlerState, target: SurroundTarget): Handle
         if (editor === undefined) return invalid();
         if (key === "t" || key === "<") {
           return tagEntryWaiter(state, "", (tagBody, entryState) =>
-            effect(entryState.mode, () =>
-              addTagSurrounds(editor, target.ranges, tagBody, { linewise: target.linewise })
+            effect(
+              entryState.mode,
+              () => addTagSurrounds(editor, target.ranges, tagBody, { linewise: target.linewise }),
+              { dotRepeatable: true }
             )
           );
         }
-        return effect(state.mode, () =>
-          addSurrounds(editor, target.ranges, keyForInput(key), { linewise: target.linewise })
+        return effect(
+          state.mode,
+          () => addSurrounds(editor, target.ranges, keyForInput(key), { linewise: target.linewise }),
+          { dotRepeatable: true }
         );
       },
       state: deeper(state),
@@ -1183,11 +1187,13 @@ function tagEntryWaiter(
   ]);
 }
 
+// vim-surround with repeat.vim: `ys`/`ds`/`cs` are all dot-repeatable — the
+// recorded chord keys replay through the dispatcher.
 function deleteSurroundHandler(): Handler<void> {
   return (key, state) => {
     const editor = state.editor;
     if (editor === undefined) return invalid();
-    return effect(state.mode, () => deleteSurrounds(editor, keyForInput(key)));
+    return effect(state.mode, () => deleteSurrounds(editor, keyForInput(key)), { dotRepeatable: true });
   };
 }
 
@@ -1206,12 +1212,14 @@ function changeSurroundHandler(fromKey: string | undefined): Handler<void> {
     const from = fromKey;
     if (key === "t" || key === "<") {
       return tagEntryWaiter(state, "", (tagBody, entryState, finishedWithEnter) =>
-        effect(entryState.mode, () =>
-          changeSurroundsToTag(editor, from, tagBody, { preserveAttributes: finishedWithEnter })
+        effect(
+          entryState.mode,
+          () => changeSurroundsToTag(editor, from, tagBody, { preserveAttributes: finishedWithEnter }),
+          { dotRepeatable: true }
         )
       );
     }
-    return effect(state.mode, () => changeSurrounds(editor, from, keyForInput(key)));
+    return effect(state.mode, () => changeSurrounds(editor, from, keyForInput(key)), { dotRepeatable: true });
   };
 }
 
@@ -1230,14 +1238,20 @@ function surroundRangesForTarget(editor: VimEditorCapabilities, target: Resolved
   }
 }
 
+// The `yss` wrap target: the current line (or [count] lines) from the first
+// non-blank to the last non-blank of the final line. Never built from the
+// linewise-delete shape ([lineRange]) — its newline-spanning ranges made
+// `yss` on any line but the last wrap onto the next line.
 function trimmedLineRange(editor: VimEditorCapabilities, row: number, count: number): TextRange {
-  const range = lineRange(editor, row, count);
-  if (range.start.row !== range.end.row) return range;
-  const line = editor.line(row);
-  const first = line.search(/\S/);
-  if (first < 0) return range;
-  const last = line.search(/\s*$/);
-  return { start: { row, column: first }, end: { row, column: last } };
+  const startRow = Math.max(0, Math.min(row, editor.lineCount() - 1));
+  const endRow = Math.min(startRow + count - 1, editor.lineCount() - 1);
+  const first = editor.line(startRow).search(/\S/);
+  const lastLine = editor.line(endRow);
+  const last = lastLine.search(/\s*$/);
+  return {
+    start: { row: startRow, column: first < 0 ? 0 : first },
+    end: { row: endRow, column: last < 0 ? lastLine.length : last },
+  };
 }
 
 export function keyForInput(key: string): string {

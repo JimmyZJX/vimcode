@@ -5,7 +5,7 @@
 // - intentional differences: GPUI action registration is replaced by direct key dispatch
 //   from the VSCode patch / tests.
 
-import { CommandLine, CommandOptions, LineRange, commandRegisterToRead, executeCommand, substitutePreviews } from "./command.js";
+import { CommandLine, CommandOptions, CommandStatusReport, LineRange, commandRegisterToRead, executeCommand, substitutePreviews } from "./command.js";
 import { commandModeHandler } from "./command_handler.js";
 import { RemapTimeoutKey, defaultVimConfiguration, mergeVimConfiguration, normalizeKey, remapModeForVimMode } from "./config.js";
 import type { NormalizedRemapping, WhenEvaluator, VimCommandMapping, VimConfiguration } from "./config.js";
@@ -66,6 +66,10 @@ export type VimStatus = {
       commit or `n`/`N`. */
   searchStatus: SearchStatus | undefined;
   searchStatusRemainingMs: number | undefined;
+  /** Ex-command outcome (Vim `:h 'report'` messages plus E486/E35): "3 fewer
+      lines", "4 substitutions on 3 lines", "Pattern not found: foo". */
+  commandStatus: CommandStatusReport | undefined;
+  commandStatusRemainingMs: number | undefined;
 };
 
 function statusText(mode: VimMode, chord: string, macroRecording: MacroRecordingStatus | undefined): string {
@@ -153,6 +157,7 @@ const readonlyWarningDurationMs = 2000;
 const swallowedKeyWarningDurationMs = 2000;
 const searchNotFoundStatusDurationMs = 1000;
 const searchCountStatusDurationMs = 3000;
+const commandStatusDurationMs = 3000;
 
 function finishQueued(result: QueuedRunResult<void>, cleanup: () => void): QueuedRunResult<void> {
   if (result !== undefined && typeof (result as Promise<void>).then === "function") {
@@ -246,6 +251,8 @@ export class Vim {
   private searchStatus: SearchStatus | undefined = undefined;
   /** Undefined = sticky (an open prompt owns the status). */
   private searchStatusUntil: number | undefined = undefined;
+  private commandStatus: CommandStatusReport | undefined = undefined;
+  private commandStatusUntil = 0;
 
   private readonly registers: Registers;
   private pendingCompositeUndoTransaction: ReturnType<VimEditorCapabilities["beginUndoTransaction"]> | undefined;
@@ -319,6 +326,7 @@ export class Vim {
     const readonlyWarningRemainingMs = this.readonlyWarningRemainingMs();
     const swallowedKeyWarningRemainingMs = this.swallowedKeyWarningRemainingMs();
     const searchStatusRemainingMs = this.searchStatusRemainingMs();
+    const commandStatusRemainingMs = this.commandStatusRemainingMs();
     return {
       mode,
       pending: this.isPending(),
@@ -340,6 +348,8 @@ export class Vim {
       swallowedKeyWarningRemainingMs,
       searchStatus: this.searchStatusVisible() ? this.searchStatus : undefined,
       searchStatusRemainingMs,
+      commandStatus: commandStatusRemainingMs !== undefined ? this.commandStatus : undefined,
+      commandStatusRemainingMs,
     };
   }
 
@@ -1881,6 +1891,18 @@ export class Vim {
     this.searchStatusUntil = undefined;
   }
 
+  private commandStatusRemainingMs(): number | undefined {
+    if (this.commandStatus === undefined) return undefined;
+    const remaining = this.commandStatusUntil - Date.now();
+    return remaining > 0 ? remaining : undefined;
+  }
+
+  // Keep an ex command's outcome message visible for a moment.
+  private reportCommandStatus(report: CommandStatusReport): void {
+    this.commandStatus = report;
+    this.commandStatusUntil = Date.now() + commandStatusDurationMs;
+  }
+
   private enterInsertMode({ origin, count = 1, separator = "" }: { origin: VimMode; count?: number; separator?: string }): void {
     this.modelState.marks.setBuiltinMark(".", selectionHead(this.editor.getSelections()[0]));
     this.insertOrigin = origin;
@@ -2080,9 +2102,9 @@ export class Vim {
       registers: this.registers,
       lastSearchPattern: {
         read: () => this.globalState.search.lastPattern(),
-        write: pattern =>
-          this.globalState.search.setLastFromExCommand(pattern, this.registers, this.editor),
+        write: pattern => this.globalState.search.setLastFromExCommand(pattern, this.registers),
       },
+      report: report => this.reportCommandStatus(report),
     };
   }
 

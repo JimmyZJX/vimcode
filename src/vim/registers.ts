@@ -158,8 +158,11 @@ export class Registers {
     const content: RegisterContent = parts === undefined ? { text, kind } : { text, kind, parts };
     if (name !== undefined && isUppercaseLetter(name)) {
       const lower = lowercaseRegister(name);
-      const current = this.storage.named.get(lower) ?? emptyRegister;
-      const appended = appendRegisterContent(current, content);
+      const current = this.storage.named.get(lower);
+      // Neovim-verified: appending to a register that was never written is a
+      // plain write, while an existing-but-empty register (`qaq`) appends
+      // with the kind's separator (`:g/a/y A` yields "\na1\na2\n").
+      const appended = current === undefined ? content : appendRegisterContent(current, content);
       this.storage.named.set(lower, appended);
       this.storage.unnamed = appended;
       return;
@@ -274,7 +277,6 @@ function registerPartAt(content: RegisterContent, index: number): RegisterPart {
 }
 
 function appendRegisterPart(current: RegisterPart, incoming: RegisterPart): RegisterPart {
-  if (current.text.length === 0) return { text: incoming.text, kind: incoming.kind };
   if (incoming.text.length === 0) return { text: current.text, kind: current.kind };
   if (current.kind === "linewise" || incoming.kind === "linewise") {
     const currentText = current.text.endsWith("\n") ? current.text.slice(0, -1) : current.text;

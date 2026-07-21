@@ -935,11 +935,17 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   endSearchPreview(_options: { restoreViewport?: boolean } = {}): void {}
 
+  /** The last [updateSearch] query (for tests: the visible search highlight
+      follows `/` searches, never `:g`/`:s` pattern writes). */
+  public lastSearchHighlightQuery: string | undefined;
+
   updateSearch(
-    _query: string,
+    query: string,
     _direction: SearchDirection,
     _options: SearchOptions = {}
-  ): void {}
+  ): void {
+    this.lastSearchHighlightQuery = query;
+  }
 
   findSearchMatch(
     query: string,

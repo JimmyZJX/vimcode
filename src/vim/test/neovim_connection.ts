@@ -56,14 +56,16 @@ export function runNeovim({
       throw new Error(`nvim failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     }
 
+    // Print-style ex commands (`:g/pat` → `:p`) write to stdout without a
+    // trailing newline, so the marker may not sit at a line start.
     const line = result.stdout
       .split("\n")
-      .find((stdoutLine) => stdoutLine.startsWith("NVIM_RESULT:"));
+      .find((stdoutLine) => stdoutLine.includes("NVIM_RESULT:"));
     if (line === undefined) {
       throw new Error(`nvim did not print result\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     }
 
-    const raw = JSON.parse(line.slice("NVIM_RESULT:".length)) as {
+    const raw = JSON.parse(line.slice(line.indexOf("NVIM_RESULT:") + "NVIM_RESULT:".length)) as {
       mode: string;
       lines: string[];
       cursor: [number, number];

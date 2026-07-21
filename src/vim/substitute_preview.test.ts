@@ -26,6 +26,46 @@ describe("substitutePreviews (pure)", () => {
     expect(substitutePreviews(editor(), "s/[")).toBeUndefined();
   });
 
+  it("highlights the matched lines of a :g command", () => {
+    // The match region on matching lines; nothing on others.
+    expect(substitutePreviews(editor(), "g/bar")).toEqual([
+      { range: { start: { row: 0, column: 4 }, end: { row: 0, column: 7 } }, replacement: undefined },
+      { range: { start: { row: 1, column: 0 }, end: { row: 1, column: 3 } }, replacement: undefined },
+    ]);
+    // :v marks lines without a match: the whole line.
+    expect(substitutePreviews(editor(), "v/bar")).toEqual([
+      { range: { start: { row: 2, column: 0 }, end: { row: 2, column: 3 } }, replacement: undefined },
+    ]);
+    // A range restricts the scan.
+    expect(substitutePreviews(editor(), "1g/bar")).toHaveLength(1);
+  });
+
+  it("previews a :g substitute tail on the matched lines only", () => {
+    // Without the g flag only the first match per line is replaced; row 2
+    // ("foo") is not a marked line, so it has no preview.
+    expect(substitutePreviews(editor(), "g/bar/s/foo/X")).toEqual([
+      { range: { start: { row: 0, column: 0 }, end: { row: 0, column: 3 } }, replacement: "X" },
+      { range: { start: { row: 1, column: 4 }, end: { row: 1, column: 7 } }, replacement: "X" },
+    ]);
+    expect(substitutePreviews(editor(), "g/bar/s/foo/X/g")).toEqual([
+      { range: { start: { row: 0, column: 0 }, end: { row: 0, column: 3 } }, replacement: "X" },
+      { range: { start: { row: 0, column: 8 }, end: { row: 0, column: 11 } }, replacement: "X" },
+      { range: { start: { row: 1, column: 4 }, end: { row: 1, column: 7 } }, replacement: "X" },
+    ]);
+    // An empty tail pattern resolves to the :g pattern.
+    expect(substitutePreviews(editor(), "g/bar/s//X")).toEqual([
+      { range: { start: { row: 0, column: 4 }, end: { row: 0, column: 7 } }, replacement: "X" },
+      { range: { start: { row: 1, column: 0 }, end: { row: 1, column: 3 } }, replacement: "X" },
+    ]);
+  });
+
+  it("previews a :g delete tail as whole-line deletions", () => {
+    expect(substitutePreviews(editor(), "g/bar/d")).toEqual([
+      { range: { start: { row: 0, column: 0 }, end: { row: 0, column: 11 } }, replacement: "" },
+      { range: { start: { row: 1, column: 0 }, end: { row: 1, column: 11 } }, replacement: "" },
+    ]);
+  });
+
   it("previews the last search pattern while the typed pattern is empty", () => {
     const options = { lastSearchPattern: { read: () => "foo", write: () => undefined } };
     expect(substitutePreviews(editor(), "s//X", options)).toEqual([

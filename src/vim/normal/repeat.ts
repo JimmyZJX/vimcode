@@ -253,14 +253,15 @@ export class MacroState {
     if (this.recordingRegister !== undefined && !this.replaying) this.currentKeys.push(typedKey(key));
   }
 
-  stopRecording(): boolean {
+  stopRecording(): { register: string; keys: readonly RecordedKey[] } | undefined {
     const register = this.recordingRegister;
-    if (register === undefined) return false;
+    if (register === undefined) return undefined;
     this.recordingRegister = undefined;
-    this.recorded.set(register, this.currentKeys);
+    const keys = this.currentKeys;
+    this.recorded.set(register, keys);
     this.lastRecordedRegister = register;
     this.currentKeys = [];
-    return true;
+    return { register, keys };
   }
 
   replayRegisterKey(key: string, count: number, runKey: (entry: RecordedKey) => ReplayResult): ReplayResult {
