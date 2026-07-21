@@ -136,13 +136,26 @@ test(">ip indents the paragraph object", () => {
 // Phase 5 probes: ys captures its range through the keymap grammar.
 
 test("ys2w) wraps two words (count after ys)", () => {
+  // vim-surround trims the motion's trailing space out of the wrap.
   const result = probe("aaa bbb ccc", ["y", "s", "2", "w", ")"]);
-  expect(result.text).toBe("(aaa bbb )ccc");
+  expect(result.text).toBe("(aaa bbb) ccc");
 });
 
 test("yss) wraps the trimmed line", () => {
   const result = probe("  aaa bbb", ["y", "s", "s", ")"]);
   expect(result.text).toBe("  (aaa bbb)");
+});
+
+// vim-surround: charwise wraps strip trailing whitespace — the space stays
+// outside the closing delimiter.
+test("ysw) leaves the w motion's trailing space outside the wrap", () => {
+  const result = probe("foo bar", ["y", "s", "w", ")"]);
+  expect(result.text).toBe("(foo) bar");
+});
+
+test("ysaw) leaves the object's trailing space outside the wrap", () => {
+  const result = probe("foo bar", ["y", "s", "a", "w", ")"]);
+  expect(result.text).toBe("(foo) bar");
 });
 
 test("ysiw) still wraps the inner word", () => {

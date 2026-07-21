@@ -667,6 +667,13 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       this.finishUndoTransaction();
   }
 
+  /** Open transaction depth (for tests): an insert session must hold one open
+      transaction from entry to escape, so a host can suppress its own
+      intra-session undo stops (word-boundary stops during typing). */
+  undoTransactionDepthForTest(): number {
+    return this.undoTransactionDepth;
+  }
+
   trackLines(rows: readonly number[]): TrackedLines {
     const tracker = new LineTracker(rows);
     this.lineTrackers.add(tracker);

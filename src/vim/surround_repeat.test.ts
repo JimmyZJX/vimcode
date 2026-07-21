@@ -24,7 +24,8 @@ describe("surround dot-repeat", () => {
   });
 
   it(". repeats ys with a motion and an object", () => {
-    expect(repeatOnNextLine("foo x\nbar y", ["y", "s", "e", ")"])).toBe("(foo) x\n(bar) y");
+    // `ysw` trims the motion's trailing space out of the wrap (vim-surround).
+    expect(repeatOnNextLine("foo x\nbar y", ["y", "s", "w", ")"])).toBe("(foo) x\n(bar) y");
     expect(repeatOnNextLine("foo x\nbar y", ["y", "s", "i", "w", "]"])).toBe("[foo] x\n[bar] y");
   });
 

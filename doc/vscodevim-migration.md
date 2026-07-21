@@ -218,6 +218,11 @@ command-line-mode remaps, `vim.visualstar`, quickpick cmdline, `ctrl-w`
   the whitelist (e.g. `tab`, completion accept) are native and *not*
   replayed. VSCodeVim intercepts nearly everything; vimcode trades exact
   macro fidelity on host-UI keys for zero interference with IntelliSense.
+- **Live insert undo keeps VSCode's granularity**: undo inside/after a live
+  insert session splits at the host's word-boundary undo stops rather than
+  Vim's one-unit-per-insert-session. Dot/macro *replays* are one undo unit
+  (the replay runs inside a Vim undo transaction, so a `.` repeat undoes
+  atomically).
 - **`ctrl-o`/`ctrl-i`** = VSCode navigation history, not a Vim jumplist.
 - **`%`** matches nvim's bundled matchit for brackets (and the failed-`d%`
   cursor-char quirk) but has no language-aware comment/tag/preprocessor

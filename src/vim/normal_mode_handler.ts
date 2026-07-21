@@ -44,7 +44,7 @@ import { textObjectForKey, textObjectRange } from "./object.js";
 import { replaceWithRegisterWouldEdit } from "./normal/replace_with_register.js";
 import { SimpleAction, applySimpleAction, simpleActionForKey } from "./normal/simple_action.js";
 import { addSurrounds, addTagSurrounds, changeSurrounds, changeSurroundsToTag, deleteSurrounds } from "./surrounds.js";
-import { TextRange, VimMode, charwiseSelection, selectionHead } from "./state.js";
+import { TextRange, VimMode, charwiseSelection, comparePositions, selectionHead } from "./state.js";
 
 // The full normal-mode grammar: the count/register prefix wrapping the raw
 // grammar (operators + motions).
@@ -1140,24 +1140,42 @@ function surroundPairWaiter(state: HandlerState, target: SurroundTarget): Handle
       handler: (key, state) => {
         const editor = state.editor;
         if (editor === undefined) return invalid();
+        // vim-surround `s:opfunc`: a charwise wrap strips trailing whitespace
+        // from the wrapped text — `ysw)` on "foo x" gives "(foo) x", the space
+        // stays outside the closing delimiter.
+        const ranges = target.linewise
+          ? target.ranges
+          : target.ranges.map(range => trimTrailingWhitespace(editor, range));
         if (key === "t" || key === "<") {
           return tagEntryWaiter(state, "", (tagBody, entryState) =>
             effect(
               entryState.mode,
-              () => addTagSurrounds(editor, target.ranges, tagBody, { linewise: target.linewise }),
+              () => addTagSurrounds(editor, ranges, tagBody, { linewise: target.linewise }),
               { dotRepeatable: true }
             )
           );
         }
         return effect(
           state.mode,
-          () => addSurrounds(editor, target.ranges, keyForInput(key), { linewise: target.linewise }),
+          () => addSurrounds(editor, ranges, keyForInput(key), { linewise: target.linewise }),
           { dotRepeatable: true }
         );
       },
       state: deeper(state),
     },
   ]);
+}
+
+function trimTrailingWhitespace(editor: VimEditorCapabilities, range: TextRange): TextRange {
+  let end = range.end;
+  while (comparePositions(range.start, end) < 0) {
+    const char = end.column > 0 ? editor.line(end.row)[end.column - 1] : "\n";
+    if (!/\s/.test(char)) break;
+    end = end.column > 0
+      ? { row: end.row, column: end.column - 1 }
+      : { row: end.row - 1, column: editor.lineLength(end.row - 1) };
+  }
+  return { start: range.start, end };
 }
 
 // vim-surround tag entry: after a `t`/`<` target, collect the tag body until

@@ -522,6 +522,10 @@ export class Vim {
       : undefined;
   }
 
+  // Live insert sessions deliberately hold NO session-wide transaction: typed
+  // text keeps the host's native undo granularity (VSCode's word-boundary
+  // stops), diverging from Vim's one-unit-per-insert-session. Replays are the
+  // exception — see [replayAsOneUndoUnit].
   private compositeUndoTransaction(
     parsed: PreParsedKey | undefined
   ): ReturnType<VimEditorCapabilities["beginUndoTransaction"]> | undefined {
@@ -1606,7 +1610,10 @@ export class Vim {
     }
   }
 
-  private replayMacro(run: () => QueuedRunResult<void>): QueuedRunResult<void> {
+  // One undo unit around a whole replay: replayed keys re-enter through
+  // [onKey], which has no plan-level transaction, and the host would otherwise
+  // split replayed insert text at its own word-boundary undo stops.
+  private replayAsOneUndoUnit(run: () => QueuedRunResult<void>): QueuedRunResult<void> {
     const undoTransaction = this.editor.beginUndoTransaction(this.editor.getSelections());
     const finish = () => undoTransaction.finish(this.editor.getSelections());
     try {
@@ -1628,7 +1635,7 @@ export class Vim {
     const pending = this.pendingMacroReplay;
     if (pending === undefined) return;
     this.pendingMacroReplay = undefined;
-    return this.replayMacro(() => {
+    return this.replayAsOneUndoUnit(() => {
       const runKey = (entry: RecordedKey) => this.replayRecordedKey(entry, context);
       return pending.register === undefined
         ? this.globalState.macro.replayLast(pending.count, runKey)
@@ -1638,9 +1645,8 @@ export class Vim {
 
   // A dot replay requested by the framework `.` handler, run after the executor's
   // effect drain like [runPendingMacroReplay] (each replayed key is fed back
-  // through the dispatcher and must fully apply before the next). Unlike a macro
-  // replay it is not wrapped in one undo transaction: the replayed change manages
-  // its own undo unit, exactly as it did when first typed.
+  // through the dispatcher and must fully apply before the next). Like a macro
+  // replay it is one undo unit — the replayed change is exactly one Vim change.
   private pendingDotReplay: { count: number | undefined; register: RegisterName | undefined } | undefined;
 
   private runPendingDotReplay(context: VimExecutionContext | undefined): QueuedRunResult<void> {
@@ -1653,11 +1659,13 @@ export class Vim {
     // advance). Without this, the dangling `[3]` would be committed as the
     // last change by the next key's [maybeFinish].
     this.globalState.repeat.cancelCurrent();
-    return this.globalState.repeat.replay(pending.count, {
-      registerName: pending.register,
-      runKey: entry => this.replayRecordedKey(entry, context),
-      runVisualAction: (selection, repeatAction) => this.replayVisualAction(selection, repeatAction),
-    });
+    return this.replayAsOneUndoUnit(() =>
+      this.globalState.repeat.replay(pending.count, {
+        registerName: pending.register,
+        runKey: entry => this.replayRecordedKey(entry, context),
+        runVisualAction: (selection, repeatAction) => this.replayVisualAction(selection, repeatAction),
+      })
+    );
   }
 
   // Replay one recorded key from a dot-repeat / macro sequence. Hosted replay
@@ -1795,7 +1803,12 @@ export class Vim {
     enterNormalMode(this.editor, { moveLeft: false });
     this.insertOrigin = undefined;
     this.setMode("normal");
-    this.editor.finishUndoTransaction(this.editor.getSelections());
+    // The insert session's undo unit ends here, through the pending composite
+    // transaction when the session opened one (like the escape path).
+    const composite = this.pendingCompositeUndoTransaction;
+    this.pendingCompositeUndoTransaction = undefined;
+    if (composite !== undefined) composite.finish(this.editor.getSelections());
+    else this.editor.finishUndoTransaction(this.editor.getSelections());
     this.temporaryNormal = true;
     return "handled";
   }
@@ -1847,6 +1860,11 @@ export class Vim {
     this.editor.setCursorStyle("block");
     this.setMode("normal");
     this.editor.setInsertPendingText(undefined);
+    // Balance a pending insert-session transaction before the flush resets the
+    // depth, so its finish closure cannot later close an unrelated transaction.
+    const composite = this.pendingCompositeUndoTransaction;
+    this.pendingCompositeUndoTransaction = undefined;
+    composite?.finish(this.editor.getSelections());
     this.editor.flushUndoTransaction();
   }
 
