@@ -338,8 +338,12 @@ export function searchUnderCursorMotion(
   // `\<word\>` syntax; locally the plain word + whole-word option is the same
   // search, so that is what a `/<Up>` recall re-runs).
   searchState.history.add(query);
+  // Vim `:h star`: "'ignorecase' is used, 'smartcase' is not" — with the
+  // VSCodeVim-default ignorecase, `*` is case-insensitive even for
+  // capitalized words (the typed-pattern smartcase rule must not apply).
   return searchState.setLast(query, backwards, registers, editor, {
     wholeWord: true,
+    caseSensitive: false,
   });
 }
 

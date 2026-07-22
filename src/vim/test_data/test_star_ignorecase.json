@@ -1,0 +1,17 @@
+{"SetOption":{"value":"ignorecase"}}
+{"Put":{"state":"ˇFoo bar\nfoo\nFOO x"}}
+{"Key":"*"}
+{"Get":{"state":"Foo bar\nˇfoo\nFOO x","mode":"normal"}}
+{"SetOption":{"value":"ignorecase"}}
+{"Put":{"state":"ˇFoo bar\nfoo\nFOO x"}}
+{"Key":"*"}
+{"Key":"n"}
+{"Get":{"state":"Foo bar\nfoo\nˇFOO x","mode":"normal"}}
+{"SetOption":{"value":"ignorecase"}}
+{"Put":{"state":"ˇFoo\nFoos\nfoo"}}
+{"Key":"*"}
+{"Get":{"state":"Foo\nFoos\nˇfoo","mode":"normal"}}
+{"SetOption":{"value":"ignorecase"}}
+{"Put":{"state":"FOO\nbar\nˇfoo"}}
+{"Key":"#"}
+{"Get":{"state":"ˇFOO\nbar\nfoo","mode":"normal"}}

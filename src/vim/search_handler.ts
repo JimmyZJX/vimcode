@@ -355,7 +355,11 @@ export function visualSearchUnderCursorHandler(
       if (selection === undefined) return;
       const query = editor.getText(rangeOfSelection(selection));
       if (query.length === 0) return;
-      const motion = search.setLast(query, backwards, registers, editor, { regex: false });
+      // Like normal-mode `*`: ignorecase applies, smartcase does not.
+      const motion = search.setLast(query, backwards, registers, editor, {
+        regex: false,
+        caseSensitive: false,
+      });
       visual.clearState();
       editor.setCursorStyle("block");
       target = "normal";

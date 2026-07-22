@@ -3698,6 +3698,19 @@ describe("Zed-inspired Vim core smoke tests", () => {
   });
 });
 
+describe("search under cursor case sensitivity", () => {
+  // Visual `*` (a VSCodeVim behavior — searches the selection) follows the
+  // same rule as normal-mode `*`: ignorecase applies, smartcase does not.
+  it("visual * matches the selection case-insensitively", () => {
+    const editor = new InMemoryVimEditor("Fox y\nz fond");
+    const vim = new Vim(editor);
+    // Select "Fo" and star-search it: lands on "fo" of "fond".
+    runKeys(vim, ["v", "l", "*"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(selectionHead(editor.getSelections()[0])).toEqual({ row: 1, column: 2 });
+  });
+});
+
 describe("configuration reloads", () => {
   // Startup fires a burst of host configuration events; reloading the
   // configuration — even one that changes the keymaps — must not cancel an
