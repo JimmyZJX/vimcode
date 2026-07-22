@@ -505,6 +505,23 @@ describe("execution-time clipboard register reads", () => {
     expect(normalEditor.getText()).toBe("ac");
   });
 
+  it("refreshes the clipboard for mark-ranged : commands (visual prefill)", async () => {
+    // `V:` prefills `'<,'>`; the register-read detection must resolve the
+    // mark addresses (state.marks) or the refresh is skipped and the put
+    // reads a stale clipboard snapshot.
+    const clipboard = new MutableClipboard("fresh");
+    const putEditor = new InMemoryVimEditor("a\nb");
+    const putVim = new Vim(putEditor, { useSystemClipboard: true });
+    await press(putVim, ["V", ":", "p", "u", "space", "+", "enter"], clipboard);
+    expect(putEditor.getText()).toBe("a\nfresh\nb");
+
+    const normalEditor = new InMemoryVimEditor("a\nb");
+    const normalVim = new Vim(normalEditor, { useSystemClipboard: true });
+    clipboard.text = "N";
+    await press(normalVim, ["V", ":", "n", "o", "r", "m", "space", "p", "enter"], clipboard);
+    expect(normalEditor.getText()).toBe("aN\nb");
+  });
+
   it("serializes mapped ranged :normal keys against each target row", async () => {
     const editor = new InMemoryVimEditor("abc\ndef");
     const vim = new Vim(editor, {

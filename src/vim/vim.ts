@@ -1028,6 +1028,11 @@ export class Vim {
         mode: "command",
         editor: this.editor,
         activeCommand: this.activeCommand,
+        // The enter branch resolves mark addresses (`:'<,'>pu +` — the form a
+        // visual `:` prefills) to detect the command's register read; without
+        // marks the clipboard refresh would be skipped for mark-ranged
+        // commands.
+        marks: this.modelState.marks,
         reportSwallowedPromptKey: swallowedKey => this.reportSwallowedPromptKey(swallowedKey),
       };
       return commandModeHandler(key, liveState);
