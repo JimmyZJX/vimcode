@@ -325,6 +325,28 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(vim.status.searchStatus).toEqual({ kind: "count", index: 1, total: 2, capped: false });
   });
 
+  it("counted n/N report the destination match index", () => {
+    const editor = new InMemoryVimEditor("a x x x");
+    const vim = new Vim(editor);
+    runKeys(vim, ["/", "x", "enter"]);
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 1, total: 3, capped: false });
+
+    // 2n traverses the second match and lands on the third.
+    runKeys(vim, ["2", "n"]);
+    expect(head(editor)).toEqual({ row: 0, column: 6 });
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 3, total: 3, capped: false });
+
+    // 2N walks back to the first.
+    runKeys(vim, ["2", "N"]);
+    expect(head(editor)).toEqual({ row: 0, column: 2 });
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 1, total: 3, capped: false });
+
+    // Counted navigation wraps like the motion does (2n from #1 -> #3).
+    runKeys(vim, ["4", "n"]);
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+    expect(vim.status.searchStatus).toEqual({ kind: "count", index: 2, total: 3, capped: false });
+  });
+
   it("shows the search-not-found warning live while typing the query", () => {
     const vim = new Vim(new InMemoryVimEditor("alpha"));
 

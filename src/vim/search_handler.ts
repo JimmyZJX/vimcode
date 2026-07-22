@@ -19,6 +19,7 @@ import {
 } from "./key_handler.js";
 import type { Motion } from "./motion.js";
 import { applyMotion } from "./motion.js";
+import type { SearchMatchCount } from "./search.js";
 import { applyMotionResults } from "./motion_handler.js";
 import type { PendingSearch, SearchState } from "./normal/search.js";
 import { searchUnderCursorMotion } from "./normal/search.js";
@@ -216,7 +217,7 @@ export function reportSearchMotionStatus(
   state: HandlerState,
   editor: VimEditorCapabilities,
   motion: Motion,
-  { countOnMatch = true }: { countOnMatch?: boolean } = {}
+  { countOnMatch = true, count = 1 }: { countOnMatch?: boolean; count?: number } = {}
 ): boolean {
   if (motion.type !== "searchForward" && motion.type !== "searchBackward") return false;
   const match = editor.findSearchMatch(
@@ -230,10 +231,32 @@ export function reportSearchMotionStatus(
     return true;
   }
   if (countOnMatch) {
-    const count = editor.searchMatchCount(motion.query, match.start, motion.options);
-    if (count !== undefined) state.reportSearchStatus?.({ kind: "count", ...count });
+    const matchCount = editor.searchMatchCount(motion.query, match.start, motion.options);
+    if (matchCount !== undefined) {
+      state.reportSearchStatus?.({
+        kind: "count",
+        ...matchCount,
+        index: destinationIndex(matchCount, motion.type === "searchBackward", count),
+      });
+    }
   }
   return false;
+}
+
+// A counted navigation (`2n`) lands [count - 1] matches beyond the first
+// traversed one, wrapping like the motion does; the displayed index must
+// follow the destination. A capped scan's index is already a placeholder.
+function destinationIndex(
+  { index, total, capped }: SearchMatchCount,
+  backwards: boolean,
+  count: number
+): number {
+  if (capped || count <= 1 || total <= 0) return index;
+  const steps = (count - 1) % total;
+  const zeroBased = backwards
+    ? (index - 1 - steps + total) % total
+    : (index - 1 + steps) % total;
+  return zeroBased + 1;
 }
 
 // Run [commit] (the deferred search side effects: preview teardown, [last] +
@@ -445,7 +468,7 @@ function searchNavigation(
     () => {
       const motion = resolve(search, editor, registers);
       if (motion === undefined) return;
-      reportSearchMotionStatus(state, editor, motion);
+      reportSearchMotionStatus(state, editor, motion, { count });
       applyMotionResults(
         editor,
         editor.getSelections().map((selection) => ({
