@@ -72,6 +72,22 @@ export type VimStatus = {
   commandStatusRemainingMs: number | undefined;
 };
 
+// The slice of the configuration that [createRemaps] consumes: only a change
+// here justifies resetting the executor's pending state.
+function remapConfiguration(configuration: VimConfiguration) {
+  return {
+    leader: configuration.leader,
+    normal: configuration.normalModeKeyBindings,
+    normalNonRecursive: configuration.normalModeKeyBindingsNonRecursive,
+    insert: configuration.insertModeKeyBindings,
+    insertNonRecursive: configuration.insertModeKeyBindingsNonRecursive,
+    visual: configuration.visualModeKeyBindings,
+    visualNonRecursive: configuration.visualModeKeyBindingsNonRecursive,
+    operatorPending: configuration.operatorPendingModeKeyBindings,
+    operatorPendingNonRecursive: configuration.operatorPendingModeKeyBindingsNonRecursive,
+  };
+}
+
 function statusText(mode: VimMode, chord: string, macroRecording: MacroRecordingStatus | undefined): string {
   const modeText = chord.length > 0 ? `${mode.toUpperCase()} ${chord}` : mode.toUpperCase();
   if (macroRecording === undefined) return modeText;
@@ -302,9 +318,22 @@ export class Vim {
   }
 
   setConfiguration(configuration: Partial<VimConfiguration>): void {
-    this.configuration = mergeVimConfiguration(configuration);
+    // Hosts fire configuration events liberally — startup fires a burst over
+    // several seconds while extensions register their settings — and an
+    // executor reset cancels an in-flight chord (`<` waiting for its
+    // operand). Nothing here needs a reset in general: every key dispatch
+    // reads [this.remaps] fresh, so even a pending chord picks up new tables
+    // on its next key. The one exception is a pending remap *prefix* (`j` of
+    // `jk` buffered for the ambiguity timeout): its continuation captured the
+    // old tables (see [handleRemapKey]), so a remap change drops it.
+    const merged = mergeVimConfiguration(configuration);
+    const previous = this.configuration;
+    if (JSON.stringify(merged) === JSON.stringify(previous)) return;
+    this.configuration = merged;
     this.remaps = createRemaps(this.configuration);
-    this.clearPendingRemaps();
+    const remapsChanged =
+      JSON.stringify(remapConfiguration(merged)) !== JSON.stringify(remapConfiguration(previous));
+    if (remapsChanged && this.remapIsPending()) this.clearPendingRemaps();
     this.registers.setUseSystemClipboard(this.configuration.useSystemClipboard);
     this.visualMode.setConfiguration(this.configuration);
   }

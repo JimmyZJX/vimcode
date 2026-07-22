@@ -3697,3 +3697,56 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(head(editor)).toEqual({ row: 1, column: 0 });
   });
 });
+
+describe("configuration reloads", () => {
+  // Startup fires a burst of host configuration events; reloading the
+  // configuration — even one that changes the keymaps — must not cancel an
+  // in-flight chord: key dispatch reads the remap tables fresh on every key.
+  it("keeps a pending chord across configuration and keymap reloads", () => {
+    const editor = new InMemoryVimEditor("aa\nbb");
+    const vim = new Vim(editor);
+    runKeys(vim, ["<"]);
+    expect(vim.status.pending).toBe(true);
+
+    // Identical configuration: no-op.
+    vim.setConfiguration({});
+    expect(vim.status.pending).toBe(true);
+
+    // A non-remap change applies without resetting the pending grammar.
+    vim.setConfiguration({ timeout: 1234 });
+    expect(vim.status.pending).toBe(true);
+    expect(vim.status.remapTimeoutMs).toBe(1234);
+
+    // A keymap change keeps the chord too; its next key resolves against the
+    // new tables.
+    vim.setConfiguration({
+      timeout: 1234,
+      normalModeKeyBindings: [{ before: ["j"], after: ["g", "j"] }],
+    });
+    expect(vim.status.pending).toBe(true);
+    runKeys(vim, ["<"]);
+    expect(editor.getText()).toBe("aa\nbb");
+    runKeys(vim, [">", ">"]);
+    expect(editor.getText()).toBe("    aa\nbb");
+  });
+
+  it("drops only a pending remap prefix when the keymaps change", () => {
+    // `do` is an ambiguous prefix of the dog->x mapping: it waits for the
+    // timeout. Its continuation captured the old tables, so a keymap change
+    // resets it rather than completing against stale mappings.
+    const editor = new InMemoryVimEditor("aa");
+    const vim = new Vim(editor, {
+      normalModeKeyBindings: [{ before: ["d", "o", "g"], after: ["x"] }],
+    });
+    runKeys(vim, ["d", "o"]);
+    expect(vim.status.remapPending).toBe(true);
+    vim.setConfiguration({
+      normalModeKeyBindings: [{ before: ["d", "o", "g"], after: ["~"] }],
+    });
+    expect(vim.status.remapPending).toBe(false);
+    expect(vim.status.pending).toBe(false);
+    // The new mapping works from a clean slate.
+    runKeys(vim, ["d", "o", "g"]);
+    expect(editor.getText()).toBe("Aa");
+  });
+});

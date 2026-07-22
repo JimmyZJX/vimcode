@@ -179,7 +179,12 @@ export class VimController extends Disposable {
 		this._register(this.extensionEnablementService.onDidChangeEnablement(() => {
 			if (this.enabled) this.warnIfVSCodeVimEnabled();
 		}));
-		this._register(this.configurationService.onDidChangeConfiguration(() => {
+		this._register(this.configurationService.onDidChangeConfiguration(event => {
+			// Startup fires a burst of configuration events while extensions
+			// register their settings schemas; only vim-relevant ones matter
+			// (setConfiguration additionally no-ops on unchanged values, so a
+			// pending chord survives the noise).
+			if (!event.affectsConfiguration('vim') && !event.affectsConfiguration('vimcode')) return;
 			this.vim.setConfiguration(this.readVimCompatibilityConfiguration());
 			this.updateEnabledState();
 		}));
