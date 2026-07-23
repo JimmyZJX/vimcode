@@ -1,0 +1,48 @@
+{"Put":{"state":"ˇhello world"}}
+{"Key":"y"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"q"}
+{"Key":"a"}
+{"Key":"q"}
+{"Key":"p"}
+{"ReadRegister":{"name":"\"","value":"hello"}}
+{"ReadRegister":{"name":"a","value":""}}
+{"Get":{"state":"hhellˇoello world","mode":"normal"}}
+{"Put":{"state":"ˇhello world"}}
+{"Key":"y"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"q"}
+{"Key":"b"}
+{"Key":"l"}
+{"Key":"q"}
+{"Key":"q"}
+{"Key":"B"}
+{"Key":"h"}
+{"Key":"q"}
+{"ReadRegister":{"name":"\"","value":"hello"}}
+{"ReadRegister":{"name":"b","value":"lh"}}
+{"Get":{"state":"ˇhello world","mode":"normal"}}
+{"Put":{"state":"ˇhello world"}}
+{"Key":"y"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"q"}
+{"Key":"1"}
+{"Key":"l"}
+{"Key":"q"}
+{"ReadRegister":{"name":"\"","value":"hello"}}
+{"ReadRegister":{"name":"1","value":"l"}}
+{"Get":{"state":"hˇello world","mode":"normal"}}
+{"Put":{"state":"ˇhello world"}}
+{"Key":"y"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"q"}
+{"Key":"\""}
+{"Key":"l"}
+{"Key":"q"}
+{"Key":"p"}
+{"ReadRegister":{"name":"\"","value":"l"}}
+{"Get":{"state":"heˇlllo world","mode":"normal"}}

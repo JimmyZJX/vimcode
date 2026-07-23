@@ -40,11 +40,13 @@ export function macroControlHandler(key: string, state: HandlerState): HandleRes
         if (recorded === undefined) return;
         // Vim keeps macros in the registers: `q` writes the recorded keys, so
         // `qaq` leaves an *existing* empty register a (the classic clear
-        // before `:g/pat/y A`) and `"ap` pastes the keys. Multi-character key
-        // names use `<>` notation, an approximation of Vim's raw termcodes.
+        // before `:g/pat/y A`) and `"ap` pastes the keys. Only the target
+        // register is written ([writeMacro]): unlike a yank, recording never
+        // clobbers the unnamed register. Multi-character key names use `<>`
+        // notation, an approximation of Vim's raw termcodes.
         const name = parseRegisterName(recorded.register);
         if (name !== undefined) {
-          state.registers?.write(name, macroKeysText(recorded.keys), "characterwise");
+          state.registers?.writeMacro(name, macroKeysText(recorded.keys));
         }
       }, { preservesDotRepeat: true });
     }

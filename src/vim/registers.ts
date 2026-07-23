@@ -178,6 +178,28 @@ export class Registers {
     }
   }
 
+  /** `q{reg}…q`: recording writes ONLY the target register — unlike yanks and
+      deletes it leaves the unnamed register untouched (Neovim-verified: `yiw`
+      then `qaq` keeps `""` holding the yank, so `p` still pastes it), except
+      when `"` itself is the recording target. Uppercase appends, charwise
+      without a separator (`qblq` + `qBhq` gives "lh"). */
+  writeMacro(name: RegisterName, text: string): void {
+    if (name === "_") return;
+    const content: RegisterContent = { text, kind: "characterwise" };
+    if (isUppercaseLetter(name)) {
+      const lower = lowercaseRegister(name);
+      const current = this.storage.named.get(lower);
+      this.storage.named.set(lower, current === undefined ? content : appendRegisterContent(current, content));
+      return;
+    }
+    if (name === '"') this.storage.unnamed = content;
+    else if (isSystemClipboardRegister(name)) this.writeSystemClipboard(content);
+    else if (isDigitRegister(name)) this.storage.numbered.set(name, content);
+    else if (name === "-") this.storage.smallDelete = content;
+    else if (name === "/") this.storage.search = content;
+    else this.storage.named.set(name, content);
+  }
+
   writeYank(
     name: RegisterName | undefined,
     text: string,
