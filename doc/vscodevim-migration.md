@@ -145,13 +145,23 @@ is from the README plus known majors and may miss minor keys.
 
 ### Tier 1 — daily-use, should fix before migration
 
-- `Y` (normal) — unbound.
-- `gcc`/`gc{motion}`/visual `gc`, `gC{object}` — commentary via native
-  toggle-comment.
-- `:s` capture groups `\1`–`\9` (and ideally `&`), `c` confirm flag.
+All resolved:
+
+- ~~`Y` (normal) — unbound.~~ Done: `y$` per Neovim's default mapping
+  (`test_shift_y`; the VSCodeVim whole-line difference is in the divergences
+  section).
+- ~~`gcc`/`gc{motion}`/visual `gc`, `gC{object}` — commentary via native
+  toggle-comment.~~ Done (comment.test.ts: counts, `gcgc`, visual `gc`/`gC`,
+  dot-repeat).
+- ~~`:s` capture groups `\1`–`\9` (and ideally `&`).~~ Done
+  (`expandReplacement`, ":s capture groups" tests). The `c` confirm flag
+  moved to Tier 2 (currently ignored: the substitute runs unconfirmed).
 - ~~`it`/`at` tag objects; surround `t` target.~~ Done.
-- `gb` alias for add-next-match cursor.
-- `vim.mode` context-value compatibility for keybindings.json users.
+- ~~`gb` alias for add-next-match cursor.~~ Done: alias of `gl`
+  (`editor.action.addSelectionToNextFindMatch`), alongside `gL`/`g>`/`g<`/`ga`.
+- ~~`vim.mode` context-value compatibility.~~ Settled as a deliberate
+  divergence (`+` pending suffix, `Search`/`Command`); leaderkey and
+  spacemacs-opinionated already target these values.
 - ~~Vim-regex conveniences in search~~ **Fixed**: `\<`/`\>` → `\b` and
   `\c`/`\C` case forcing are translated for `/`?` search (core + host
   find-highlight), `:s`, and `:g`.
@@ -177,8 +187,9 @@ is from the README plus known majors and may miss minor keys.
   'expandtab' — nvim's default would synthesize tabs).
 - Ex: ~~`:m[ove]`, `:t`/`:co[py]`, `:pu[t]`~~ done (`test_ex_move_copy_put`;
   `$`/`0` addresses now parse). Still open: `:reg[isters]`, `:marks`,
-  `:delmarks`, `:>`/`:<`, `:sort` flags (`i`, `u`, `n`), `:s` repeat (`:s`,
-  `&`), ~~`:g` with more than `d`/`normal`~~. The `:g` framework is in: full
+  `:delmarks`, ~~`:>`/`:<`~~ (done), `:sort` flags (`i`, `u`, `n`), `:s`
+  repeat (`:s`, `&`), the `:s` `c` confirm flag (from Tier 1; currently
+  ignored), ~~`:g` with more than `d`/`normal`~~. The `:g` framework is in: full
   `:g[lobal]`/`:g!`/`:v[global]` spellings, `:g`/`:s` sharing the last search
   pattern with `/` (`:g//`, `:s//`), Neovim-faithful mark-tracked execution
   (single undo step), and generic sub-command dispatch — any ex tail runs per
