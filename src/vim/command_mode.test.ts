@@ -220,6 +220,62 @@ describe("compound host commands run in sequence", () => {
   });
 });
 
+describe(":b buffer switching", () => {
+  function bufferVim() {
+    const editor = new InMemoryVimEditor("a");
+    return { editor, vim: new Vim(editor) };
+  }
+
+  it(":b1 jumps to the first tab in the group", () => {
+    const { editor, vim } = bufferVim();
+    runKeys(vim, cmd("b1"));
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.openEditorAtIndex", args: [0] },
+    ]);
+  });
+
+  it("abbreviations, spaced counts, and the bang all resolve to the tab index", () => {
+    const { editor, vim } = bufferVim();
+    runKeys(vim, [...cmd("buffer 3"), ...cmd("bu2"), ...cmd("b! 4")]);
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.openEditorAtIndex", args: [2] },
+      { command: "workbench.action.openEditorAtIndex", args: [1] },
+      { command: "workbench.action.openEditorAtIndex", args: [3] },
+    ]);
+  });
+
+  it(":b# switches to the alternate (most recently used) tab", () => {
+    const { editor, vim } = bufferVim();
+    runKeys(vim, cmd("b#"));
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.openPreviousRecentlyUsedEditorInGroup", args: [] },
+    ]);
+  });
+
+  it(":b name opens quick-open filtered by the name", () => {
+    const { editor, vim } = bufferVim();
+    runKeys(vim, cmd("b main.ts"));
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.quickOpen", args: ["main.ts"] },
+    ]);
+  });
+
+  it(":b0 reports E939 and runs nothing", () => {
+    const { editor, vim } = bufferVim();
+    runKeys(vim, cmd("b0"));
+    expect(editor.nativeCommands).toEqual([]);
+    expect(vim.status.commandStatus).toEqual({ kind: "error", message: "E939: Positive count required" });
+  });
+
+  it("bare :b is a no-op and :bn stays bnext", () => {
+    const { editor, vim } = bufferVim();
+    runKeys(vim, [...cmd("b"), ...cmd("bn")]);
+    expect(editor.nativeCommands).toEqual([
+      { command: "workbench.action.nextEditorInGroup", args: [] },
+    ]);
+  });
+});
+
 describe(":w does not hold the key pipeline", () => {
   // The save's completion promise must not join the awaited selection syncs
   // (that froze typing under slow save participants); it reconciles in the

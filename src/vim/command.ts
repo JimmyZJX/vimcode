@@ -489,6 +489,13 @@ function executeCommandCore(editor: VimEditorCapabilities, rawCommand: string, o
 
   if (dispatchSimpleCommand({ editor, range }, trimmedRest)) return;
 
+  // `:b[uffer][!] {N|#|name}`: switch tabs in the active editor group.
+  const buffer = parseBufferCommand(trimmedRest);
+  if (buffer !== undefined) {
+    runBufferCommand(editor, buffer.argument, options);
+    return;
+  }
+
   // `:[range]d[elete] [reg] [count]` / `:[range]y[ank] [reg] [count]`.
   const deleteYank = parseDeleteYank(trimmedRest);
   if (deleteYank !== undefined) {
@@ -587,6 +594,44 @@ function matchesVimCommandAbbreviation(command: string, [required, optional]: Vi
     && command.length <= fullName.length
     && command.startsWith(required)
     && fullName.startsWith(command);
+}
+
+// Vim `:h :buffer`: `:b[uffer][!] {N|#|name}`. Buffer numbers map to tab
+// positions in the active editor group (`:b1` is the first tab, like Vim
+// buffer numbers in a freshly opened session), `#` is the alternate (most
+// recently used) tab, and a name argument opens quick-open prefiltered by the
+// name — the core has no tab list to match a name against directly. The bang
+// is accepted and ignored: switching tabs never abandons changes in VSCode.
+// The digits must be attached or space-separated (`:b1`, `:b 1`) but a name
+// needs the space (`:bnext` is `:bn`, not `:b next`), which the command-word
+// split below gets right because the word is greedy over letters.
+function parseBufferCommand(command: string): { argument: string } | undefined {
+  const match = /^([a-zA-Z]+)!?\s*(.*)$/.exec(command);
+  if (match === null) return undefined;
+  const [, name, argument] = match;
+  if (!matchesVimCommandAbbreviation(name, ["b", "uffer"])) return undefined;
+  return { argument: argument.trim() };
+}
+
+function runBufferCommand(editor: VimEditorCapabilities, argument: string, options: CommandOptions): void {
+  // Vim: `:b` without an argument re-edits the current buffer.
+  if (argument.length === 0) return;
+  if (argument === "#") {
+    editor.executeNativeCommand("workbench.action.openPreviousRecentlyUsedEditorInGroup");
+    return;
+  }
+  if (/^\d+$/.test(argument)) {
+    const bufferNumber = Number.parseInt(argument, 10);
+    if (bufferNumber === 0) {
+      reportError(options, "E939: Positive count required");
+      return;
+    }
+    // 0-based tab index within the active group; out-of-range indexes are a
+    // no-op in the VSCode handler (Vim's E86 needs the tab list to detect).
+    editor.executeNativeCommand("workbench.action.openEditorAtIndex", [bufferNumber - 1]);
+    return;
+  }
+  editor.executeNativeCommand("workbench.action.quickOpen", [argument]);
 }
 
 function commandSearch(editor: VimEditorCapabilities, command: string): void {
