@@ -14,6 +14,7 @@ import { IKeybindingService } from '../../../../platform/keybinding/common/keybi
 import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import type { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorCommand, registerEditorCommand } from '../../../browser/editorExtensions.js';
 import { ICodeEditorService } from '../../../browser/services/codeEditorService.js';
@@ -57,19 +58,68 @@ function whenClauseIsVimAware(when: ContextKeyExpression | undefined): boolean {
 	return when !== undefined && when.keys().some(key => key.startsWith('vim.') || key.startsWith('vimcode.'));
 }
 
-let vimRemapCommandRegistered = false;
+let vimRemapCommandsRegistered = false;
 
-function registerVimRemapCommandOnce(): void {
-	if (vimRemapCommandRegistered) {
+type RemapCommandId = 'vim.remap' | 'vimcode.remap';
+
+/**
+ * `vim.remap` mirrors VSCodeVim's command of the same name: it is a silent
+ * no-op when Vim is disabled and it swallows remap execution errors.
+ * `vimcode.remap` is the vimcode-owned strict variant for callers that target
+ * vimcode specifically: it raises when there is no Vim-enabled editor to run
+ * against and propagates execution errors.
+ *
+ * Both commands resolve only once the remapped keys and commands have been
+ * fully processed, so callers can sequence work after the remap. This is why
+ * they subclass [EditorCommand] directly instead of using
+ * [EditorCommand.bindToContribution]: the bound command wrapper discards the
+ * handler's return value, which would leave callers nothing to await.
+ *
+ * Registration is intentionally lazy (first time Vim is enabled) to keep the
+ * disabled startup path inert; until then `vimcode.remap` is not defined at
+ * all, so probing or calling it fails with "command not found".
+ */
+class VimRemapCommand extends EditorCommand {
+	constructor(private readonly remapCommandId: RemapCommandId) {
+		super({ id: remapCommandId, precondition: undefined });
+	}
+
+	private get strict(): boolean {
+		return this.remapCommandId === 'vimcode.remap';
+	}
+
+	public override runCommand(accessor: ServicesAccessor, args: unknown): void | Promise<void> {
+		if (this.strict) {
+			// Mirrors the editor lookup in [EditorCommand.runEditorCommand],
+			// which silently gives up when no editor is available.
+			const codeEditorService = accessor.get(ICodeEditorService);
+			const editor = codeEditorService.getFocusedCodeEditor() || codeEditorService.getActiveCodeEditor();
+			if (!editor) {
+				throw new Error('vimcode.remap requires a focused or active text editor');
+			}
+		}
+		return super.runCommand(accessor, args);
+	}
+
+	public override runEditorCommand(_accessor: ServicesAccessor, editor: ICodeEditor, args: unknown): void | Promise<void> {
+		const controller = editor.getContribution<VimController>(VimController.ID);
+		if (controller === null) {
+			if (this.strict) {
+				throw new Error('vimcode.remap requires an editor with the Vim contribution');
+			}
+			return;
+		}
+		return controller.runRemapCommand(args, this.remapCommandId);
+	}
+}
+
+function registerVimRemapCommandsOnce(): void {
+	if (vimRemapCommandsRegistered) {
 		return;
 	}
-	vimRemapCommandRegistered = true;
-	const VimCommand = EditorCommand.bindToContribution<VimController>(editor => editor.getContribution<VimController>(VimController.ID));
-	registerEditorCommand(new VimCommand({
-		id: 'vim.remap',
-		precondition: undefined,
-		handler: (controller, args) => controller.runRemapCommand(args),
-	}));
+	vimRemapCommandsRegistered = true;
+	registerEditorCommand(new VimRemapCommand('vim.remap'));
+	registerEditorCommand(new VimRemapCommand('vimcode.remap'));
 }
 
 type NativeCursorAppearance = {
@@ -212,15 +262,19 @@ export class VimController extends Disposable {
 		return this.vim.status;
 	}
 
-	runRemapCommand(args: unknown): void {
+	runRemapCommand(args: unknown, commandId: RemapCommandId): Promise<void> | undefined {
+		const strict = commandId === 'vimcode.remap';
 		if (!this.enabled || !this.hasModel()) {
-			return;
+			if (strict) {
+				throw new Error('vimcode.remap requires Vim to be enabled on the active editor (`vimcode.enabled`)');
+			}
+			return undefined;
 		}
 		const remap = readRemapCommandArgs(args);
 		if (remap === undefined) {
-			throw new Error("vim.remap requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]");
+			throw new Error(`${commandId} requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]`);
 		}
-		void this.asyncKeyQueue.enqueue(async () => {
+		const run = this.asyncKeyQueue.enqueue(async () => {
 			const clipboard = new ClipboardTransaction(this.vimClipboard);
 			await clipboard.with(async () => {
 				await this.vim.executeExternalRemap(remap, clipboard);
@@ -231,7 +285,16 @@ export class VimController extends Disposable {
 			} else {
 				this.syncStatus();
 			}
-		}).then(undefined, () => this.syncStatus());
+		});
+		if (strict) {
+			return run.then(undefined, (error) => {
+				this.syncStatus();
+				throw error;
+			});
+		}
+		// VSCodeVim-compatible: swallow remap execution errors, but still
+		// resolve only after the remap has been fully processed.
+		return run.then(undefined, () => this.syncStatus());
 	}
 
 	isVimEnabled(): boolean {
@@ -310,7 +373,7 @@ export class VimController extends Disposable {
 		// owned by the block-startup workbench contribution, independently of
 		// whether an editor (and therefore a VimController) has been created.
 		if (enabled) {
-			registerVimRemapCommandOnce();
+			registerVimRemapCommandsOnce();
 			this.attachCurrentModelState();
 			this.warnIfVSCodeVimEnabled();
 			this.syncEditorState();

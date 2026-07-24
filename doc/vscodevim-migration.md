@@ -74,7 +74,16 @@ wins when set), so existing settings.json files partially "just work".
 `before`/`after`/`commands` (string or `{command, args}`, `:`-commands run
 through the ex executor), `silent`, plus vimcode extras VSCodeVim lacks:
 per-mapping `recursive` override and `when` clauses. `vim.remap` command and
-`toggleVim` command ids match. vimcode also provides
+`toggleVim` command ids match. Deliberate improvement: `vim.remap` resolves
+only after the remapped keys/commands have been fully processed, so callers
+can sequence work after the remap (VSCodeVim's resolves immediately and
+processes the keys in the background — `registerCommand` in its
+`extensionBase.ts` does not await the handler, which only enqueues onto its
+task queue). A strict `vimcode.remap` variant also exists for callers that
+target vimcode specifically: it raises when Vim is not enabled (and is not
+defined until Vim has been enabled once, so its presence also distinguishes
+vimcode from VSCodeVim) and propagates remap execution errors instead of
+swallowing them like `vim.remap` does. vimcode also provides
 `vim.insertModeCtrlVAsPaste` (default true) to opt into VS Code's native
 Insert-mode `ctrl-v` paste without changing Visual Block `ctrl-v`.
 `vim.highlightedyank.{enable,color,textColor,duration}` match VSCodeVim
