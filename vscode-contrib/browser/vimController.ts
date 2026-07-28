@@ -1067,6 +1067,9 @@ function readRemaps(value: unknown): VimKeyRemapping[] {
 	});
 }
 
+// US-layout shift table. Only a fallback for events whose typed character is
+// not printable ASCII (see [keyFromEvent]); layout-correct characters come
+// from the browser event's [key].
 function shiftedDigitKey(digit: number): string {
 	const shiftedDigits = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
 	return shiftedDigits[digit] ?? String(digit);
@@ -1095,6 +1098,10 @@ function readRemapCommands(commands: unknown[]): VimKeyRemapping['commands'] {
 	return result;
 }
 
+// Special keys plus the US-layout punctuation table. The punctuation half is
+// only a fallback for events whose typed character is not printable ASCII
+// (see [keyFromEvent]); layout-correct characters come from the browser
+// event's [key].
 function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean): string | undefined {
 	switch (keyCode) {
 		case KeyCode.LeftArrow:
@@ -1160,10 +1167,16 @@ function pendingCursorClipInsetPercent(pendingDepth: number): number {
 }
 
 function keyFromEvent(event: IKeyboardEvent): string | undefined {
-	if (event.altKey || event.metaKey) {
+	if (event.metaKey) {
 		return undefined;
 	}
-	if (event.ctrlKey) {
+	// AltGr (which Windows reports as ctrl+alt) composes a character under the
+	// OS layout (German AltGr+8 is '['); route it to the typed-character path
+	// below instead of treating it as an alt/ctrl chord.
+	if (!event.altGraphKey && event.altKey) {
+		return undefined;
+	}
+	if (!event.altGraphKey && event.ctrlKey) {
 		if (event.shiftKey) {
 			return undefined;
 		}
@@ -1197,6 +1210,30 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 			const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
 			return `ctrl-${letter}`;
 		}
+		return undefined;
+	}
+
+	// The browser event's [key] is the typed character under the OS keyboard
+	// layout (UK shift+2 is '"', not '@') and accounts for caps lock, unlike
+	// reconstructing the character from the layout-independent [KeyCode] with
+	// a hardcoded US shift table. Only trusted for printable ASCII: on
+	// layouts whose characters mean nothing to Vim (e.g. Cyrillic 'ф'), the
+	// KeyCode fallback below keeps normal mode usable through the US-virtual-
+	// key positions, mirroring VSCode's own keybinding fallback. A dead key
+	// ('Dead') stays native so composition can produce the accented character.
+	const typed = event.browserEvent.key;
+	if (typed === 'Dead') {
+		return undefined;
+	}
+	if (typed === ' ') {
+		return 'space';
+	}
+	if (typeof typed === 'string' && typed.length === 1 && typed >= '!' && typed <= '~') {
+		return typed;
+	}
+	if (event.altGraphKey) {
+		// An AltGr composition without a printable-ASCII result (e.g. '€')
+		// means nothing to Vim; leave it to native handling.
 		return undefined;
 	}
 
