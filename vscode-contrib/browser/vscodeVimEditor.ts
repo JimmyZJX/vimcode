@@ -3,6 +3,7 @@ import { diffInserted, editorFindMatchHighlight } from '../../../../platform/the
 import { registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
+import { EnterOperation } from '../../../common/cursor/cursorTypeEditOperations.js';
 import { CursorChangeReason } from '../../../common/cursorEvents.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { IRange, Range } from '../../../common/core/range.js';
@@ -440,6 +441,32 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			return;
 		}
 		this.editor.trigger('keyboard', 'type', { text });
+	}
+
+	// Vim `o`/`O`: run VSCode's Insert Line Below/Above semantics (the same
+	// [EnterOperation] the `editor.action.insertLine{After,Before}` actions
+	// execute), so the new line gets language-aware auto-indentation and the
+	// inserted whitespace registers as auto-whitespace, which VSCode trims
+	// again when the line is abandoned without typing. Unlike the native
+	// actions this pushes no undo stop: the opened line belongs to the insert
+	// session's undo unit (`o` + typed text undo as one). The 'vim' command
+	// source keeps the controller's selection listener from reacting to the
+	// cursor move.
+	openLineNatively({ above }: { above: boolean }): boolean {
+		const viewModel = this.editor._getViewModel();
+		if (!viewModel || !this.editor.hasModel()) {
+			return false;
+		}
+		const commands = above
+			? EnterOperation.lineInsertBefore(viewModel.cursorConfig, this.editor.getModel(), this.editor.getSelections())
+			: EnterOperation.lineInsertAfter(viewModel.cursorConfig, this.editor.getModel(), this.editor.getSelections());
+		this.logUndo(`openLineNatively above=${above} open=${this.isUndoTransactionOpen()} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		this.withVimEditInProgress(() => {
+			this.editor.executeCommands('vim', commands);
+		});
+		this.invalidateCachedSelections();
+		this.logUndo(`openLineNatively end native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		return true;
 	}
 
 	applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {

@@ -72,19 +72,39 @@ export function enterInsertAtSelections(
 }
 
 // Zed: `normal::Vim::insert_line_above` and `normal::Vim::insert_line_below`.
+// The host path delegates to native line insertion so the new line gets the
+// host's language-aware auto-indentation (like VSCodeVim's `o`/`O`). The
+// model-buffer fallback applies Vim 'autoindent' (default-on in Neovim): the
+// opened line copies the *current* line's leading whitespace — for both `o`
+// and `O`, deliberately not the following line's (Neovim-verified; language
+// indent rules are host territory). Known divergence: Neovim deletes the
+// copied indent again when insert ends with nothing typed after it (`did_ai`,
+// see `:h 'autoindent'`); this fallback keeps it, and the host path leaves
+// that cleanup to VSCode's auto-whitespace trimming.
 export function openLine(editor: VimEditorCapabilities, { above }: { above: boolean }, options: ApplyEditsOptions = {}): void {
+  if (editor.openLineNatively?.({ above }) === true) {
+    editor.setCursorStyle("line");
+    return;
+  }
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
 
   for (const selection of editor.getSelections()) {
     const row = selectionHead(selection).row;
+    const indent = leadingWhitespace(editor.line(row));
     const insertAt = above ? { row, column: 0 } : { row, column: editor.lineLength(row) };
-    edits.push({ range: { start: insertAt, end: insertAt }, text: "\n" });
-    selectionsAfter.push(charwiseSelection({ row: above ? row : row + 1, column: 0 }));
+    edits.push({ range: { start: insertAt, end: insertAt }, text: above ? `${indent}\n` : `\n${indent}` });
+    selectionsAfter.push(charwiseSelection({ row: above ? row : row + 1, column: indent.length }));
   }
 
   editor.applyEdits(edits, selectionsAfter, options);
   editor.setCursorStyle("line");
+}
+
+// Vim `get_indent()`: the whole leading-whitespace prefix, including on
+// whitespace-only lines (`o` from a blank-but-indented line copies all of it).
+function leadingWhitespace(line: string): string {
+  return /^\s*/.exec(line)?.[0] ?? "";
 }
 
 // Zed: `vim::Vim::switch_mode`. The cursor-left behavior when leaving insert

@@ -180,6 +180,15 @@ export interface VimEditorCapabilities {
   // coalesce into one undo unit finished on Escape).
   replayInsertKey(key: string): void;
 
+  // Open a new line below/above every cursor with the host's language-aware
+  // auto-indentation (VSCode's Insert Line Below/Above), leaving each cursor
+  // on its new line after the indent. Optional host delegation like
+  // [replayInsertKey]; returns false when the host cannot run it (e.g. no
+  // attached model), letting [openLine] fall back to the model-buffer edit.
+  // The host must not push undo stops: the caller runs this inside the
+  // `o`/`O` insert session's open undo unit.
+  openLineNatively?(options: { above: boolean }): boolean;
+
   executeHostCommand(command: HostCommand): void;
   executeNativeCommand(
     command: string,
