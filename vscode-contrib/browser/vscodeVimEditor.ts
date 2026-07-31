@@ -457,6 +457,15 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		if (!viewModel || !this.editor.hasModel()) {
 			return false;
 		}
+		// [executeCommands] mutates the view model without the read-only check
+		// that [executeEdits] performs (the native insertLine actions rely on
+		// their `writable` precondition instead, which this path bypasses).
+		// Decline so the model-buffer fallback runs: its edit is rejected by
+		// [executeEdits], leaving the buffer untouched while Vim's read-only
+		// handling bounces insert mode back to normal.
+		if (this.isReadonly()) {
+			return false;
+		}
 		const commands = above
 			? EnterOperation.lineInsertBefore(viewModel.cursorConfig, this.editor.getModel(), this.editor.getSelections())
 			: EnterOperation.lineInsertAfter(viewModel.cursorConfig, this.editor.getModel(), this.editor.getSelections());
