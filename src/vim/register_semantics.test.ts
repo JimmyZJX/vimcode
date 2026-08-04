@@ -24,7 +24,7 @@ describe("register semantics", () => {
     macro.stopRecording();
     expect(() => macro.replayRegisterKey("a", 1, () => {
       throw new Error("macro failed");
-    })).toThrow("macro failed");
+    }, () => {})).toThrow("macro failed");
     expect(macro.isReplaying()).toBe(false);
   });
 

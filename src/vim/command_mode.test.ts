@@ -8,6 +8,7 @@
 // synchronously, after the executor's effect queue drains).
 import { InMemoryVimEditor } from "./editor.js";
 import { Vim, runKeys } from "./vim.js";
+import { VimGlobalState } from "./vim_state.js";
 import { selectionHead } from "./state.js";
 
 function head(editor: InMemoryVimEditor) {
@@ -217,6 +218,54 @@ describe("compound host commands run in sequence", () => {
       "workbench.action.closeActiveEditor",
       "workbench.action.files.newUntitledFile",
     ]);
+  });
+});
+
+describe("@: repeats the last command-line", () => {
+  it("repeats a substitution, and @@ repeats it again", () => {
+    const editor = new InMemoryVimEditor("foo foo foo");
+    const vim = new Vim(editor);
+    runKeys(vim, cmd("s/foo/bar"));
+    expect(editor.getText()).toBe("bar foo foo");
+    runKeys(vim, ["@", ":"]);
+    expect(editor.getText()).toBe("bar bar foo");
+    runKeys(vim, ["@", "@"]);
+    expect(editor.getText()).toBe("bar bar bar");
+  });
+
+  it("runs [count] times", () => {
+    const editor = new InMemoryVimEditor("a a a a");
+    const vim = new Vim(editor);
+    runKeys(vim, [...cmd("s/a/b"), "3", "@", ":"]);
+    expect(editor.getText()).toBe("b b b b");
+  });
+
+  it("repeats the last executed command, not one abandoned with escape", () => {
+    const editor = new InMemoryVimEditor("foo foo");
+    const vim = new Vim(editor);
+    runKeys(vim, [...cmd("s/foo/bar"), ":", "q", "escape", "@", ":"]);
+    expect(editor.getText()).toBe("bar bar");
+  });
+
+  it("reports E30 when no command line was ever executed", () => {
+    const editor = new InMemoryVimEditor("foo");
+    const vim = new Vim(editor);
+    runKeys(vim, ["@", ":"]);
+    expect(editor.getText()).toBe("foo");
+    expect(vim.status.commandStatus).toEqual({ kind: "error", message: "E30: No previous command line" });
+  });
+
+  it("repeats across editors sharing the global state (another file)", () => {
+    const globalState = new VimGlobalState();
+    const firstEditor = new InMemoryVimEditor("foo");
+    const firstVim = new Vim(firstEditor, {}, globalState);
+    runKeys(firstVim, cmd("s/foo/bar"));
+    expect(firstEditor.getText()).toBe("bar");
+
+    const secondEditor = new InMemoryVimEditor("foo qux");
+    const secondVim = new Vim(secondEditor, {}, globalState);
+    runKeys(secondVim, ["@", ":"]);
+    expect(secondEditor.getText()).toBe("bar qux");
   });
 });
 

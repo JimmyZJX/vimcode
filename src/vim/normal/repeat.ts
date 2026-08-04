@@ -264,9 +264,26 @@ export class MacroState {
     return { register, keys };
   }
 
-  replayRegisterKey(key: string, count: number, runKey: (entry: RecordedKey) => ReplayResult): ReplayResult {
+  replayRegisterKey(
+    key: string,
+    count: number,
+    runKey: (entry: RecordedKey) => ReplayResult,
+    replayCommandLine: (count: number) => ReplayResult
+  ): ReplayResult {
     const register = key === "@" ? this.lastReplayRegister : key;
     if (register === undefined) return;
+    // Vim `@:` (`:h @:`): replay the last command-line rather than recorded
+    // keys; a following `@@` repeats the command line again. Execution lives
+    // with the owner ([replayCommandLine]); the replaying flag still
+    // suppresses recording, like a key replay, so a `:normal` inside the
+    // repeated command does not re-record its keys.
+    if (register === ":") {
+      this.lastReplayRegister = register;
+      this.replaying = true;
+      return runReplayWithCleanup(() => replayCommandLine(count), () => {
+        this.replaying = false;
+      });
+    }
     return this.replay(register, count, runKey);
   }
 

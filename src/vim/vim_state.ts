@@ -27,6 +27,12 @@ export class VimGlobalState {
   /** Ex options toggled with `:set`; only options that change core command
       semantics live here (`:h gdefault`). */
   readonly exOptions = { gdefault: false };
+  /** Vim's `:` register (`:h quote_:`): the most recent *executed* command
+      line, replayed by `@:`. Only interactively submitted command lines are
+      stored — a command line abandoned with escape enters [commandHistory]
+      but not this, and mapping-run `:` commands never update it (Vim stores
+      the register only when at least one character of it was typed). */
+  lastCommandLine: string | undefined;
 }
 
 export class VimModelState {

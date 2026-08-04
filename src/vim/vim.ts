@@ -1119,6 +1119,7 @@ export class Vim {
     if (mode === "normal" && sessionBeforeTransition.mode === "command") {
       const command = sessionBeforeTransition.command.value();
       this.globalState.commandHistory.add(command);
+      if (command.length > 0) this.globalState.lastCommandLine = command;
       // The preview decorations must not survive into (or interleave with) the
       // command's own edits.
       this.editor.clearSubstitutePreview();
@@ -1673,8 +1674,21 @@ export class Vim {
       const runKey = (entry: RecordedKey) => this.replayRecordedKey(entry, context);
       return pending.register === undefined
         ? this.globalState.macro.replayLast(pending.count, runKey)
-        : this.globalState.macro.replayRegisterKey(pending.register, pending.count, runKey);
+        : this.globalState.macro.replayRegisterKey(pending.register, pending.count, runKey, count =>
+          this.replayLastCommandLine(count));
     });
+  }
+
+  // Vim `@:`: repeat the most recent executed command-line [count] times.
+  private replayLastCommandLine(count: number): void {
+    const command = this.globalState.lastCommandLine;
+    if (command === undefined) {
+      this.reportCommandStatus({ kind: "error", message: "E30: No previous command line" });
+      return;
+    }
+    for (let index = 0; index < count; index++) {
+      executeCommand(this.editor, command, this.commandOptions());
+    }
   }
 
   // A dot replay requested by the framework `.` handler, run after the executor's
