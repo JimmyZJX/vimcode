@@ -255,6 +255,32 @@ describe("@: repeats the last command-line", () => {
     expect(vim.status.commandStatus).toEqual({ kind: "error", message: "E30: No previous command line" });
   });
 
+  it("a failing @: still makes @@ retry the command line, not the last macro (nvim-verified)", () => {
+    // Neovim's `do_execreg` updates `execreg_lastc` before the empty-command-
+    // line check, so `@@` after an E30 `@:` errors again instead of re-running
+    // the previously replayed register.
+    const editor = new InMemoryVimEditor("x1\nx2\nx3");
+    const vim = new Vim(editor);
+    runKeys(vim, ["q", "a", "d", "d", "q", "@", "a"]);
+    expect(editor.getText()).toBe("x3");
+    runKeys(vim, ["@", ":"]);
+    expect(vim.status.commandStatus).toEqual({ kind: "error", message: "E30: No previous command line" });
+    runKeys(vim, ["@", "@"]);
+    expect(editor.getText()).toBe("x3");
+    expect(vim.status.commandStatus).toEqual({ kind: "error", message: "E30: No previous command line" });
+  });
+
+  it("q: does not start a recording into the : register", () => {
+    const editor = new InMemoryVimEditor("abc");
+    const vim = new Vim(editor);
+    runKeys(vim, ["q", ":"]);
+    expect(vim.status.macroRecording).toBeUndefined();
+    expect(vim.modeName).toBe("vim:normal");
+    // The rejected chord must not swallow the next key.
+    runKeys(vim, ["x"]);
+    expect(editor.getText()).toBe("bc");
+  });
+
   it("repeats across editors sharing the global state (another file)", () => {
     const globalState = new VimGlobalState();
     const firstEditor = new InMemoryVimEditor("foo");

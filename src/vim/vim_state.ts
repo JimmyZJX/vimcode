@@ -28,10 +28,13 @@ export class VimGlobalState {
       semantics live here (`:h gdefault`). */
   readonly exOptions = { gdefault: false };
   /** Vim's `:` register (`:h quote_:`): the most recent *executed* command
-      line, replayed by `@:`. Only interactively submitted command lines are
-      stored — a command line abandoned with escape enters [commandHistory]
-      but not this, and mapping-run `:` commands never update it (Vim stores
-      the register only when at least one character of it was typed). */
+      line, replayed by `@:`. A command line abandoned with escape enters
+      [commandHistory] but not this. Key-replaying remaps (`after: [":", …]`)
+      re-dispatch through the same command -> normal transition as typed
+      input, so they do update it — a small divergence: Vim stores the
+      register only when at least one character of it was typed. Only `:`
+      commands dispatched directly as commands (a mapping's
+      `commands: [":w"]`, the host `vim.remap` command entries) bypass it. */
   lastCommandLine: string | undefined;
 }
 

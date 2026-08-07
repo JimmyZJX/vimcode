@@ -76,6 +76,10 @@ function macroKeysText(keys: readonly { key: string }[]): string {
 // The register name after `q`: start recording into it. Escape cancels.
 function recordRegisterWaiter(key: string, state: HandlerState): HandleResult<void> {
   if (isEscapeKey(key)) return invalid();
+  // Vim makes `q:` the cmdline window (not supported here), never a recording
+  // register — and `@:` replays the last command line, so keys recorded into
+  // `:` would be unreachable anyway. Reject rather than record.
+  if (key === ":") return invalid();
   return effect("normal", () => state.macro?.startRecording(key), { preservesDotRepeat: true });
 }
 

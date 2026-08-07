@@ -276,7 +276,12 @@ export class MacroState {
     // keys; a following `@@` repeats the command line again. Execution lives
     // with the owner ([replayCommandLine]); the replaying flag still
     // suppresses recording, like a key replay, so a `:normal` inside the
-    // repeated command does not re-record its keys.
+    // repeated command does not re-record its keys. [lastReplayRegister] is
+    // deliberately set before we know whether a command line exists: Neovim's
+    // `do_execreg` updates `execreg_lastc` before its empty-command-line
+    // check, so after a failing `@:` (E30) a following `@@` retries `:` and
+    // errors again rather than re-running the previously replayed register
+    // (Neovim-verified).
     if (register === ":") {
       this.lastReplayRegister = register;
       this.replaying = true;
