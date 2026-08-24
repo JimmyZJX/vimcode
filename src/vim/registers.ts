@@ -37,18 +37,46 @@ type DigitRegister = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
 
 const emptyRegister: RegisterContent = { text: "", kind: "characterwise" };
 
+type RegisterStorage = {
+  unnamed: RegisterContent | undefined;
+  smallDelete: RegisterContent | undefined;
+  search: RegisterContent | undefined;
+  systemClipboard: RegisterContent | undefined;
+  named: Map<LowercaseLetter, RegisterContent>;
+  numbered: Map<DigitRegister, RegisterContent>;
+};
+
+function createRegisterStorage(): RegisterStorage {
+  return {
+    unnamed: undefined,
+    smallDelete: undefined,
+    search: undefined,
+    systemClipboard: undefined,
+    named: new Map(),
+    numbered: new Map(),
+  };
+}
+
 export class Registers {
-  private unnamed: RegisterContent = emptyRegister;
-  private smallDelete: RegisterContent = emptyRegister;
-  private search: RegisterContent = emptyRegister;
-  private systemClipboard: RegisterContent | undefined;
-  private readonly named = new Map<LowercaseLetter, RegisterContent>();
-  private readonly numbered = new Map<DigitRegister, RegisterContent>();
   private activeClipboard: VimSystemClipboard | undefined;
+  private activeClipboardFresh = false;
+  private activeClipboardContent: RegisterContent | undefined;
   private useSystemClipboard = false;
+
+  constructor(private readonly storage: RegisterStorage = createRegisterStorage()) {}
+
+  /** A per-Vim facade: register values remain global, while execution-scoped
+      clipboard identity/freshness cannot race with another editor controller. */
+  scoped(): Registers {
+    return new Registers(this.storage);
+  }
 
   setUseSystemClipboard(useSystemClipboard: boolean): void {
     this.useSystemClipboard = useSystemClipboard;
+  }
+
+  hasFreshActiveClipboard(): boolean {
+    return this.activeClipboard !== undefined && this.activeClipboardFresh;
   }
 
   read(name: RegisterName | undefined): string {
@@ -56,31 +84,66 @@ export class Registers {
   }
 
   readContent(name: RegisterName | undefined): RegisterContent {
-    if (this.usesSystemClipboardRegister(name)) return this.systemClipboard ?? this.unnamed;
-    if (name === undefined || name === '"') return this.unnamed;
-    if (name === "_") return emptyRegister;
-    if (name === "-") return this.smallDelete;
-    if (name === "/") return this.search;
-    if (isSystemClipboardRegister(name)) return this.systemClipboard ?? this.unnamed;
-    if (isDigitRegister(name)) return this.numbered.get(name) ?? emptyRegister;
-    return this.named.get(lowercaseRegister(name)) ?? emptyRegister;
+    return this.readContentIfPresent(name) ?? emptyRegister;
   }
 
-  async refreshSystemClipboardRegister(name: RegisterName | undefined): Promise<void> {
-    if (!this.usesSystemClipboardRegister(name) || this.activeClipboard === undefined) return;
-    this.systemClipboard = {
-      text: await this.activeClipboard.readText(),
-      kind: this.systemClipboard?.kind ?? "characterwise",
-    };
+  readContentIfPresent(name: RegisterName | undefined): RegisterContent | undefined {
+    if (this.usesSystemClipboardRegister(name) || isSystemClipboardRegister(name)) {
+      return this.activeClipboardContent ?? this.storage.systemClipboard ?? this.storage.unnamed;
+    }
+    if (name === undefined || name === '"') return this.storage.unnamed;
+    if (name === "_") return emptyRegister;
+    if (name === "-") return this.storage.smallDelete;
+    if (name === "/") return this.storage.search;
+    if (isDigitRegister(name)) return this.storage.numbered.get(name);
+    return this.storage.named.get(lowercaseRegister(name));
+  }
+
+  refreshSystemClipboardRegister(name: RegisterName | undefined): Promise<void> | void {
+    if (!this.usesSystemClipboardRegister(name) || this.activeClipboard === undefined || this.activeClipboardFresh) return;
+    return this.refreshActiveSystemClipboard();
+  }
+
+  private async refreshActiveSystemClipboard(): Promise<void> {
+    const clipboard = this.activeClipboard;
+    if (clipboard === undefined) return;
+    // Clipboard round trips (browser clipboard services, remote bridging,
+    // external apps) can deliver Windows line endings. The model is \n-only —
+    // a stray `\r` surviving into a paste is rendered by the host as an extra
+    // line break (`Vyp` through the system clipboard pasted a ghost empty
+    // line: "aaa\r\n" minus the stripped `\n` left "aaa\r").
+    const text = (await clipboard.readText()).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    // Unchanged since Vim last wrote it: keep kind/parts. External text gets a
+    // fresh plain-text classification.
+    const content = this.storage.systemClipboard?.text === text
+      ? this.storage.systemClipboard
+      : {
+          text,
+          kind: text.endsWith("\n") ? "linewise" as const : "characterwise" as const,
+        };
+    this.storage.systemClipboard = content;
+    if (this.activeClipboard === clipboard) {
+      this.activeClipboardContent = content;
+      this.activeClipboardFresh = true;
+    }
   }
 
   async withSystemClipboard<T>(clipboard: VimSystemClipboard | undefined, f: () => Promise<T>): Promise<T> {
     const previous = this.activeClipboard;
+    const previousFresh = this.activeClipboardFresh;
+    const previousContent = this.activeClipboardContent;
+    const sameTransaction = previous !== undefined && previous === clipboard;
     this.activeClipboard = clipboard;
+    this.activeClipboardFresh = sameTransaction ? previousFresh : false;
+    this.activeClipboardContent = sameTransaction ? previousContent : undefined;
     try {
       return await f();
     } finally {
+      const refreshed = this.activeClipboardFresh;
+      const refreshedContent = this.activeClipboardContent;
       this.activeClipboard = previous;
+      this.activeClipboardFresh = sameTransaction ? previousFresh || refreshed : previousFresh;
+      this.activeClipboardContent = sameTransaction && refreshed ? refreshedContent : previousContent;
     }
   }
 
@@ -95,21 +158,46 @@ export class Registers {
     const content: RegisterContent = parts === undefined ? { text, kind } : { text, kind, parts };
     if (name !== undefined && isUppercaseLetter(name)) {
       const lower = lowercaseRegister(name);
-      const current = this.named.get(lower) ?? emptyRegister;
-      const appended = { text: current.text + text, kind };
-      this.named.set(lower, appended);
-      this.unnamed = appended;
+      const current = this.storage.named.get(lower);
+      // Neovim-verified: appending to a register that was never written is a
+      // plain write, while an existing-but-empty register (`qaq`) appends
+      // with the kind's separator (`:g/a/y A` yields "\na1\na2\n").
+      const appended = current === undefined ? content : appendRegisterContent(current, content);
+      this.storage.named.set(lower, appended);
+      this.storage.unnamed = appended;
       return;
     }
 
-    this.unnamed = content;
+    this.storage.unnamed = content;
     if (this.usesSystemClipboardRegister(name)) this.writeSystemClipboard(content);
     if (name !== undefined && name !== '"') {
-      if (isDigitRegister(name)) this.numbered.set(name, content);
-      else if (name === "-") this.smallDelete = content;
-      else if (name === "/") this.search = content;
-      else if (!isSystemClipboardRegister(name)) this.named.set(name, content);
+      if (isDigitRegister(name)) this.storage.numbered.set(name, content);
+      else if (name === "-") this.storage.smallDelete = content;
+      else if (name === "/") this.storage.search = content;
+      else if (!isSystemClipboardRegister(name)) this.storage.named.set(name, content);
     }
+  }
+
+  /** `q{reg}…q`: recording writes ONLY the target register — unlike yanks and
+      deletes it leaves the unnamed register untouched (Neovim-verified: `yiw`
+      then `qaq` keeps `""` holding the yank, so `p` still pastes it), except
+      when `"` itself is the recording target. Uppercase appends, charwise
+      without a separator (`qblq` + `qBhq` gives "lh"). */
+  writeMacro(name: RegisterName, text: string): void {
+    if (name === "_") return;
+    const content: RegisterContent = { text, kind: "characterwise" };
+    if (isUppercaseLetter(name)) {
+      const lower = lowercaseRegister(name);
+      const current = this.storage.named.get(lower);
+      this.storage.named.set(lower, current === undefined ? content : appendRegisterContent(current, content));
+      return;
+    }
+    if (name === '"') this.storage.unnamed = content;
+    else if (isSystemClipboardRegister(name)) this.writeSystemClipboard(content);
+    else if (isDigitRegister(name)) this.storage.numbered.set(name, content);
+    else if (name === "-") this.storage.smallDelete = content;
+    else if (name === "/") this.storage.search = content;
+    else this.storage.named.set(name, content);
   }
 
   writeYank(
@@ -120,7 +208,7 @@ export class Registers {
   ): void {
     this.write(name, text, kind, parts);
     if (name === undefined || name === '"') {
-      this.numbered.set("0", parts === undefined ? { text, kind } : { text, kind, parts });
+      this.storage.numbered.set("0", parts === undefined ? { text, kind } : { text, kind, parts });
     }
   }
 
@@ -130,34 +218,53 @@ export class Registers {
     kind: RegisterKind = "characterwise",
     parts?: readonly RegisterPart[]
   ): void {
+    if (name === "_") return;
     const content: RegisterContent = parts === undefined ? { text, kind } : { text, kind, parts };
-    if (name === '"') {
-      this.unnamed = content;
-      this.numbered.set("0", content);
-      return;
-    }
-
-    if (name === undefined) {
-      this.unnamed = content;
-      if (this.usesSystemClipboardRegister(name)) this.writeSystemClipboard(content);
-      if (kind === "linewise" || text.includes("\n")) {
-        this.pushNumberedDelete(content);
-      } else {
-        this.smallDelete = content;
-      }
-      return;
-    }
-
     this.write(name, text, kind, parts);
+    if (name === '"') this.storage.numbered.set("0", content);
+
+    // Neovim-verified asymmetry: the 1-9 rotation happens even when the delete
+    // names a register (`"add` also fills `"1`, :h quote1), but the
+    // small-delete register is written only when NO register was specified
+    // (`"adw`/`""dw` leave `"-` untouched, :h quote-).
+    this.writeDeleteHistoryContent(content, { smallDelete: name === undefined });
+  }
+
+  /** Update numbered/small-delete history without overwriting the selected
+      source register (Visual `P`). The replaced text of a visual put counts as
+      an unspecified-register delete, so it may write `"-` even when the put
+      itself read a named register (Neovim-verified: `viw"ap` fills `"-`). */
+  writeDeleteHistory(
+    text: string,
+    kind: RegisterKind = "characterwise",
+    parts?: readonly RegisterPart[]
+  ): void {
+    const content: RegisterContent = parts === undefined ? { text, kind } : { text, kind, parts };
+    this.writeDeleteHistoryContent(content, { smallDelete: true });
+  }
+
+  private writeDeleteHistoryContent(content: RegisterContent, { smallDelete }: { smallDelete: boolean }): void {
+    // Classify from real part geometry, not synthetic separators in aggregate
+    // multicursor text.
+    const multiline = content.kind !== "characterwise"
+      || (content.parts === undefined
+        ? content.text.includes("\n")
+        : content.parts.some(part => part.text.includes("\n")));
+    if (multiline) this.pushNumberedDelete(content);
+    else if (smallDelete) this.storage.smallDelete = content;
   }
 
   writeSearch(query: string): void {
-    this.search = { text: query, kind: "characterwise" };
+    this.storage.search = { text: query, kind: "characterwise" };
   }
 
   private writeSystemClipboard(content: RegisterContent): void {
-    this.systemClipboard = content;
-    this.activeClipboard?.writeText(content.text);
+    this.storage.systemClipboard = content;
+    if (this.activeClipboard !== undefined) {
+      this.activeClipboard.writeText(content.text);
+      this.activeClipboardContent = content;
+      this.activeClipboardFresh = true;
+    }
   }
 
   private usesSystemClipboardRegister(name: RegisterName | undefined): boolean {
@@ -166,11 +273,42 @@ export class Registers {
 
   private pushNumberedDelete(content: RegisterContent): void {
     for (let digit = 9; digit >= 2; digit--) {
-      const previous = this.numbered.get(String(digit - 1) as DigitRegister);
-      if (previous !== undefined) this.numbered.set(String(digit) as DigitRegister, previous);
+      const previous = this.storage.numbered.get(String(digit - 1) as DigitRegister);
+      const destination = String(digit) as DigitRegister;
+      if (previous !== undefined) this.storage.numbered.set(destination, previous);
+      else this.storage.numbered.delete(destination);
     }
-    this.numbered.set("1", content);
+    this.storage.numbered.set("1", content);
   }
+}
+
+function appendRegisterContent(current: RegisterContent, incoming: RegisterContent): RegisterContent {
+  const appended = appendRegisterPart(current, incoming);
+  const partCount = Math.max(current.parts?.length ?? 0, incoming.parts?.length ?? 0);
+  if (partCount === 0) return appended;
+  const parts = Array.from({ length: partCount }, (_unused, index) =>
+    appendRegisterPart(registerPartAt(current, index), registerPartAt(incoming, index)));
+  const text = appended.kind === "linewise"
+    ? `${parts.map(part => part.text.endsWith("\n") ? part.text.slice(0, -1) : part.text).join("\n")}\n`
+    : parts.map(part => part.text).join("\n");
+  return { text, kind: appended.kind, parts };
+}
+
+function registerPartAt(content: RegisterContent, index: number): RegisterPart {
+  return content.parts?.[index] ?? content.parts?.[0] ?? { text: content.text, kind: content.kind };
+}
+
+function appendRegisterPart(current: RegisterPart, incoming: RegisterPart): RegisterPart {
+  if (incoming.text.length === 0) return { text: current.text, kind: current.kind };
+  if (current.kind === "linewise" || incoming.kind === "linewise") {
+    const currentText = current.text.endsWith("\n") ? current.text.slice(0, -1) : current.text;
+    const incomingText = incoming.text.endsWith("\n") ? incoming.text.slice(0, -1) : incoming.text;
+    return { text: `${currentText}\n${incomingText}\n`, kind: "linewise" };
+  }
+  return {
+    text: current.text + incoming.text,
+    kind: current.kind === "blockwise" && incoming.kind === "blockwise" ? "blockwise" : "characterwise",
+  };
 }
 
 export function parseRegisterName(key: string): RegisterName | undefined {

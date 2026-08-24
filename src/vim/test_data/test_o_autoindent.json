@@ -1,0 +1,25 @@
+// 'autoindent' (default-on in Neovim): o/O copy the current line's leading whitespace.
+// Verified against nvim --clean 0.7 (headless): the copied indent comes from the
+// current line for both o and O (never the following line), whitespace-only lines
+// copy their whole prefix, and tabs are copied verbatim. Insert-mode Gets only:
+// Neovim deletes the copied indent again on Escape with nothing typed (did_ai),
+// which the model-buffer editor intentionally does not model.
+{"Put":{"state":"  helloˇ"}}
+{"Key":"o"}
+{"Get":{"state":"  hello\n  ˇ","mode":"Insert"}}
+{"Key":"x"}
+{"Get":{"state":"  hello\n  xˇ","mode":"Insert"}}
+{"Put":{"state":"  helloˇ"}}
+{"Key":"shift-o"}
+{"Get":{"state":"  ˇ\n  hello","mode":"Insert"}}
+{"Key":"y"}
+{"Get":{"state":"  yˇ\n  hello","mode":"Insert"}}
+{"Put":{"state":"  bodyˇ\n}"}}
+{"Key":"o"}
+{"Get":{"state":"  body\n  ˇ\n}","mode":"Insert"}}
+{"Put":{"state":"\thelloˇ"}}
+{"Key":"o"}
+{"Get":{"state":"\thello\n\tˇ","mode":"Insert"}}
+{"Put":{"state":"    ˇ"}}
+{"Key":"o"}
+{"Get":{"state":"    \n    ˇ","mode":"Insert"}}

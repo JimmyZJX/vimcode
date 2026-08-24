@@ -1,0 +1,6 @@
+{"Put":{"state":"aˇbc"}}
+{"Key":"insert"}
+{"Key":"X"}
+{"Key":"Y"}
+{"Key":"escape"}
+{"Get":{"state":"aXˇYbc","mode":"normal"}}

@@ -1,20 +1,24 @@
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { diffInserted, editorFindMatchHighlight } from '../../../../platform/theme/common/colorRegistry.js';
 import { registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { IActiveCodeEditor, ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
+import { EnterOperation } from '../../../common/cursor/cursorTypeEditOperations.js';
 import { CursorChangeReason } from '../../../common/cursorEvents.js';
 import { Position as VSCodePosition } from '../../../common/core/position.js';
-import { Range } from '../../../common/core/range.js';
+import { IRange, Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
-import { IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
+import { IDecorationOptions, IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
 import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, InjectedTextCursorStops, PositionAffinity } from '../../../common/model.js';
 import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
 import { FindReplaceState } from '../../find/browser/findState.js';
-import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, normalCursorPosition } from '../common/editor.js';
+import type { SubstitutePreview } from '../common/command.js';
+import { ApplyEditsOptions, HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, NativeCommandOptions, VimEditorCapabilities, VimUndoTransaction, insertTextForKey, normalCursorPosition, normalViewLineColumnForGoal } from '../common/editor.js';
 import type { EasyMotionMarker } from '../common/editor.js';
-import { SearchDirection, SearchMatch, SearchOptions } from '../common/search.js';
+import { LineTracker, TrackedLines } from '../common/line_tracker.js';
+import { SearchDirection, SearchMatch, SearchMatchCount, SearchOptions, translateVimRegex } from '../common/search.js';
 import { charwiseRenderCursor, lowerCharwiseGeometry, previousCharacterCell } from '../common/selection_geometry.js';
 import { CursorStyle, TextEdit, TextRange, Position as VimPosition, VimSelection, VimSelectionGoal, charwiseSelection, comparePositions, selectionHead } from '../common/state.js';
 
@@ -30,34 +34,80 @@ type VSCodeUndoTransaction = {
 	hasEdits: boolean;
 };
 
-registerThemingParticipant((_theme, collector) => {
+// Easymotion label decorations are `setDecorationsByType` pseudo-element
+// decorations (see [showEasyMotionMarkers]); this key groups them so a new
+// marker set replaces the previous one and unused label subtypes are dropped.
+// The per-label subtypes the widget registers resolve their *parent* type, so
+// the parent key must be registered with the code editor service before the
+// first [showEasyMotionMarkers] call — the controller owns that registration.
+export const VimEasyMotionLabelDecorationTypeKey = 'vim-easymotion-marker';
+
+registerThemingParticipant((theme, collector) => {
+	// The label replaces the target text visually (VSCodeVim-style): the
+	// character under the marker is hidden and the label pseudo-element (see
+	// [showEasyMotionMarkers]) paints on the editor background over it.
 	collector.addRule(`
-		.monaco-editor .vim-easymotion-marker {
-			color: #ff0000;
-			background-color: transparent;
-			font-weight: bold;
-			font-style: normal;
-			position: absolute;
-			display: inline-block;
-			width: max-content;
-			min-width: max-content;
-			overflow: visible;
-			height: 100%;
-			margin: 0 -1ch 0 0;
-			z-index: 10;
+		.monaco-editor .vim-easymotion-target {
+			opacity: 0;
+		}
+	`);
+	// Live `:s` preview: matches use the find-match highlight; once the
+	// replacement section is typed the original is struck through and the
+	// resolved replacement shows as injected text with an "inserted" tint
+	// (VSCodeVim/Neovim 'inccommand'-style).
+	// VSCodeVim `vim.highlightedyank.*`: the colors are user-configured strings,
+	// applied per-flash as CSS variables on the editor container (see
+	// [highlightYankedRanges]); the rule itself is static.
+	collector.addRule(`
+		.monaco-editor .vim-highlighted-yank {
+			background-color: var(--vim-highlighted-yank-background, rgba(250, 240, 170, 0.5));
+			color: var(--vim-highlighted-yank-foreground, inherit);
+		}
+	`);
+	const findMatch = theme.getColor(editorFindMatchHighlight);
+	const inserted = theme.getColor(diffInserted);
+	collector.addRule(`
+		.monaco-editor .vim-substitute-match {
+			background-color: ${findMatch ?? 'rgba(234, 92, 0, 0.33)'};
+		}
+		.monaco-editor .vim-substitute-match-replaced {
+			background-color: ${findMatch ?? 'rgba(234, 92, 0, 0.33)'};
+			text-decoration: line-through;
+			opacity: 0.6;
+		}
+		.monaco-editor .vim-substitute-replacement {
+			background-color: ${inserted ?? 'rgba(155, 185, 85, 0.2)'};
 		}
 	`);
 });
+
+// Bounds the match-count scan; when reached ([capped]) the status bar shows a
+// `? of 9999+` placeholder instead of exact numbers.
+const MaxCountedSearchMatches = 10000;
+
+/** Rendering options for the VSCodeVim `vim.highlightedyank.*` compatibility
+    feature; undefined when the highlight is disabled. */
+export type YankHighlightOptions = {
+	color: string;
+	textColor: string | undefined;
+	durationMs: number;
+};
 
 export class VSCodeVimEditor implements VimEditorCapabilities {
 	private readonly visualLineDecorations: IEditorDecorationsCollection;
 	private readonly insertPendingDecorations: IEditorDecorationsCollection;
 	private readonly easyMotionDecorations: IEditorDecorationsCollection;
+	private readonly substitutePreviewDecorations: IEditorDecorationsCollection;
+	private readonly yankHighlightDecorations: IEditorDecorationsCollection;
+	private yankHighlightTimer: ReturnType<typeof setTimeout> | undefined;
 	private lastSetVimSelections: readonly VimSelection[] | undefined;
 	private lastSetVSCodeSelections: readonly Selection[] | undefined;
 	private rememberedSelectionGoals = new Map<string, VimSelectionGoal>();
 	private searchPreviewViewport: { scrollTop: number; scrollLeft: number } | undefined;
 	private hiddenFindState: FindReplaceState | undefined;
+	/** Set by the controller: reconcile Vim state after a [backgroundSync]
+	    native command completes (see NativeCommandOptions.backgroundSync). */
+	onBackgroundNativeCommandSync: (() => void) | undefined;
 	private hiddenFindModel: FindModelBoundToEditorModel | undefined;
 	private viewportControlledByCommand = false;
 	private appliedCursorStyle: CursorStyle | undefined = undefined;
@@ -72,11 +122,16 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	constructor(
 		private readonly editor: ICodeEditor,
 		private readonly commandService: ICommandService,
-		private readonly logUndo: (message: string) => void = () => undefined
+		private readonly logUndo: (message: string) => void = () => undefined,
+		// The controller reads the live configuration; undefined disables the
+		// yank highlight (the default).
+		private readonly yankHighlightOptions: () => YankHighlightOptions | undefined = () => undefined
 	) {
 		this.visualLineDecorations = editor.createDecorationsCollection();
 		this.insertPendingDecorations = editor.createDecorationsCollection();
 		this.easyMotionDecorations = editor.createDecorationsCollection();
+		this.substitutePreviewDecorations = editor.createDecorationsCollection();
+		this.yankHighlightDecorations = editor.createDecorationsCollection();
 	}
 
 	lineCount(): number {
@@ -201,32 +256,150 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 
 	showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void {
 		if (!this.editor.hasModel()) {
-			this.easyMotionDecorations.clear();
+			this.clearEasyMotionMarkers();
 			return;
 		}
-		const decorations: IModelDeltaDecoration[] = [];
+		const model = this.model();
+		// The label must NOT be injected text: injected text occupies columns in
+		// the view line's character mapping, and the monospace fast path computes
+		// x-offsets arithmetically from that mapping — a zero-width (absolutely
+		// positioned) injected label therefore shifted the cursor right by the
+		// label width for every marker before it on the same line (and the block
+		// cursor painted a duplicate of its character there). Instead the label
+		// is a CSS `::before` pseudo-element (`setDecorationsByType`, the same
+		// mechanism VSCodeVim's easymotion decorations use), which the character
+		// mapping never sees; the pseudo-element leaves the layout flow via
+		// VSCodeVim's margin recipe below, so the real text does not shift
+		// either. The character under the marker is hidden with a pure CSS class
+		// (`.vim-easymotion-target`), which also has no layout effect.
+		const hideDecorations: IModelDeltaDecoration[] = [];
+		const labelDecorations: IDecorationOptions[] = [];
 		for (const marker of markers) {
 			const lineNumber = marker.position.row + 1;
 			const column = marker.position.column + 1;
-			const position = new VSCodePosition(lineNumber, column);
-			decorations.push({
-				range: Range.fromPositions(position),
-				options: {
-					description: 'vim-easymotion-marker',
-					before: {
-						content: marker.label,
-						inlineClassName: 'vim-easymotion-marker',
-						cursorStops: InjectedTextCursorStops.Right,
+			// The label is a transparent overlay: hide as many characters as the
+			// label covers so a multi-character label does not overlap visible
+			// text; at end-of-line there may be fewer (or no) characters to hide.
+			const endColumn = Math.min(column + marker.label.length, model.getLineMaxColumn(lineNumber));
+			if (endColumn > column) {
+				hideDecorations.push({
+					range: new Range(lineNumber, column, lineNumber, endColumn),
+					options: {
+						description: 'vim-easymotion-target',
+						inlineClassName: 'vim-easymotion-target',
 					},
-					showIfCollapsed: true,
+				});
+			}
+			labelDecorations.push({
+				range: new Range(lineNumber, column, lineNumber, column),
+				renderOptions: {
+					before: {
+						contentText: marker.label,
+						color: '#ff0000',
+						fontWeight: 'bold',
+						height: '100%',
+						// VSCodeVim's recipe (easymotion.ts `firstCharRenderOptions`):
+						// the decoration API has no fields for positioning, so the
+						// margin value carries the extra properties into the generated
+						// rule. `position: absolute` takes the label out of the layout
+						// flow, drawing it over the hidden characters without a
+						// backing box.
+						margin: `0 -1ch 0 0;
+						position: absolute;
+						z-index: 10;
+						width: max-content;
+						font-style: normal;`,
+					},
 				},
 			});
 		}
-		this.easyMotionDecorations.set(decorations);
+		this.easyMotionDecorations.set(hideDecorations);
+		this.editor.setDecorationsByType('vim-easymotion-marker', VimEasyMotionLabelDecorationTypeKey, labelDecorations);
 	}
 
 	clearEasyMotionMarkers(): void {
 		this.easyMotionDecorations.clear();
+		this.editor.removeDecorationsByType(VimEasyMotionLabelDecorationTypeKey);
+	}
+
+	// VSCodeVim `highlightedyank` (`BaseOperator.highlightYankedRanges`): flash
+	// the yanked ranges for the configured duration. A new yank replaces any
+	// still-visible flash and restarts the timer.
+	highlightYankedRanges(ranges: readonly TextRange[]): void {
+		const options = this.yankHighlightOptions();
+		if (options === undefined || ranges.length === 0 || !this.editor.hasModel()) {
+			return;
+		}
+		const containerStyle = this.editor.getContainerDomNode().style;
+		containerStyle.setProperty('--vim-highlighted-yank-background', options.color);
+		if (options.textColor !== undefined) {
+			containerStyle.setProperty('--vim-highlighted-yank-foreground', options.textColor);
+		} else {
+			containerStyle.removeProperty('--vim-highlighted-yank-foreground');
+		}
+		this.yankHighlightDecorations.set(ranges.map(range => ({
+			range: toRange(range),
+			options: {
+				description: 'vim-highlighted-yank',
+				inlineClassName: 'vim-highlighted-yank',
+			},
+		})));
+		if (this.yankHighlightTimer !== undefined) {
+			clearTimeout(this.yankHighlightTimer);
+		}
+		this.yankHighlightTimer = setTimeout(() => {
+			this.yankHighlightTimer = undefined;
+			this.yankHighlightDecorations.clear();
+		}, options.durationMs);
+	}
+
+	updateSubstitutePreview(previews: readonly SubstitutePreview[]): void {
+		if (!this.editor.hasModel()) {
+			this.substitutePreviewDecorations.clear();
+			return;
+		}
+		const decorations: IModelDeltaDecoration[] = previews.map(preview => {
+			const range = new Range(
+				preview.range.start.row + 1,
+				preview.range.start.column + 1,
+				preview.range.end.row + 1,
+				preview.range.end.column + 1,
+			);
+			if (preview.replacement === undefined) {
+				return {
+					range,
+					options: {
+						description: 'vim-substitute-preview',
+						inlineClassName: 'vim-substitute-match',
+						showIfCollapsed: true,
+					},
+				};
+			}
+			return {
+				range,
+				options: {
+					description: 'vim-substitute-preview',
+					inlineClassName: 'vim-substitute-match-replaced',
+					showIfCollapsed: true,
+					...(preview.replacement.length > 0
+						? {
+							after: {
+								// Injected text must stay single-line; a `\r`
+								// replacement renders its break as a return symbol.
+								content: preview.replacement.replace(/\n/g, '\u23ce'),
+								inlineClassName: 'vim-substitute-replacement',
+								cursorStops: InjectedTextCursorStops.None,
+							},
+						}
+						: {}),
+				},
+			};
+		});
+		this.substitutePreviewDecorations.set(decorations);
+	}
+
+	clearSubstitutePreview(): void {
+		this.substitutePreviewDecorations.clear();
 	}
 
 	beginUndoTransaction(selectionsBefore: readonly VimSelection[]): VimUndoTransaction {
@@ -244,6 +417,65 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				this.finishUndoTransaction(selectionsAfter);
 			},
 		};
+	}
+
+	// Reproduce VSCode's default insert-mode handling for a passthrough key on the
+	// replay path (dot-repeat / macros) — there is no real keydown to let through,
+	// so drive the editor's own commands: printable text via the `type` command
+	// (VSCode's typed-input entry point, so auto-indent / auto-closing / on-type
+	// formatting fire), and the whitelisted editing/navigation keys via the
+	// corresponding synchronous core editor commands (their default bindings).
+	// Using the `keyboard` source makes VSCode coalesce a replayed run into one
+	// undo unit, matching live typing. Deterministic by design: replay drives the
+	// *default* editing behavior rather than re-resolving keybindings at replay
+	// time (honoring user rebindings via the keybinding service is a possible
+	// follow-up).
+	replayInsertKey(key: string): void {
+		const command = insertReplayCommands[key];
+		if (command !== undefined) {
+			this.editor.trigger('keyboard', command, null);
+			return;
+		}
+		const text = insertTextForKey(key);
+		if (text === undefined) {
+			return;
+		}
+		this.editor.trigger('keyboard', 'type', { text });
+	}
+
+	// Vim `o`/`O`: run VSCode's Insert Line Below/Above semantics (the same
+	// [EnterOperation] the `editor.action.insertLine{After,Before}` actions
+	// execute), so the new line gets language-aware auto-indentation and the
+	// inserted whitespace registers as auto-whitespace, which VSCode trims
+	// again when the line is abandoned without typing. Unlike the native
+	// actions this pushes no undo stop: the opened line belongs to the insert
+	// session's undo unit (`o` + typed text undo as one). The 'vim' command
+	// source keeps the controller's selection listener from reacting to the
+	// cursor move.
+	openLineNatively({ above }: { above: boolean }): boolean {
+		const viewModel = this.editor._getViewModel();
+		if (!viewModel || !this.editor.hasModel()) {
+			return false;
+		}
+		// [executeCommands] mutates the view model without the read-only check
+		// that [executeEdits] performs (the native insertLine actions rely on
+		// their `writable` precondition instead, which this path bypasses).
+		// Decline so the model-buffer fallback runs: its edit is rejected by
+		// [executeEdits], leaving the buffer untouched while Vim's read-only
+		// handling bounces insert mode back to normal.
+		if (this.isReadonly()) {
+			return false;
+		}
+		const commands = above
+			? EnterOperation.lineInsertBefore(viewModel.cursorConfig, this.editor.getModel(), this.editor.getSelections())
+			: EnterOperation.lineInsertAfter(viewModel.cursorConfig, this.editor.getModel(), this.editor.getSelections());
+		this.logUndo(`openLineNatively above=${above} open=${this.isUndoTransactionOpen()} nativeBefore=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		this.withVimEditInProgress(() => {
+			this.editor.executeCommands('vim', commands);
+		});
+		this.invalidateCachedSelections();
+		this.logUndo(`openLineNatively end native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+		return true;
 	}
 
 	applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
@@ -266,6 +498,24 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			if (!this.isUndoTransactionOpen()) this.editor.pushUndoStop();
 		}
 		this.logUndo(`applyEdits end open=${this.isUndoTransactionOpen()} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])}`);
+	}
+
+	trackLines(rows: readonly number[]): TrackedLines {
+		const tracker = new LineTracker(rows);
+		// Track through model content events rather than [applyEdits]: replayed
+		// insert-mode keys edit through native commands (see [replayInsertKey]),
+		// and the event's change ranges are pre-change coordinates like the
+		// tracker expects. Changes within one event are sorted end-to-start, so
+		// sequential application never invalidates a later change's range.
+		const subscription = this.editor.onDidChangeModelContent(event => {
+			for (const change of event.changes) {
+				tracker.applyChange({ range: fromRange(change.range), text: change.text });
+			}
+		});
+		return {
+			currentRow: index => tracker.currentRow(index),
+			dispose: () => subscription.dispose(),
+		};
 	}
 
 	finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void {
@@ -320,22 +570,41 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 	}
 
-	executeNativeCommand(command: string, args: readonly unknown[] = [], options: NativeCommandOptions = {}): void {
+	executeNativeCommand(command: string, args: readonly unknown[] = [], options: NativeCommandOptions = {}): void | Promise<void> {
 		const syncSelectionAfter = options.syncSelectionAfter === true || command === 'undo' || command === 'redo';
 		const selectionsToRestore = options.preserveVisualSelection === true
 			? visualSemanticSelections(this.lastSetVimSelections)
 			: undefined;
 		this.nativeCommandInProgressDepth++;
-		const commandPromise = this.commandService.executeCommand(command, ...args).finally(() => {
-			this.nativeCommandInProgressDepth = Math.max(0, this.nativeCommandInProgressDepth - 1);
-			if (selectionsToRestore !== undefined) {
-				this.setSelections(selectionsToRestore);
+		const commandPromise = (async () => {
+			try {
+				await this.commandService.executeCommand(command, ...args);
+				// [onResolved] runs strictly after the command *completes*
+				// (`:wq` must not close while the save is still in flight), and
+				// not at all when it fails — a failed save must never take the
+				// editor down with it. Awaiting extends the command's own
+				// promise over the callback's async work, so the in-progress
+				// bookkeeping, [syncSelectionAfter], and the cleanup below stay
+				// correct for asynchronous callbacks too.
+				await options.onResolved?.();
+			} finally {
+				this.nativeCommandInProgressDepth = Math.max(0, this.nativeCommandInProgressDepth - 1);
+				if (selectionsToRestore !== undefined) {
+					this.setSelections(selectionsToRestore);
+				}
+				if (options.selectionsAfter !== undefined) {
+					this.setSelections(options.selectionsAfter);
+				}
 			}
-		});
+		})();
 		if (syncSelectionAfter) {
 			this.pendingNativeSelectionSyncs.push(commandPromise.then(() => undefined, () => undefined));
 		}
-		void commandPromise;
+		if (options.backgroundSync === true) {
+			void commandPromise.then(() => this.onBackgroundNativeCommandSync?.(), () => undefined);
+		}
+		void commandPromise.then(undefined, () => undefined);
+		return syncSelectionAfter ? commandPromise : undefined;
 	}
 
 	async waitForNativeSelectionSync(): Promise<boolean> {
@@ -476,9 +745,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	moveByViewLines(direction: HostDirection, count: number, { displayLine, extend }: { displayLine: boolean; extend: boolean }): readonly VimSelection[] {
-		// This is a pure query over VSCode's internal view model. It uses the same
-		// model<->view coordinate conversion that native cursor movement uses, so
-		// folded ranges and soft wraps are represented without moving the live cursor.
+		// This is a pure query over VSCode's internal view model. Logical-line
+		// movement (`j`/`k`) uses hidden model ranges so it skips closed folds but
+		// does not stop on soft-wrapped segments. Display-line movement (`gj`/`gk`)
+		// instead walks view lines. This mirrors VSCode's CursorMove units
+		// `foldedLine` and `wrappedLine` without moving the live cursor mid-dispatch.
 		const before = this.getSelections();
 		const viewModel = this.editor._getViewModel();
 		if (viewModel === null) {
@@ -486,18 +757,32 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		}
 		const converter = viewModel.coordinatesConverter;
 		const lineCount = viewModel.model.getLineCount();
+		const hiddenAreas = viewModel.getHiddenAreas();
 		const result = before.map(selection => {
 			const head = selection.cursor ?? selectionHead(selection);
 			const modelPosition = new VSCodePosition(head.row + 1, head.column + 1);
 			const viewPosition = converter.convertModelPositionToViewPosition(modelPosition, PositionAffinity.None, false, direction === 'down');
-			const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
-			const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
-			const goal = viewGoalForSelection(selection.goal, viewPosition);
-			const viewColumn = viewColumnForGoal(viewModel, viewLine, goal);
-			const target = converter.convertViewPositionToModelPosition(new VSCodePosition(viewLine, viewColumn));
-			const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
-			const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
-			const targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
+			let goal: VimSelectionGoal;
+			let targetPosition: VimPosition;
+			if (displayLine) {
+				const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
+				const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
+				goal = viewGoalForSelection(selection.goal, viewPosition);
+				const viewColumn = normalViewLineColumnForGoal(goal, {
+					minColumn: viewModel.getLineMinColumn(viewLine),
+					maxColumn: viewModel.getLineMaxColumn(viewLine),
+				});
+				const target = converter.convertViewPositionToModelPosition(new VSCodePosition(viewLine, viewColumn));
+				const targetLineNumber = Math.max(1, Math.min(target.lineNumber, lineCount));
+				const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
+				targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
+			} else {
+				goal = modelGoalForSelection(selection.goal, head);
+				const targetLineNumber = foldedLineTarget(head.row + 1, direction, count, hiddenAreas, lineCount);
+				const maxColumn = Math.max(1, viewModel.model.getLineMaxColumn(targetLineNumber) - 1);
+				const targetColumn = modelColumnForGoal(goal, maxColumn);
+				targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
+			}
 			if (extend) {
 				switch (selection.type) {
 					case 'charwise':
@@ -526,6 +811,19 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return this.moveByViewLines(direction, pageLineCount * count, { displayLine: true, extend });
 	}
 
+	rulerColumns(): readonly number[] {
+		// `editor.rulers` resolved for this editor (per-language overrides
+		// included); entries are numbers or `{ column, color }` objects.
+		return this.editor.getOption(EditorOption.rulers).map(ruler => ruler.column);
+	}
+
+	indentWidth(): number {
+		// The model's resolved indent size (`editor.indentSize` /
+		// auto-detected indentation), so Vim shifts match the editor's own
+		// indent commands.
+		return this.model().getOptions().indentSize;
+	}
+
 	visibleRowRange(): { top: number; bottom: number } | undefined {
 		// Vim `H`/`M`/`L` target the visible window. Convert the completely
 		// visible view range back to model rows so soft wraps and folds use the
@@ -545,7 +843,16 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.viewportControlledByCommand = true;
 		const lineHeight = this.editor.getOption(EditorOption.fontInfo).lineHeight;
 		const delta = count * lineHeight * (direction === 'down' ? 1 : -1);
-		this.scheduleViewportReveal({ scrollTop: Math.max(0, this.editor.getScrollTop() + delta) });
+		// VSCode's `editorScroll` computes every smooth-scroll target from the
+		// animation's current intermediate position. Under key repeat that keeps
+		// retargeting only one line ahead, whereas j/k advances a full line per
+		// key. Accumulate from the pending animation's final target instead.
+		const scrollTop = this.editor._getViewModel()?.viewLayout.getFutureViewport().top
+			?? this.editor.getScrollTop();
+		this.editor.setScrollPosition(
+			{ scrollTop: Math.max(0, scrollTop + delta) },
+			this.editorScrollType(),
+		);
 	}
 
 	updateSearch(query: string, _direction: SearchDirection, options: SearchOptions = {}): void {
@@ -557,8 +864,12 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.closeNativeFindWidget();
 
 		const hiddenFindState = this.ensureHiddenFindState();
+		// Vim-pattern conveniences (`\<`, `\>`, `\c`, `\C`) are translated to
+		// plain JS regex before the host's find engine sees the pattern; the
+		// case force is already folded into [options.caseSensitive].
+		const searchString = options.regex === true ? translateVimRegex(query).source : query;
 		hiddenFindState.change({
-			searchString: query,
+			searchString,
 			isRegex: options.regex ?? false,
 			wholeWord: options.wholeWord ?? false,
 			matchCase: options.caseSensitive ?? true,
@@ -579,10 +890,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		return this.hiddenFindState;
 	}
 
-	findSearchMatch(query: string, start: VimPosition, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
-		if (query.length === 0) {
+	findSearchMatch(rawQuery: string, start: VimPosition, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
+		if (rawQuery.length === 0) {
 			return undefined;
 		}
+		const query = options.regex === true ? translateVimRegex(rawQuery).source : rawQuery;
 		const model = this.model();
 		const wordSeparators = options.wholeWord === true ? this.editor.getOption(EditorOption.wordSeparators) : null;
 		if (options.includeStart === true) {
@@ -596,6 +908,27 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			? model.findNextMatch(query, startPosition, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false)
 			: model.findPreviousMatch(query, startPosition, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false);
 		return match === null ? undefined : fromRange(match.range);
+	}
+
+	searchMatchCount(rawQuery: string, matchStart: VimPosition, options: SearchOptions = {}): SearchMatchCount | undefined {
+		if (rawQuery.length === 0) {
+			return undefined;
+		}
+		const query = options.regex === true ? translateVimRegex(rawQuery).source : rawQuery;
+		const model = this.model();
+		const wordSeparators = options.wholeWord === true ? this.editor.getOption(EditorOption.wordSeparators) : null;
+		const limit = MaxCountedSearchMatches;
+		const matches = model.findMatches(query, false, options.regex ?? false, options.caseSensitive ?? true, wordSeparators, false, limit);
+		if (matches.length === 0) {
+			return undefined;
+		}
+		const target = new VSCodePosition(matchStart.row + 1, matchStart.column + 1);
+		const index = matches.findIndex(match => target.isBeforeOrEqual(match.range.getStartPosition()));
+		return {
+			index: (index < 0 ? matches.length - 1 : index) + 1,
+			total: matches.length,
+			capped: matches.length >= limit,
+		};
 	}
 
 	clearSearchHighlights(): void {
@@ -625,6 +958,11 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		this.clearSearchHighlights();
 		this.setInsertPendingText(undefined);
 		this.clearEasyMotionMarkers();
+		if (this.yankHighlightTimer !== undefined) {
+			clearTimeout(this.yankHighlightTimer);
+			this.yankHighlightTimer = undefined;
+		}
+		this.yankHighlightDecorations.clear();
 		this.closeUndoTransaction({ pushUndoStop: false });
 		this.invalidateCachedSelections();
 		this.rememberedSelectionGoals.clear();
@@ -894,8 +1232,6 @@ function inclusiveVisualAnchor(
 		: selection.anchor;
 }
 
-type ViewModelLike = NonNullable<ReturnType<ICodeEditor['_getViewModel']>>;
-
 function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: VSCodePosition): VimSelectionGoal {
 	if (goal?.type === 'endOfLine') {
 		return goal;
@@ -909,13 +1245,71 @@ function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: 
 	return { type: 'viewColumn', column: viewPosition.column };
 }
 
-function viewColumnForGoal(viewModel: ViewModelLike, viewLine: number, goal: VimSelectionGoal): number {
-	const minColumn = viewModel.getLineMinColumn(viewLine);
-	const maxColumn = viewModel.getLineMaxColumn(viewLine);
-	if (goal.type === 'endOfLine') {
-		return Math.max(minColumn, maxColumn - 1);
+function modelGoalForSelection(goal: VimSelectionGoal | undefined, head: VimPosition): VimSelectionGoal {
+	if (goal?.type === 'endOfLine' || goal?.type === 'modelColumn') {
+		return goal;
 	}
-	return Math.max(minColumn, Math.min(goal.column, maxColumn));
+	if (goal?.type === 'viewColumn') {
+		return { type: 'modelColumn', column: Math.max(0, goal.column - 1) };
+	}
+	return { type: 'modelColumn', column: head.column };
+}
+
+function modelColumnForGoal(goal: VimSelectionGoal, maxColumn: number): number {
+	if (goal.type === 'endOfLine') {
+		return maxColumn;
+	}
+	return Math.max(1, Math.min(goal.column + 1, maxColumn));
+}
+
+// VSCode `CursorMoveCommands._targetFolded{Down,Up}` semantics: hidden areas
+// contain the folded rows after the visible fold header, so crossing one jumps
+// to the first row after it (or back to its header) and consumes one movement.
+function foldedLineTarget(
+	startLine: number,
+	direction: HostDirection,
+	count: number,
+	hiddenAreas: readonly Range[],
+	lineCount: number
+): number {
+	let line = startLine;
+	if (direction === 'down') {
+		let hiddenIndex = 0;
+		while (hiddenIndex < hiddenAreas.length && hiddenAreas[hiddenIndex].endLineNumber < line + 1) {
+			hiddenIndex++;
+		}
+		for (let step = 0; step < count; step++) {
+			if (line >= lineCount) return lineCount;
+			let candidate = line + 1;
+			while (hiddenIndex < hiddenAreas.length && hiddenAreas[hiddenIndex].endLineNumber < candidate) {
+				hiddenIndex++;
+			}
+			if (hiddenIndex < hiddenAreas.length && hiddenAreas[hiddenIndex].startLineNumber <= candidate) {
+				candidate = hiddenAreas[hiddenIndex].endLineNumber + 1;
+			}
+			if (candidate > lineCount) return line;
+			line = candidate;
+		}
+		return line;
+	}
+
+	let hiddenIndex = hiddenAreas.length - 1;
+	while (hiddenIndex >= 0 && hiddenAreas[hiddenIndex].startLineNumber > line - 1) {
+		hiddenIndex--;
+	}
+	for (let step = 0; step < count; step++) {
+		if (line <= 1) return 1;
+		let candidate = line - 1;
+		while (hiddenIndex >= 0 && hiddenAreas[hiddenIndex].startLineNumber > candidate) {
+			hiddenIndex--;
+		}
+		if (hiddenIndex >= 0 && hiddenAreas[hiddenIndex].endLineNumber >= candidate) {
+			candidate = hiddenAreas[hiddenIndex].startLineNumber - 1;
+		}
+		if (candidate < 1) return line;
+		line = candidate;
+	}
+	return line;
 }
 
 function foldCommandId(command: HostFoldCommand): string {
@@ -973,7 +1367,7 @@ function searchStartPosition(model: ITextModel, position: VimPosition, direction
 	return model.getPositionAt(shiftedOffset);
 }
 
-function fromRange(range: Range): TextRange {
+function fromRange(range: IRange): TextRange {
 	return {
 		start: { row: range.startLineNumber - 1, column: range.startColumn - 1 },
 		end: { row: range.endLineNumber - 1, column: range.endColumn - 1 },
@@ -996,6 +1390,27 @@ function formatVimSelections(selections: readonly VimSelection[] | undefined): s
 		}
 	}).join(', ')}]`;
 }
+
+// The default editing/navigation commands behind the insert-mode passthrough
+// whitelist (see `isPassthroughInsertKey` in ../common/insert_handler.js). All
+// synchronous core editor commands, so the recorded-key replay loop stays
+// synchronous.
+const insertReplayCommands: Readonly<Record<string, string>> = {
+	'backspace': 'deleteLeft',
+	'delete': 'deleteRight',
+	'ctrl-backspace': 'deleteWordLeft',
+	'ctrl-delete': 'deleteWordRight',
+	'up': 'cursorUp',
+	'down': 'cursorDown',
+	'left': 'cursorLeft',
+	'right': 'cursorRight',
+	'ctrl-left': 'cursorWordLeft',
+	'ctrl-right': 'cursorWordRight',
+	'home': 'cursorHome',
+	'end': 'cursorEnd',
+	'pageup': 'cursorPageUp',
+	'pagedown': 'cursorPageDown',
+};
 
 function formatVimPosition(position: VimPosition): string {
 	return `${position.row + 1}:${position.column + 1}`;

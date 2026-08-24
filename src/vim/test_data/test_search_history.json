@@ -1,0 +1,79 @@
+{"Put":{"state":"ˇone apple here\ntwo banana there\nthree apricot far\nfour cherry near\nfive apple again"}}
+{"Key":"/"}
+{"Key":"b"}
+{"Key":"a"}
+{"Key":"n"}
+{"Key":"a"}
+{"Key":"n"}
+{"Key":"a"}
+{"Key":"enter"}
+{"Get":{"state":"one apple here\ntwo ˇbanana there\nthree apricot far\nfour cherry near\nfive apple again","mode":"Normal"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"up"}
+{"Key":"enter"}
+{"ReadRegister":{"name":"/","value":"banana"}}
+{"Get":{"state":"one apple here\ntwo ˇbanana there\nthree apricot far\nfour cherry near\nfive apple again","mode":"Normal"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"a"}
+{"Key":"p"}
+{"Key":"p"}
+{"Key":"l"}
+{"Key":"e"}
+{"Key":"enter"}
+{"Get":{"state":"one apple here\ntwo banana there\nthree apricot far\nfour cherry near\nfive ˇapple again","mode":"Normal"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"a"}
+{"Key":"p"}
+{"Key":"up"}
+{"Key":"enter"}
+{"ReadRegister":{"name":"/","value":"apple"}}
+{"Get":{"state":"one apple here\ntwo banana there\nthree apricot far\nfour cherry near\nfive ˇapple again","mode":"Normal"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"a"}
+{"Key":"p"}
+{"Key":"ctrl-p"}
+{"Key":"enter"}
+{"ReadRegister":{"name":"/","value":"apple"}}
+{"Get":{"state":"one apple here\ntwo banana there\nthree apricot far\nfour cherry near\nfive ˇapple again","mode":"Normal"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"b"}
+{"Key":"a"}
+{"Key":"up"}
+{"Key":"down"}
+{"Key":"enter"}
+{"ReadRegister":{"name":"/","value":"ba"}}
+{"Get":{"state":"one apple here\ntwo ˇbanana there\nthree apricot far\nfour cherry near\nfive apple again","mode":"Normal"}}
+{"Key":"/"}
+{"Key":"c"}
+{"Key":"h"}
+{"Key":"e"}
+{"Key":"r"}
+{"Key":"r"}
+{"Key":"y"}
+{"Key":"escape"}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"up"}
+{"Key":"enter"}
+{"ReadRegister":{"name":"/","value":"cherry"}}
+{"Get":{"state":"one apple here\ntwo banana there\nthree apricot far\nfour ˇcherry near\nfive apple again","mode":"Normal"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"*"}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"up"}
+{"Key":"enter"}
+{"Get":{"state":"one apple here\ntwo banana there\nthree apricot far\nfour cherry near\nfive ˇapple again","mode":"Normal"}}

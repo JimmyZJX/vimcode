@@ -136,13 +136,43 @@ test(">ip indents the paragraph object", () => {
 // Phase 5 probes: ys captures its range through the keymap grammar.
 
 test("ys2w) wraps two words (count after ys)", () => {
+  // vim-surround trims the motion's trailing space out of the wrap.
   const result = probe("aaa bbb ccc", ["y", "s", "2", "w", ")"]);
-  expect(result.text).toBe("(aaa bbb )ccc");
+  expect(result.text).toBe("(aaa bbb) ccc");
 });
 
 test("yss) wraps the trimmed line", () => {
   const result = probe("  aaa bbb", ["y", "s", "s", ")"]);
   expect(result.text).toBe("  (aaa bbb)");
+});
+
+// Vim 'shiftwidth' follows the host's resolved indent size, so `>>`/`v>`/`:>`
+// all shift by the same amount as the editor's own indent commands (2-space
+// OCaml files shift by 2, not a hardcoded 4).
+test("indent commands use the editor's indent width", () => {
+  const editor = new InMemoryVimEditor("aa\nbb");
+  editor.configureIndentWidthForTest(2);
+  const vim = new Vim(editor);
+  runKeys(vim, [">", ">"]);
+  expect(editor.getText()).toBe("  aa\nbb");
+  runKeys(vim, ["j", "v", ">"]);
+  expect(editor.getText()).toBe("  aa\n  bb");
+  runKeys(vim, [":", ">", "enter"]);
+  expect(editor.getText()).toBe("  aa\n    bb");
+  runKeys(vim, ["<", "<"]);
+  expect(editor.getText()).toBe("  aa\n  bb");
+});
+
+// vim-surround: charwise wraps strip trailing whitespace — the space stays
+// outside the closing delimiter.
+test("ysw) leaves the w motion's trailing space outside the wrap", () => {
+  const result = probe("foo bar", ["y", "s", "w", ")"]);
+  expect(result.text).toBe("(foo) bar");
+});
+
+test("ysaw) leaves the object's trailing space outside the wrap", () => {
+  const result = probe("foo bar", ["y", "s", "a", "w", ")"]);
+  expect(result.text).toBe("(foo) bar");
 });
 
 test("ysiw) still wraps the inner word", () => {

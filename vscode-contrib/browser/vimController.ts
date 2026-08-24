@@ -14,8 +14,10 @@ import { IKeybindingService } from '../../../../platform/keybinding/common/keybi
 import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import type { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorCommand, registerEditorCommand } from '../../../browser/editorExtensions.js';
+import { ICodeEditorService } from '../../../browser/services/codeEditorService.js';
 import { EditorOption } from '../../../common/config/editorOptions.js';
 import { CursorChangeReason, CursorSelectionStartKind, ICursorSelectionChangedEvent } from '../../../common/cursorEvents.js';
 import { IModelContentChangedEvent } from '../../../common/textModelEvents.js';
@@ -25,10 +27,9 @@ import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
 import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
-import { VSCodeVimEditor } from './vscodeVimEditor.js';
+import { installVSCodeGraphemeProvider } from './vscodeGrapheme.js';
+import { VSCodeVimEditor, VimEasyMotionLabelDecorationTypeKey, YankHighlightOptions } from './vscodeVimEditor.js';
 
-const VimEnabledContext = new RawContextKey<boolean>('vim.enabled', false, true);
-const VimCodeEnabledContext = new RawContextKey<boolean>('vimcode.enabled', false, true);
 const VimActiveContext = new RawContextKey<boolean>('vim.active', false, true);
 const VimModeContext = new RawContextKey<string>('vim.mode', 'Normal', true);
 const VimNormalContext = new RawContextKey<boolean>('vim.normal', true, true);
@@ -44,19 +45,81 @@ const VimNativePassthroughCommands = new Set([
 	'showPrevParameterHint',
 ]);
 
-let vimRemapCommandRegistered = false;
+/**
+ * A keybinding whose `when` clause references Vim's own context keys (for
+ * example leaderkey's `vim.mode == 'Normal'`) is deliberately scoped to Vim
+ * state, so it cannot collide with Vim by accident. Such bindings preempt Vim
+ * even when they are default keybindings from VSCode core or a built-in
+ * extension, which Vim otherwise overrides. Checking [isBuiltinExtension]
+ * alone is not enough: installing a gallery update of a built-in extension
+ * keeps the running copy flagged as built-in.
+ */
+function whenClauseIsVimAware(when: ContextKeyExpression | undefined): boolean {
+	return when !== undefined && when.keys().some(key => key.startsWith('vim.') || key.startsWith('vimcode.'));
+}
 
-function registerVimRemapCommandOnce(): void {
-	if (vimRemapCommandRegistered) {
+let vimRemapCommandsRegistered = false;
+
+type RemapCommandId = 'vim.remap' | 'vimcode.remap';
+
+/**
+ * `vim.remap` mirrors VSCodeVim's command of the same name: it is a silent
+ * no-op when Vim is disabled and it swallows remap execution errors.
+ * `vimcode.remap` is the vimcode-owned strict variant for callers that target
+ * vimcode specifically: it raises when there is no Vim-enabled editor to run
+ * against and propagates execution errors.
+ *
+ * Both commands resolve only once the remapped keys and commands have been
+ * fully processed, so callers can sequence work after the remap. This is why
+ * they subclass [EditorCommand] directly instead of using
+ * [EditorCommand.bindToContribution]: the bound command wrapper discards the
+ * handler's return value, which would leave callers nothing to await.
+ *
+ * Registration is intentionally lazy (first time Vim is enabled) to keep the
+ * disabled startup path inert; until then `vimcode.remap` is not defined at
+ * all, so probing or calling it fails with "command not found".
+ */
+class VimRemapCommand extends EditorCommand {
+	constructor(private readonly remapCommandId: RemapCommandId) {
+		super({ id: remapCommandId, precondition: undefined });
+	}
+
+	private get strict(): boolean {
+		return this.remapCommandId === 'vimcode.remap';
+	}
+
+	public override runCommand(accessor: ServicesAccessor, args: unknown): void | Promise<void> {
+		if (this.strict) {
+			// Mirrors the editor lookup in [EditorCommand.runEditorCommand],
+			// which silently gives up when no editor is available.
+			const codeEditorService = accessor.get(ICodeEditorService);
+			const editor = codeEditorService.getFocusedCodeEditor() || codeEditorService.getActiveCodeEditor();
+			if (!editor) {
+				throw new Error('vimcode.remap requires a focused or active text editor');
+			}
+		}
+		return super.runCommand(accessor, args);
+	}
+
+	public override runEditorCommand(_accessor: ServicesAccessor, editor: ICodeEditor, args: unknown): void | Promise<void> {
+		const controller = editor.getContribution<VimController>(VimController.ID);
+		if (controller === null) {
+			if (this.strict) {
+				throw new Error('vimcode.remap requires an editor with the Vim contribution');
+			}
+			return;
+		}
+		return controller.runRemapCommand(args, this.remapCommandId);
+	}
+}
+
+function registerVimRemapCommandsOnce(): void {
+	if (vimRemapCommandsRegistered) {
 		return;
 	}
-	vimRemapCommandRegistered = true;
-	const VimCommand = EditorCommand.bindToContribution<VimController>(editor => editor.getContribution<VimController>(VimController.ID));
-	registerEditorCommand(new VimCommand({
-		id: 'vim.remap',
-		precondition: undefined,
-		handler: (controller, args) => controller.runRemapCommand(args),
-	}));
+	vimRemapCommandsRegistered = true;
+	registerEditorCommand(new VimRemapCommand('vim.remap'));
+	registerEditorCommand(new VimRemapCommand('vimcode.remap'));
 }
 
 type NativeCursorAppearance = {
@@ -106,7 +169,7 @@ export class VimController extends Disposable {
 	private enabled = false;
 	private remapTimeout: ReturnType<typeof setTimeout> | undefined;
 	private remapTimeoutGeneration = 0;
-	private readonly remapWhenExpressionCache = new Map<string, ContextKeyExpression | undefined>();
+	private readonly whenExpressionCache = new Map<string, ContextKeyExpression | undefined>();
 	private pendingUndoRedoContentSync = false;
 	private nativeCursorAppearance: NativeCursorAppearance | undefined = undefined;
 	private appliedCursorBlinking: 'vim-solid' | 'original' | undefined = undefined;
@@ -125,11 +188,34 @@ export class VimController extends Disposable {
 		private readonly extensionManagementService: IExtensionManagementService,
 		private readonly extensionEnablementService: IGlobalExtensionEnablementService,
 		private readonly notificationService: INotificationService,
-		private readonly logService: ILogService
+		private readonly logService: ILogService,
+		codeEditorService: ICodeEditorService
 	) {
 		super();
+		// Align the core's character-cell boundaries with the host's own
+		// character-column mapping (idempotent).
+		installVSCodeGraphemeProvider();
+		// The easymotion label decorations ([showEasyMotionMarkers]) are
+		// per-label *subtypes* of this parent decoration type; resolving a
+		// subtype resolves its parent, which throws when unregistered. The
+		// registration is refcounted by key across editors and scoped to this
+		// editor's stylesheet (matters for auxiliary windows).
+		this._register(codeEditorService.registerDecorationType('vim-easymotion-label', VimEasyMotionLabelDecorationTypeKey, {}, undefined, editor));
 		this.vimClipboard = new VSCodeVimClipboard(clipboardService);
-		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message));
+		this.vimEditor = new VSCodeVimEditor(editor, this.commandService, message => this.logUndo(message), () => this.yankHighlightOptions());
+		// A background native command (`:w`) completed: selection/content events
+		// were suppressed while it ran ([isExecutingNativeCommand]), so pull one
+		// reconcile — the same path as any external editor change. It is
+		// *enqueued* rather than run from the completion continuation directly:
+		// the promise can resolve while a later key's job is mid-flight, and a
+		// reconcile must never mutate Vim state between a job's dispatch and its
+		// own post-run sync. As the next job in line it runs against settled
+		// state (and after any keys typed during the save).
+		this.vimEditor.onBackgroundNativeCommandSync = () => {
+			void this.asyncKeyQueue
+				.enqueue(async () => this.handleExternalEditorStateChanged('nativeCommand:background'))
+				.then(undefined, () => this.syncStatus());
+		};
 		this.vim = new Vim(this.vimEditor, this.readVimCompatibilityConfiguration(), VimController.globalState);
 		this.updateEnabledState();
 		this._register(this.editor.onKeyDown(event => this.handleKeyDown(event)));
@@ -143,7 +229,12 @@ export class VimController extends Disposable {
 		this._register(this.extensionEnablementService.onDidChangeEnablement(() => {
 			if (this.enabled) this.warnIfVSCodeVimEnabled();
 		}));
-		this._register(this.configurationService.onDidChangeConfiguration(() => {
+		this._register(this.configurationService.onDidChangeConfiguration(event => {
+			// Startup fires a burst of configuration events while extensions
+			// register their settings schemas; only vim-relevant ones matter
+			// (setConfiguration additionally no-ops on unchanged values, so a
+			// pending chord survives the noise).
+			if (!event.affectsConfiguration('vim') && !event.affectsConfiguration('vimcode')) return;
 			this.vim.setConfiguration(this.readVimCompatibilityConfiguration());
 			this.updateEnabledState();
 		}));
@@ -171,23 +262,39 @@ export class VimController extends Disposable {
 		return this.vim.status;
 	}
 
-	runRemapCommand(args: unknown): void {
+	runRemapCommand(args: unknown, commandId: RemapCommandId): Promise<void> | undefined {
+		const strict = commandId === 'vimcode.remap';
 		if (!this.enabled || !this.hasModel()) {
-			return;
+			if (strict) {
+				throw new Error('vimcode.remap requires Vim to be enabled on the active editor (`vimcode.enabled`)');
+			}
+			return undefined;
 		}
 		const remap = readRemapCommandArgs(args);
 		if (remap === undefined) {
-			throw new Error("vim.remap requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]");
+			throw new Error(`${commandId} requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]`);
 		}
-		void this.asyncKeyQueue.enqueue(async () => {
-			this.vim.executeExternalRemap(remap);
+		const run = this.asyncKeyQueue.enqueue(async () => {
+			const clipboard = new ClipboardTransaction(this.vimClipboard);
+			await clipboard.with(async () => {
+				await this.vim.executeExternalRemap(remap, clipboard);
+			});
 			if (!this.vim.status.pending) {
 				this.vimEditor.revealPrimaryCursorIfOutsideViewport();
 				this.syncEditorState();
 			} else {
 				this.syncStatus();
 			}
-		}).then(undefined, () => this.syncStatus());
+		});
+		if (strict) {
+			return run.then(undefined, (error) => {
+				this.syncStatus();
+				throw error;
+			});
+		}
+		// VSCodeVim-compatible: swallow remap execution errors, but still
+		// resolve only after the remap has been fully processed.
+		return run.then(undefined, () => this.syncStatus());
 	}
 
 	isVimEnabled(): boolean {
@@ -237,13 +344,6 @@ export class VimController extends Disposable {
 		return this.readCompatibilityConfigValue('enabled') === true;
 	}
 
-	private setGlobalEnabledContexts(enabled: boolean, options: { mirrorVimEnabled: boolean }): void {
-		void this.commandService.executeCommand('_setContext', VimCodeEnabledContext.key, enabled);
-		if (options.mirrorVimEnabled) {
-			void this.commandService.executeCommand('_setContext', VimEnabledContext.key, enabled);
-		}
-	}
-
 	private ensureVimContextKeys(): VimContextKeys {
 		if (this.vimContexts === undefined) {
 			this.vimContexts = {
@@ -269,14 +369,11 @@ export class VimController extends Disposable {
 			this.rememberNativeCursorAppearance();
 		}
 		this.enabled = enabled;
-		// Keep the default disabled startup path inert for users of the VSCodeVim
-		// extension: do not write the shared `vim.enabled` context key until
-		// vimcode has actually taken ownership. Once vimcode is active, mirror it
-		// for VSCodeVim-compatible when-clauses and clear it when toggling away
-		// from vimcode. Users switching back to VSCodeVim should reload the window.
-		this.setGlobalEnabledContexts(enabled, { mirrorVimEnabled: enabled || wasEnabled });
+		// Global `vimcode.enabled` / compatibility `vim.enabled` contexts are
+		// owned by the block-startup workbench contribution, independently of
+		// whether an editor (and therefore a VimController) has been created.
 		if (enabled) {
-			registerVimRemapCommandOnce();
+			registerVimRemapCommandsOnce();
 			this.attachCurrentModelState();
 			this.warnIfVSCodeVimEnabled();
 			this.syncEditorState();
@@ -334,8 +431,12 @@ export class VimController extends Disposable {
 		const configSources = [vimConfig, vimcodeConfig];
 		const useCtrlKeys = this.readCompatibilityConfigValue('useCtrlKeys');
 		const useSystemClipboard = this.readCompatibilityConfigValue('useSystemClipboard');
+		const hlsearch = this.readCompatibilityConfigValue('hlsearch');
 		const timeout = this.readCompatibilityConfigValue('timeout');
+		const textwidth = this.readCompatibilityConfigValue('textwidth');
 		const visualMultilineInsert = this.readCompatibilityConfigValue('visualMultilineInsert');
+		const insertModeCtrlVAsPaste = this.readCompatibilityConfigValue('insertModeCtrlVAsPaste');
+		const replaceWithRegister = this.readCompatibilityConfigValue('replaceWithRegister');
 		const easymotion = this.readCompatibilityConfigValue('easymotion');
 		const easymotionKeys = this.readCompatibilityConfigValue('easymotionKeys');
 		const easymotionJumpToAnywhereRegex = this.readCompatibilityConfigValue('easymotionJumpToAnywhereRegex');
@@ -344,8 +445,12 @@ export class VimController extends Disposable {
 			leader: typeof leader === 'string' ? leader : undefined,
 			useCtrlKeys: typeof useCtrlKeys === 'boolean' ? useCtrlKeys : undefined,
 			useSystemClipboard: typeof useSystemClipboard === 'boolean' ? useSystemClipboard : undefined,
+			hlsearch: typeof hlsearch === 'boolean' ? hlsearch : undefined,
 			timeout: typeof timeout === 'number' ? timeout : undefined,
+			textwidth: typeof textwidth === 'number' ? textwidth : undefined,
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean' ? visualMultilineInsert : undefined,
+			insertModeCtrlVAsPaste: typeof insertModeCtrlVAsPaste === 'boolean' ? insertModeCtrlVAsPaste : undefined,
+			replaceWithRegister: typeof replaceWithRegister === 'boolean' ? replaceWithRegister : undefined,
 			easymotion: typeof easymotion === 'boolean' ? easymotion : undefined,
 			easymotionKeys: typeof easymotionKeys === 'string' ? easymotionKeys : undefined,
 			easymotionJumpToAnywhereRegex: typeof easymotionJumpToAnywhereRegex === 'string' ? easymotionJumpToAnywhereRegex : undefined,
@@ -358,12 +463,32 @@ export class VimController extends Disposable {
 			visualModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'visualModeKeyBindingsNonRecursive')),
 			operatorPendingModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'operatorPendingModeKeyBindings')),
 			operatorPendingModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'operatorPendingModeKeyBindingsNonRecursive')),
+			commandLineModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'commandLineModeKeyBindings')),
+			commandLineModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'commandLineModeKeyBindingsNonRecursive')),
 		};
 	}
 
 	private readCompatibilityConfigValue(key: string): unknown {
 		const vimcodeValue = this.readConfiguredConfigValue(`vimcode.${key}`);
 		return vimcodeValue !== undefined ? vimcodeValue : this.configurationService.getValue<unknown>(`vim.${key}`);
+	}
+
+	// VSCodeVim `vim.highlightedyank.*`: undefined when disabled; otherwise the
+	// rendering options for the transient yank highlight, with the VSCodeVim
+	// defaults filled in. Read lazily on each yank so setting changes apply
+	// without a reload.
+	private yankHighlightOptions(): YankHighlightOptions | undefined {
+		if (this.readCompatibilityConfigValue('highlightedyank.enable') !== true) {
+			return undefined;
+		}
+		const color = this.readCompatibilityConfigValue('highlightedyank.color');
+		const textColor = this.readCompatibilityConfigValue('highlightedyank.textColor');
+		const duration = this.readCompatibilityConfigValue('highlightedyank.duration');
+		return {
+			color: typeof color === 'string' && color.length > 0 ? color : 'rgba(250, 240, 170, 0.5)',
+			textColor: typeof textColor === 'string' && textColor.length > 0 ? textColor : undefined,
+			durationMs: typeof duration === 'number' && duration >= 1 ? duration : 200,
+		};
 	}
 
 	private readConfiguredConfigSection(section: string): Record<string, unknown> {
@@ -411,7 +536,7 @@ export class VimController extends Disposable {
 			return;
 		}
 		const key = keyFromEvent(event);
-		const remapWhen = (when: string | undefined) => this.evaluateRemapWhen(when, event.target);
+		const whenEvaluator = (when: string | undefined) => this.evaluateWhen(when, event.target);
 		// When Vim is waiting for the rest of a command (`g`, `d`, a register name,
 		// search input, a pending remap, ...), the next key belongs to Vim. Otherwise
 		// user/extension VSCode keybindings get first refusal, and Vim only runs if it
@@ -421,14 +546,20 @@ export class VimController extends Disposable {
 			this.syncReadonlyModeAfterNativeKey();
 			return;
 		}
-		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { remapWhen });
+		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { whenEvaluator });
 		if (keyPlan === null) {
 			this.syncReadonlyModeAfterNativeKey();
 			return;
 		}
 
-		event.preventDefault();
-		event.stopPropagation();
+		// A passthrough key (insert-mode typing/backspace) is handled natively by
+		// VSCode — do NOT preventDefault, so the editor types/deletes as usual —
+		// but still run the plan so Vim records the keystroke (for macros +
+		// dot-repeat). Owned keys prevent default as usual.
+		if (!keyPlan.passthrough) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
 		void this.asyncKeyQueue.enqueue(async () => this.runVimKeyPlan(keyPlan)).then(undefined, () => this.syncStatus());
 	}
 
@@ -446,28 +577,28 @@ export class VimController extends Disposable {
 		}, 0);
 	}
 
-	private evaluateRemapWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
+	private evaluateWhen(when: string | undefined, target: IContextKeyServiceTarget | null): boolean {
 		if (when === undefined || when.trim().length === 0) {
 			return true;
 		}
-		const expression = this.remapWhenExpression(when);
+		const expression = this.whenExpression(when);
 		if (expression === undefined) {
 			return false;
 		}
 		return expression.evaluate(this.contextKeyService.getContext(target));
 	}
 
-	private remapWhenExpression(when: string): ContextKeyExpression | undefined {
-		if (!this.remapWhenExpressionCache.has(when)) {
+	private whenExpression(when: string): ContextKeyExpression | undefined {
+		if (!this.whenExpressionCache.has(when)) {
 			let expression: ContextKeyExpression | undefined;
 			try {
 				expression = ContextKeyExpr.deserialize(when);
 			} catch (_error) {
 				expression = undefined;
 			}
-			this.remapWhenExpressionCache.set(when, expression);
+			this.whenExpressionCache.set(when, expression);
 		}
-		return this.remapWhenExpressionCache.get(when);
+		return this.whenExpressionCache.get(when);
 	}
 
 	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent): boolean {
@@ -512,6 +643,7 @@ export class VimController extends Disposable {
 				return false;
 			}
 			return VimNativePassthroughCommands.has(keybinding.command)
+				|| whenClauseIsVimAware(keybinding.when)
 				|| !keybinding.isDefault
 				|| (keybinding.extensionId !== null && !keybinding.isBuiltinExtension);
 		});
@@ -524,8 +656,16 @@ export class VimController extends Disposable {
 		});
 		if (await this.vimEditor.waitForNativeSelectionSync()) {
 			this.vimEditor.invalidateCachedSelections();
-			const result = this.vim.syncFromEditorState({ canonicalizeVisualSelection: true });
-			this.logVisualSyncDecision('nativeCommand', result);
+			// Same policy as [handleCursorSelectionChanged]: while insert/replace
+			// mode intentionally lets VSCode own the cursor, the native selection
+			// left by the command is authoritative and must not be reconciled back
+			// into normal mode (e.g. the optional insert-mode ctrl-v paste, or a
+			// `ctrl-o` excursion that returned to insert).
+			const mode = this.vim.mode;
+			if (mode !== 'insert' && mode !== 'replace') {
+				const result = this.vim.syncFromEditorState({ canonicalizeVisualSelection: true });
+				this.logVisualSyncDecision('nativeCommand', result);
+			}
 		}
 		if (!this.vim.status.pending) {
 			this.vimEditor.revealPrimaryCursorIfOutsideViewport();
@@ -546,7 +686,7 @@ export class VimController extends Disposable {
 		}
 		this.logUndo(`selection event source=${event.source} reason=${cursorChangeReasonName(event.reason)} selections=${formatVSCodeSelections(selections)}`);
 		if (event.source === 'mouse' && this.shouldLogVisual()) {
-			this.logVisual(`mouse selection reason=${cursorChangeReasonName(event.reason)} mode=${this.vim.mode.kind} native=${formatVSCodeSelections(selections)}`);
+			this.logVisual(`mouse selection reason=${cursorChangeReasonName(event.reason)} mode=${this.vim.mode} native=${formatVSCodeSelections(selections)}`);
 		}
 		if (event.reason === CursorChangeReason.Undo || event.reason === CursorChangeReason.Redo) {
 			this.pendingUndoRedoContentSync = false;
@@ -557,7 +697,7 @@ export class VimController extends Disposable {
 		// can be changed outside the Vim state machine (mouse selections, multicursor
 		// commands, other editor contributions). Ignore native cursor movement while
 		// insert/replace mode is intentionally letting VSCode handle typed input.
-		if (this.vim.mode.kind === 'insert' || this.vim.mode.kind === 'replace') {
+		if (this.vim.mode === 'insert' || this.vim.mode === 'replace') {
 			return;
 		}
 		this.handleExternalEditorStateChanged(event.source, {
@@ -575,10 +715,10 @@ export class VimController extends Disposable {
 		// such as log-file appends. Treat it as authoritative for insert/replace via the
 		// existing early return above, but do not let it churn normal-mode cursors or
 		// rewrite an active Vim visual selection.
-		if (this.vim.mode.kind === 'visual' || this.vim.mode.kind === 'visualLine' || this.vim.mode.kind === 'visualBlock') {
+		if (this.vim.mode === 'visual' || this.vim.mode === 'visualLine' || this.vim.mode === 'visualBlock') {
 			return true;
 		}
-		return this.vim.mode.kind === 'normal'
+		return this.vim.mode === 'normal'
 			&& [event.selection, ...event.secondarySelections].every(selection =>
 				selection.selectionStartLineNumber === selection.positionLineNumber
 				&& selection.selectionStartColumn === selection.positionColumn);
@@ -633,11 +773,11 @@ export class VimController extends Disposable {
 			this.syncDetachedStatus();
 			return;
 		}
-		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
+		this.logUndo(`syncFromUndoRedoState start reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode}`);
 		this.vimEditor.invalidateCachedSelections();
 		const result = this.vim.syncFromUndoRedoState();
 		this.logVisualSyncDecision(`undoRedo:${reason}`, result);
-		this.logUndo(`syncFromUndoRedoState end reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode.kind}`);
+		this.logUndo(`syncFromUndoRedoState end reason=${reason} native=${formatVSCodeSelections(this.editor.getSelections() ?? [])} mode=${this.vim.mode}`);
 		this.syncEditorState();
 	}
 
@@ -837,6 +977,15 @@ class ClipboardTransaction implements VimSystemClipboard {
 	}
 }
 
+// The `vim.mode` context values use VSCodeVim-style mode names with a
+// deliberate difference: any mode with a pending chord gets a `+` suffix
+// (`Normal+`, `Visual+`, …) instead of VSCodeVim's single
+// `OperatorPendingMode` value, so when-clauses can distinguish pending state
+// uniformly in every mode (VSCodeVim only models it for normal mode). The
+// prompts are `Search`/`Command` rather than VSCodeVim's
+// `SearchInProgressMode`/`CommandlineInProgress`. Migrating users with
+// keybindings.json when-clauses on `vim.mode` need to adjust — documented in
+// doc/vscodevim-migration.md ("Deliberate divergences").
 function vscodeVimModeContextValue(status: VimStatus): string {
 	const suffix = status.pending ? '+' : '';
 	switch (status.mode) {
@@ -856,6 +1005,10 @@ function vscodeVimModeContextValue(status: VimStatus): string {
 			return `VisualLine${suffix}`;
 		case 'visualBlock':
 			return `VisualBlock${suffix}`;
+		case 'helixNormal':
+			return `HelixNormal${suffix}`;
+		case 'helixSelect':
+			return `HelixSelect${suffix}`;
 		default:
 			return `Unknown${suffix}`;
 	}
@@ -918,6 +1071,9 @@ function readRemaps(value: unknown): VimKeyRemapping[] {
 	});
 }
 
+// US-layout shift table. Only a fallback for events whose typed character is
+// not printable ASCII (see [keyFromEvent]); layout-correct characters come
+// from the browser event's [key].
 function shiftedDigitKey(digit: number): string {
 	const shiftedDigits = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
 	return shiftedDigits[digit] ?? String(digit);
@@ -946,6 +1102,10 @@ function readRemapCommands(commands: unknown[]): VimKeyRemapping['commands'] {
 	return result;
 }
 
+// Special keys plus the US-layout punctuation table. The punctuation half is
+// only a fallback for events whose typed character is not printable ASCII
+// (see [keyFromEvent]); layout-correct characters come from the browser
+// event's [key].
 function keyNameFromKeyCode(keyCode: KeyCode, shiftKey: boolean): string | undefined {
 	switch (keyCode) {
 		case KeyCode.LeftArrow:
@@ -1011,10 +1171,16 @@ function pendingCursorClipInsetPercent(pendingDepth: number): number {
 }
 
 function keyFromEvent(event: IKeyboardEvent): string | undefined {
-	if (event.altKey || event.metaKey) {
+	if (event.metaKey) {
 		return undefined;
 	}
-	if (event.ctrlKey) {
+	// AltGr (which Windows reports as ctrl+alt) composes a character under the
+	// OS layout (German AltGr+8 is '['); route it to the typed-character path
+	// below instead of treating it as an alt/ctrl chord.
+	if (!event.altGraphKey && event.altKey) {
+		return undefined;
+	}
+	if (!event.altGraphKey && event.ctrlKey) {
 		if (event.shiftKey) {
 			return undefined;
 		}
@@ -1033,6 +1199,14 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 				return 'ctrl-pagedown';
 			case KeyCode.BracketLeft:
 				return 'ctrl-[';
+			case KeyCode.BracketRight:
+				return 'ctrl-]';
+			// Word deletes are insert-mode passthrough keys (recorded for macros /
+			// dot-repeat); in other modes Vim declines them and they stay native.
+			case KeyCode.Backspace:
+				return 'ctrl-backspace';
+			case KeyCode.Delete:
+				return 'ctrl-delete';
 			default:
 				break;
 		}
@@ -1040,6 +1214,30 @@ function keyFromEvent(event: IKeyboardEvent): string | undefined {
 			const letter = String.fromCharCode('a'.charCodeAt(0) + event.keyCode - KeyCode.KeyA);
 			return `ctrl-${letter}`;
 		}
+		return undefined;
+	}
+
+	// The browser event's [key] is the typed character under the OS keyboard
+	// layout (UK shift+2 is '"', not '@') and accounts for caps lock, unlike
+	// reconstructing the character from the layout-independent [KeyCode] with
+	// a hardcoded US shift table. Only trusted for printable ASCII: on
+	// layouts whose characters mean nothing to Vim (e.g. Cyrillic 'ф'), the
+	// KeyCode fallback below keeps normal mode usable through the US-virtual-
+	// key positions, mirroring VSCode's own keybinding fallback. A dead key
+	// ('Dead') stays native so composition can produce the accented character.
+	const typed = event.browserEvent.key;
+	if (typed === 'Dead') {
+		return undefined;
+	}
+	if (typed === ' ') {
+		return 'space';
+	}
+	if (typeof typed === 'string' && typed.length === 1 && typed >= '!' && typed <= '~') {
+		return typed;
+	}
+	if (event.altGraphKey) {
+		// An AltGr composition without a printable-ASCII result (e.g. '€')
+		// means nothing to Vim; leave it to native handling.
 		return undefined;
 	}
 

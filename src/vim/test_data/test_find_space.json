@@ -1,0 +1,14 @@
+{"Put":{"state":"ˇfoo bar baz"}}
+{"Key":"f"}
+{"Key":"space"}
+{"Get":{"state":"fooˇ bar baz","mode":"normal"}}
+{"Put":{"state":"ˇfoo bar baz"}}
+{"Key":"d"}
+{"Key":"f"}
+{"Key":"space"}
+{"Get":{"state":"ˇbar baz","mode":"normal"}}
+{"Put":{"state":"ˇfoo bar baz"}}
+{"Key":"d"}
+{"Key":"t"}
+{"Key":"space"}
+{"Get":{"state":"ˇ bar baz","mode":"normal"}}

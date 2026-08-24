@@ -1,0 +1,22 @@
+{"Put":{"state":"  oneˇ two\n    second\n\n  fourth"}}
+{"Key":"_"}
+{"Get":{"state":"  ˇone two\n    second\n\n  fourth","mode":"normal"}}
+{"Put":{"state":"  oneˇ two\n    second\n\n  fourth"}}
+{"Key":"2"}
+{"Key":"_"}
+{"Get":{"state":"  one two\n    ˇsecond\n\n  fourth","mode":"normal"}}
+{"Put":{"state":"  oneˇ two\n    second\n\n  fourth"}}
+{"Key":"d"}
+{"Key":"_"}
+{"Get":{"state":"    sˇecond\n\n  fourth","mode":"normal"}}
+{"Put":{"state":"  oneˇ two\n    second\n\n  fourth"}}
+{"Key":"d"}
+{"Key":"2"}
+{"Key":"_"}
+{"Get":{"state":"ˇ\n  fourth","mode":"normal"}}
+{"Put":{"state":"  oneˇ two\n    second\n\n  fourth"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":"_"}
+{"Key":"d"}
+{"Get":{"state":"  oneˇecond\n\n  fourth","mode":"normal"}}

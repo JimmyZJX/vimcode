@@ -1,0 +1,53 @@
+{"Put":{"state":"{ a { b ˇc } d } e }"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":"]"}
+{"Key":"}"}
+{"Key":"d"}
+{"Get":{"state":"{ a { b ˇ e }","mode":"normal"}}
+{"Put":{"state":"{ a { b ˇc } d } e }"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":"["}
+{"Key":"{"}
+{"Key":"d"}
+{"Get":{"state":"ˇ } d } e }","mode":"normal"}}
+{"Put":{"state":"ˇabx-cx-d"}}
+{"Key":"v"}
+{"Key":"3"}
+{"Key":"f"}
+{"Key":"x"}
+{"Key":"d"}
+{"Get":{"state":"ˇbx-cx-d","mode":"normal"}}
+{"Put":{"state":"ˇone\n  two\nthree"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":"$"}
+{"Key":"d"}
+{"Get":{"state":"ˇthree","mode":"normal"}}
+{"Put":{"state":"ˇone\n  two\nthree"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":"g"}
+{"Key":"_"}
+{"Key":"d"}
+{"Get":{"state":"ˇ\nthree","mode":"normal"}}
+{"Put":{"state":"one\n  two\nˇthree"}}
+{"Key":"v"}
+{"Key":"2"}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"d"}
+{"Get":{"state":"one\nˇhree","mode":"normal"}}
+{"Put":{"state":"ˇone\n  two\nthree"}}
+{"Key":"V"}
+{"Key":"2"}
+{"Key":"$"}
+{"Key":"d"}
+{"Get":{"state":"threˇe","mode":"normal"}}
+{"Put":{"state":"ˇone\n  two\nthree"}}
+{"Key":"ctrl-v"}
+{"Key":"2"}
+{"Key":"$"}
+{"Key":"d"}
+{"Get":{"state":"ˇ\n\nthree","mode":"normal"}}

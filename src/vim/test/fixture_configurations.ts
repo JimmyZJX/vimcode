@@ -10,6 +10,10 @@
 import type { VimConfiguration } from "../config.js";
 
 export const fixtureConfigurations: Record<string, Partial<VimConfiguration>> = {
+  // Recorded with `set textwidth=20` (see the fixture's Exec entry).
+  test_format_operator: {
+    textwidth: 20,
+  },
   // Zed test_jk: `j k -> NormalBefore` in insert mode (`imap jk <esc>`).
   test_jk: {
     insertModeKeyBindings: [{ before: ["j", "k"], after: ["<Esc>"] }],

@@ -1,0 +1,28 @@
+{"Put":{"state":"hello ˇworld now\nsecond line"}}
+{"Key":"Y"}
+{"Key":"j"}
+{"Key":"."}
+{"Key":"p"}
+{"Get":{"state":"hello world now\nsecond world noˇwline","mode":"Normal"}}
+{"Put":{"state":"hello ˇworld now\nsecond line"}}
+{"Key":"Y"}
+{"Key":"j"}
+{"Key":"p"}
+{"ReadRegister":{"name":"\"","value":"world now"}}
+{"Get":{"state":"hello world now\nsecond world noˇwline","mode":"Normal"}}
+{"Put":{"state":"hello ˇworld now\nsecond line"}}
+{"Key":"2"}
+{"Key":"Y"}
+{"Key":"G"}
+{"Key":"p"}
+{"ReadRegister":{"name":"\"","value":"world now\nsecond line"}}
+{"Get":{"state":"hello world now\nsecond ˇworld now\nsecond lineline","mode":"Normal"}}
+{"Put":{"state":"hello ˇworld now\nsecond line"}}
+{"Key":"\""}
+{"Key":"a"}
+{"Key":"Y"}
+{"Key":"j"}
+{"Key":"\""}
+{"Key":"a"}
+{"Key":"p"}
+{"Get":{"state":"hello world now\nsecond world noˇwline","mode":"Normal"}}

@@ -5,9 +5,10 @@
 // - intentional differences: this first slice uses simple text ranges and the unnamed
 //   clipboard string; linewise, register, visual, and multicursor fidelity are incomplete.
 
+import { nextGraphemeBoundary, previousGraphemeBoundary } from "../grapheme.js";
 import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
 import { lineRange, linewiseCursorAfterDelete } from "../motion.js";
-import type { CharwiseTarget, OperatorTarget, RowRange } from "../operator_target.js";
+import type { CharwiseTarget, ResolvedTarget, RowRange } from "../operator_target.js";
 import { RegisterName, Registers } from "../registers.js";
 import {
   TextEdit,
@@ -23,7 +24,7 @@ export function applyDelete(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): void {
   switch (target.kind) {
     case "charwise":
@@ -59,6 +60,7 @@ export function deleteTargets(
     selectionsAfter.push(charwiseSelection(cursor ?? cursorForRange(editor, range, head)));
   }
 
+  editor.applyEdits(edits, selectionsAfter, options);
   if (copied.length > 0) {
     registers.writeDelete(
       registerName,
@@ -67,7 +69,6 @@ export function deleteTargets(
       copied.map(text => ({ text, kind: "characterwise" }))
     );
   }
-  editor.applyEdits(edits, selectionsAfter, options);
 }
 
 export function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: TextEdit["range"]) {
@@ -80,11 +81,14 @@ export function cursorAfterDeletingRange(editor: VimEditorCapabilities, range: T
       column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
     });
   }
+  // Clamp against the post-edit joined line, not the pre-edit buffer: deleting
+  // a multi-row range can make a column valid that was one past the old line
+  // end (`dit` on a multiline tag leaves the cursor between the joined tags).
   const newLineLength = range.start.column + editor.line(range.end.row).slice(range.end.column).length;
-  return normalCursorPosition(editor, {
+  return {
     row: range.start.row,
     column: Math.min(range.start.column, Math.max(0, newLineLength - 1)),
-  });
+  };
 }
 
 export function deleteLineRange(
@@ -107,6 +111,7 @@ export function deleteLineRange(
       rangeInfo.cursor ?? linewiseCursorAfterDelete(editor, rangeInfo.startRow, rangeInfo.column, rangeInfo.endRow - rangeInfo.startRow + 1)));
   }
 
+  editor.applyEdits(edits, selectionsAfter);
   if (copied.length > 0) {
     registers.writeDelete(
       registerName,
@@ -115,7 +120,6 @@ export function deleteLineRange(
       copied.map(text => ({ text, kind: "linewise" }))
     );
   }
-  editor.applyEdits(edits, selectionsAfter);
 }
 
 function linewiseContent(editor: VimEditorCapabilities, row: number, count: number): string {
@@ -141,9 +145,11 @@ export function deleteCharactersBefore(
     registerName,
     editor.getSelections().map(selection => {
       const head = selectionHead(selection);
-      const range = head.column === 0
-        ? { start: head, end: head }
-        : { start: { row: head.row, column: Math.max(0, head.column - count) }, end: head };
+      let startColumn = head.column;
+      for (let step = 0; step < count && startColumn > 0; step++) {
+        startColumn = previousGraphemeBoundary(editor.line(head.row), startColumn);
+      }
+      const range = { start: { row: head.row, column: startColumn }, end: head };
       return { head, range };
     }),
     (_editor, range, head) => ({ row: head.row, column: range.start.column }),
@@ -165,15 +171,19 @@ export function deleteCharacters(
 
   for (const selection of editor.getSelections()) {
     const head = selectionHead(selection);
-    const oldLineLength = editor.lineLength(head.row);
-    const end = {
-      row: head.row,
-      column: Math.min(head.column + count, oldLineLength),
-    };
+    const line = editor.line(head.row);
+    const oldLineLength = line.length;
+    // The count is in character cells (grapheme clusters), not code units.
+    let endColumn = head.column;
+    for (let step = 0; step < count && endColumn < line.length; step++) {
+      endColumn = nextGraphemeBoundary(line, endColumn);
+    }
+    const end = { row: head.row, column: endColumn };
     const range = orderedRange(head, end);
     const deletedColumns = Math.max(0, range.end.column - range.start.column);
     const newLineLength = oldLineLength - deletedColumns;
-    copied.push(rangeText(editor, range));
+    const deleted = rangeText(editor, range);
+    if (deleted.length > 0) copied.push(deleted);
     edits.push({ range, text: "" });
     selectionsAfter.push(charwiseSelection(normalCursorPosition(editor, {
       row: head.row,
@@ -181,6 +191,7 @@ export function deleteCharacters(
     })));
   }
 
+  editor.applyEdits(edits, selectionsAfter, options);
   if (copied.length > 0) {
     registers.writeDelete(
       registerName,
@@ -189,5 +200,4 @@ export function deleteCharacters(
       copied.map(text => ({ text, kind: "characterwise" }))
     );
   }
-  editor.applyEdits(edits, selectionsAfter, options);
 }

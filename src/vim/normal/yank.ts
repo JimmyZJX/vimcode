@@ -5,7 +5,7 @@
 // - intentional differences: this first slice writes only an unnamed clipboard string.
 
 import { VimEditorCapabilities, normalCursorPosition, rangeText } from "../editor.js";
-import type { CharwiseTarget, OperatorTarget, RowRange } from "../operator_target.js";
+import type { CharwiseTarget, ResolvedTarget, RowRange } from "../operator_target.js";
 import { RegisterName, Registers } from "../registers.js";
 import { charwiseSelection, comparePositions } from "../state.js";
 
@@ -15,7 +15,7 @@ export function applyYank(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): void {
   switch (target.kind) {
     case "charwise":
@@ -33,7 +33,11 @@ export function yankTargets(
   registerName: RegisterName | undefined,
   targets: readonly CharwiseTarget[]
 ): void {
-  const copied = targets.map(({ range }) => rangeText(editor, range));
+  const yanked = targets.filter(target =>
+    target.cancelled !== true
+    && (target.range.start.row !== target.range.end.row
+      || target.range.start.column !== target.range.end.column));
+  const copied = yanked.map(({ range }) => rangeText(editor, range));
 
   if (copied.length > 0) {
     registers.writeYank(
@@ -42,6 +46,9 @@ export function yankTargets(
       "characterwise",
       copied.map(text => ({ text, kind: "characterwise" }))
     );
+    // VSCodeVim `highlightedyank` (`YankOperator.run`): the host flashes the
+    // yanked ranges when the user opted in.
+    editor.highlightYankedRanges(yanked.map(({ range }) => range));
   }
   // Vim moves the cursor to the start of the yanked region (in effect only
   // for backward motions, where the range starts before the cursor).
@@ -65,6 +72,12 @@ export function yankLineRanges(
       "linewise",
       copied.map(text => ({ text, kind: "linewise" }))
     );
+    // VSCodeVim highlights a linewise yank from the first line's start to the
+    // last line's end (`YankOperator.run` with a `LineWise` register mode).
+    editor.highlightYankedRanges(rows.map(({ startRow, endRow }) => ({
+      start: { row: startRow, column: 0 },
+      end: { row: endRow, column: editor.lineLength(endRow) },
+    })));
   }
   // Vim moves the cursor to the start of a linewise-yanked region.
   editor.setSelections(rows.map(({ startRow, column }) =>

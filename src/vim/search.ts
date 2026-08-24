@@ -17,11 +17,76 @@ export type SearchOptions = {
 };
 export type SearchMatch = TextRange;
 
+/** 1-based [index] of a match among [total] document matches; [capped] when
+    the host limited the scan. */
+export type SearchMatchCount = { index: number; total: number; capped: boolean };
+
+/** What the search-status display shows: a match count (Vim `[x/y]`) or a
+    not-found report (Vim E486). */
+export type SearchStatus =
+  | { kind: "count"; index: number; total: number; capped: boolean }
+  | { kind: "notFound"; query: string };
+
+// Vim `search-offset`: an offset typed after the closing separator of a search
+// (`/pat/e`, `?pat?s-1`) moves the cursor relative to the match rather than to
+// its start. `end` targets the last character of the match, `start` (Vim `s` or
+// `b`) its first, each shifted by an optional `+N`/`-N` character delta. Line
+// offsets (`/pat/2`) are not yet supported.
+export type SearchOffset =
+  | { type: "end"; delta: number }
+  | { type: "start"; delta: number };
+
+const searchOffsetPattern = /^([esb])([+-]\d+)?$/;
+
+// Parse the offset token that follows a search separator (the part after the
+// `/` in `/pat/e+2`). Returns undefined when the text is not a recognized
+// character offset, so callers can treat an unrecognized trailing segment as
+// part of the pattern instead (e.g. a literal `a/b` search).
+export function parseSearchOffset(text: string): SearchOffset | undefined {
+  const match = searchOffsetPattern.exec(text);
+  if (match === null) return undefined;
+  const delta = match[2] === undefined ? 0 : Number.parseInt(match[2], 10);
+  return match[1] === "e" ? { type: "end", delta } : { type: "start", delta };
+}
+
+// Minimal Vim-pattern conveniences layered over JS regex syntax (the pattern
+// language is otherwise JavaScript's, like VSCodeVim): `\<` and `\>` become
+// word boundaries (`\b`), and `\c`/`\C` anywhere in the pattern force
+// case-insensitive/-sensitive matching, overriding the smartcase heuristic
+// (`:h /\c`). Other escapes pass through untouched.
+export function translateVimRegex(pattern: string): { source: string; forceCase: "ignore" | "match" | undefined } {
+  let source = "";
+  let forceCase: "ignore" | "match" | undefined;
+  for (let index = 0; index < pattern.length; index++) {
+    const char = pattern[index];
+    if (char !== "\\") {
+      source += char;
+      continue;
+    }
+    const next = pattern[index + 1];
+    index++;
+    if (next === undefined) {
+      source += "\\";
+    } else if (next === "<" || next === ">") {
+      source += "\\b";
+    } else if (next === "c") {
+      forceCase = "ignore";
+    } else if (next === "C") {
+      forceCase = "match";
+    } else {
+      source += `\\${next}`;
+    }
+  }
+  return { source, forceCase };
+}
+
 export function searchOptionsForQuery(query: string, options: SearchOptions = {}): SearchOptions {
+  const forceCase = options.regex === false ? undefined : translateVimRegex(query).forceCase;
   return {
     ...options,
     regex: options.regex ?? true,
-    caseSensitive: options.caseSensitive ?? hasUppercase(query),
+    caseSensitive:
+      forceCase !== undefined ? forceCase === "match" : options.caseSensitive ?? hasUppercase(query),
   };
 }
 
@@ -46,6 +111,36 @@ function findLiteralSearchMatchInText(
   direction: SearchDirection,
   options: SearchOptions
 ): { range: SearchMatch; offset: number } | undefined {
+  return findMatchFromMatches(allLiteralSearchMatchesInText(text, query, options), startOffset, direction, options);
+}
+
+function findRegexSearchMatchInText(
+  text: string,
+  query: string,
+  startOffset: number,
+  direction: SearchDirection,
+  options: SearchOptions
+): { range: SearchMatch; offset: number } | undefined {
+  return findMatchFromMatches(allRegexSearchMatchesInText(text, query, options), startOffset, direction, options);
+}
+
+/** All matches in document order (for the match-count status). */
+export function allSearchMatchesInText(
+  text: string,
+  query: string,
+  options: SearchOptions
+): { range: SearchMatch; offset: number; length: number }[] {
+  if (query.length === 0) return [];
+  return options.regex === true
+    ? allRegexSearchMatchesInText(text, query, options)
+    : allLiteralSearchMatchesInText(text, query, options);
+}
+
+function allLiteralSearchMatchesInText(
+  text: string,
+  query: string,
+  options: SearchOptions
+): { range: SearchMatch; offset: number; length: number }[] {
   const searchText = options.caseSensitive === false ? text.toLocaleLowerCase() : text;
   const searchQuery = options.caseSensitive === false ? query.toLocaleLowerCase() : query;
   const matches: { range: SearchMatch; offset: number; length: number }[] = [];
@@ -56,21 +151,18 @@ function findLiteralSearchMatchInText(
     }
     offset = searchText.indexOf(searchQuery, offset + Math.max(1, searchQuery.length));
   }
-  return findMatchFromMatches(matches, startOffset, direction, options);
+  return matches;
 }
 
-function findRegexSearchMatchInText(
+function allRegexSearchMatchesInText(
   text: string,
   query: string,
-  startOffset: number,
-  direction: SearchDirection,
   options: SearchOptions
-): { range: SearchMatch; offset: number } | undefined {
+): { range: SearchMatch; offset: number; length: number }[] {
   const regex = regexForQuery(query, options);
-  if (regex === undefined) return undefined;
-  const matches = regexMatches(text, regex)
+  if (regex === undefined) return [];
+  return regexMatches(text, regex)
     .filter(match => options.wholeWord !== true || isWholeWordMatch(text, match.offset, match.length));
-  return findMatchFromMatches(matches, startOffset, direction, options);
 }
 
 function findMatchFromMatches(
@@ -93,7 +185,7 @@ function findMatchFromMatches(
 
 function regexForQuery(query: string, options: SearchOptions): RegExp | undefined {
   try {
-    return new RegExp(query, `g${options.caseSensitive === false ? "i" : ""}m`);
+    return new RegExp(translateVimRegex(query).source, `g${options.caseSensitive === false ? "i" : ""}m`);
   } catch (_error) {
     return undefined;
   }

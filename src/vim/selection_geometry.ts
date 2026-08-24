@@ -12,6 +12,7 @@
 //   `lowerCharwiseGeometry(editor, raiseCharwiseSelection(editor, s))` preserves the
 //   native range and direction of `s`.
 
+import { graphemeStart, nextGraphemeBoundary, previousGraphemeBoundary } from "./grapheme.js";
 import {
   Position,
   VimSelection,
@@ -22,6 +23,7 @@ import {
 
 /** The minimal editor surface needed for cell arithmetic. */
 export type CharacterCellEditor = {
+  line(row: number): string;
   lineLength(row: number): number;
   lineCount(): number;
 };
@@ -40,9 +42,12 @@ export type CharwiseGeometry = {
 /** The character cell that ends at boundary [position]: one cell to the left,
     wrapping to the last cell of the previous line at column 0. */
 export function previousCharacterCell(editor: CharacterCellEditor, position: Position): Position {
-  if (position.column > 0) return { row: position.row, column: position.column - 1 };
+  if (position.column > 0) {
+    return { row: position.row, column: previousGraphemeBoundary(editor.line(position.row), position.column) };
+  }
   if (position.row > 0) {
-    return { row: position.row - 1, column: Math.max(0, editor.lineLength(position.row - 1) - 1) };
+    const previousLine = editor.line(position.row - 1);
+    return { row: position.row - 1, column: previousLine.length === 0 ? 0 : graphemeStart(previousLine, previousLine.length - 1) };
   }
   return position;
 }
@@ -53,9 +58,9 @@ export function previousCharacterCell(editor: CharacterCellEditor, position: Pos
     cell of a non-empty line the end wraps past the newline to the start of the
     next line. On the last line the end clamps to the cell itself. */
 export function characterCellEnd(editor: CharacterCellEditor, position: Position): Position {
-  const lineLength = editor.lineLength(position.row);
-  if (lineLength === 0) return position;
-  if (position.column < lineLength) return { row: position.row, column: position.column + 1 };
+  const line = editor.line(position.row);
+  if (line.length === 0) return position;
+  if (position.column < line.length) return { row: position.row, column: nextGraphemeBoundary(line, position.column) };
   if (position.row + 1 < editor.lineCount()) return { row: position.row + 1, column: 0 };
   return position;
 }

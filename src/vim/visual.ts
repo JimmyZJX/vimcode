@@ -7,22 +7,26 @@
 //   block mode through editor selections over a display map (`visual_block_motion`);
 //   here we keep a compact semantic block state and lower to model edits/selections.
 
+import { graphemeStart, nextGraphemeBoundary, previousGraphemeBoundary } from "./grapheme.js";
 import { VimConfiguration } from "./config.js";
-import type { VisualCommand, VisualModeKind } from "./keymap.js";
 import { isEditorOwnedCharwiseSelection } from "./editor_state_sync.js";
 import { VimEditorCapabilities, VimUndoTransaction, keepUndoTransactionOpen, normalCursorPosition, rangeText } from "./editor.js";
 import { firstNonWhitespace, positionAfterInsertedText } from "./insert.js";
 import { applyMotionWithGoal, hostViewLineSelectionsForMotion, lineRange, linewiseCursorAfterDelete, matchingPositionFromLine, Motion } from "./motion.js";
 import { TextObject, textObjectForKey, textObjectRange } from "./object.js";
 import { ConvertTarget, convertRanges } from "./normal/convert.js";
+import { incrementNumbers } from "./normal/increment.js";
 import { IndentDirection } from "./normal/indent.js";
 import { RecordedSelection, VisualRepeatAction } from "./normal/repeat.js";
+import { replaceWithRegisterWouldEdit } from "./normal/replace_with_register.js";
 import { joinLines } from "./normal/join.js";
-import { RegisterContent, RegisterName, RegisterPart, Registers, isSystemClipboardRegister } from "./registers.js";
-import { VimOperatorStack } from "./operator.js";
-import { OperatorTarget, applyOperatorToTarget } from "./operator_target.js";
+import { applyComment } from "./normal/comment.js";
+import { applyFormat } from "./normal/format.js";
+import type { FormatOptions } from "./normal/format.js";
+import { RegisterContent, RegisterName, RegisterPart, Registers } from "./registers.js";
+import { ResolvedTarget, applyOperatorToTarget } from "./operator_target.js";
 import { canonicalVimSelection, canonicalizationChangesMeaning, characterCellEnd, lowerCharwiseGeometry, raiseCharwiseSelection } from "./selection_geometry.js";
-import { addSurrounds } from "./surrounds.js";
+import { addSurrounds, addTagSurrounds } from "./surrounds.js";
 import {
   KeyResult,
   Position,
@@ -38,6 +42,25 @@ import {
 
 export type VisualResultMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock";
 export type RestoredVisualMode = "visual" | "visualLine" | "visualBlock";
+
+export type VisualModeKind = "visual" | "visualLine" | "visualBlock";
+
+// The visual-mode command vocabulary [VisualMode.handleCommand] executes,
+// produced by the typed visual grammar (visual_handler.ts).
+export type VisualCommand =
+  | { type: "insertAtSelection"; side: "start" | "end" }
+  | { type: "indent"; key: ">" | "<" | "="; count?: number }
+  | { type: "convert"; key: "u" | "U" | "~" }
+  | { type: "otherEnd"; rowAware: boolean }
+  | { type: "yankLinewise" }
+  | { type: "yank" }
+  | { type: "deleteToLineEnd" }
+  | { type: "delete" }
+  | { type: "change" }
+  | { type: "changeLines" }
+  | { type: "paste"; preserveSourceRegister: boolean }
+  | { type: "replaceWithRegister" }
+  | { type: "percentOrMatching" };
 
 export type VisualKeyResult = {
   keyResult: KeyResult;
@@ -107,6 +130,16 @@ function handled(
   return { keyResult: "handled", exitVisual, enterInsert, nextMode, repeatAction, pendingRepeatChange };
 }
 
+// Proof that a command tore down the visual session (state cleared, block
+// cursor restored). Produced only by [VisualMode.endSession], so a
+// visual-grammar command routed through `exitVisualEffect` (visual_handler.ts)
+// cannot compile without the teardown: the "left visual mode with the session
+// alive" bug class becomes a type error instead of a runtime ghost. The
+// unique-symbol brand prevents constructing the proof outside this module.
+declare const visualSessionEndBrand: unique symbol;
+export type VisualSessionEnd = { readonly [visualSessionEndBrand]: true };
+const VISUAL_SESSION_END = {} as VisualSessionEnd;
+
 export class VisualMode {
   private state: VisualState | undefined;
   private lastState: VisualState | undefined;
@@ -118,7 +151,6 @@ export class VisualMode {
     private readonly registers: Registers,
     private readonly registerSelection: RegisterSelection,
     private readonly countState: CountState,
-    private readonly operatorStack: VimOperatorStack,
     configuration: Pick<VimConfiguration, "visualMultilineInsert">
   ) {
     this.visualMultilineInsert = configuration.visualMultilineInsert;
@@ -129,21 +161,10 @@ export class VisualMode {
   }
 
 
-  clearPending(): void {
-    this.clearPendingStack();
-    this.registerSelection.clear();
-    this.countState.clear();
-  }
-
-  private clearPendingStack(): void {
-    this.operatorStack.clear();
-  }
-
   enter(kind: VisualState["kind"] = "charwise"): void {
     const selections = this.editor.getSelections();
     const selection = selections[0];
     const head = selectionHead(selection);
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
     this.editor.setCursorStyle("line");
@@ -185,16 +206,29 @@ export class VisualMode {
 
   clearState(): void {
     this.state = undefined;
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
+  }
+
+  // The active visual kind as a [VimMode], or undefined when not in visual mode.
+  // Used by the framework visual grammar to compute the target mode of a
+  // mode-toggling key (`v`/`V`/`ctrl-v`).
+  currentMode(): RestoredVisualMode | undefined {
+    if (this.state === undefined) return undefined;
+    switch (this.state.kind) {
+      case "charwise":
+        return "visual";
+      case "linewise":
+        return "visualLine";
+      case "blockwise":
+        return "visualBlock";
+    }
   }
 
   exit(): void {
     const state = this.state;
     if (state !== undefined) this.rememberState(state);
     this.state = undefined;
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
     this.editor.setCursorStyle("block");
@@ -204,11 +238,6 @@ export class VisualMode {
     } else {
       this.editor.setSelections([charwiseSelection(visualExitPosition(this.editor, state))]);
     }
-  }
-
-  handleUnhandledKey(): VisualKeyResult {
-    this.exit();
-    return handled({ exitVisual: true, nextMode: "normal" });
   }
 
   toggleMode(mode: VisualModeKind): VisualKeyResult {
@@ -224,7 +253,11 @@ export class VisualMode {
     }
   }
 
-  handleCommand(command: VisualCommand): VisualKeyResult {
+  // [registerOverride] lets the framework visual grammar supply the selected
+  // register directly (its `"a` prefix lives in the executor, not the legacy
+  // [registerSelection]). When omitted, the register is taken from
+  // [registerSelection] as before.
+  handleCommand(command: VisualCommand, registerOverride?: RegisterName): VisualKeyResult {
     const state = this.state;
     if (state === undefined) return handled({ exitVisual: true });
     switch (command.type) {
@@ -232,34 +265,32 @@ export class VisualMode {
         return command.side === "start"
           ? this.insertBeforeOrAtBlockStart(state) ?? handled()
           : this.insertAfterOrAtBlockEnd(state) ?? handled();
-      case "startSurround":
-        return this.startSurround(state);
       case "indent":
-        return this.indentKey(state, command.key);
+        return this.indentKey(state, command.key, command.count ?? 1);
       case "convert":
         this.convert(state, convertTargetForKey(command.key));
         return handled({ exitVisual: true, nextMode: "normal" });
-      case "startTextObject":
-        return this.startTextObject(command.around);
       case "otherEnd":
         return this.otherEnd(state, { rowAware: command.rowAware });
       case "yankLinewise":
-        return this.yankLinewiseKey(state);
+        return this.yankLinewiseKey(state, registerOverride);
       case "yank":
-        return this.yankKey(state);
+        return this.yankKey(state, registerOverride);
       case "deleteToLineEnd":
-        return this.deleteToLineEndKey(state);
+        return this.deleteToLineEndKey(state, registerOverride);
       case "delete":
-        return this.deleteKey(state);
+        return this.deleteKey(state, registerOverride);
       case "change":
-        return this.changeKey(state);
+        return this.changeKey(state, registerOverride);
       case "changeLines":
         // Vim `v_R`: the change always operates on whole lines.
-        return this.changeKey(state.kind === "linewise" ? state : stateToLinewise(state));
+        return this.changeKey(state.kind === "linewise" ? state : stateToLinewise(state), registerOverride);
       case "paste":
-        return this.pasteKey(state);
+        return this.pasteKey(state, registerOverride, { preserveSourceRegister: command.preserveSourceRegister });
+      case "replaceWithRegister":
+        return this.replaceWithRegisterKey(state, registerOverride);
       case "percentOrMatching":
-        return this.percentKey(state) ?? handled();
+        return this.percentKey(state);
     }
   }
 
@@ -331,25 +362,12 @@ export class VisualMode {
     return undefined;
   }
 
-  private startSurround(state: VisualState): VisualKeyResult {
-    this.operatorStack.pushVisualAddSurrounds({
-      ranges: visualSurroundRanges(this.editor, state),
-      linewise: state.kind === "linewise",
-      undoSelectionsBefore: visualCurrentUndoSelections(this.editor, state),
-    });
-    return handled();
-  }
-
-  private indentKey(state: VisualState, key: ">" | "<" | "="): VisualKeyResult {
+  // Vim `v_>`: the count multiplies the shift ("{count} times 'shiftwidth'").
+  private indentKey(state: VisualState, key: ">" | "<" | "=", count: number): VisualKeyResult {
     const direction = indentDirectionForKey(key);
-    const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction);
-    this.indent(state, direction);
+    const repeatAction = visualIndentRepeatActionForState(this.editor, state, direction, count);
+    this.indent(state, direction, count);
     return handled({ exitVisual: true, nextMode: "normal", repeatAction });
-  }
-
-  private startTextObject(around: boolean): VisualKeyResult {
-    this.operatorStack.push({ type: "object", around });
-    return handled();
   }
 
   private otherEnd(state: VisualState, { rowAware }: { rowAware: boolean }): VisualKeyResult {
@@ -362,8 +380,8 @@ export class VisualMode {
     return handled();
   }
 
-  private yankLinewiseKey(state: VisualState): VisualKeyResult {
-    const cursor = this.yankLinewise(state, this.takeSelectedRegister());
+  private yankLinewiseKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
+    const cursor = this.yankLinewise(state, this.takeSelectedRegister(registerOverride));
     if (cursor !== undefined) this.rememberState(state);
     this.state = undefined;
     this.editor.setCursorStyle("block");
@@ -371,8 +389,8 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private yankKey(state: VisualState): VisualKeyResult {
-    this.yank(state, this.takeSelectedRegister());
+  private yankKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
+    this.yank(state, this.takeSelectedRegister(registerOverride));
     if (state.kind === "blockwise") {
       this.finishNormalAtVisualStarts(state);
     } else {
@@ -385,43 +403,90 @@ export class VisualMode {
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private deleteToLineEndKey(state: VisualState): VisualKeyResult {
+  private deleteToLineEndKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
     this.rememberState(state);
-    this.deleteToLineEnd(state, this.takeSelectedRegister());
+    this.deleteToLineEnd(state, this.takeSelectedRegister(registerOverride));
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private deleteKey(state: VisualState): VisualKeyResult {
+  private deleteKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
     const selection = visualRepeatSelectionForState(this.editor, state);
     this.rememberState(state);
-    this.delete(state, this.takeSelectedRegister());
+    this.delete(state, this.takeSelectedRegister(registerOverride));
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal", repeatAction: { selection, action: { type: "delete" } } });
   }
 
-  private changeKey(state: VisualState): VisualKeyResult {
+  private changeKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
     const selection = visualRepeatSelectionForState(this.editor, state);
     this.rememberState(state);
-    this.change(state, this.takeSelectedRegister());
+    this.change(state, this.takeSelectedRegister(registerOverride));
     this.state = undefined;
     this.editor.setCursorStyle("line");
     return handled({ exitVisual: true, enterInsert: true, nextMode: "insert", pendingRepeatChange: { selection } });
   }
 
-  private pasteKey(state: VisualState): VisualKeyResult {
-    const pastedState = this.paste(state, this.takeSelectedRegister());
+  private pasteKey(
+    state: VisualState,
+    registerOverride: RegisterName | undefined,
+    { preserveSourceRegister }: { preserveSourceRegister: boolean }
+  ): VisualKeyResult {
+    const pastedState = this.paste(state, this.takeSelectedRegister(registerOverride), { preserveSourceRegister });
     this.rememberState(pastedState ?? state);
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  private percentKey(state: VisualState): VisualKeyResult | undefined {
-    if (this.countState.get().length > 0) {
-      this.applyVisualMotion(state, { type: "goToPercentage", percent: this.takeCount(1) }, 1, { displayLine: false });
+  private replaceWithRegisterKey(state: VisualState, registerOverride?: RegisterName): VisualKeyResult {
+    if (state.kind === "blockwise") return handled();
+    const registerName = this.takeSelectedRegister(registerOverride);
+    if (this.registers.readContentIfPresent(registerName) === undefined) return handled();
+    const selection = visualRepeatSelectionForState(this.editor, state);
+    this.rememberState(state);
+    const target = state.kind === "charwise"
+      ? visualCharwiseTarget(this.editor, state)
+      : visualLinewiseTarget(state, { column: 0 });
+    const didEdit = replaceWithRegisterWouldEdit(this.editor, this.registers, registerName, target);
+    applyOperatorToTarget(
+      this.editor,
+      this.registers,
+      registerName,
+      { type: "replaceWithRegister" },
+      target
+    );
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return handled({
+      exitVisual: true,
+      nextMode: "normal",
+      repeatAction: didEdit
+        ? { selection, action: { type: "replaceWithRegister", registerName } }
+        : undefined,
+    });
+  }
+
+  private percentKey(state: VisualState): VisualKeyResult {
+    // Legacy path: the count lives in [countState].
+    const count = this.countState.get().length > 0 ? this.takeCount(1) : undefined;
+    return this.percentOrMatchingForState(state, count);
+  }
+
+  // Framework `%`: with a count it is go-to-percentage; without, it extends a
+  // charwise selection to the matching bracket. The count is supplied explicitly
+  // (the framework owns the count) rather than read from the legacy [countState].
+  percentOrMatching(count: number | undefined): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled();
+    return this.percentOrMatchingForState(state, count);
+  }
+
+  private percentOrMatchingForState(state: VisualState, count: number | undefined): VisualKeyResult {
+    if (count !== undefined) {
+      this.applyVisualMotion(state, { type: "goToPercentage", percent: count }, 1, { displayLine: false });
       return handled();
     }
 
@@ -437,41 +502,57 @@ export class VisualMode {
       return handled();
     }
 
-    return undefined;
+    return handled();
   }
 
-  handlePendingSurroundKey(key: string): VisualKeyResult {
-    const pendingSurround = this.operatorStack.popVisualOperator("visualAddSurrounds");
-    if (pendingSurround === undefined) return handled();
-    const undoTransaction = this.editor.beginUndoTransaction(pendingSurround.undoSelectionsBefore);
-    try {
-      addSurrounds(this.editor, pendingSurround.ranges, key, { linewise: pendingSurround.linewise });
-    } finally {
-      undoTransaction.finish();
-    }
+  // Framework path: surround the current visual selection with the pair named by
+  // [pairKey] (vim-surround `S{char}`). Combines the legacy range capture and
+  // apply into one step, reading the live selection — no operator stack (nothing
+  // edits the buffer between `S` and the pair key, so the ranges are unchanged).
+  addSurround(pairKey: string): VisualKeyResult {
+    return this.addSurroundWith(state =>
+      addSurrounds(this.editor, visualSurroundRanges(this.editor, state), pairKey, { linewise: state.kind === "linewise" })
+    );
+  }
+
+  // Visual `St`/`S<`: wrap the selection in a typed tag (vim-surround tag
+  // entry mode).
+  addTagSurround(tagBody: string): VisualKeyResult {
+    return this.addSurroundWith(state =>
+      addTagSurrounds(this.editor, visualSurroundRanges(this.editor, state), tagBody, { linewise: state.kind === "linewise" })
+    );
+  }
+
+  private addSurroundWith(apply: (state: VisualState) => void): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled();
+    withUndoTransaction(this.editor, visualCurrentUndoSelections(this.editor, state), () => apply(state));
     this.state = undefined;
     this.editor.setCursorStyle("block");
     return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  handlePendingTextObjectKey(key: string): VisualKeyResult {
-    const pendingTextObject = this.operatorStack.popVisualOperator("object");
+  // Framework path: expand the live selection to the text object named by [key].
+  // [around] (`i` vs `a`) and [count] are supplied directly, so no operator stack
+  // is involved.
+  applyTextObject(around: boolean, key: string, count: number): VisualKeyResult {
     const state = this.state;
     const object = textObjectForKey(key);
-    if (state === undefined || object === undefined || pendingTextObject === undefined) {
+    if (state === undefined || object === undefined) {
       this.exit();
       return handled({ exitVisual: true, nextMode: "normal" });
     }
 
-    const around = pendingTextObject.around;
-    const count = this.takeCount(1);
+    // Linewise objects (paragraph, indent, entire) handle blank cursor lines
+    // themselves; other objects fail on an empty line.
+    const linewiseObject = object.type === "paragraph" || object.type === "indent" || object.type === "entire";
     const states = state.kind === "charwise" ? currentCharwiseVisualStates(this.editor, state) : [state];
-    if (states.some(state => object.type !== "paragraph" && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
+    if (states.some(state => !linewiseObject && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
       this.syncEditorSelection();
       return handled();
     }
 
-    if (object.type === "paragraph") {
+    if (linewiseObject) {
       const range = textObjectRange(this.editor, visualObjectPosition(this.editor, state), object, { around, count });
       this.state = paragraphLinewiseStateForRange(state, range);
       this.syncEditorSelection();
@@ -531,7 +612,7 @@ export class VisualMode {
         && comparePositions(inclusiveHeadForRangeEnd(this.editor, range), selectionEnd) === 0) {
         const requery = reversed
           ? state.head
-          : { row: selectionEnd.row, column: Math.min(selectionEnd.column + 1, this.editor.lineLength(selectionEnd.row)) };
+          : { row: selectionEnd.row, column: nextGraphemeBoundary(this.editor.line(selectionEnd.row), selectionEnd.column) };
         const expanded = textObjectRange(this.editor, requery, object, { around, count });
         if (!rangeIsEmpty(expanded)) return charwiseStateForRange(this.editor, expanded);
         return state;
@@ -555,9 +636,18 @@ export class VisualMode {
         // Vim `v_y`: the cursor moves to the start of the yanked lines.
         applyOperatorToTarget(this.editor, this.registers, registerName, { type: "yank" }, visualLinewiseTarget(state, { column: 0 }));
         break;
-      case "blockwise":
-        this.registers.writeYank(registerName, blockwiseText(this.editor, state), "blockwise");
+      case "blockwise": {
+        const ranges = blockRanges(this.editor, state);
+        const parts = ranges
+          .map(range => ({ text: rangeText(this.editor, range), kind: "blockwise" as const }));
+        if (parts.some(part => part.text.length > 0)) {
+          this.registers.writeYank(registerName, parts.map(part => part.text).join("\n"), "blockwise", parts);
+          // VSCodeVim `highlightedyank` (`YankVisualBlockMode.run`): one
+          // highlight per block row.
+          this.editor.highlightYankedRanges(ranges);
+        }
         break;
+      }
     }
   }
 
@@ -570,6 +660,11 @@ export class VisualMode {
       lines.push(this.editor.line(row));
     }
     this.registers.writeYank(registerName, `${lines.join("\n")}\n`, "linewise");
+    // VSCodeVim `highlightedyank`: linewise yanks highlight the full lines.
+    this.editor.highlightYankedRanges([{
+      start: { row: bounds.startRow, column: 0 },
+      end: { row: bounds.endRow, column: this.editor.lineLength(bounds.endRow) },
+    }]);
     return { row: bounds.startRow, column: 0 };
   }
 
@@ -579,19 +674,22 @@ export class VisualMode {
       const edits: TextEdit[] = [];
       const copied: string[] = [];
       for (let row = startRow; row <= endRow; row++) {
-        const start = { row, column: Math.min(startColumn, this.editor.lineLength(row)) };
-        const end = { row, column: this.editor.lineLength(row) };
+        const line = this.editor.line(row);
+        const start = { row, column: blockStartColumnForLine(line, startColumn) };
+        const end = { row, column: line.length };
         edits.push({ range: { start, end }, text: "" });
         copied.push(rangeText(this.editor, { start, end }));
       }
-      this.registers.writeDelete(
-        registerName,
-        copied.join("\n"),
-        "blockwise",
-        copied.map(text => ({ text, kind: "blockwise" }))
-      );
       const cursorColumn = Math.max(0, Math.min(startColumn, this.editor.lineLength(startRow)) - 1);
       this.editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: cursorColumn })]);
+      if (copied.some(text => text.length > 0)) {
+        this.registers.writeDelete(
+          registerName,
+          copied.join("\n"),
+          "blockwise",
+          copied.map(text => ({ text, kind: "blockwise" }))
+        );
+      }
       return;
     }
 
@@ -601,37 +699,29 @@ export class VisualMode {
     const range = lineRange(this.editor, startRow, count);
     const copied: string[] = [];
     for (let row = startRow; row <= endRow; row++) copied.push(this.editor.line(row));
-    this.registers.writeDelete(registerName, `${copied.join("\n")}\n`, "linewise");
     this.editor.applyEdits(
       [{ range, text: "" }],
       [charwiseSelection(linewiseCursorAfterDelete(this.editor, startRow, anchor.column, count))]
     );
+    this.registers.writeDelete(registerName, `${copied.join("\n")}\n`, "linewise");
   }
 
   private delete(state: VisualState, registerName: RegisterName | undefined): void {
     switch (state.kind) {
       case "charwise": {
-        const undoTransaction = this.editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(this.editor, state));
-        try {
-          applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualCharwiseTarget(this.editor, state));
-        } finally {
-          undoTransaction.finish();
-        }
+        withUndoTransaction(this.editor, currentCharwiseVisualUndoSelections(this.editor, state), () =>
+          applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualCharwiseTarget(this.editor, state)));
         break;
       }
       case "linewise": {
         const { startLine, endLine } = lineBounds(state);
-        const undoTransaction = beginVisualUndoTransaction(this.editor, state);
-        try {
+        withVisualUndoTransaction(this.editor, state, () =>
           applyOperatorToTarget(this.editor, this.registers, registerName, { type: "delete" }, visualLinewiseTarget(state, {
             column: state.headColumn,
             // Vim `v_d` linewise: the cursor column clamps against the line
             // that follows the deleted range, not the first deleted line.
             cursor: linewiseCursorAfterDelete(this.editor, startLine, state.headColumn, endLine - startLine + 1),
-          }));
-        } finally {
-          undoTransaction.finish();
-        }
+          })));
         break;
       }
       case "blockwise":
@@ -656,70 +746,160 @@ export class VisualMode {
     }
   }
 
-  joinSelections({ insertWhitespace }: { insertWhitespace: boolean }): void {
-    if (this.state === undefined) return;
-    this.join(this.state, { insertWhitespace });
+  // The single visual-session teardown: every command that exits visual mode
+  // with an edit ends by returning this proof (see [VisualSessionEnd]).
+  private endSession(): VisualSessionEnd {
+    this.state = undefined;
+    this.editor.setCursorStyle("block");
+    return VISUAL_SESSION_END;
   }
 
-  private join(state: VisualState, { insertWhitespace }: { insertWhitespace: boolean }): void {
+  joinSelections({ insertWhitespace }: { insertWhitespace: boolean }): VisualSessionEnd {
+    if (this.state === undefined) return this.endSession();
+    return this.join(this.state, { insertWhitespace });
+  }
+
+  // Visual `gq`/`gw`: format the selected lines and exit visual. Like [join],
+  // this owns the visual-session teardown (remember for `gv`, clear the state,
+  // restore the block cursor) — the owner's normal-mode transition relies on
+  // the command's effect having done it.
+  formatSelections(options: FormatOptions): VisualSessionEnd {
+    const state = this.state;
+    if (state === undefined) return this.endSession();
+    this.rememberState(state);
+    const { startRow, endRow } = visualLineBounds(this.editor, state);
+    applyFormat(this.editor, { kind: "linewise", rows: [{ startRow, endRow, column: 0 }] }, options);
+    return this.endSession();
+  }
+
+  private join(state: VisualState, { insertWhitespace }: { insertWhitespace: boolean }): VisualSessionEnd {
     this.rememberState(state);
     const { startRow, endRow } = visualLineBounds(this.editor, state);
     joinLines(this.editor, startRow, Math.max(1, endRow - startRow), { insertWhitespace });
+    return this.endSession();
+  }
+
+  convertSelections(target: ConvertTarget): VisualSessionEnd {
+    if (this.state === undefined) return this.endSession();
+    return this.convert(this.state, target);
+  }
+
+  // Visual `gc`/`gC` (vim-commentary): toggle line comments over the selected
+  // rows, or a block comment over the exact charwise selection for `gC`. The
+  // cursor lands on the selection start (like the plugin); the native command
+  // applies asynchronously and restores it via [selectionsAfter].
+  commentSelections({ block }: { block: boolean }): VisualSessionEnd {
+    const state = this.state;
+    if (state === undefined) return this.endSession();
+    this.rememberState(state);
+    let target: ResolvedTarget;
+    if (block && state.kind === "charwise") {
+      target = visualCharwiseTarget(this.editor, state);
+    } else {
+      const { startRow, endRow } = visualLineBounds(this.editor, state);
+      target = { kind: "linewise", rows: [{ startRow, endRow, column: 0 }] };
+    }
+    const cursor =
+      target.kind === "charwise"
+        ? target.targets[0]?.range.start ?? visualAnchorPosition(state)
+        : { row: target.rows[0].startRow, column: 0 };
+    applyComment(this.editor, target, { block, cursorsAfter: [cursor] });
+    return this.endSession();
+  }
+
+  // Vim `v_r{char}`: replace every character in the selection with [char],
+  // preserving the line breaks (each line's own characters are replaced), then
+  // collapse to normal with the cursor at the selection start. Mirrors Zed's
+  // `Vim::visual_replace`, which splits each selection by display line and
+  // replaces each grapheme with the typed text; `r<CR>` replaces with line
+  // breaks the same way.
+  replaceSelection(char: string): VisualKeyResult {
+    const state = this.state;
+    if (state === undefined) return handled({ exitVisual: true, nextMode: "normal" });
+    this.rememberState(state);
+    const replacement = char === "enter" ? "\n" : char;
+    const ranges = replaceRanges(this.editor, state);
+    const cursor = normalCursorPosition(this.editor, ranges[0]?.start ?? visualAnchorPosition(state));
+    const edits: TextEdit[] = ranges.map(range => ({
+      range,
+      text: replacement.repeat(graphemeCellCount(this.editor.line(range.start.row), range.start.column, range.end.column)),
+    }));
+    withVisualUndoTransaction(this.editor, state, () =>
+      this.editor.applyEdits(edits, [charwiseSelection(cursor)]));
     this.state = undefined;
     this.editor.setCursorStyle("block");
+    return handled({ exitVisual: true, nextMode: "normal" });
   }
 
-  convertSelections(target: ConvertTarget): void {
-    if (this.state === undefined) return;
-    this.convert(this.state, target);
+  // Vim visual `ctrl-a`/`ctrl-x` (and `g ctrl-a`/`g ctrl-x`): increment the
+  // numbers in the selection. [delta] is the signed step; [cumulativeStep] adds
+  // an extra multiple per matched number on successive lines (`g ctrl-a`), else
+  // 0. Exits the visual selection (the caller transitions to normal).
+  increment(delta: number, cumulativeStep: number): VisualSessionEnd {
+    const state = this.state;
+    if (state === undefined) return this.endSession();
+    // Vim: a visual operator moves the cursor to the selection start before
+    // changing text, so that is where `u` later restores it.
+    const selection = this.editor.getSelections()[0];
+    if (selection !== undefined) {
+      this.editor.beginUndoTransaction([charwiseSelection(rangeOfSelection(selection).start)]);
+    }
+    incrementNumbers(this.editor, delta, cumulativeStep);
+    this.editor.finishUndoTransaction();
+    return this.endSession();
   }
 
-  private convert(state: VisualState, target: ConvertTarget): void {
+  private convert(state: VisualState, target: ConvertTarget): VisualSessionEnd {
     this.rememberState(state);
     // Vim: a visual operator moves the cursor to the selection start before
     // changing text, so that is where `u` later restores it.
-    beginVisualUndoTransaction(this.editor, state);
-    switch (state.kind) {
-      case "charwise":
-        applyOperatorToTarget(this.editor, this.registers, undefined, { type: "convert", target }, visualCharwiseTarget(this.editor, state));
-        break;
-      case "linewise":
-        applyOperatorToTarget(this.editor, this.registers, undefined, { type: "convert", target }, visualLinewiseTarget(state, { column: 0 }));
-        break;
-      case "blockwise":
-        convertRanges(this.editor, visualConvertRanges(this.editor, state), target);
-        break;
-    }
-    this.state = undefined;
-    this.editor.setCursorStyle("block");
+    withVisualUndoTransaction(this.editor, state, () => {
+      switch (state.kind) {
+        case "charwise":
+          applyOperatorToTarget(this.editor, this.registers, undefined, { type: "convert", target }, visualCharwiseTarget(this.editor, state));
+          break;
+        case "linewise":
+          applyOperatorToTarget(this.editor, this.registers, undefined, { type: "convert", target }, visualLinewiseTarget(state, { column: 0 }));
+          break;
+        case "blockwise":
+          convertRanges(this.editor, visualConvertRanges(this.editor, state), target);
+          break;
+      }
+    });
+    return this.endSession();
   }
 
-  private indent(state: VisualState, direction: IndentDirection): void {
+  private indent(state: VisualState, direction: IndentDirection, count: number): void {
     this.rememberState(state);
-    const cursor = visualIndentCursor(this.editor, state, direction);
+    const cursor = visualIndentCursor(state);
     const { startRow, endRow } = visualLineBounds(this.editor, state);
-    applyOperatorToTarget(this.editor, this.registers, undefined, { type: "indent", direction }, {
+    applyOperatorToTarget(this.editor, this.registers, undefined, { type: "indent", direction, count }, {
       kind: "linewise",
       rows: [{ startRow, endRow, column: cursor.column }],
     });
-    // Vim `v_>`: the cursor lands on the visual start, shifted with the text.
-    this.editor.setSelections([charwiseSelection(cursor)]);
+    // Vim `v_>`: the cursor lands on the visual start, column unshifted but
+    // clamped to the shifted line's last cell.
+    this.editor.setSelections([charwiseSelection(normalCursorPosition(this.editor, cursor))]);
     this.state = undefined;
     this.editor.setCursorStyle("block");
   }
 
-  private paste(state: VisualState, registerName: RegisterName | undefined): VisualState | undefined {
+  private paste(
+    state: VisualState,
+    registerName: RegisterName | undefined,
+    { preserveSourceRegister }: { preserveSourceRegister: boolean }
+  ): VisualState | undefined {
     const content = this.registers.readContent(registerName);
     if (content.text.length === 0) return undefined;
 
     switch (state.kind) {
       case "charwise":
-        return pasteOverCharwise(this.editor, this.registers, state, content);
+        return pasteOverCharwise(this.editor, this.registers, state, content, { preserveSourceRegister });
       case "linewise":
-        pasteOverLinewise(this.editor, this.registers, state, content);
+        pasteOverLinewise(this.editor, this.registers, state, content, { preserveSourceRegister });
         return undefined;
       case "blockwise":
-        pasteOverBlockwise(this.editor, this.registers, state, content);
+        pasteOverBlockwise(this.editor, this.registers, state, content, { preserveSourceRegister });
         return undefined;
     }
   }
@@ -798,7 +978,6 @@ export class VisualMode {
   ): boolean {
     if (selection.type !== "charwise") return false;
     if (!allowEmpty && comparePositions(selection.anchor, selection.head) === 0) return false;
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
     this.state = externalSelectionToCharwiseState(this.editor, selection);
@@ -829,12 +1008,12 @@ export class VisualMode {
     this.editor.setSelections(selections);
   }
 
-  private takeSelectedRegister(): RegisterName | undefined {
+  private takeSelectedRegister(registerOverride?: RegisterName): RegisterName | undefined {
+    if (registerOverride !== undefined) return registerOverride;
     return this.registerSelection.take();
   }
 
   private clearPendingInteraction(): void {
-    this.clearPendingStack();
     this.registerSelection.clear();
     this.countState.clear();
   }
@@ -848,15 +1027,6 @@ export class VisualMode {
     this.applyVisualMotion(this.state, motion, count, { displayLine: (motion.type === "up" || motion.type === "down") && motion.displayLine === true });
   }
 
-
-  systemClipboardRegisterToReadForKey(key: string): { registerName: RegisterName | undefined } | undefined {
-    if (key !== "p" && key !== "P") return undefined;
-    const registerName = this.registerSelection.get();
-    if (registerName === undefined || isSystemClipboardRegister(registerName)) {
-      return { registerName };
-    }
-    return undefined;
-  }
 
   private takeCount(defaultValue: number): number {
     return this.countState.take(defaultValue) ?? defaultValue;
@@ -934,37 +1104,35 @@ function stateAfterMotion(
   motion: Motion,
   count: number
 ): VisualState {
-  let current = state;
-  for (let index = 0; index < count; index++) {
-    switch (current.kind) {
-      case "charwise":
-        current = charwiseStateAfterMotion(editor, current, motion);
-        break;
-      case "linewise":
-        current = linewiseStateAfterMotion(editor, current, motion);
-        break;
-      case "blockwise":
-        current = blockwiseStateAfterMotion(editor, current, motion);
-        break;
-    }
+  // Zed's `visual_motion` passes `times` to `Motion::move_point` once. This
+  // leaves each motion responsible for its own count semantics (`_` is
+  // count - 1 rows, while `j` is count rows) instead of encoding them here.
+  switch (state.kind) {
+    case "charwise":
+      return charwiseStateAfterMotion(editor, state, motion, count);
+    case "linewise":
+      return linewiseStateAfterMotion(editor, state, motion, count);
+    case "blockwise":
+      return blockwiseStateAfterMotion(editor, state, motion, count);
   }
-  return current;
 }
 
 function charwiseStateAfterMotion(
   editor: VimEditorCapabilities,
   state: CharwiseVisualState,
-  motion: Motion
+  motion: Motion,
+  count: number
 ): CharwiseVisualState {
   if (motion.type === "right") {
-    const head = charwiseRight(editor, state.head);
+    const head = charwiseRight(editor, state.head, count);
     return { ...state, head, cursor: undefined, goal: undefined };
   }
   if (motion.type === "endOfLine") {
-    const head = { row: state.head.row, column: editor.lineLength(state.head.row) };
+    const row = Math.min(state.head.row + count - 1, editor.lineCount() - 1);
+    const head = { row, column: editor.lineLength(row) };
     return { ...state, head, cursor: undefined, goal: { type: "endOfLine" } };
   }
-  const result = applyMotionWithGoal(editor, state.head, motion, 1, state.goal);
+  const result = applyMotionWithGoal(editor, state.head, motion, count, state.goal);
   return {
     ...state,
     head: result.position,
@@ -973,28 +1141,34 @@ function charwiseStateAfterMotion(
   };
 }
 
-function charwiseRight(editor: VimEditorCapabilities, head: Position): Position {
-  const lineLength = editor.lineLength(head.row);
-  if (head.column < lineLength) return { row: head.row, column: head.column + 1 };
-  return head;
+function charwiseRight(editor: VimEditorCapabilities, head: Position, count: number): Position {
+  const line = editor.line(head.row);
+  let column = head.column;
+  for (let step = 0; step < count && column < line.length; step++) {
+    column = nextGraphemeBoundary(line, column);
+  }
+  return { row: head.row, column };
 }
 
 function linewiseStateAfterMotion(
   editor: VimEditorCapabilities,
   state: LinewiseVisualState,
-  motion: Motion
+  motion: Motion,
+  count: number
 ): LinewiseVisualState {
   switch (motion.type) {
     case "up":
-      return { ...state, headLine: Math.max(0, state.headLine - 1), goal: undefined };
+      return { ...state, headLine: Math.max(0, state.headLine - count), goal: undefined };
     case "down":
-      return { ...state, headLine: Math.min(editor.lineCount() - 1, state.headLine + 1), goal: undefined };
+      return { ...state, headLine: Math.min(editor.lineCount() - 1, state.headLine + count), goal: undefined };
     case "endOfDocument":
       return { ...state, headLine: editor.lineCount() - 1, goal: undefined };
-    case "endOfLine":
-      return { ...state, headColumn: editor.lineLength(state.headLine) };
+    case "endOfLine": {
+      const headLine = Math.min(state.headLine + count - 1, editor.lineCount() - 1);
+      return { ...state, headLine, headColumn: editor.lineLength(headLine) };
+    }
     default: {
-      const result = applyMotionWithGoal(editor, linewiseCursor(editor, state), motion, 1, state.goal);
+      const result = applyMotionWithGoal(editor, linewiseCursor(editor, state), motion, count, state.goal);
       return { ...state, headLine: result.position.row, headColumn: result.position.column, goal: result.goal };
     }
   }
@@ -1003,13 +1177,14 @@ function linewiseStateAfterMotion(
 function blockwiseStateAfterMotion(
   editor: VimEditorCapabilities,
   state: BlockwiseVisualState,
-  motion: Motion
+  motion: Motion,
+  count: number
 ): BlockwiseVisualState {
   const { position, goal } = applyMotionWithGoal(
     editor,
     state.head,
     motion,
-    1,
+    count,
     state.goal,
     { allowEndOfLine: true }
   );
@@ -1216,29 +1391,21 @@ function rawVisualAnchor(state: VisualState): Position {
 }
 
 function inclusiveHeadForRangeEnd(editor: VimEditorCapabilities, range: TextRange): Position {
+  const endLine = editor.line(range.end.row);
   if (range.end.row === range.start.row) {
-    return { row: range.end.row, column: Math.max(range.start.column, range.end.column - 1) };
+    return { row: range.end.row, column: Math.max(range.start.column, previousGraphemeBoundary(endLine, range.end.column)) };
   }
   if (range.end.column > 0) {
-    return { row: range.end.row, column: range.end.column - 1 };
+    return { row: range.end.row, column: previousGraphemeBoundary(endLine, range.end.column) };
   }
   return { row: range.end.row, column: 0 };
 }
 
-function visualIndentCursor(editor: VimEditorCapabilities, state: VisualState, direction: IndentDirection): Position {
-  const start = visualStartPosition(state);
-  switch (direction) {
-    case "in":
-      return { row: start.row, column: start.column + 4 };
-    case "out":
-      return { row: start.row, column: Math.max(0, start.column - Math.min(4, leadingWhitespaceLength(editor.line(start.row)))) };
-    case "auto":
-      return start;
-  }
-}
-
-function leadingWhitespaceLength(line: string): number {
-  return /^\s*/.exec(line)?.[0].length ?? 0;
+// Neovim `v_>` (probed): the cursor lands on the visual start's position with
+// its column unshifted, clamped to the shifted line by the selection
+// write-back — not shifted with the text, and not the first non-blank.
+function visualIndentCursor(state: VisualState): Position {
+  return visualStartPosition(state);
 }
 
 function visualRepeatSelectionForState(
@@ -1267,12 +1434,13 @@ function visualRepeatSelectionForState(
 function visualIndentRepeatActionForState(
   editor: VimEditorCapabilities,
   state: VisualState,
-  direction: IndentDirection
+  direction: IndentDirection,
+  count: number
 ): { selection: RecordedSelection; action: VisualRepeatAction } {
   const { startRow, endRow } = visualLineBounds(editor, state);
   return {
     selection: { type: "visualLine", rows: Math.max(0, endRow - startRow) },
-    action: { type: "indent", direction },
+    action: { type: "indent", direction, count },
   };
 }
 
@@ -1282,7 +1450,7 @@ function visualSurroundRanges(editor: VimEditorCapabilities, state: VisualState)
 
 // Zed: the visual fold-in — visual state lowers to an `OperatorTarget` so
 // normal and visual mode apply operators through the same `apply*` modules.
-function visualCharwiseTarget(editor: VimEditorCapabilities, state: CharwiseVisualState): OperatorTarget {
+function visualCharwiseTarget(editor: VimEditorCapabilities, state: CharwiseVisualState): ResolvedTarget {
   return {
     kind: "charwise",
     targets: currentCharwiseVisualRanges(editor, state).map(range => ({ range, head: range.start })),
@@ -1292,7 +1460,7 @@ function visualCharwiseTarget(editor: VimEditorCapabilities, state: CharwiseVisu
 function visualLinewiseTarget(
   state: LinewiseVisualState,
   { column, cursor }: { column: number; cursor?: Position }
-): OperatorTarget {
+): ResolvedTarget {
   const { startLine, endLine } = lineBounds(state);
   return { kind: "linewise", rows: [{ startRow: startLine, endRow: endLine, column, cursor }] };
 }
@@ -1305,18 +1473,58 @@ function visualConvertRanges(editor: VimEditorCapabilities, state: VisualState):
       const { startLine, endLine } = lineBounds(state);
       return [{ start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } }];
     }
-    case "blockwise": {
-      const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
-      const ranges = [];
-      for (let row = startRow; row <= endRow; row++) {
-        ranges.push({
-          start: { row, column: Math.min(startColumn, editor.lineLength(row)) },
-          end: { row, column: Math.min(endColumn + 1, editor.lineLength(row)) },
-        });
+    case "blockwise":
+      return blockRanges(editor, state);
+  }
+}
+
+// Per-line, single-row ranges covering the selection, for `v_r` (replace every
+// selected character). Unlike [visualConvertRanges] (whose linewise/charwise
+// cases can return a multi-line range), every range here stays within one line,
+// so replacing its text with a repeated char preserves the line breaks between
+// them.
+// The number of grapheme cells between two columns of [line]: `v_r` writes
+// one replacement character per selected cell, not per UTF-16 unit (an emoji
+// becomes one `x`, not two).
+function graphemeCellCount(line: string, startColumn: number, endColumn: number): number {
+  let cells = 0;
+  let column = startColumn;
+  while (column < endColumn) {
+    const next = nextGraphemeBoundary(line, column);
+    if (next <= column) break;
+    column = next;
+    cells++;
+  }
+  return cells;
+}
+
+function replaceRanges(editor: VimEditorCapabilities, state: VisualState): readonly TextRange[] {
+  switch (state.kind) {
+    case "charwise":
+      return currentCharwiseVisualRanges(editor, state).flatMap(range => splitRangeByLine(editor, range));
+    case "linewise": {
+      const { startLine, endLine } = lineBounds(state);
+      const ranges: TextRange[] = [];
+      for (let row = startLine; row <= endLine; row++) {
+        ranges.push({ start: { row, column: 0 }, end: { row, column: editor.lineLength(row) } });
       }
       return ranges;
     }
+    case "blockwise":
+      return blockRanges(editor, state);
   }
+}
+
+function splitRangeByLine(editor: VimEditorCapabilities, range: TextRange): readonly TextRange[] {
+  if (range.start.row === range.end.row) return [range];
+  const ranges: TextRange[] = [
+    { start: range.start, end: { row: range.start.row, column: editor.lineLength(range.start.row) } },
+  ];
+  for (let row = range.start.row + 1; row < range.end.row; row++) {
+    ranges.push({ start: { row, column: 0 }, end: { row, column: editor.lineLength(row) } });
+  }
+  ranges.push({ start: { row: range.end.row, column: 0 }, end: range.end });
+  return ranges;
 }
 
 function visualLineBounds(editor: VimEditorCapabilities, state: VisualState): { startRow: number; endRow: number } {
@@ -1335,6 +1543,36 @@ function visualLineBounds(editor: VimEditorCapabilities, state: VisualState): { 
       return { startRow, endRow };
     }
   }
+}
+
+// The visual edits run as one undo unit anchored on the visual selection.
+//
+// Commands that finish editing before returning must go through
+// [withUndoTransaction]/[withVisualUndoTransaction] so the transaction is
+// finished with the command: a transaction left open makes every later edit
+// coalesce into the same undo unit. Only commands that enter insert mode may
+// call [beginVisualUndoTransaction] directly and leave the transaction open;
+// it is finished when Escape leaves insert/replace mode (see
+// [keepUndoTransactionOpen]).
+function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: VisualState): VimUndoTransaction {
+  return editor.beginUndoTransaction(visualUndoSelections(state));
+}
+
+function withUndoTransaction<T>(
+  editor: VimEditorCapabilities,
+  selectionsBefore: readonly VimSelection[],
+  run: () => T
+): T {
+  const undoTransaction = editor.beginUndoTransaction(selectionsBefore);
+  try {
+    return run();
+  } finally {
+    undoTransaction.finish();
+  }
+}
+
+function withVisualUndoTransaction<T>(editor: VimEditorCapabilities, state: VisualState, run: () => T): T {
+  return withUndoTransaction(editor, visualUndoSelections(state), run);
 }
 
 function visualUndoSelections(state: VisualState): readonly VimSelection[] {
@@ -1418,39 +1656,48 @@ function linewiseEditRange(editor: VimEditorCapabilities, state: LinewiseVisualS
   return { start: { row: startLine, column: 0 }, end: { row: endLine, column: editor.lineLength(endLine) } };
 }
 
-function beginVisualUndoTransaction(editor: VimEditorCapabilities, state: VisualState): VimUndoTransaction {
-  return editor.beginUndoTransaction(visualUndoSelections(state));
-}
-
 function openVisualChangeEditOptions() {
   return keepUndoTransactionOpen();
+}
+
+function recordVisualPasteDelete(
+  registers: Registers,
+  text: string,
+  kind: RegisterPart["kind"],
+  parts: readonly RegisterPart[] | undefined,
+  { preserveSourceRegister }: { preserveSourceRegister: boolean }
+): void {
+  if (parts === undefined ? text.length === 0 : parts.every(part => part.text.length === 0)) return;
+  if (preserveSourceRegister) registers.writeDeleteHistory(text, kind, parts);
+  else registers.writeDelete(undefined, text, kind, parts);
 }
 
 function pasteOverCharwise(
   editor: VimEditorCapabilities,
   registers: Registers,
   state: CharwiseVisualState,
-  content: RegisterContent
+  content: RegisterContent,
+  { preserveSourceRegister }: { preserveSourceRegister: boolean }
 ): VisualState | undefined {
   const ranges = currentCharwiseVisualRanges(editor, state);
   const distributed = distributedRegisterParts(content, ranges.length);
   if (distributed !== undefined) {
-    return pasteDistributedOverCharwise(editor, registers, state, ranges, distributed);
+    return pasteDistributedOverCharwise(editor, registers, state, ranges, distributed, { preserveSourceRegister });
   }
 
   const range = charwiseVisualRange(editor, state);
   const deletedText = rangeText(editor, range);
   if (content.kind === "blockwise") {
-    pasteBlockwiseOverCharwise(editor, registers, state, range, deletedText, content.text);
+    pasteBlockwiseOverCharwise(editor, registers, state, range, deletedText, content.text, { preserveSourceRegister });
     return undefined;
   }
 
   const replacement = replacementForRegisterPart(content);
   const pastedRange = { start: range.start, end: positionAfterInsertedText(range.start, replacement.text) };
 
-  registers.write(undefined, deletedText, "characterwise");
-  beginVisualUndoTransaction(editor, state);
-  editor.applyEdits([{ range, text: replacement.text }], [charwiseSelection(cursorAfterReplacement(range.start, replacement))]);
+  withVisualUndoTransaction(editor, state, () =>
+    editor.applyEdits([{ range, text: replacement.text }], [charwiseSelection(cursorAfterReplacement(range.start, replacement))]));
+  recordVisualPasteDelete(registers, deletedText, "characterwise", undefined, { preserveSourceRegister });
   return charwiseStateForRange(editor, pastedRange);
 }
 
@@ -1474,7 +1721,8 @@ function pasteDistributedOverCharwise(
   registers: Registers,
   state: CharwiseVisualState,
   ranges: readonly TextRange[],
-  parts: readonly RegisterPart[]
+  parts: readonly RegisterPart[],
+  { preserveSourceRegister }: { preserveSourceRegister: boolean }
 ): VisualState | undefined {
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
@@ -1493,18 +1741,15 @@ function pasteDistributedOverCharwise(
   }
 
   if (deleted.length === 0) return undefined;
-  registers.write(
-    undefined,
+  withUndoTransaction(editor, currentCharwiseVisualUndoSelections(editor, state), () =>
+    editor.applyEdits(edits, selectionsAfter));
+  recordVisualPasteDelete(
+    registers,
     deleted.join("\n"),
     "characterwise",
-    deleted.map(text => ({ text, kind: "characterwise" }))
+    deleted.map(text => ({ text, kind: "characterwise" })),
+    { preserveSourceRegister }
   );
-  const undoTransaction = editor.beginUndoTransaction(currentCharwiseVisualUndoSelections(editor, state));
-  try {
-    editor.applyEdits(edits, selectionsAfter);
-  } finally {
-    undoTransaction.finish();
-  }
   return firstPastedRange === undefined ? undefined : charwiseStateForRange(editor, firstPastedRange);
 }
 
@@ -1529,7 +1774,8 @@ function pasteBlockwiseOverCharwise(
   state: CharwiseVisualState,
   range: TextRange,
   deletedText: string,
-  text: string
+  text: string,
+  { preserveSourceRegister }: { preserveSourceRegister: boolean }
 ): void {
   const blockLines = text.split("\n");
   const edits: TextEdit[] = [{ range, text: blockLines[0] ?? "" }];
@@ -1539,16 +1785,17 @@ function pasteBlockwiseOverCharwise(
     const insertAt = { row, column: Math.min(range.start.column, editor.lineLength(row)) };
     edits.push({ range: { start: insertAt, end: insertAt }, text: blockLines[index] });
   }
-  registers.write(undefined, deletedText, "characterwise");
-  beginVisualUndoTransaction(editor, state);
-  editor.applyEdits(edits, [charwiseSelection({ row: range.start.row, column: range.start.column })]);
+  withVisualUndoTransaction(editor, state, () =>
+    editor.applyEdits(edits, [charwiseSelection({ row: range.start.row, column: range.start.column })]));
+  recordVisualPasteDelete(registers, deletedText, "characterwise", undefined, { preserveSourceRegister });
 }
 
 function pasteOverLinewise(
   editor: VimEditorCapabilities,
   registers: Registers,
   state: LinewiseVisualState,
-  content: RegisterContent
+  content: RegisterContent,
+  { preserveSourceRegister }: { preserveSourceRegister: boolean }
 ): void {
   const range = linewiseEditRange(editor, state);
   const replacementText = content.kind === "linewise"
@@ -1556,35 +1803,44 @@ function pasteOverLinewise(
     : `${content.text}\n`;
   const { startLine } = lineBounds(state);
 
-  if (content.kind === "linewise") {
-    registers.write(undefined, linewiseText(editor, state), "linewise");
-  }
-
-  beginVisualUndoTransaction(editor, state);
-  editor.applyEdits([{ range, text: replacementText }], [charwiseSelection({ row: startLine, column: 0 })]);
+  const deletedText = linewiseText(editor, state);
+  withVisualUndoTransaction(editor, state, () =>
+    editor.applyEdits([{ range, text: replacementText }], [charwiseSelection({ row: startLine, column: 0 })]));
+  recordVisualPasteDelete(registers, deletedText, "linewise", undefined, { preserveSourceRegister });
 }
 
 function pasteOverBlockwise(
   editor: VimEditorCapabilities,
-  _registers: Registers,
+  registers: Registers,
   state: BlockwiseVisualState,
-  content: RegisterContent
+  content: RegisterContent,
+  { preserveSourceRegister }: { preserveSourceRegister: boolean }
 ): void {
   const blockLines = content.text.split("\n");
   if (blockLines.length === 0) return;
 
   const { startRow, endRow, startColumn } = blockBounds(state);
   const edits: TextEdit[] = [];
+  const deleted: string[] = [];
 
   for (let row = startRow; row <= endRow; row++) {
     const blockLine = content.kind === "blockwise"
       ? blockLines[row - startRow] ?? ""
       : blockLines[0];
-    edits.push({ range: blockRangeForRow(editor, state, row), text: blockLine });
+    const range = blockRangeForRow(editor, state, row);
+    deleted.push(rangeText(editor, range));
+    edits.push({ range, text: blockLine });
   }
 
-  beginVisualUndoTransaction(editor, state);
-  editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: startColumn + blockLines[0].length - 1 })]);
+  withVisualUndoTransaction(editor, state, () =>
+    editor.applyEdits(edits, [charwiseSelection({ row: startRow, column: startColumn + blockLines[0].length - 1 })]));
+  recordVisualPasteDelete(
+    registers,
+    deleted.join("\n"),
+    "blockwise",
+    deleted.map(text => ({ text, kind: "blockwise" })),
+    { preserveSourceRegister }
+  );
 }
 
 function currentCharwiseVisualStates(
@@ -1642,12 +1898,6 @@ function deleteBlockwise(
     edits.push({ range, text: "" });
   }
 
-  registers.writeDelete(
-    registerName,
-    deleted.join("\n"),
-    "blockwise",
-    deleted.map(text => ({ text, kind: "blockwise" }))
-  );
   const selectionsAfter = collapse
     ? [charwiseSelection({ row: startRow, column: startColumn })]
     : blockInsertSelections(editor, state, { side: "start" });
@@ -1657,6 +1907,14 @@ function deleteBlockwise(
     selectionsAfter,
     collapse ? {} : openVisualChangeEditOptions()
   );
+  if (deleted.some(text => text.length > 0)) {
+    registers.writeDelete(
+      registerName,
+      deleted.join("\n"),
+      "blockwise",
+      deleted.map(text => ({ text, kind: "blockwise" }))
+    );
+  }
   if (collapse) undoTransaction.finish();
 }
 
@@ -1719,10 +1977,11 @@ function blockInsertSelections(
   const { startRow, endRow, startColumn, endColumn } = blockBounds(state);
   const selections: VimSelection[] = [];
   for (let row = startRow; row <= endRow; row++) {
+    const line = editor.line(row);
     const column = side === "start"
-      ? startColumn
-      : state.goal?.type === "endOfLine" ? editor.lineLength(row) : endColumn + 1;
-    selections.push(charwiseSelection({ row, column: Math.min(column, editor.lineLength(row)) }));
+      ? blockStartColumnForLine(line, startColumn)
+      : state.goal?.type === "endOfLine" ? line.length : blockEndColumnForLine(line, endColumn);
+    selections.push(charwiseSelection({ row, column }));
   }
   return selections;
 }
@@ -1738,17 +1997,28 @@ function blockRanges(editor: VimEditorCapabilities, state: BlockwiseVisualState)
 
 function blockRangeForRow(editor: VimEditorCapabilities, state: BlockwiseVisualState, row: number): TextRange {
   const { startColumn, endColumn } = blockBounds(state);
-  const lineLength = editor.lineLength(row);
+  const line = editor.line(row);
+  const start = blockStartColumnForLine(line, startColumn);
+  const end = state.goal?.type === "endOfLine" ? line.length : blockEndColumnForLine(line, endColumn);
   return {
-    start: { row, column: Math.min(startColumn, lineLength) },
-    end: { row, column: state.goal?.type === "endOfLine"
-      ? lineLength
-      : Math.min(endColumn + 1, lineLength) },
+    start: { row, column: start },
+    end: { row, column: Math.max(start, end) },
   };
 }
 
-function blockwiseText(editor: VimEditorCapabilities, state: BlockwiseVisualState): string {
-  return blockRanges(editor, state).map(range => rangeText(editor, range)).join("\n");
+// Cluster-snapped block geometry: block cell columns are UTF-16 unit columns
+// taken from the anchor/head rows, so on another row they can land inside a
+// grapheme cluster (an emoji is one cell but several units). The block covers
+// whole clusters — an edit must never split a surrogate pair or strip a
+// combining mark.
+function blockStartColumnForLine(line: string, startColumn: number): number {
+  return graphemeStart(line, Math.min(startColumn, line.length));
+}
+
+// The end of the cluster containing the block's last cell column (exclusive).
+function blockEndColumnForLine(line: string, endColumn: number): number {
+  if (endColumn >= line.length) return line.length;
+  return nextGraphemeBoundary(line, graphemeStart(line, endColumn));
 }
 
 function blockBounds(state: BlockwiseVisualState): {
@@ -1778,7 +2048,10 @@ function cursorAtEndOfInsertedText(start: Position, text: string): Position {
   const after = positionAfterInsertedText(start, text);
   if (text.length === 0) return start;
   const lines = text.split("\n");
-  if (lines.length === 1) return { row: after.row, column: Math.max(start.column, after.column - 1) };
-  const lastLineLength = lines[lines.length - 1].length;
-  return { row: after.row, column: Math.max(0, lastLineLength - 1) };
+  // The cursor lands on the last pasted character *cell* (cluster start).
+  if (lines.length === 1) {
+    return { row: after.row, column: Math.max(start.column, start.column + previousGraphemeBoundary(text, text.length)) };
+  }
+  const lastLine = lines[lines.length - 1];
+  return { row: after.row, column: lastLine.length === 0 ? 0 : previousGraphemeBoundary(lastLine, lastLine.length) };
 }

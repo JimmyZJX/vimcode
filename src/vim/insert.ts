@@ -6,6 +6,7 @@
 //   `VimEditorCapabilities`; production VSCode should usually delegate to native typing.
 
 import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition } from "./editor.js";
+import { charClass } from "./motion.js";
 import {
   Position,
   TextEdit,
@@ -71,19 +72,39 @@ export function enterInsertAtSelections(
 }
 
 // Zed: `normal::Vim::insert_line_above` and `normal::Vim::insert_line_below`.
+// The host path delegates to native line insertion so the new line gets the
+// host's language-aware auto-indentation (like VSCodeVim's `o`/`O`). The
+// model-buffer fallback applies Vim 'autoindent' (default-on in Neovim): the
+// opened line copies the *current* line's leading whitespace — for both `o`
+// and `O`, deliberately not the following line's (Neovim-verified; language
+// indent rules are host territory). Known divergence: Neovim deletes the
+// copied indent again when insert ends with nothing typed after it (`did_ai`,
+// see `:h 'autoindent'`); this fallback keeps it, and the host path leaves
+// that cleanup to VSCode's auto-whitespace trimming.
 export function openLine(editor: VimEditorCapabilities, { above }: { above: boolean }, options: ApplyEditsOptions = {}): void {
+  if (editor.openLineNatively?.({ above }) === true) {
+    editor.setCursorStyle("line");
+    return;
+  }
   const edits: TextEdit[] = [];
   const selectionsAfter: VimSelection[] = [];
 
   for (const selection of editor.getSelections()) {
     const row = selectionHead(selection).row;
+    const indent = leadingWhitespace(editor.line(row));
     const insertAt = above ? { row, column: 0 } : { row, column: editor.lineLength(row) };
-    edits.push({ range: { start: insertAt, end: insertAt }, text: "\n" });
-    selectionsAfter.push(charwiseSelection({ row: above ? row : row + 1, column: 0 }));
+    edits.push({ range: { start: insertAt, end: insertAt }, text: above ? `${indent}\n` : `\n${indent}` });
+    selectionsAfter.push(charwiseSelection({ row: above ? row : row + 1, column: indent.length }));
   }
 
   editor.applyEdits(edits, selectionsAfter, options);
   editor.setCursorStyle("line");
+}
+
+// Vim `get_indent()`: the whole leading-whitespace prefix, including on
+// whitespace-only lines (`o` from a blank-but-indented line copies all of it).
+function leadingWhitespace(line: string): string {
+  return /^\s*/.exec(line)?.[0] ?? "";
 }
 
 // Zed: `vim::Vim::switch_mode`. The cursor-left behavior when leaving insert
@@ -126,23 +147,25 @@ export function enterNormalMode(
   );
 }
 
+// Vim `i_CTRL-W` (Neovim-verified): word-wise and line-local, unlike the `b`
+// motion the previous version approximated with a whitespace-only scan.
+// - At the start of a line, delete just the line break (nvim 'backspace'
+//   includes "eol"), never words on the previous line.
+// - Otherwise skip the whitespace run before the cursor, then delete one run
+//   of same-class characters (keyword vs punctuation, like `b`), stopping at
+//   the line start.
 function previousWordStart(editor: VimEditorCapabilities, head: Position): Position {
-  let row = head.row;
-  let column = head.column;
-
-  while (row > 0 || column > 0) {
-    if (column === 0) {
-      row--;
-      column = editor.lineLength(row);
-    } else if (/\s/.test(editor.line(row)[column - 1])) {
-      column--;
-    } else {
-      break;
-    }
+  if (head.column === 0) {
+    if (head.row === 0) return head;
+    return { row: head.row - 1, column: editor.lineLength(head.row - 1) };
   }
-
-  while (column > 0 && !/\s/.test(editor.line(row)[column - 1])) column--;
-  return { row, column };
+  const line = editor.line(head.row);
+  let column = head.column;
+  while (column > 0 && charClass(line[column - 1], false) === "whitespace") column--;
+  if (column === 0) return { row: head.row, column };
+  const kind = charClass(line[column - 1], false);
+  while (column > 0 && charClass(line[column - 1], false) === kind) column--;
+  return { row: head.row, column };
 }
 
 export function firstNonWhitespace(line: string, row: number): Position {

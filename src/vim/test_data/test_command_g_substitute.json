@@ -1,0 +1,50 @@
+{"Put":{"state":"ˇfoo a\nbar\nfoo b"}}
+{"Key":":"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"f"}
+{"Key":"o"}
+{"Key":"o"}
+{"Key":"/"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"o"}
+{"Key":"/"}
+{"Key":"0"}
+{"Key":"/"}
+{"Key":"enter"}
+{"Get":{"state":"f0o a\nbar\nˇf0o b","mode":"normal"}}
+{"Put":{"state":"ˇfoo a\nbar\nfoo b"}}
+{"Key":":"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"f"}
+{"Key":"o"}
+{"Key":"o"}
+{"Key":"/"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"o"}
+{"Key":"/"}
+{"Key":"0"}
+{"Key":"/"}
+{"Key":"enter"}
+{"Key":"u"}
+{"Get":{"state":"ˇfoo a\nbar\nfoo b","mode":"normal"}}
+{"Put":{"state":"ˇfoo one\nbar two\nfoo three"}}
+{"Key":":"}
+{"Key":"g"}
+{"Key":"/"}
+{"Key":"f"}
+{"Key":"o"}
+{"Key":"o"}
+{"Key":"/"}
+{"Key":"s"}
+{"Key":"/"}
+{"Key":"/"}
+{"Key":"F"}
+{"Key":"O"}
+{"Key":"O"}
+{"Key":"/"}
+{"Key":"enter"}
+{"Get":{"state":"FOO one\nbar two\nˇFOO three","mode":"normal"}}

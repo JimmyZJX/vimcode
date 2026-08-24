@@ -1,0 +1,33 @@
+{"Put":{"state":"ˇabc def"}}
+{"Key":"r"}
+{"Key":"escape"}
+{"Get":{"state":"ˇabc def","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇbc def","mode":"Normal"}}
+{"Put":{"state":"ˇabc def"}}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"r"}
+{"Key":"escape"}
+{"Key":"d"}
+{"Get":{"state":"ˇc def","mode":"Normal"}}
+{"Put":{"state":"ˇabc def"}}
+{"Key":"r"}
+{"Key":"ctrl-["}
+{"Get":{"state":"ˇabc def","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇbc def","mode":"Normal"}}
+{"Put":{"state":"ˇabc def"}}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"r"}
+{"Key":"ctrl-["}
+{"Key":"d"}
+{"Get":{"state":"ˇc def","mode":"Normal"}}
+{"Put":{"state":"ˇabc def"}}
+{"Key":"f"}
+{"Key":"ctrl-k"}
+{"Key":"escape"}
+{"Get":{"state":"ˇabc def","mode":"Normal"}}
+{"Key":"x"}
+{"Get":{"state":"ˇbc def","mode":"Normal"}}

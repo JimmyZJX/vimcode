@@ -4,14 +4,12 @@
 // - intentional differences: this is a focused compatibility layer, not a full vimrc
 //   remapper. It supports exact `before` -> `after` / `commands` mappings first.
 
-import { VimMode } from "./state.js";
+import type { VimMode } from "./state.js";
 
-export type VimRemapMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock" | "operatorPending";
+export type VimRemapMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock" | "operatorPending" | "commandLine";
 
 export type VimCommandMapping = string | { command: string; args?: unknown | unknown[] };
-export type RemapWhenEvaluator = (when: string | undefined) => boolean;
-
-const alwaysActiveRemapWhen: RemapWhenEvaluator = () => true;
+export type WhenEvaluator = (when: string | undefined) => boolean;
 
 export type VimKeyRemapping = {
   before: readonly string[];
@@ -37,14 +35,25 @@ export type VimConfiguration = {
   visualModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
   operatorPendingModeKeyBindings: readonly VimKeyRemapping[];
   operatorPendingModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
+  commandLineModeKeyBindings: readonly VimKeyRemapping[];
+  commandLineModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
   handleKeys: Readonly<Record<string, boolean>>;
   useCtrlKeys: boolean;
   useSystemClipboard: boolean;
+  // Vim 'hlsearch': keep search matches highlighted after the search motion
+  // lands, until `:noh` clears them. Off by default: highlights are torn down
+  // as soon as the search completes.
+  hlsearch: boolean;
   timeout: number;
   visualMultilineInsert: boolean;
+  insertModeCtrlVAsPaste: boolean;
+  replaceWithRegister: boolean;
   easymotion: boolean;
   easymotionKeys: string;
   easymotionJumpToAnywhereRegex: string;
+  // 'textwidth' for the `gq`/`gw` format operators; 0 formats to 79 columns
+  // (Vim's fallback for 'textwidth'=0, capped screen width).
+  textwidth: number;
 };
 
 export const defaultVimHandleKeys: Readonly<Record<string, boolean>> = {
@@ -63,14 +72,26 @@ export const defaultVimConfiguration: VimConfiguration = {
   visualModeKeyBindingsNonRecursive: [],
   operatorPendingModeKeyBindings: [],
   operatorPendingModeKeyBindingsNonRecursive: [],
+  commandLineModeKeyBindings: [],
+  commandLineModeKeyBindingsNonRecursive: [],
   handleKeys: defaultVimHandleKeys,
   useCtrlKeys: true,
   useSystemClipboard: false,
+  hlsearch: false,
   timeout: 1000,
   visualMultilineInsert: true,
-  easymotion: false,
+  insertModeCtrlVAsPaste: true,
+  // VSCodeVim compatibility: the `gr` plugin is opt-in; when disabled the
+  // Neovim-style grr/grn/gra LSP bindings own the prefix.
+  replaceWithRegister: false,
+  // Deliberate divergence from VSCodeVim (default false): with the default `\`
+  // leader the `<leader><leader>` prefix sits on an otherwise-unbound key, so
+  // enabling costs nothing — and a disabled easymotion silently degrades
+  // `<leader><leader>s` into plain `s`, which is a confusing failure mode.
+  easymotion: true,
   easymotionKeys: "hklyuiopnm,qwertzxcvbasdgjf;",
   easymotionJumpToAnywhereRegex: "\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]",
+  textwidth: 0,
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {
@@ -129,139 +150,7 @@ export type NormalizedRemapping = {
   when?: string;
 };
 
-export type AmbiguousRemapConflict = {
-  mode: VimRemapMode;
-  shorter: readonly string[];
-  longer: readonly string[];
-};
-
-export class RemapResolver {
-  private pendingKeys: string[] = [];
-  private pendingAmbiguousMapping: NormalizedRemapping | undefined;
-  private readonly mappingsByMode: Record<VimRemapMode, readonly NormalizedRemapping[]>;
-  private readonly conflicts: readonly AmbiguousRemapConflict[];
-
-  constructor(private readonly config: VimConfiguration) {
-    this.mappingsByMode = {
-      normal: normalizeRemappings(config.leader, config.normalModeKeyBindings, true)
-        .concat(normalizeRemappings(config.leader, config.normalModeKeyBindingsNonRecursive, false)),
-      insert: normalizeRemappings(config.leader, config.insertModeKeyBindings, true)
-        .concat(normalizeRemappings(config.leader, config.insertModeKeyBindingsNonRecursive, false)),
-      visual: normalizeRemappings(config.leader, config.visualModeKeyBindings, true)
-        .concat(normalizeRemappings(config.leader, config.visualModeKeyBindingsNonRecursive, false)),
-      visualLine: normalizeRemappings(config.leader, config.visualModeKeyBindings, true)
-        .concat(normalizeRemappings(config.leader, config.visualModeKeyBindingsNonRecursive, false)),
-      visualBlock: normalizeRemappings(config.leader, config.visualModeKeyBindings, true)
-        .concat(normalizeRemappings(config.leader, config.visualModeKeyBindingsNonRecursive, false)),
-      operatorPending: normalizeRemappings(config.leader, config.operatorPendingModeKeyBindings, true)
-        .concat(normalizeRemappings(config.leader, config.operatorPendingModeKeyBindingsNonRecursive, false)),
-    };
-    this.conflicts = ambiguousRemapConflicts(this.mappingsByMode);
-  }
-
-  isPending(): boolean {
-    return this.pendingKeys.length > 0;
-  }
-
-  hasMappings(mode: VimRemapMode, whenEvaluator: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
-    return this.activeMappings(mode, whenEvaluator).length > 0;
-  }
-
-  hasMappingStartingWith(mode: VimRemapMode, key: string, whenEvaluator: RemapWhenEvaluator = alwaysActiveRemapWhen): boolean {
-    return this.activeMappings(mode, whenEvaluator).some(mapping => mapping.before[0] === normalizeKey(key, this.config.leader));
-  }
-
-  ambiguousConflicts(): readonly AmbiguousRemapConflict[] {
-    return this.conflicts;
-  }
-
-  handleKeyOverride(key: string): boolean | undefined {
-    return this.config.handleKeys[normalizeKey(key, this.config.leader)];
-  }
-
-  pendingChord(): string {
-    return this.pendingKeys.join(" ");
-  }
-
-  pendingInsertText(): string | undefined {
-    const key = this.pendingKeys[this.pendingKeys.length - 1];
-    if (key === undefined) return undefined;
-    if (key === "space") return " ";
-    return key.length === 1 ? key : undefined;
-  }
-
-  clearPending(): void {
-    this.pendingKeys = [];
-    this.pendingAmbiguousMapping = undefined;
-  }
-
-  handleKey(mode: VimRemapMode, key: string, whenEvaluator: RemapWhenEvaluator = alwaysActiveRemapWhen): RemapResolution {
-    if (key === RemapTimeoutKey) {
-      return this.handleTimeout(whenEvaluator);
-    }
-
-    const keys = [...this.pendingKeys, key];
-    const mappings = this.activeMappings(mode, whenEvaluator);
-    const exact = findLast(mappings, mapping => sameKeys(mapping.before, keys));
-    const hasLongerMatch = mappings.some(mapping => isPrefix(keys, mapping.before) && !sameKeys(mapping.before, keys));
-
-    if (exact !== undefined) {
-      if (hasLongerMatch) {
-        this.pendingKeys = keys;
-        this.pendingAmbiguousMapping = exact;
-        return { kind: "pending", chord: keys.join(" ") };
-      }
-      this.clearPending();
-      return { kind: "matched", mapping: exact };
-    }
-
-    if (hasLongerMatch) {
-      this.pendingKeys = keys;
-      this.pendingAmbiguousMapping = undefined;
-      return { kind: "pending", chord: keys.join(" ") };
-    }
-
-    if (this.pendingKeys.length > 0) {
-      const ambiguousMapping = this.pendingAmbiguousMapping;
-      this.clearPending();
-      if (ambiguousMapping !== undefined) {
-        return { kind: "matchedWithReplay", mapping: ambiguousMapping, keys: keys.slice(ambiguousMapping.before.length) };
-      }
-      return { kind: "replay", keys };
-    }
-
-    return { kind: "noMatch" };
-  }
-
-  private handleTimeout(whenEvaluator: RemapWhenEvaluator): RemapResolution {
-    const keys = this.pendingKeys;
-    const ambiguousMapping = this.pendingAmbiguousMapping;
-    this.clearPending();
-    if (keys.length === 0) return { kind: "handled" };
-    if (ambiguousMapping !== undefined && this.mappingIsActive(ambiguousMapping, whenEvaluator)) {
-      return { kind: "matched", mapping: ambiguousMapping };
-    }
-    return { kind: "replay", keys };
-  }
-
-  private activeMappings(mode: VimRemapMode, whenEvaluator: RemapWhenEvaluator): readonly NormalizedRemapping[] {
-    return this.mappingsByMode[mode].filter(mapping => this.mappingIsActive(mapping, whenEvaluator));
-  }
-
-  private mappingIsActive(mapping: NormalizedRemapping, whenEvaluator: RemapWhenEvaluator): boolean {
-    return whenEvaluator(mapping.when);
-  }
-}
-
-export type RemapResolution =
-  | { kind: "pending"; chord: string }
-  | { kind: "matched"; mapping: NormalizedRemapping }
-  | { kind: "matchedWithReplay"; mapping: NormalizedRemapping; keys: readonly string[] }
-  | { kind: "replay"; keys: readonly string[] }
-  | { kind: "handled" }
-  | { kind: "noMatch" };
-
-export function remapModeForVimMode(mode: VimMode["kind"], { operatorPending }: { operatorPending: boolean }): VimRemapMode {
+export function remapModeForVimMode(mode: VimMode, { operatorPending }: { operatorPending: boolean }): VimRemapMode {
   if (operatorPending) return "operatorPending";
   switch (mode) {
     case "insert":
@@ -272,11 +161,15 @@ export function remapModeForVimMode(mode: VimMode["kind"], { operatorPending }: 
       return "visualLine";
     case "visualBlock":
       return "visualBlock";
-    case "normal":
-    case "replace":
+    // VSCodeVim: `commandLineModeKeyBindings*` apply to both the `:` command
+    // line and the `/`?` search prompt.
     case "search":
     case "command":
-    case "select":
+      return "commandLine";
+    case "normal":
+    case "helixNormal":
+    case "helixSelect":
+    case "replace":
       return "normal";
   }
 }
@@ -291,7 +184,7 @@ function compareStrings(a: string, b: string): number {
   return 0;
 }
 
-function normalizeRemappings(leader: string, mappings: readonly VimKeyRemapping[], recursive: boolean): readonly NormalizedRemapping[] {
+export function normalizeRemappings(leader: string, mappings: readonly VimKeyRemapping[], recursive: boolean): readonly NormalizedRemapping[] {
   return mappings.map(mapping => ({
     before: mapping.before.map(key => normalizeKey(key, leader)),
     after: (mapping.after ?? []).map(key => normalizeKey(key, leader)),
@@ -346,40 +239,4 @@ function normalizeModifierKey(key: string): string {
     default:
       return key;
   }
-}
-
-function sameKeys(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((key, index) => key === right[index]);
-}
-
-function isPrefix(prefix: readonly string[], full: readonly string[]): boolean {
-  return prefix.length < full.length && prefix.every((key, index) => key === full[index]);
-}
-
-function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
-  for (let index = items.length - 1; index >= 0; index--) {
-    if (predicate(items[index])) return items[index];
-  }
-  return undefined;
-}
-
-function ambiguousRemapConflicts(
-  mappingsByMode: Record<VimRemapMode, readonly NormalizedRemapping[]>
-): readonly AmbiguousRemapConflict[] {
-  const conflicts: AmbiguousRemapConflict[] = [];
-  for (const [mode, mappings] of Object.entries(mappingsByMode) as [VimRemapMode, readonly NormalizedRemapping[]][]) {
-    for (const shorter of mappings) {
-      for (const longer of mappings) {
-        if (shorter === longer) continue;
-        if (isPrefixOrEqual(shorter.before, longer.before) && shorter.before.length < longer.before.length) {
-          conflicts.push({ mode, shorter: shorter.before, longer: longer.before });
-        }
-      }
-    }
-  }
-  return conflicts;
-}
-
-function isPrefixOrEqual(prefix: readonly string[], full: readonly string[]): boolean {
-  return prefix.length <= full.length && prefix.every((key, index) => key === full[index]);
 }

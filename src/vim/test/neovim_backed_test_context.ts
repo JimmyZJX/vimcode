@@ -7,6 +7,7 @@
 //   source of truth for which tests exist.
 
 import { RemapTimeoutKey } from "../config.js";
+import type { VimConfiguration } from "../config.js";
 import { parseRegisterName } from "../registers.js";
 import { Vim, runKeys } from "../vim.js";
 import { InMemoryVimEditor } from "../editor.js";
@@ -22,11 +23,21 @@ export type SharedState = {
   };
 };
 
+function configurationForFixture(testCaseId: string): Partial<VimConfiguration> {
+  // Product compatibility defaults Insert-mode ctrl-v to native paste, while
+  // these fixtures intentionally compare against Neovim literal insertion.
+  return {
+    insertModeCtrlVAsPaste: false,
+    ...fixtureConfigurations[testCaseId],
+  };
+}
+
 export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
   let editor: InMemoryVimEditor | undefined;
   let vim: Vim | undefined;
   const registers: Record<string, string> = {};
   const viewportOptions: { lines?: number; scrolloff?: number } = {};
+  let indentWidth: number | undefined;
 
   let step = 0;
   let currentScenario: string[] = [];
@@ -37,8 +48,9 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       if (editor === undefined || vim === undefined) {
         // Some Zed fixtures configure key remappings in the test body rather
         // than the fixture file; mirror that setup here.
-        ({ editor, vim } = editorFromMarkedText(entry.Put.state, fixtureConfigurations[fixture.testCaseId] ?? {}));
+        ({ editor, vim } = editorFromMarkedText(entry.Put.state, configurationForFixture(fixture.testCaseId)));
         editor.configureViewportForTest(viewportOptions);
+        if (indentWidth !== undefined) editor.configureIndentWidthForTest(indentWidth);
       } else {
         resetEditorFromMarkedText(editor, vim, entry.Put.state);
       }
@@ -50,16 +62,15 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       // Some fixtures type setup commands (`:set gdefault`) before the first
       // Put; run them against an empty scratch buffer.
       if (vim === undefined) {
-        ({ editor, vim } = editorFromMarkedText("ˇ", fixtureConfigurations[fixture.testCaseId] ?? {}));
+        ({ editor, vim } = editorFromMarkedText("ˇ", configurationForFixture(fixture.testCaseId)));
       }
       const localKey = keyForLocalVim(entry.Key);
-      const dispatchResult = vim.onKey(localKey);
-      // Keys the core leaves to the host (arrow keys in insert mode) take
-      // effect natively in a real editor; emulate that for the in-memory
-      // editor, including the undo split native cursor movement causes.
-      if (dispatchResult === "native") {
-        emulateNativeInsertKey(requireEditor(editor, fixture.testCaseId), requireVim(vim, fixture.testCaseId), localKey);
-      }
+      // Insert/replace-mode navigation keys used to be host-native and needed
+      // emulation here; they are framework passthrough keys now, applied through
+      // [InMemoryVimEditor.replayInsertKey] (including the undo split cursor
+      // movement causes), so a "native" result needs no special handling.
+      vim.onKey(localKey);
+      vim.assertModeStateInvariants(`after key "${localKey}" in ${fixture.testCaseId}`);
     } else if ("SetOption" in entry) {
       // Zed fixtures may contain Neovim UI options (e.g. wrap/columns) that do
       // not affect the model-buffer semantics supported by this harness yet.
@@ -70,6 +81,13 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       const scrolloff = /^scrolloff=(\d+)$/.exec(entry.SetOption.value);
       if (scrolloff !== null) viewportOptions.scrolloff = Number(scrolloff[1]);
       editor?.configureViewportForTest(viewportOptions);
+      // `shiftwidth=N` feeds the indent-width capability (Vim 'shiftwidth' =
+      // the host's resolved indent size).
+      const shiftwidth = /^shiftwidth=(\d+)$/.exec(entry.SetOption.value);
+      if (shiftwidth !== null) {
+        indentWidth = Number(shiftwidth[1]);
+        editor?.configureIndentWidthForTest(indentWidth);
+      }
     } else if ("Exec" in entry) {
       // Some Zed fixtures set filetype or other Neovim-local state. The current
       // model-buffer harness ignores those unless a fixture explicitly needs a
@@ -89,7 +107,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
       // Zed advances the clock past the remap timeout before asserting;
       // resolve any ambiguous pending remap the same way (`pin` vs `pine`).
       if (currentVim.status.remapPending) runKeys(currentVim, [RemapTimeoutKey]);
-      const actual = { mode: currentVim.mode.kind, markedText: markedTextFromEditor(currentEditor, currentVim.mode.kind) };
+      const actual = { mode: currentVim.mode, markedText: markedTextFromEditor(currentEditor, currentVim.mode) };
       const expected = { mode: entry.Get.mode, markedText: entry.Get.state };
       try {
         expect(actual).toEqual(expected);
@@ -105,7 +123,7 @@ export function simulateFixture(fixture: EnabledNeovimFixture): SharedState {
   const currentVim = requireVim(vim, fixture.testCaseId);
   return {
     local: {
-      mode: currentVim.mode.kind,
+      mode: currentVim.mode,
       markedText: markedTextFromEditor(currentEditor),
       registers,
     },
@@ -128,35 +146,6 @@ function requireVim(vim: Vim | undefined, testCaseId: string): Vim {
 
 // Native cursor movement during insert/replace mode: a real host moves the
 // cursor itself, which also breaks Vim's undo block (`i_<Left>` etc.).
-function emulateNativeInsertKey(editor: InMemoryVimEditor, vim: Vim, key: string): void {
-  if (vim.mode.kind !== "insert" && vim.mode.kind !== "replace") return;
-  const selection = editor.getSelections()[0];
-  if (selection === undefined || selection.type !== "charwise") return;
-  const head = selection.cursor ?? selection.head;
-  const lineLength = editor.lineLength(head.row);
-  const target = (() => {
-    switch (key) {
-      case "left":
-        return { row: head.row, column: Math.max(0, head.column - 1) };
-      case "right":
-        return { row: head.row, column: Math.min(head.column + 1, lineLength) };
-      case "up":
-      case "down": {
-        const row = Math.max(0, Math.min(head.row + (key === "down" ? 1 : -1), editor.lineCount() - 1));
-        return { row, column: Math.min(head.column, editor.lineLength(row)) };
-      }
-      case "home":
-        return { row: head.row, column: 0 };
-      case "end":
-        return { row: head.row, column: lineLength };
-      default:
-        return undefined;
-    }
-  })();
-  if (target === undefined) return;
-  editor.finishUndoTransaction();
-  editor.setSelections([{ type: "charwise", anchor: target, head: target }]);
-}
 
 function keyForLocalVim(key: string): string {
   switch (key) {

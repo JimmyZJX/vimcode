@@ -20,18 +20,22 @@ import {
   motionRange,
 } from "./motion.js";
 import { applyChange } from "./normal/change.js";
+import { applyComment } from "./normal/comment.js";
 import { ConvertTarget, applyConvert } from "./normal/convert.js";
 import { applyDelete } from "./normal/delete.js";
+import { applyFormat } from "./normal/format.js";
 import { IndentDirection, applyIndent } from "./normal/indent.js";
+import { applyReplaceWithRegister } from "./normal/replace_with_register.js";
 import { paragraphObjectCancelled } from "./normal/object.js";
 import { applyYank } from "./normal/yank.js";
-import { TextObject, blankLineAroundWordRows, surroundObjectFound, textObjectRange } from "./object.js";
-import type { ForcedMotion } from "./operator.js";
+import { TextObject, argumentObjectFound, blankLineAroundWordRows, surroundObjectFound, tagObjectFound, textObjectRange } from "./object.js";
 import { RegisterName, Registers } from "./registers.js";
 import { Position, TextRange, selectionHead } from "./state.js";
 
 export type RowRange = {
   startRow: number;
+  /** Original editor selection index; preserved when failed targets are dropped. */
+  selectionIndex?: number;
   endRow: number;
   /** Cursor column to restore after the operation. */
   column: number;
@@ -44,6 +48,8 @@ export type RowRange = {
 
 export type CharwiseTarget = {
   range: TextRange;
+  /** Original editor selection index; used for distributed register parts. */
+  selectionIndex?: number;
   /** The cursor position the target was produced from. Application modules use
       it for cursor-after-operation rules (e.g. yank keeps the cursor in place
       unless the range starts before it; `:h quote_quote` cursor semantics). */
@@ -58,13 +64,37 @@ export type CharwiseTarget = {
   cancelled?: boolean;
 };
 
-// Zed: `MotionKind` survives into operator application; locally inclusivity is
-// resolved into concrete range extents at target production, so only
-// charwise/linewise remain. A blockwise variant is reserved for the visual-block
-// fold-in.
-export type OperatorTarget =
+// A *resolved* operator target: concrete model-coordinate ranges/rows, ready to
+// hand to an application module. Zed: `MotionKind` survives into operator
+// application; locally inclusivity is resolved into concrete range extents at
+// resolution, so only charwise/linewise remain. A blockwise variant is reserved
+// for the visual-block fold-in.
+// Vim `o_v`/`o_V`: a pending operator's motion can be forced charwise/linewise.
+export type ForcedMotion = "charwise" | "linewise";
+
+export type ResolvedTarget =
   | { kind: "charwise"; targets: readonly CharwiseTarget[] }
   | { kind: "linewise"; rows: readonly RowRange[] };
+
+// A *lazy* operator target: a description of what an operator should act on,
+// resolved to concrete ranges only at execution time via [resolveTarget] — the
+// same value/resolution split as [Motion]/[applyMotion]. This is what the
+// normal-mode grammar builds and what a repeatable command stores, so a replay
+// (`.`) re-resolves the range against the cursor at replay time rather than
+// reusing positions captured when the command was first typed. Visual-mode
+// operators do not use this: their range is the live selection, already a
+// [ResolvedTarget].
+export type OperatorTarget =
+  // A motion (`dw`, `d}`, `d%`, `dvj` with a forced motion, `dgg` via
+  // [startOfDocument]); [count] is the motion repeat.
+  | { kind: "motion"; motion: Motion; forced?: ForcedMotion }
+  // A text object (`diw`, `dap`); [around] selects `a`/`i`, [count] the object
+  // count.
+  | { kind: "object"; object: TextObject; around: boolean }
+  // The doubled operator key (`dd`/`cc`/`yy`/`>>`): [count] whole lines.
+  | { kind: "line" }
+  // `G`: linewise to the last line, or to line [count] when a count was given.
+  | { kind: "lastLine" };
 
 // Zed: `state::Operator`, restricted to the operators that consume a
 // motion/object/line/visual-derived range.
@@ -73,7 +103,17 @@ export type RangeOperator =
   | { type: "change" }
   | { type: "yank" }
   | { type: "convert"; target: ConvertTarget }
-  | { type: "indent"; direction: IndentDirection };
+  | { type: "indent"; direction: IndentDirection; count?: number }
+  // `gq`/`gw`; [keepCursor] is `gw`. The effective 'textwidth' is resolved from
+  // the configuration when the operator is built (the application modules have
+  // no configuration access).
+  | { type: "format"; keepCursor: boolean; textwidth: number }
+  // `gc` (line) / `gC` (block): toggle comments via the host's native
+  // commenting commands (vim-commentary / VSCodeVim compat).
+  | { type: "comment"; block: boolean }
+  // VSCodeVim ReplaceWithRegister: replace a motion/object/line target with
+  // the selected register without overwriting that register.
+  | { type: "replaceWithRegister"; lineAction?: boolean; multilineObject?: boolean };
 
 export type OperatorOutcome = { enterInsert: boolean };
 
@@ -84,6 +124,7 @@ function isLinewiseMotion(motion: Motion): boolean {
     case "up":
     case "down":
     case "startOfDocument":
+    case "startOfLineDownward":
     case "windowLine":
       return true;
     default:
@@ -91,9 +132,10 @@ function isLinewiseMotion(motion: Motion): boolean {
   }
 }
 
-function rowRange(head: Position, target: Position): RowRange {
+function rowRange(head: Position, target: Position, selectionIndex?: number): RowRange {
   return {
     startRow: Math.min(head.row, target.row),
+    selectionIndex,
     endRow: Math.max(head.row, target.row),
     column: head.column,
   };
@@ -106,7 +148,7 @@ export function operatorTarget(
   motion: Motion,
   count: number,
   { forcedMotion, forChange = false }: { forcedMotion?: ForcedMotion; forChange?: boolean } = {}
-): OperatorTarget {
+): ResolvedTarget {
   const selections = editor.getSelections();
   const heads = selections.map(selectionHead);
 
@@ -115,7 +157,7 @@ export function operatorTarget(
   if (forcedMotion === "linewise") {
     return {
       kind: "linewise",
-      rows: heads.map(head => rowRange(head, applyMotion(editor, head, motion, count))),
+      rows: heads.map((head, selectionIndex) => rowRange(head, applyMotion(editor, head, motion, count), selectionIndex)),
     };
   }
 
@@ -133,9 +175,9 @@ export function operatorTarget(
         const verticalMotion = motion;
         return {
           kind: "linewise",
-          rows: heads.map(selectionHead => {
+          rows: heads.map((selectionHead, selectionIndex) => {
             const targetPosition = applyMotion(editor, selectionHead, verticalMotion, count);
-            return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column });
+            return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column }, selectionIndex);
           }),
         };
       }
@@ -157,9 +199,9 @@ export function operatorTarget(
       && head.column <= firstNonWhitespaceColumn(editor.line(head.row))) {
       return {
         kind: "linewise",
-        rows: heads.map(selectionHead => {
+        rows: heads.map((selectionHead, selectionIndex) => {
           const targetPosition = applyMotion(editor, selectionHead, motion, count);
-          return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column });
+          return rowRange(selectionHead, { row: Math.max(0, targetPosition.row - 1), column: targetPosition.column }, selectionIndex);
         }),
       };
     }
@@ -174,7 +216,7 @@ export function operatorTarget(
         rows: heads.flatMap((head, index) => {
           const target = selectionHead(hostSelections[index] ?? selections[index]);
           // Vim: `j`/`k` that cannot move (first/last line) fails the operation.
-          return target.row === head.row ? [] : [rowRange(head, target)];
+          return target.row === head.row ? [] : [rowRange(head, target, index)];
         }),
       };
     }
@@ -182,31 +224,31 @@ export function operatorTarget(
       const rowDelta = motion.type === "up" ? -count : count;
       return {
         kind: "linewise",
-        rows: heads.flatMap(head => {
+        rows: heads.flatMap((head, selectionIndex) => {
           const targetRow = Math.max(0, Math.min(head.row + rowDelta, editor.lineCount() - 1));
-          return targetRow === head.row ? [] : [rowRange(head, { row: targetRow, column: head.column })];
+          return targetRow === head.row ? [] : [rowRange(head, { row: targetRow, column: head.column }, selectionIndex)];
         }),
       };
     }
-    // `H`/`M`/`L`: linewise between the cursor row and the window line,
-    // including the same-row case (`dM` on the middle line deletes one line).
-    if (motion.type === "windowLine") {
+    // `_` and `H`/`M`/`L`: linewise between the cursor row and the resolved
+    // target, including the same-row case (`d_` deletes the current line).
+    if (motion.type === "startOfLineDownward" || motion.type === "windowLine") {
       return {
         kind: "linewise",
-        rows: heads.map(head => rowRange(head, applyMotion(editor, head, motion, count))),
+        rows: heads.map((head, selectionIndex) => rowRange(head, applyMotion(editor, head, motion, count), selectionIndex)),
       };
     }
     // `gg`: linewise between the cursor row and the (counted) target line,
     // including the same-row case.
     return {
       kind: "linewise",
-      rows: heads.map(head => rowRange(head, { row: Math.min(count - 1, editor.lineCount() - 1), column: head.column })),
+      rows: heads.map((head, selectionIndex) => rowRange(head, { row: Math.min(count - 1, editor.lineCount() - 1), column: head.column }, selectionIndex)),
     };
   }
 
   return {
     kind: "charwise",
-    targets: heads.map(head => {
+    targets: heads.map((head, selectionIndex) => {
       // Vim: `cw` on a word acts like `ce` (`:h cw`); the adjustment lives
       // behind [forChange] (Zed: change's expanded word range).
       const range = forChange ? changeMotionRange(editor, head, motion, count) : motionRange(editor, head, motion, count);
@@ -220,7 +262,7 @@ export function operatorTarget(
       })()
         ? true
         : undefined;
-      return { head, range, cancelled };
+      return { head, range, cancelled, selectionIndex };
     }),
   };
 }
@@ -243,7 +285,7 @@ export function textObjectOperatorTarget(
   editor: VimEditorCapabilities,
   object: TextObject,
   { around, count, forChange = false }: { around: boolean; count: number; forChange?: boolean }
-): OperatorTarget {
+): ResolvedTarget {
   const selections = editor.getSelections();
 
   // Vim: paragraph text objects operate linewise after an operator (`:h ap`),
@@ -251,17 +293,20 @@ export function textObjectOperatorTarget(
   // A single blank line is a valid one-row paragraph; only `ap` on a trailing
   // blank run at end of file fails (cancelled: no edit, change does not enter
   // insert).
-  if (object.type === "paragraph") {
+  // Linewise text objects: paragraphs (`:h ap`), and the plugin objects that
+  // operate on whole lines (vim-indent-object `ii`/`ai`/`aI`,
+  // vim-textobj-entire `ie`/`ae`).
+  if (object.type === "paragraph" || object.type === "indent" || object.type === "entire") {
     const rows: RowRange[] = [];
     const charwise: CharwiseTarget[] = [];
-    for (const selection of selections) {
+    for (const [selectionIndex, selection] of selections.entries()) {
       const head = selectionHead(selection);
       const range = textObjectRange(editor, head, object, { around, count });
-      if (paragraphObjectCancelled(editor, head, range, { around })) {
-        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined });
+      if (object.type === "paragraph" && paragraphObjectCancelled(editor, head, range, { around })) {
+        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined, selectionIndex });
         continue;
       }
-      rows.push({ startRow: range.start.row, endRow: range.end.row, column: head.column });
+      rows.push({ startRow: range.start.row, endRow: range.end.row, column: head.column, selectionIndex });
     }
     if (rows.length === 0) return { kind: "charwise", targets: charwise };
     return { kind: "linewise", rows };
@@ -272,18 +317,18 @@ export function textObjectOperatorTarget(
   if (object.type === "word" && around) {
     const rows: RowRange[] = [];
     const charwise: CharwiseTarget[] = [];
-    for (const selection of selections) {
+    for (const [selectionIndex, selection] of selections.entries()) {
       const head = selectionHead(selection);
       const blankRows = count === 1 ? blankLineAroundWordRows(editor, head) : undefined;
       if (blankRows === "cancelled") {
-        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined });
+        charwise.push({ head, range: { start: head, end: head }, cancelled: forChange ? true : undefined, selectionIndex });
         continue;
       }
       if (blankRows !== undefined) {
-        rows.push({ ...blankRows, column: head.column });
+        rows.push({ ...blankRows, column: head.column, selectionIndex });
         continue;
       }
-      charwise.push({ head, range: textObjectRange(editor, head, object, { around, count }) });
+      charwise.push({ head, range: textObjectRange(editor, head, object, { around, count }), selectionIndex });
     }
     if (rows.length > 0) return { kind: "linewise", rows };
     return { kind: "charwise", targets: charwise };
@@ -291,26 +336,33 @@ export function textObjectOperatorTarget(
 
   return {
     kind: "charwise",
-    targets: selections.map(selection => {
+    targets: selections.map((selection, selectionIndex) => {
       const head = selectionHead(selection);
       const range = textObjectRange(editor, head, object, { around, count });
-      // Vim: a surround object with no pair at the cursor fails the operator
-      // (`ci"` with no quotes ahead must not enter insert).
-      const cancelled = object.type === "surround" && !surroundObjectFound(editor, head, object) ? true : undefined;
-      return { head, range, cancelled };
+      // Vim: a surround/tag object with no pair at the cursor fails the
+      // operator (`ci"` with no quotes ahead, `cit` outside any tag, must not
+      // enter insert).
+      const cancelled =
+        (object.type === "surround" && !surroundObjectFound(editor, head, object))
+        || (object.type === "tag" && !tagObjectFound(editor, head, count))
+        || (object.type === "argument" && !argumentObjectFound(editor, head))
+          ? true
+          : undefined;
+      return { head, range, cancelled, selectionIndex };
     }),
   };
 }
 
 // Zed: `dd`/`cc`/`yy` are operator + `motion::Motion::CurrentLine`. Doubling
 // the pending operator's final key targets [count] whole lines from the cursor.
-export function lineOperatorTarget(editor: VimEditorCapabilities, count: number): OperatorTarget {
+export function lineOperatorTarget(editor: VimEditorCapabilities, count: number): ResolvedTarget {
   return {
     kind: "linewise",
-    rows: editor.getSelections().map(selection => {
+    rows: editor.getSelections().map((selection, selectionIndex) => {
       const head = selectionHead(selection);
       return {
         startRow: head.row,
+        selectionIndex,
         endRow: Math.min(head.row + count - 1, editor.lineCount() - 1),
         column: head.column,
       };
@@ -321,7 +373,7 @@ export function lineOperatorTarget(editor: VimEditorCapabilities, count: number)
 // Vim: `dG`/`d{count}G` and friends operate linewise between the cursor row
 // and an absolute target row (`:h G`: "not a motion character" semantics are
 // resolved by the caller; the target row arrives precomputed).
-export function rowOperatorTarget(editor: VimEditorCapabilities, targetRow: number): OperatorTarget {
+export function rowOperatorTarget(editor: VimEditorCapabilities, targetRow: number): ResolvedTarget {
   const clampedRow = Math.max(0, Math.min(targetRow, editor.lineCount() - 1));
   return {
     kind: "linewise",
@@ -332,6 +384,31 @@ export function rowOperatorTarget(editor: VimEditorCapabilities, targetRow: numb
   };
 }
 
+// Resolve a lazy [OperatorTarget] descriptor to concrete ranges against the
+// current editor — the operator analog of [applyMotion] for [Motion]. Called at
+// execution time (including each `.` replay), so the ranges always reflect the
+// cursor as it is now, not as it was when the command was first typed. [count]
+// is the combined operator/operand count; [hasCount] distinguishes `G`
+// (last line) from `{count}G` (line N); [forChange] applies the change-specific
+// adjustments (`cw`-as-`ce`, object cancellation).
+export function resolveTarget(
+  editor: VimEditorCapabilities,
+  target: OperatorTarget,
+  count: number,
+  { hasCount = false, forChange = false }: { hasCount?: boolean; forChange?: boolean } = {}
+): ResolvedTarget {
+  switch (target.kind) {
+    case "motion":
+      return operatorTarget(editor, target.motion, count, { forcedMotion: target.forced, forChange });
+    case "object":
+      return textObjectOperatorTarget(editor, target.object, { around: target.around, count, forChange });
+    case "line":
+      return lineOperatorTarget(editor, count);
+    case "lastLine":
+      return rowOperatorTarget(editor, hasCount ? Math.max(0, count - 1) : editor.lineCount() - 1);
+  }
+}
+
 // Zed: `normal::Vim::normal_motion` / `normal_object`. The only switch over
 // operators; application modules are each total over target kinds, so a new
 // targeting source cannot stub an operator silently.
@@ -340,7 +417,7 @@ export function applyOperatorToTarget(
   registers: Registers,
   registerName: RegisterName | undefined,
   operator: RangeOperator,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): OperatorOutcome {
   switch (operator.type) {
     case "delete":
@@ -355,7 +432,19 @@ export function applyOperatorToTarget(
       applyConvert(editor, operator.target, target);
       return { enterInsert: false };
     case "indent":
-      applyIndent(editor, operator.direction, target);
+      applyIndent(editor, operator.direction, target, operator.count);
+      return { enterInsert: false };
+    case "format":
+      applyFormat(editor, target, { textwidth: operator.textwidth, keepCursor: operator.keepCursor });
+      return { enterInsert: false };
+    case "comment":
+      applyComment(editor, target, { block: operator.block });
+      return { enterInsert: false };
+    case "replaceWithRegister":
+      applyReplaceWithRegister(editor, registers, registerName, target, {
+        lineAction: operator.lineAction ?? false,
+        multilineObject: operator.multilineObject ?? false,
+      });
       return { enterInsert: false };
   }
 }

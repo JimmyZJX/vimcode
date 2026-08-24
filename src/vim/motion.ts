@@ -5,6 +5,7 @@
 // - intentional differences: this first slice implements model-position motions only;
 //   display-line and fold-aware movement will be adapter capabilities.
 
+import { nextGraphemeBoundary, previousGraphemeBoundary } from "./grapheme.js";
 import {
   Position,
   TextRange,
@@ -19,10 +20,14 @@ import {
 // basic model-position motions; missing Zed variants should be added here with
 // provenance as they are translated.
 export type FindMotion =
-  | { type: "findForward"; before: boolean; char: string }
-  | { type: "findBackward"; after: boolean; char: string }
-  | { type: "searchForward"; query: string; options?: SearchOptions }
-  | { type: "searchBackward"; query: string; options?: SearchOptions };
+  // [repeated] marks a `;`/`,` re-application of the find (Zed: the
+  // `RepeatFind`/`RepeatFindReversed` wrappers around the stored motion): a
+  // repeated till must make progress even when the cursor already sits
+  // adjacent to a match (Vim default 'cpo' without ';', see `:h cpo-;`).
+  | { type: "findForward"; before: boolean; char: string; repeated?: boolean }
+  | { type: "findBackward"; after: boolean; char: string; repeated?: boolean }
+  | { type: "searchForward"; query: string; options?: SearchOptions; offset?: SearchOffset }
+  | { type: "searchBackward"; query: string; options?: SearchOptions; offset?: SearchOffset };
 
 export function reverseFindMotion(motion: FindMotion): FindMotion {
   switch (motion.type) {
@@ -48,12 +53,25 @@ export type Motion =
   | { type: "down"; displayLine?: boolean }
   | { type: "startOfLine" }
   | { type: "firstNonWhitespace" }
+  // Vim `_`: [count] - 1 lines downward, then the first non-blank character.
+  // Unlike `^`, this is naturally linewise when used as an operator motion.
+  | { type: "startOfLineDownward" }
   | { type: "lastNonWhitespace" }
   | { type: "middleOfLine" }
   | { type: "endOfLine" }
   | { type: "startOfDocument" }
   | { type: "startOfFile" }
   | { type: "endOfDocument" }
+  // Go to an absolute 1-based line, keeping the column (Vim `G`/`NG` with
+  // 'nostartofline'). Count-agnostic: the target line is baked in by the caller.
+  | { type: "goToLine"; line: number }
+  // Go [count] lines down/up to the first non-blank character (Vim `+`/`<CR>`
+  // and `-`). Count-aware: the row delta is [count] in [direction].
+  | { type: "firstNonBlankLine"; direction: "down" | "up" }
+  // Go to the (1-based) [column] of the current line (Vim `|`). The column is
+  // baked in by the caller (from the count) so the motion is idempotent, like
+  // `goToLine`/`goToPercentage`; exclusive as an operator target.
+  | { type: "goToColumn"; column: number }
   | { type: "nextWordStart"; bigWord: boolean }
   | { type: "nextWordEnd"; bigWord: boolean }
   | { type: "previousWordStart"; bigWord: boolean }
@@ -72,9 +90,20 @@ export type Motion =
   | { type: "searchMatch"; range: TextRange }
   | FindMotion;
 import { VimEditorCapabilities, clipPosition, normalCursorPosition } from "./editor.js";
-import { SearchOptions } from "./search.js";
+import { SearchOffset, SearchOptions } from "./search.js";
 
 // Zed: `motion::register` maps key actions to `Motion` variants once, while
+// Unmatched-bracket motions (`]}`/`])`/`[{`/`[(`): the second key after `]`/`[`
+// names the unmatched bracket to jump to. Shared by the operator operand grammar,
+// the standalone motion handler, and visual selection extension.
+export function bracketMotion(bracket: string, key: string): Motion | undefined {
+  if (bracket === "]" && key === "}") return { type: "unmatchedForward", char: "}" };
+  if (bracket === "]" && key === ")") return { type: "unmatchedForward", char: ")" };
+  if (bracket === "[" && key === "{") return { type: "unmatchedBackward", char: "{" };
+  if (bracket === "[" && key === "(") return { type: "unmatchedBackward", char: "(" };
+  return undefined;
+}
+
 // `vim::Vim::motion` dispatches those motions by mode. This is the local
 // key-to-motion subset used by both normal and visual modes.
 export function motionForKey(key: string): Motion | undefined {
@@ -108,6 +137,8 @@ export function motionForKey(key: string): Motion | undefined {
       return { type: "endOfDocument" };
     case "^":
       return { type: "firstNonWhitespace" };
+    case "_":
+      return { type: "startOfLineDownward" };
     case "$":
     case "end":
       return { type: "endOfLine" };
@@ -152,7 +183,7 @@ function isWord(char: string): boolean {
   return /\w/.test(char);
 }
 
-function charClass(char: string, bigWord: boolean): "whitespace" | "word" | "other" {
+export function charClass(char: string, bigWord: boolean): "whitespace" | "word" | "other" {
   if (isWhitespace(char)) return "whitespace";
   if (bigWord || isWord(char)) return "word";
   return "other";
@@ -167,14 +198,14 @@ function charAt(editor: VimEditorCapabilities, pos: Position): string | undefine
 }
 
 function nextPosition(editor: VimEditorCapabilities, pos: Position): Position | undefined {
-  const lineLength = editor.lineLength(pos.row);
-  if (pos.column < lineLength) return { row: pos.row, column: pos.column + 1 };
+  const line = editor.line(pos.row);
+  if (pos.column < line.length) return { row: pos.row, column: nextGraphemeBoundary(line, pos.column) };
   if (pos.row + 1 < editor.lineCount()) return { row: pos.row + 1, column: 0 };
   return undefined;
 }
 
 function previousPosition(editor: VimEditorCapabilities, pos: Position): Position | undefined {
-  if (pos.column > 0) return { row: pos.row, column: pos.column - 1 };
+  if (pos.column > 0) return { row: pos.row, column: previousGraphemeBoundary(editor.line(pos.row), pos.column) };
   if (pos.row > 0) return { row: pos.row - 1, column: editor.lineLength(pos.row - 1) };
   return undefined;
 }
@@ -344,13 +375,13 @@ export function applyMotionOnce(
   const clipped = clipPosition(editor, start);
   switch (motion.type) {
     case "left":
-      return normalCursorPosition(editor, { row: clipped.row, column: clipped.column - 1 });
+      return normalCursorPosition(editor, { row: clipped.row, column: previousGraphemeBoundary(editor.line(clipped.row), clipped.column) });
     case "wrappingLeft":
-      if (clipped.column > 0) return normalCursorPosition(editor, { row: clipped.row, column: clipped.column - 1 });
+      if (clipped.column > 0) return normalCursorPosition(editor, { row: clipped.row, column: previousGraphemeBoundary(editor.line(clipped.row), clipped.column) });
       if (clipped.row > 0) return normalCursorPosition(editor, { row: clipped.row - 1, column: editor.lineLength(clipped.row - 1) });
       return normalCursorPosition(editor, clipped);
     case "right":
-      return normalCursorPosition(editor, { row: clipped.row, column: clipped.column + 1 });
+      return normalCursorPosition(editor, { row: clipped.row, column: nextGraphemeBoundary(editor.line(clipped.row), clipped.column) });
     case "wrappingRight":
       return wrappingRight(editor, clipped);
     case "up":
@@ -361,6 +392,8 @@ export function applyMotionOnce(
       return { row: clipped.row, column: 0 };
     case "firstNonWhitespace":
       return firstNonWhitespaceOrCurrent(editor, clipped);
+    case "startOfLineDownward":
+      return firstNonWhitespace(editor, clipped.row);
     case "lastNonWhitespace":
       return lastNonWhitespace(editor, clipped.row);
     case "middleOfLine":
@@ -375,6 +408,17 @@ export function applyMotionOnce(
       return position(0, 0);
     case "endOfDocument":
       return endOfLine(editor, editor.lineCount() - 1);
+    case "goToLine":
+      return normalCursorPosition(editor, {
+        row: Math.max(0, Math.min(motion.line - 1, editor.lineCount() - 1)),
+        column: clipped.column,
+      });
+    case "goToColumn":
+      return normalCursorPosition(editor, { row: clipped.row, column: motion.column - 1 });
+    case "firstNonBlankLine":
+      return firstNonWhitespace(editor, motion.direction === "down"
+        ? Math.min(clipped.row + 1, editor.lineCount() - 1)
+        : Math.max(clipped.row - 1, 0));
     case "nextWordStart":
       return nextWordStart(editor, clipped, motion.bigWord);
     case "nextWordEnd":
@@ -413,13 +457,13 @@ export function applyMotionOnce(
     case "searchMatch":
       return normalCursorPosition(editor, motion.range.start);
     case "findForward":
-      return findForward(editor, clipped, motion.char, 1, { before: motion.before }) ?? clipped;
+      return findForward(editor, clipped, motion.char, 1, { before: motion.before, repeated: motion.repeated }) ?? clipped;
     case "findBackward":
-      return findBackward(editor, clipped, motion.char, 1, { after: motion.after });
+      return findBackward(editor, clipped, motion.char, 1, { after: motion.after, repeated: motion.repeated });
     case "searchForward":
-      return searchForward(editor, clipped, motion.query, motion.options) ?? clipped;
+      return searchForward(editor, clipped, motion.query, motion.options, motion.offset) ?? clipped;
     case "searchBackward":
-      return searchBackward(editor, clipped, motion.query, motion.options) ?? clipped;
+      return searchBackward(editor, clipped, motion.query, motion.options, motion.offset) ?? clipped;
   }
 }
 
@@ -438,6 +482,11 @@ function isInclusiveMotion(motion: Motion): boolean {
     case "findForward":
     case "goToPercentage":
       return true;
+    case "searchForward":
+    case "searchBackward":
+      // Vim: an `e` (end) search offset makes the motion inclusive; a `start`
+      // offset (or none) leaves it exclusive.
+      return motion.offset?.type === "end";
     default:
       return false;
   }
@@ -492,7 +541,7 @@ export function applyMotionWithGoal(
   { allowEndOfLine = false }: { allowEndOfLine?: boolean } = {}
 ): MotionResult {
   if (motion.type === "findForward") {
-    return { position: findForward(editor, start, motion.char, count, { before: motion.before }) ?? start };
+    return { position: findForward(editor, start, motion.char, count, { before: motion.before, repeated: motion.repeated }) ?? start };
   }
   if (motion.type === "startOfDocument") {
     const row = Math.max(0, Math.min(count - 1, editor.lineCount() - 1));
@@ -539,7 +588,20 @@ export function applyMotionWithGoal(
       goal: nextGoal,
     };
   }
-  if (motion.type === "matching" || motion.type === "unmatchedForward" || motion.type === "unmatchedBackward" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "goToPercentage" || motion.type === "jump" || motion.type === "searchMatch") {
+  if (motion.type === "firstNonBlankLine") {
+    // Vim `+`/`<CR>` (down) and `-` (up): [count] lines in [direction], first
+    // non-blank column.
+    const delta = motion.direction === "down" ? count : -count;
+    const row = Math.max(0, Math.min(start.row + delta, editor.lineCount() - 1));
+    return { position: firstNonWhitespace(editor, row) };
+  }
+  if (motion.type === "startOfLineDownward") {
+    // Zed `Motion::StartOfLineDownward` and Neovim `nv_lineop` both receive
+    // the full count once and move [count] - 1 rows from the original head.
+    const row = Math.min(start.row + count - 1, editor.lineCount() - 1);
+    return { position: firstNonWhitespace(editor, row) };
+  }
+  if (motion.type === "matching" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "endOfParagraph" || motion.type === "startOfParagraph" || motion.type === "goToPercentage" || motion.type === "jump" || motion.type === "searchMatch" || motion.type === "goToLine" || motion.type === "goToColumn") {
     if (motion.type === "nextSentence") return { position: sentenceForward(editor, start, count) };
     if (motion.type === "previousSentence") return { position: sentenceBackward(editor, start, count) };
     if (motion.type === "endOfParagraph") return { position: endOfParagraphMotion(editor, start, count) };
@@ -547,13 +609,18 @@ export function applyMotionWithGoal(
     return { position: applyMotionOnce(editor, start, motion) };
   }
   if (motion.type === "findBackward") {
-    return { position: findBackward(editor, start, motion.char, count, { after: motion.after }) };
+    return { position: findBackward(editor, start, motion.char, count, { after: motion.after, repeated: motion.repeated }) };
   }
-  if (motion.type === "searchForward") {
-    return { position: searchForward(editor, start, motion.query, motion.options) ?? start };
-  }
-  if (motion.type === "searchBackward") {
-    return { position: searchBackward(editor, start, motion.query, motion.options) ?? start };
+  if (motion.type === "searchForward" || motion.type === "searchBackward") {
+    let position = start;
+    for (let step = 0; step < count; step++) {
+      const next = motion.type === "searchForward"
+        ? searchForward(editor, position, motion.query, motion.options, motion.offset)
+        : searchBackward(editor, position, motion.query, motion.options, motion.offset);
+      if (next === undefined) break;
+      position = next;
+    }
+    return { position };
   }
   if (motion.type === "up" || motion.type === "down") {
     const nextGoal = goal ?? { type: "modelColumn", column: start.column };
@@ -584,8 +651,12 @@ function modelColumnForGoal(
     case "endOfLine":
       return maxColumn;
     case "modelColumn":
-    case "viewColumn":
       return Math.min(goal.column, maxColumn);
+    case "viewColumn":
+      // View-column goals are 1-based VSCode view coordinates (set by the host
+      // view-line movements, e.g. `ctrl-d`/`ctrl-u`). The model core cannot see
+      // soft wraps or folds, so approximate with the 0-based model column.
+      return Math.max(0, Math.min(goal.column - 1, maxColumn));
   }
 }
 
@@ -618,14 +689,20 @@ export function motionRange(
       return orderedRange(start, { row: target.row, column });
     }
     const range = motionRange(editor, start, inner, count);
+    if (inner.type === "matching") {
+      // Neovim: the charwise force does not toggle `%` to exclusive (the
+      // default `%` is the bundled matchit mapping, not a plain inclusive
+      // motion); `dv%` deletes the same inclusive range as `d%`.
+      return range;
+    }
+    const endLine = editor.line(range.end.row);
     if (isInclusiveMotion(inner)) {
-      const end = { row: range.end.row, column: Math.max(0, range.end.column - 1) };
+      const end = { row: range.end.row, column: previousGraphemeBoundary(endLine, range.end.column) };
       return { start: range.start, end: comparePositions(end, range.start) < 0 ? range.start : end };
     }
-    const endLineLength = editor.lineLength(range.end.row);
     return {
       start: range.start,
-      end: { row: range.end.row, column: Math.min(range.end.column + 1, endLineLength) },
+      end: { row: range.end.row, column: range.end.column < endLine.length ? nextGraphemeBoundary(endLine, range.end.column) : endLine.length },
     };
   }
   // Vim `c<BS>`/`d<BS>`: backspace is an exclusive motion to the previous
@@ -634,7 +711,12 @@ export function motionRange(
   // normal-mode cursor cell.
   if (motion.type === "wrappingLeft") {
     if (start.column > 0) {
-      return { start: { row: start.row, column: Math.max(0, start.column - count) }, end: start };
+      const line = editor.line(start.row);
+      let startColumn = start.column;
+      for (let step = 0; step < count && startColumn > 0; step++) {
+        startColumn = previousGraphemeBoundary(line, startColumn);
+      }
+      return { start: { row: start.row, column: startColumn }, end: start };
     }
     if (start.row > 0) {
       return { start: { row: start.row - 1, column: editor.lineLength(start.row - 1) }, end: start };
@@ -643,10 +725,12 @@ export function motionRange(
   }
   const end = applyMotion(editor, start, motion, count);
   if (motion.type === "right") {
-    return {
-      start,
-      end: { row: start.row, column: Math.min(start.column + count, editor.lineLength(start.row)) },
-    };
+    const line = editor.line(start.row);
+    let endColumn = start.column;
+    for (let step = 0; step < count && endColumn < line.length; step++) {
+      endColumn = nextGraphemeBoundary(line, endColumn);
+    }
+    return { start, end: { row: start.row, column: endColumn } };
   }
   if (motion.type === "endOfLine") {
     return orderedRange(start, { row: end.row, column: editor.lineLength(end.row) });
@@ -681,19 +765,36 @@ export function motionRange(
     }
     return orderedRange(start, end);
   }
-  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "goToPercentage" || motion.type === "matching" || motion.type === "unmatchedBackward" || motion.type === "jump") {
+  if (motion.type === "matching") {
+    // Vim: `%` is an inclusive motion — the landed-on bracket is included in
+    // the operated range in both directions (`d%` deletes `(abc)` entirely
+    // from either bracket). When no match is found, `matching` returns the
+    // start position and the inclusive range covers the character under the
+    // cursor — Neovim's default `%` (the bundled matchit mapping) does the
+    // same under an operator, including joining lines when the cursor sits on
+    // an empty line (the one case where the one-character extension wraps).
+    const range = orderedRange(start, end);
+    return { start: range.start, end: nextPosition(editor, range.end) ?? range.end };
+  }
+  if (motion.type === "startOfParagraph" || motion.type === "nextSentence" || motion.type === "previousSentence" || motion.type === "goToPercentage" || motion.type === "unmatchedBackward" || motion.type === "jump") {
     return orderedRange(start, end);
   }
   if (motion.type === "searchMatch") {
     return motion.range;
   }
   if (motion.type === "findForward") {
-    const target = findForwardTarget(editor, start, motion.char, count);
+    const target = findForwardMotionTarget(editor, start, motion.char, count, {
+      before: motion.before,
+      repeated: motion.repeated === true,
+    });
     if (target === undefined) return { start, end: start };
     return orderedRange(start, motion.before ? target : nextPosition(editor, target) ?? target);
   }
   if (motion.type === "findBackward") {
-    const target = findBackwardTarget(editor, start, motion.char, count);
+    const target = findBackwardMotionTarget(editor, start, motion.char, count, {
+      after: motion.after,
+      repeated: motion.repeated === true,
+    });
     if (target === undefined) return { start, end: start };
     return orderedRange(motion.after ? nextPosition(editor, target) ?? target : target, nextPosition(editor, start) ?? start);
   }
@@ -705,7 +806,16 @@ export function motionRange(
       motion.options
     );
     if (target === undefined) return { start, end: start };
-    return orderedRange(start, target.start);
+    const offsetPosition = applySearchOffset(editor, target, motion.offset);
+    // Vim: `/pat/e` (end offset) makes the operator motion inclusive of the
+    // landed-on character; without an `e` offset it stays exclusive, as a plain
+    // `/pat` search does. The inclusive extension only makes sense for a forward
+    // landing (the common `d/pat/e`); for a backward landing the position is the
+    // ordered start and is already included.
+    if (motion.offset?.type === "end" && comparePositions(offsetPosition, start) >= 0) {
+      return orderedRange(start, nextPosition(editor, offsetPosition) ?? offsetPosition);
+    }
+    return orderedRange(start, offsetPosition);
   }
   if (motion.type === "previousWordStart" && end.row < start.row && start.column === 0) {
     const lastIncludedRow = start.row - 1;
@@ -719,9 +829,9 @@ function findForward(
   start: Position,
   char: string,
   count: number,
-  { before }: { before: boolean }
+  { before, repeated = false }: { before: boolean; repeated?: boolean }
 ): Position | undefined {
-  const target = findForwardTarget(editor, start, char, count);
+  const target = findForwardMotionTarget(editor, start, char, count, { before, repeated });
   if (target === undefined) return undefined;
   if (!before) return target;
   if (target.column > 0) return { row: target.row, column: target.column - 1 };
@@ -733,12 +843,50 @@ function findBackward(
   start: Position,
   char: string,
   count: number,
-  { after }: { after: boolean }
+  { after, repeated = false }: { after: boolean; repeated?: boolean }
 ): Position {
-  const target = findBackwardTarget(editor, start, char, count);
+  const target = findBackwardMotionTarget(editor, start, char, count, { after, repeated });
   if (target === undefined) return start;
   if (!after) return target;
   return { row: target.row, column: Math.min(target.column + 1, Math.max(0, editor.lineLength(target.row) - 1)) };
+}
+
+// The matched-character position for a (possibly repeated) forward find. A
+// repeated till whose match is adjacent would leave the cursor in place, so it
+// skips to the following match instead:
+// - Neovim: search.c `searchc` clears `stop` for a `;`/`,` of a `t` with
+//   count 1 ("Force a move of at least one char", 'cpo' without ';').
+// - Zed: motion.rs `RepeatFind` re-runs `find_forward` with `times + 1` when
+//   the motion landed on the current point. With a count the adjacent match
+//   already counts as the first occurrence and the motion makes progress, so
+//   only the count-1 case can retry — matching Neovim's `count == 1` guard.
+function findForwardMotionTarget(
+  editor: VimEditorCapabilities,
+  start: Position,
+  char: string,
+  count: number,
+  { before, repeated }: { before: boolean; repeated: boolean }
+): Position | undefined {
+  const target = findForwardTarget(editor, start, char, count);
+  if (repeated && before && target !== undefined && target.column === start.column + 1) {
+    return findForwardTarget(editor, start, char, count + 1);
+  }
+  return target;
+}
+
+// Backward counterpart of [findForwardMotionTarget] for repeated `T`.
+function findBackwardMotionTarget(
+  editor: VimEditorCapabilities,
+  start: Position,
+  char: string,
+  count: number,
+  { after, repeated }: { after: boolean; repeated: boolean }
+): Position | undefined {
+  const target = findBackwardTarget(editor, start, char, count);
+  if (repeated && after && target !== undefined && target.column === start.column - 1) {
+    return findBackwardTarget(editor, start, char, count + 1);
+  }
+  return target;
 }
 
 function findForwardTarget(editor: VimEditorCapabilities, start: Position, char: string, count: number): Position | undefined {
@@ -765,12 +913,47 @@ function findBackwardTarget(editor: VimEditorCapabilities, start: Position, char
   return { row: start.row, column: found };
 }
 
-function searchForward(editor: VimEditorCapabilities, start: Position, query: string, options: SearchOptions = {}): Position | undefined {
-  return editor.findSearchMatch(query, start, "forward", options)?.start;
+function searchForward(editor: VimEditorCapabilities, start: Position, query: string, options: SearchOptions = {}, offset?: SearchOffset): Position | undefined {
+  return searchWithOffset(editor, start, query, "forward", options, offset);
 }
 
-function searchBackward(editor: VimEditorCapabilities, start: Position, query: string, options: SearchOptions = {}): Position | undefined {
-  return editor.findSearchMatch(query, start, "backward", options)?.start;
+function searchBackward(editor: VimEditorCapabilities, start: Position, query: string, options: SearchOptions = {}, offset?: SearchOffset): Position | undefined {
+  return searchWithOffset(editor, start, query, "backward", options, offset);
+}
+
+function searchWithOffset(
+  editor: VimEditorCapabilities,
+  start: Position,
+  query: string,
+  direction: "forward" | "backward",
+  options: SearchOptions,
+  offset: SearchOffset | undefined
+): Position | undefined {
+  const match = editor.findSearchMatch(query, start, direction, options);
+  if (match === undefined) return undefined;
+  const position = applySearchOffset(editor, match, offset);
+  // Vim: a search always makes progress. An offset can land the cursor back on
+  // its starting position (e.g. `N` after `/pat/e` re-finds the same match, since
+  // the cursor sits past that match's start); when it does, skip to the adjacent
+  // match in the search direction.
+  if (offset !== undefined && comparePositions(position, start) === 0) {
+    const next = editor.findSearchMatch(query, match.start, direction, options);
+    if (next !== undefined) return applySearchOffset(editor, next, offset);
+  }
+  return position;
+}
+
+// Vim `search-offset`: translate a match range into the cursor position implied
+// by the offset. `end` targets the last character of the match (`range.end` is
+// exclusive, so `end - 1`); `start` its first character; both shifted by the
+// signed character delta (which may cross line boundaries via the buffer
+// offset). With no offset the cursor goes to the match start, as before.
+function applySearchOffset(editor: VimEditorCapabilities, range: TextRange, offset?: SearchOffset): Position {
+  if (offset === undefined) return range.start;
+  const base = offset.type === "end"
+    ? offsetOfPosition(editor, range.end) - 1
+    : offsetOfPosition(editor, range.start);
+  return positionOfOffset(editor, Math.max(0, base + offset.delta));
 }
 
 function documentText(editor: VimEditorCapabilities): string {
@@ -960,7 +1143,11 @@ function unmatched(editor: VimEditorCapabilities, start: Position, char: string,
   const pair = pairForTarget(char);
   if (pair === undefined) return start;
   const text = documentText(editor);
-  const startOffset = offsetOfPosition(editor, start);
+  // Neovim's `]}`/`])` and `[{`/`[(` search strictly after/before the
+  // cursor. This also lets generic repeated-motion application advance to
+  // successive unmatched brackets for a count instead of finding the same
+  // bracket again.
+  const startOffset = offsetOfPosition(editor, start) + (direction === "forward" ? 1 : -1);
   const matchOffset = direction === "forward"
     ? unmatchedForwardOffset(text, startOffset, pair)
     : unmatchedBackwardOffset(text, startOffset, pair);
@@ -968,26 +1155,16 @@ function unmatched(editor: VimEditorCapabilities, start: Position, char: string,
 }
 
 function unmatchedForwardOffset(text: string, startOffset: number, { open, close }: { open: string; close: string }): number | undefined {
-  let depth = unmatchedDepthBefore(text, startOffset, { open, close });
+  let depth = 0;
   for (let offset = startOffset; offset < text.length; offset++) {
     const char = text[offset];
     if (char === open) depth++;
     if (char === close) {
-      if (depth <= 1) return offset;
+      if (depth === 0) return offset;
       depth--;
     }
   }
   return undefined;
-}
-
-function unmatchedDepthBefore(text: string, startOffset: number, { open, close }: { open: string; close: string }): number {
-  let depth = 0;
-  for (let offset = 0; offset < startOffset; offset++) {
-    const char = text[offset];
-    if (char === open) depth++;
-    if (char === close && depth > 0) depth--;
-  }
-  return depth;
 }
 
 function unmatchedBackwardOffset(text: string, startOffset: number, { open, close }: { open: string; close: string }): number | undefined {

@@ -4,6 +4,17 @@
 // - translated concepts: editor operations are mediated through a testable host interface
 // - intentional differences: VSCode and fake editors implement this capability interface directly
 
+import type { SubstitutePreview } from "./command.js";
+import { graphemeStart } from "./grapheme.js";
+import { LineTracker, TrackedLines } from "./line_tracker.js";
+import {
+  SearchDirection,
+  SearchMatch,
+  SearchMatchCount,
+  SearchOptions,
+  allSearchMatchesInText,
+  findSearchMatchInText,
+} from "./search.js";
 import {
   CursorStyle,
   Position,
@@ -17,7 +28,6 @@ import {
   position,
   selectionHead,
 } from "./state.js";
-import { SearchDirection, SearchMatch, SearchOptions, findSearchMatchInText } from "./search.js";
 
 export type EasyMotionMarker = {
   label: string;
@@ -27,7 +37,14 @@ export type EasyMotionMarker = {
 export type HostCommand = "navigateBack" | "navigateForward" | "undo" | "redo";
 export type HostDirection = "up" | "down";
 export type HostRevealTarget = "top" | "center" | "bottom";
-export type HostFoldCommand = "toggle" | "open" | "close" | "openRecursive" | "closeRecursive" | "openAll" | "closeAll";
+export type HostFoldCommand =
+  | "toggle"
+  | "open"
+  | "close"
+  | "openRecursive"
+  | "closeRecursive"
+  | "openAll"
+  | "closeAll";
 export type ApplyEditsOptions = {
   undoStopBefore?: boolean;
   undoStopAfter?: boolean;
@@ -36,6 +53,30 @@ export type ApplyEditsOptions = {
 export type NativeCommandOptions = {
   preserveVisualSelection?: boolean;
   syncSelectionAfter?: boolean;
+  /** Selections to apply once the (asynchronous) native command completes —
+      e.g. the restored cursor after `gcc` runs the native comment toggle over
+      a temporary selection. */
+  selectionsAfter?: readonly VimSelection[];
+  /** Reconcile Vim state from the editor once the command completes, but
+      *without* holding the key pipeline. [syncSelectionAfter] makes the key's
+      job — and therefore every later keystroke — wait for the command; that
+      is right for undo/redo (the next key depends on the restored state) but
+      froze typing for the duration of `:w` under slow save participants
+      (format-on-save, remote filesystems). Background sync lets keys flow and
+      runs one external-state reconcile when the command resolves (selection
+      events are suppressed while a native command is in flight, so the
+      reconcile cannot be event-driven). */
+  backgroundSync?: boolean;
+  /** Runs once the command has *completed successfully* — and not at all when
+      it fails. Native commands are asynchronous, so two back-to-back
+      [executeNativeCommand] calls race: `:wq` firing close while the save is
+      still in flight makes VSCode see a dirty editor and ask for
+      confirmation. Chaining the follow-up in the callback orders them (and a
+      failed save never closes the editor). A returned promise is awaited: the
+      command counts as in progress — and [syncSelectionAfter] waits — until
+      the callback's own work is done too. (The in-memory test host runs
+      everything synchronously and does not await.) */
+  onResolved?: () => void | Promise<void>;
 };
 
 export type VimUndoTransaction = {
@@ -46,8 +87,43 @@ export type VimUndoTransaction = {
 // Change-like commands ([c], [s], visual [c], etc.) first delete text and then
 // enter insert/replace mode; use [keepUndoTransactionOpen] for the deletion half
 // and call [finishUndoTransaction] when Escape leaves insert/replace mode.
-export function keepUndoTransactionOpen(options: ApplyEditsOptions = {}): ApplyEditsOptions {
+export function keepUndoTransactionOpen(
+  options: ApplyEditsOptions = {}
+): ApplyEditsOptions {
   return { ...options, undoStopAfter: false };
+}
+
+// The text a printable insert-mode key inserts, or [undefined] for a key that
+// is not plain typed input (a bare `backspace`, a ctrl-chord, …). Shared by the
+// Vim core (dispatch/ownership) and the in-memory editor's [replayInsertKey].
+export function normalViewLineColumnForGoal(
+  goal: VimSelectionGoal,
+  { minColumn, maxColumn }: { minColumn: number; maxColumn: number }
+): number {
+  // Host view positions are 1-based and [maxColumn] is one past the final
+  // character. Normal-mode display-line movement must not return that boundary:
+  // at a soft wrap it converts to the first character of the next view line.
+  const maxCursorColumn = Math.max(minColumn, maxColumn - 1);
+  if (goal.type === "endOfLine") return maxCursorColumn;
+  const requestedColumn =
+    goal.type === "viewColumn" ? goal.column : goal.column + 1;
+  return Math.max(minColumn, Math.min(requestedColumn, maxCursorColumn));
+}
+
+export function insertTextForKey(key: string): string | undefined {
+  if (key === "space") return " ";
+  if (key === "enter") return "\n";
+  if (key === "\n") return "\n";
+  if (key.length === 1) return key;
+  // A single astral character (e.g. an emoji from a remap replacement) is one
+  // key even though it spans two UTF-16 units.
+  if (
+    key.length === 2 &&
+    key.charCodeAt(0) >= 0xd800 &&
+    key.charCodeAt(0) <= 0xdbff
+  )
+    return key;
+  return undefined;
 }
 
 // Zed: `vim::Vim::update_editor` is the closest
@@ -72,25 +148,84 @@ export interface VimEditorCapabilities {
   setInsertPendingText(text: string | undefined): void;
   showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void;
   clearEasyMotionMarkers(): void;
+  /** Every yank reports the yanked ranges here; the host renders a transient
+      highlight when the user opted in (VSCodeVim `vim.highlightedyank.*` —
+      `BaseOperator.highlightYankedRanges`). Rendering (color, text color,
+      duration, enablement) is entirely a host concern. */
+  highlightYankedRanges(ranges: readonly TextRange[]): void;
 
-  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options?: ApplyEditsOptions): void;
-  beginUndoTransaction(selectionsBefore: readonly VimSelection[]): VimUndoTransaction;
+  applyEdits(
+    edits: readonly TextEdit[],
+    selectionsAfter: readonly VimSelection[],
+    options?: ApplyEditsOptions
+  ): void;
+  /** Track line identities across buffer edits (Vim `:h :global` pass 2: the
+      marked lines shift as earlier iterations add/remove lines, and a deleted
+      line's mark dies). See [LineTracker] for the transform semantics. */
+  trackLines(rows: readonly number[]): TrackedLines;
+  beginUndoTransaction(
+    selectionsBefore: readonly VimSelection[]
+  ): VimUndoTransaction;
   finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void;
   flushUndoTransaction(): void;
 
+  // Reproduce the host's default handling of an insert/replace-mode [key] that
+  // Vim let pass through (see [RecordedKey] "typed"). It is called on the
+  // replay path (dot-repeat / macros) — where there is no real keydown — and in
+  // tests; live typing is handled natively by the host (the controller does not
+  // preventDefault). VSCode routes the key through its real keybinding resolution
+  // (a printable char → the `type` command, `backspace` → `deleteLeft`, honoring
+  // user overrides); the in-memory editor applies the equivalent buffer edit so
+  // tests can assert contents. Edits keep the insert undo transaction open (they
+  // coalesce into one undo unit finished on Escape).
+  replayInsertKey(key: string): void;
+
+  // Open a new line below/above every cursor with the host's language-aware
+  // auto-indentation (VSCode's Insert Line Below/Above), leaving each cursor
+  // on its new line after the indent. Optional host delegation like
+  // [replayInsertKey]; returns false when the host cannot run it (e.g. no
+  // attached model), letting [openLine] fall back to the model-buffer edit.
+  // The host must not push undo stops: the caller runs this inside the
+  // `o`/`O` insert session's open undo unit.
+  openLineNatively?(options: { above: boolean }): boolean;
+
   executeHostCommand(command: HostCommand): void;
-  executeNativeCommand(command: string, args?: readonly unknown[], options?: NativeCommandOptions): void;
+  executeNativeCommand(
+    command: string,
+    args?: readonly unknown[],
+    options?: NativeCommandOptions
+  ): void | Promise<void>;
   isExecutingNativeCommand?(): boolean;
   revealPrimaryCursorIfOutsideViewport(): void;
   revealRange(range: TextRange): void;
   revealCurrentLine(target: HostRevealTarget): void;
   executeFoldCommand(command: HostFoldCommand): void;
-  moveByViewLines(direction: HostDirection, count: number, options: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined;
-  moveByPages(direction: HostDirection, count: number, options: { halfPage: boolean; extend: boolean }): readonly VimSelection[] | undefined;
-  scrollByLines(direction: HostDirection, count: number, options?: { extend: boolean }): void;
+  moveByViewLines(
+    direction: HostDirection,
+    count: number,
+    options: { displayLine: boolean; extend: boolean }
+  ): readonly VimSelection[] | undefined;
+  moveByPages(
+    direction: HostDirection,
+    count: number,
+    options: { halfPage: boolean; extend: boolean }
+  ): readonly VimSelection[] | undefined;
+  scrollByLines(
+    direction: HostDirection,
+    count: number,
+    options?: { extend: boolean }
+  ): void;
   /** Model rows currently visible in the host viewport (both inclusive), or
       undefined when the host has no viewport. Used by `H`/`M`/`L`. */
   visibleRowRange(): { top: number; bottom: number } | undefined;
+  /** The host's vertical ruler columns (VSCode `editor.rulers`, resolved for
+      the editor's language), in configuration order. The first ruler is the
+      `gq`/`gw` format width when `vim.textwidth` is not set. */
+  rulerColumns(): readonly number[];
+  /** Columns per indent level (Vim 'shiftwidth'): the host editor's resolved
+      indent size, so `>>`/`<<`/`:>` shift like the editor's own indent
+      commands. */
+  indentWidth(): number;
 
   // Zed: `normal::search` integrates with `BufferSearchBar` so search motions,
   // highlights, and find-widget state share one source of truth. Locally, the
@@ -98,15 +233,41 @@ export interface VimEditorCapabilities {
   // with the native find controller/model.
   beginSearchPreview(): void;
   endSearchPreview(options?: { restoreViewport?: boolean }): void;
-  updateSearch(query: string, direction: SearchDirection, options?: SearchOptions): void;
-  findSearchMatch(query: string, start: Position, direction: SearchDirection, options?: SearchOptions): SearchMatch | undefined;
+  updateSearch(
+    query: string,
+    direction: SearchDirection,
+    options?: SearchOptions
+  ): void;
+  findSearchMatch(
+    query: string,
+    start: Position,
+    direction: SearchDirection,
+    options?: SearchOptions
+  ): SearchMatch | undefined;
+  /** Match count for the search-status display: the 1-based index of the match
+      starting at [matchStart] among all document matches, or undefined when
+      nothing matches. */
+  searchMatchCount(
+    query: string,
+    matchStart: Position,
+    options?: SearchOptions
+  ): SearchMatchCount | undefined;
   clearSearchHighlights(): void;
+
+  // Live `:s` preview (see [substitutePreviews]): the host highlights each
+  // match and shows its resolved replacement inline while the command line is
+  // being typed. Cleared when the prompt closes (submit or escape).
+  updateSubstitutePreview(previews: readonly SubstitutePreview[]): void;
+  clearSubstitutePreview(): void;
 }
 
 // Zed: clipping is usually handled by display-map/editor helpers such as
 // `DisplaySnapshot::clip_point` / display-map helpers, for example in
 // `normal::delete::Vim::delete_motion`.
-export function clipPosition(editor: VimEditorCapabilities, pos: Position): Position {
+export function clipPosition(
+  editor: VimEditorCapabilities,
+  pos: Position
+): Position {
   const row = Math.max(0, Math.min(pos.row, editor.lineCount() - 1));
   const column = Math.max(0, Math.min(pos.column, editor.lineLength(row)));
   return { row, column };
@@ -119,16 +280,28 @@ export function normalCursorPosition(
   pos: Position
 ): Position {
   const clipped = clipPosition(editor, pos);
-  const lineLength = editor.lineLength(clipped.row);
-  if (lineLength === 0) return { row: clipped.row, column: 0 };
-  return { row: clipped.row, column: Math.min(clipped.column, lineLength - 1) };
+  const line = editor.line(clipped.row);
+  if (line.length === 0) return { row: clipped.row, column: 0 };
+  // A normal-mode cursor sits on a character cell: snap into the containing
+  // grapheme cluster (the last cell starts at the final cluster's boundary,
+  // not at length - 1, which can be mid-cluster).
+  return {
+    row: clipped.row,
+    column: graphemeStart(line, Math.min(clipped.column, line.length - 1)),
+  };
 }
 
-export function rangeText(editor: VimEditorCapabilities, range: TextRange): string {
+export function rangeText(
+  editor: VimEditorCapabilities,
+  range: TextRange
+): string {
   return editor.getText(range);
 }
 
-function exclusiveVisualHead(editor: VimEditorCapabilities, head: Position): Position {
+function exclusiveVisualHead(
+  editor: VimEditorCapabilities,
+  head: Position
+): Position {
   const lineLength = editor.lineLength(head.row);
   if (lineLength === 0) return head;
   return { row: head.row, column: Math.min(head.column + 1, lineLength) };
@@ -154,14 +327,29 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   private pendingUndoSnapshot: UndoSnapshot | undefined;
   private pendingUndoSelectionsBefore: VimSelection[] | undefined;
   private undoTransactionDepth = 0;
+  private readonly lineTrackers = new Set<LineTracker>();
+  private indentWidthValue = 4;
   public cursorStyle: CursorStyle = "block";
   public insertPendingText: string | undefined;
   public easyMotionMarkers: readonly EasyMotionMarker[] = [];
   private viewportLines: number | undefined;
   private viewportScrolloff = 0;
   private viewportTopRow = 0;
+  private rulers: readonly number[] = [];
   private readonlyForTest = false;
-  public readonly nativeCommands: { command: string; args: readonly unknown[] }[] = [];
+  public readonly nativeCommands: {
+    command: string;
+    args: readonly unknown[];
+  }[] = [];
+  /** Ranges reported through [highlightYankedRanges], one entry per yank. */
+  public readonly yankHighlights: TextRange[][] = [];
+  /** Commands issued from an [onResolved] callback — i.e. only after the
+      previous command completed (for tests: `:wq` must chain, not race). */
+  public readonly chainedNativeCommands: string[] = [];
+  /** Commands executed with [backgroundSync] (for tests: `:w` must not hold
+      the key pipeline while the save runs). */
+  public readonly backgroundSyncNativeCommands: string[] = [];
+  private inNativeCommandCallback = false;
 
   constructor(text = "") {
     this.lines = text.split("\n");
@@ -178,6 +366,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.pendingUndoSelectionsBefore = undefined;
     this.undoTransactionDepth = 0;
     this.easyMotionMarkers = [];
+    this.substitutePreview = undefined;
     this.viewportTopRow = 0;
     this.readonlyForTest = false;
     this.setSelections(selections);
@@ -201,7 +390,10 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     const end = clipPosition(this, range.end);
     const ordered = orderedRange(start, end);
     if (ordered.start.row === ordered.end.row) {
-      return this.line(ordered.start.row).slice(ordered.start.column, ordered.end.column);
+      return this.line(ordered.start.row).slice(
+        ordered.start.column,
+        ordered.end.column
+      );
     }
 
     const parts = [this.line(ordered.start.row).slice(ordered.start.column)];
@@ -235,16 +427,23 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
         case "linewise":
           return {
             ...selection,
-            anchorLine: clipPosition(this, position(selection.anchorLine, 0)).row,
+            anchorLine: clipPosition(this, position(selection.anchorLine, 0))
+              .row,
             headLine: clipPosition(this, position(selection.headLine, 0)).row,
-            cursor: selection.cursor === undefined ? undefined : clipPosition(this, selection.cursor),
+            cursor:
+              selection.cursor === undefined
+                ? undefined
+                : clipPosition(this, selection.cursor),
           };
         case "blockwise":
           return {
             ...selection,
             anchor: clipPosition(this, selection.anchor),
             head: clipPosition(this, selection.head),
-            cursor: selection.cursor === undefined ? undefined : clipPosition(this, selection.cursor),
+            cursor:
+              selection.cursor === undefined
+                ? undefined
+                : clipPosition(this, selection.cursor),
           };
       }
     });
@@ -264,9 +463,11 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     const height = this.viewportHeight();
     const selection = this.selections[0];
     if (height === undefined || selection === undefined) return;
-    const row = (selection.type === "linewise"
-      ? selection.cursor ?? { row: selection.headLine, column: 0 }
-      : selection.cursor ?? selectionHead(selection)).row;
+    const row = (
+      selection.type === "linewise"
+        ? selection.cursor ?? { row: selection.headLine, column: 0 }
+        : selection.cursor ?? selectionHead(selection)
+    ).row;
     const lastRow = this.lineCount() - 1;
     const scrolloff = this.viewportScrolloff;
     let top = this.viewportTopRow;
@@ -300,20 +501,149 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   showEasyMotionMarkers(markers: readonly EasyMotionMarker[]): void {
-    this.easyMotionMarkers = markers.map(marker => ({ ...marker }));
+    this.easyMotionMarkers = markers.map((marker) => ({ ...marker }));
+  }
+
+  highlightYankedRanges(ranges: readonly TextRange[]): void {
+    this.yankHighlights.push(ranges.map((range) => ({
+      start: { ...range.start },
+      end: { ...range.end },
+    })));
   }
 
   clearEasyMotionMarkers(): void {
     this.easyMotionMarkers = [];
   }
 
-  applyEdits(edits: readonly TextEdit[], selectionsAfter: readonly VimSelection[], options: ApplyEditsOptions = {}): void {
+  // Simulate VSCode's default insert-mode handling for the passthrough
+  // whitelist: printable keys insert their text; backspace/delete remove one
+  // character (joining lines at boundaries); `ctrl-backspace`/`ctrl-delete`
+  // remove a (whitespace-delimited — an approximation of VSCode's word rules)
+  // word; the navigation keys move the cursor. Edits keep the insert undo
+  // transaction open so a replayed session is one undo unit.
+  replayInsertKey(key: string): void {
+    const options = keepUndoTransactionOpen();
+    const text = insertTextForKey(key);
+    if (text !== undefined) {
+      const edits: TextEdit[] = [];
+      const selectionsAfter: VimSelection[] = [];
+      for (const selection of this.getSelections()) {
+        const head = selectionHead(selection);
+        edits.push({ range: { start: head, end: head }, text });
+        const lines = text.split("\n");
+        const after =
+          lines.length > 1
+            ? {
+                row: head.row + lines.length - 1,
+                column: lines[lines.length - 1].length,
+              }
+            : { row: head.row, column: head.column + text.length };
+        selectionsAfter.push(charwiseSelection(after));
+      }
+      this.applyEdits(edits, selectionsAfter, options);
+      return;
+    }
+
+    const deleteToTarget = (
+      target: (head: Position) => Position,
+      side: "before" | "after"
+    ): void => {
+      const edits: TextEdit[] = [];
+      const selectionsAfter: VimSelection[] = [];
+      for (const selection of this.getSelections()) {
+        const head = selectionHead(selection);
+        const other = target(head);
+        const range =
+          side === "before"
+            ? { start: other, end: head }
+            : { start: head, end: other };
+        edits.push({ range, text: "" });
+        selectionsAfter.push(charwiseSelection(range.start));
+      }
+      this.applyEdits(edits, selectionsAfter, options);
+    };
+    const moveTo = (target: (head: Position) => Position): void => {
+      // Cursor movement splits the insert undo unit, like VSCode (a cursor
+      // change breaks typing coalescing) and like Vim, where arrow keys in
+      // insert break the undo sequence.
+      this.finishUndoTransaction();
+      this.setSelections(
+        this.getSelections().map((selection) =>
+          charwiseSelection(target(selectionHead(selection)))
+        )
+      );
+    };
+
+    switch (key) {
+      case "backspace":
+        deleteToTarget((head) => characterLeft(this, head), "before");
+        return;
+      case "delete":
+        deleteToTarget((head) => characterRight(this, head), "after");
+        return;
+      case "ctrl-backspace":
+        deleteToTarget((head) => simulatedWordLeft(this, head), "before");
+        return;
+      case "ctrl-delete":
+        deleteToTarget((head) => simulatedWordRight(this, head), "after");
+        return;
+      case "left":
+        moveTo((head) => characterLeft(this, head));
+        return;
+      case "right":
+        moveTo((head) => characterRight(this, head));
+        return;
+      case "up":
+      case "down": {
+        const delta = key === "up" ? -1 : 1;
+        moveTo((head) => {
+          const row = Math.max(
+            0,
+            Math.min(this.lineCount() - 1, head.row + delta)
+          );
+          return { row, column: Math.min(head.column, this.lineLength(row)) };
+        });
+        return;
+      }
+      case "home":
+        moveTo((head) => ({ row: head.row, column: 0 }));
+        return;
+      case "end":
+        moveTo((head) => ({
+          row: head.row,
+          column: this.lineLength(head.row),
+        }));
+        return;
+      case "ctrl-left":
+        moveTo((head) => simulatedWordLeft(this, head));
+        return;
+      case "ctrl-right":
+        moveTo((head) => simulatedWordRight(this, head));
+        return;
+      case "pageup":
+      case "pagedown": {
+        this.finishUndoTransaction();
+        const moved = this.moveByPages(key === "pageup" ? "up" : "down", 1, {
+          halfPage: false,
+          extend: false,
+        });
+        if (moved !== undefined) this.setSelections(moved);
+        return;
+      }
+    }
+  }
+
+  applyEdits(
+    edits: readonly TextEdit[],
+    selectionsAfter: readonly VimSelection[],
+    options: ApplyEditsOptions = {}
+  ): void {
     const undoStopBefore = options.undoStopBefore ?? true;
     const undoStopAfter = options.undoStopAfter ?? true;
     if (
-      undoStopBefore
-      && this.pendingUndoSnapshot === undefined
-      && this.pendingUndoSelectionsBefore === undefined
+      undoStopBefore &&
+      this.pendingUndoSnapshot === undefined &&
+      this.pendingUndoSelectionsBefore === undefined
     ) {
       this.finishUndoTransaction();
     }
@@ -322,28 +652,59 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     const snapshotBefore = this.pendingUndoSnapshot;
     const textBefore = snapshotBefore?.textBefore ?? this.getText();
     const selectionsBefore = cloneSelections(
-      snapshotBefore?.selectionsBefore
-      ?? this.pendingUndoSelectionsBefore
-      ?? this.selections
+      snapshotBefore?.selectionsBefore ??
+        this.pendingUndoSelectionsBefore ??
+        this.selections
     );
-    const sortedEdits = [...edits].sort((a, b) => -comparePositions(a.range.start, b.range.start));
+    const sortedEdits = [...edits].sort(
+      (a, b) => -comparePositions(a.range.start, b.range.start)
+    );
     for (const edit of sortedEdits) {
       this.replace(edit.range, edit.text);
     }
     this.setSelections(selectionsAfter);
     const textAfter = this.getText();
     const storedSelectionsAfter = cloneSelections(this.selections);
-    if (textBefore !== textAfter || !selectionsEqual(selectionsBefore, storedSelectionsAfter)) {
-      this.pendingUndoSnapshot = { textBefore, textAfter, selectionsBefore, selectionsAfter: storedSelectionsAfter };
+    if (
+      textBefore !== textAfter ||
+      !selectionsEqual(selectionsBefore, storedSelectionsAfter)
+    ) {
+      this.pendingUndoSnapshot = {
+        textBefore,
+        textAfter,
+        selectionsBefore,
+        selectionsAfter: storedSelectionsAfter,
+      };
       this.redoStack = [];
     }
-    if (undoStopAfter && snapshotBefore === undefined && !transactionOpenBefore) this.finishUndoTransaction();
+    if (undoStopAfter && snapshotBefore === undefined && !transactionOpenBefore)
+      this.finishUndoTransaction();
   }
 
-  beginUndoTransaction(selectionsBefore: readonly VimSelection[]): VimUndoTransaction {
-    if (this.undoTransactionDepth === 0
-      && this.pendingUndoSnapshot === undefined
-      && this.pendingUndoSelectionsBefore === undefined) {
+  /** Open transaction depth (for tests): an insert session must hold one open
+      transaction from entry to escape, so a host can suppress its own
+      intra-session undo stops (word-boundary stops during typing). */
+  undoTransactionDepthForTest(): number {
+    return this.undoTransactionDepth;
+  }
+
+  trackLines(rows: readonly number[]): TrackedLines {
+    const tracker = new LineTracker(rows);
+    this.lineTrackers.add(tracker);
+    return {
+      currentRow: index => tracker.currentRow(index),
+      dispose: () => this.lineTrackers.delete(tracker),
+    };
+  }
+
+  beginUndoTransaction(
+    selectionsBefore: readonly VimSelection[]
+  ): VimUndoTransaction {
+    if (
+      this.undoTransactionDepth === 0 &&
+      this.pendingUndoSnapshot === undefined &&
+      this.pendingUndoSelectionsBefore === undefined
+    ) {
       this.pendingUndoSelectionsBefore = cloneSelections(selectionsBefore);
     }
     this.undoTransactionDepth++;
@@ -358,7 +719,10 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   finishUndoTransaction(selectionsAfter?: readonly VimSelection[]): void {
-    if (selectionsAfter !== undefined && this.pendingUndoSnapshot !== undefined) {
+    if (
+      selectionsAfter !== undefined &&
+      this.pendingUndoSnapshot !== undefined
+    ) {
       this.pendingUndoSnapshot = {
         ...this.pendingUndoSnapshot,
         selectionsAfter: cloneSelections(selectionsAfter),
@@ -373,12 +737,16 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     this.pendingUndoSelectionsBefore = undefined;
     if (snapshot === undefined) return;
     this.pendingUndoSnapshot = undefined;
-    const finalizedSnapshot = selectionsAfter === undefined
-      ? snapshot
-      : { ...snapshot, selectionsAfter: cloneSelections(selectionsAfter) };
+    const finalizedSnapshot =
+      selectionsAfter === undefined
+        ? snapshot
+        : { ...snapshot, selectionsAfter: cloneSelections(selectionsAfter) };
     if (
-      finalizedSnapshot.textBefore !== finalizedSnapshot.textAfter
-      || !selectionsEqual(finalizedSnapshot.selectionsBefore, finalizedSnapshot.selectionsAfter)
+      finalizedSnapshot.textBefore !== finalizedSnapshot.textAfter ||
+      !selectionsEqual(
+        finalizedSnapshot.selectionsBefore,
+        finalizedSnapshot.selectionsAfter
+      )
     ) {
       this.undoStack.push(finalizedSnapshot);
     }
@@ -403,8 +771,30 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     }
   }
 
-  executeNativeCommand(command: string, args: readonly unknown[] = [], _options: NativeCommandOptions = {}): void {
+  executeNativeCommand(
+    command: string,
+    args: readonly unknown[] = [],
+    options: NativeCommandOptions = {}
+  ): void {
     this.nativeCommands.push({ command, args });
+    if (this.inNativeCommandCallback) this.chainedNativeCommands.push(command);
+    if (options.backgroundSync === true) this.backgroundSyncNativeCommands.push(command);
+    if (options.selectionsAfter !== undefined) {
+      this.setSelections([...options.selectionsAfter]);
+    }
+    // The in-memory host runs commands synchronously (as no-ops), so the
+    // completion callback fires immediately; a returned promise is not
+    // awaited here (this host has no async), so tests should use synchronous
+    // callbacks.
+    if (options.onResolved !== undefined) {
+      const wasInCallback = this.inNativeCommandCallback;
+      this.inNativeCommandCallback = true;
+      try {
+        void options.onResolved();
+      } finally {
+        this.inNativeCommandCallback = wasInCallback;
+      }
+    }
   }
 
   revealPrimaryCursorIfOutsideViewport(): void {}
@@ -415,7 +805,11 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   executeFoldCommand(_command: HostFoldCommand): void {}
 
-  moveByViewLines(direction: HostDirection, count: number, { extend }: { displayLine: boolean; extend: boolean }): readonly VimSelection[] | undefined {
+  moveByViewLines(
+    direction: HostDirection,
+    count: number,
+    { extend }: { displayLine: boolean; extend: boolean }
+  ): readonly VimSelection[] | undefined {
     // The in-memory editor has no VSCode view model, hidden ranges, or soft-wrap data.
     // Use a deliberately naive model-row approximation for non-extending movements so
     // host-motion callers such as [dj] are testable without a real VSCode instance.
@@ -425,10 +819,17 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     return this.modelRowSelections(direction, count, { extend });
   }
 
-  moveByPages(direction: HostDirection, count: number, { halfPage, extend }: { halfPage: boolean; extend: boolean }): readonly VimSelection[] {
+  moveByPages(
+    direction: HostDirection,
+    count: number,
+    { halfPage, extend }: { halfPage: boolean; extend: boolean }
+  ): readonly VimSelection[] {
     const height = this.viewportHeight();
     if (height === undefined) {
-      const pageSize = Math.max(1, Math.floor(this.lineCount() / (halfPage ? 2 : 1)));
+      const pageSize = Math.max(
+        1,
+        Math.floor(this.lineCount() / (halfPage ? 2 : 1))
+      );
       return this.modelRowSelections(direction, count * pageSize, { extend });
     }
     const lastRow = this.lineCount() - 1;
@@ -442,32 +843,50 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       // 'scrolloff' margins.
       const delta = count * Math.max(1, Math.floor(height / 2));
       const signedDelta = direction === "up" ? -delta : delta;
-      this.viewportTopRow = Math.max(0, Math.min(this.viewportTopRow + signedDelta, maxTop));
-      return this.modelRowSelections(direction, delta, { extend }, row => this.rowInsideScrolloffMargins(row));
+      this.viewportTopRow = Math.max(
+        0,
+        Math.min(this.viewportTopRow + signedDelta, maxTop)
+      );
+      return this.modelRowSelections(direction, delta, { extend }, (row) =>
+        this.rowInsideScrolloffMargins(row)
+      );
     }
     // Vim `onepage()`: `ctrl-f`/`ctrl-b` scroll by a window (keeping two lines
     // of overlap) and land the cursor on the new window's first/last line,
     // pushed inside the 'scrolloff' margins.
     const delta = count * Math.max(1, height - 2);
     const signedDelta = direction === "up" ? -delta : delta;
-    this.viewportTopRow = Math.max(0, Math.min(this.viewportTopRow + signedDelta, maxTop));
-    const target = direction === "down"
-      ? this.viewportTopRow
-      : Math.min(this.viewportTopRow + height - 1, lastRow);
+    this.viewportTopRow = Math.max(
+      0,
+      Math.min(this.viewportTopRow + signedDelta, maxTop)
+    );
+    const target =
+      direction === "down"
+        ? this.viewportTopRow
+        : Math.min(this.viewportTopRow + height - 1, lastRow);
     const row = this.rowInsideScrolloffMargins(target);
     return this.modelRowSelections(direction, 0, { extend }, () => row);
   }
 
-  scrollByLines(direction: HostDirection, count: number, { extend = false }: { extend?: boolean } = {}): void {
+  scrollByLines(
+    direction: HostDirection,
+    count: number,
+    { extend = false }: { extend?: boolean } = {}
+  ): void {
     const height = this.viewportHeight();
     if (height === undefined) return;
     // Vim: `ctrl-e`/`ctrl-y` scroll the viewport; the cursor stays put until
     // the 'scrolloff' margins push it.
     const lastRow = this.lineCount() - 1;
     const signedDelta = direction === "up" ? -count : count;
-    this.viewportTopRow = Math.max(0, Math.min(this.viewportTopRow + signedDelta, lastRow));
+    this.viewportTopRow = Math.max(
+      0,
+      Math.min(this.viewportTopRow + signedDelta, lastRow)
+    );
     this.setSelections(
-      this.modelRowSelections(direction, 0, { extend }, row => this.rowInsideScrolloffMargins(row))
+      this.modelRowSelections(direction, 0, { extend }, (row) =>
+        this.rowInsideScrolloffMargins(row)
+      )
     );
   }
 
@@ -484,15 +903,42 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   // Test-only viewport model so fixtures recorded with Neovim UI options
   // (`lines=N`, `scrolloff=N`) can replay page motions faithfully.
-  configureViewportForTest({ lines, scrolloff }: { lines?: number; scrolloff?: number }): void {
+  configureViewportForTest({
+    lines,
+    scrolloff,
+  }: {
+    lines?: number;
+    scrolloff?: number;
+  }): void {
     if (lines !== undefined) this.viewportLines = lines;
     if (scrolloff !== undefined) this.viewportScrolloff = scrolloff;
+  }
+
+  rulerColumns(): readonly number[] {
+    return this.rulers;
+  }
+
+  indentWidth(): number {
+    return this.indentWidthValue;
+  }
+
+  // Test-only stand-in for the host's resolved indent size (fixtures record
+  // with `shiftwidth=4`, the default here).
+  configureIndentWidthForTest(width: number): void {
+    this.indentWidthValue = width;
+  }
+
+  // Test-only stand-in for VSCode's `editor.rulers`.
+  configureRulersForTest(rulers: readonly number[]): void {
+    this.rulers = rulers;
   }
 
   private viewportHeight(): number | undefined {
     // Neovim: 'lines' counts the whole screen; the text window loses one row
     // each to the statusline and the command line.
-    return this.viewportLines === undefined ? undefined : Math.max(1, this.viewportLines - 2);
+    return this.viewportLines === undefined
+      ? undefined
+      : Math.max(1, this.viewportLines - 2);
   }
 
   private rowInsideScrolloffMargins(row: number): number {
@@ -511,7 +957,8 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       return Math.max(minRow, Math.min(row, maxRow));
     }
     const minRow = top === 0 ? top : Math.min(top + scrolloff, bottom);
-    const maxRow = bottom >= lastRow ? bottom : Math.max(bottom - scrolloff, top);
+    const maxRow =
+      bottom >= lastRow ? bottom : Math.max(bottom - scrolloff, top);
     return Math.max(minRow, Math.min(row, maxRow));
   }
 
@@ -519,13 +966,58 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
   endSearchPreview(_options: { restoreViewport?: boolean } = {}): void {}
 
-  updateSearch(_query: string, _direction: SearchDirection, _options: SearchOptions = {}): void {}
+  /** The last [updateSearch] query (for tests: the visible search highlight
+      follows `/` searches, never `:g`/`:s` pattern writes). */
+  public lastSearchHighlightQuery: string | undefined;
 
-  findSearchMatch(query: string, start: Position, direction: SearchDirection, options: SearchOptions = {}): SearchMatch | undefined {
-    return findSearchMatchInText(this.getText(), query, offsetOfPosition(this, start), direction, options)?.range;
+  updateSearch(
+    query: string,
+    _direction: SearchDirection,
+    _options: SearchOptions = {}
+  ): void {
+    this.lastSearchHighlightQuery = query;
+  }
+
+  findSearchMatch(
+    query: string,
+    start: Position,
+    direction: SearchDirection,
+    options: SearchOptions = {}
+  ): SearchMatch | undefined {
+    return findSearchMatchInText(
+      this.getText(),
+      query,
+      offsetOfPosition(this, start),
+      direction,
+      options
+    )?.range;
+  }
+
+  searchMatchCount(
+    query: string,
+    matchStart: Position,
+    options: SearchOptions = {}
+  ): SearchMatchCount | undefined {
+    const matches = allSearchMatchesInText(this.getText(), query, options);
+    if (matches.length === 0) return undefined;
+    const target = offsetOfPosition(this, matchStart);
+    const index = matches.findIndex(match => match.offset >= target);
+    return { index: (index < 0 ? matches.length - 1 : index) + 1, total: matches.length, capped: false };
   }
 
   clearSearchHighlights(): void {}
+
+  /** The last live `:s` preview, or undefined when cleared (for tests). */
+  public substitutePreview: readonly SubstitutePreview[] | undefined =
+    undefined;
+
+  updateSubstitutePreview(previews: readonly SubstitutePreview[]): void {
+    this.substitutePreview = previews;
+  }
+
+  clearSubstitutePreview(): void {
+    this.substitutePreview = undefined;
+  }
 
   private undo(): void {
     this.finishUndoTransaction();
@@ -536,8 +1028,11 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     // Vim restores the cursor saved when the change began, clamped to a
     // normal-mode cell of the restored text (an undone append from the end of
     // a line lands on its last character).
-    this.setSelections(snapshot.selectionsBefore.map(selection =>
-      charwiseSelection(normalCursorPosition(this, selectionHead(selection)))));
+    this.setSelections(
+      snapshot.selectionsBefore.map((selection) =>
+        charwiseSelection(normalCursorPosition(this, selectionHead(selection)))
+      )
+    );
     this.redoStack.push(snapshot);
   }
 
@@ -549,11 +1044,19 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     if (snapshot.textBefore !== snapshot.textAfter) this.contentVersion++;
     // Vim `u_redo`: the cursor is put at the start of the redone change, not
     // where the cursor sat when the change finished.
-    const changeStart = firstDifferencePosition(snapshot.textBefore, snapshot.textAfter);
-    this.setSelections(changeStart !== undefined
-      ? [charwiseSelection(normalCursorPosition(this, changeStart))]
-      : snapshot.selectionsAfter.map(selection =>
-        charwiseSelection(normalCursorPosition(this, selectionHead(selection)))));
+    const changeStart = firstDifferencePosition(
+      snapshot.textBefore,
+      snapshot.textAfter
+    );
+    this.setSelections(
+      changeStart !== undefined
+        ? [charwiseSelection(normalCursorPosition(this, changeStart))]
+        : snapshot.selectionsAfter.map((selection) =>
+            charwiseSelection(
+              normalCursorPosition(this, selectionHead(selection))
+            )
+          )
+    );
     this.undoStack.push(snapshot);
   }
 
@@ -561,14 +1064,26 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     direction: HostDirection,
     count: number,
     { extend }: { extend: boolean },
-    clampRow: (row: number) => number = row => row
+    clampRow: (row: number) => number = (row) => row
   ): readonly VimSelection[] {
-    return this.selections.map(selection => {
+    return this.selections.map((selection) => {
       const head = selection.cursor ?? selectionHead(selection);
-      const goal = selection.goal ?? modelGoalForHead(head, { extend: extend && selection.type === "charwise" && selection.cursor !== undefined });
+      const goal =
+        selection.goal ??
+        modelGoalForHead(head, {
+          extend:
+            extend &&
+            selection.type === "charwise" &&
+            selection.cursor !== undefined,
+        });
       const rowDelta = direction === "up" ? -count : count;
-      const row = clampRow(Math.max(0, Math.min(head.row + rowDelta, this.lineCount() - 1)));
-      const next = normalCursorPosition(this, { row, column: modelColumnForGoal(this, row, goal) });
+      const row = clampRow(
+        Math.max(0, Math.min(head.row + rowDelta, this.lineCount() - 1))
+      );
+      const next = normalCursorPosition(this, {
+        row,
+        column: modelColumnForGoal(this, row, goal),
+      });
       if (extend) {
         switch (selection.type) {
           case "charwise":
@@ -599,7 +1114,11 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
   }
 
   private replace(range: TextRange, text: string): void {
-    const ordered = orderedRange(clipPosition(this, range.start), clipPosition(this, range.end));
+    const ordered = orderedRange(
+      clipPosition(this, range.start),
+      clipPosition(this, range.end)
+    );
+    for (const tracker of this.lineTrackers) tracker.applyChange({ range: ordered, text });
     if (this.getText(ordered) !== text) this.contentVersion++;
     const before = this.line(ordered.start.row).slice(0, ordered.start.column);
     const after = this.line(ordered.end.row).slice(ordered.end.column);
@@ -614,7 +1133,59 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
 
 // Position (in [after]) of the first character where the two texts differ, or
 // undefined when the texts are equal.
-function firstDifferencePosition(before: string, after: string): Position | undefined {
+// Character/word steps for the in-memory default-handler simulation
+// ([InMemoryVimEditor.replayInsertKey]). Word boundaries are a deliberate
+// simplification of VSCode's word rules (whitespace-delimited): only the test
+// double uses them, and the real editor runs VSCode's own commands.
+function characterLeft(
+  editor: VimEditorCapabilities,
+  head: Position
+): Position {
+  if (head.column > 0) return { row: head.row, column: head.column - 1 };
+  if (head.row > 0)
+    return { row: head.row - 1, column: editor.lineLength(head.row - 1) };
+  return head;
+}
+
+function characterRight(
+  editor: VimEditorCapabilities,
+  head: Position
+): Position {
+  if (head.column < editor.lineLength(head.row))
+    return { row: head.row, column: head.column + 1 };
+  if (head.row < editor.lineCount() - 1)
+    return { row: head.row + 1, column: 0 };
+  return head;
+}
+
+function simulatedWordLeft(
+  editor: VimEditorCapabilities,
+  head: Position
+): Position {
+  if (head.column === 0) return characterLeft(editor, head);
+  const line = editor.line(head.row);
+  let column = head.column;
+  while (column > 0 && /\s/.test(line[column - 1])) column--;
+  while (column > 0 && !/\s/.test(line[column - 1])) column--;
+  return { row: head.row, column };
+}
+
+function simulatedWordRight(
+  editor: VimEditorCapabilities,
+  head: Position
+): Position {
+  const line = editor.line(head.row);
+  if (head.column >= line.length) return characterRight(editor, head);
+  let column = head.column;
+  while (column < line.length && /\s/.test(line[column])) column++;
+  while (column < line.length && !/\s/.test(line[column])) column++;
+  return { row: head.row, column };
+}
+
+function firstDifferencePosition(
+  before: string,
+  after: string
+): Position | undefined {
   if (before === after) return undefined;
   const limit = Math.min(before.length, after.length);
   let offset = 0;
@@ -636,13 +1207,15 @@ function cloneSelection(selection: VimSelection): VimSelection {
         ...selection,
         anchor: { ...selection.anchor },
         head: { ...selection.head },
-        cursor: selection.cursor === undefined ? undefined : { ...selection.cursor },
+        cursor:
+          selection.cursor === undefined ? undefined : { ...selection.cursor },
         goal: selection.goal === undefined ? undefined : { ...selection.goal },
       };
     case "linewise":
       return {
         ...selection,
-        cursor: selection.cursor === undefined ? undefined : { ...selection.cursor },
+        cursor:
+          selection.cursor === undefined ? undefined : { ...selection.cursor },
         goal: selection.goal === undefined ? undefined : { ...selection.goal },
       };
     case "blockwise":
@@ -650,32 +1223,52 @@ function cloneSelection(selection: VimSelection): VimSelection {
         ...selection,
         anchor: { ...selection.anchor },
         head: { ...selection.head },
-        cursor: selection.cursor === undefined ? undefined : { ...selection.cursor },
+        cursor:
+          selection.cursor === undefined ? undefined : { ...selection.cursor },
         goal: selection.goal === undefined ? undefined : { ...selection.goal },
       };
   }
 }
 
-function selectionsEqual(a: readonly VimSelection[], b: readonly VimSelection[]): boolean {
+function selectionsEqual(
+  a: readonly VimSelection[],
+  b: readonly VimSelection[]
+): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function modelGoalForHead(head: Position, { extend }: { extend: boolean }): VimSelectionGoal {
-  return { type: "modelColumn", column: extend ? head.column + 1 : head.column };
+function modelGoalForHead(
+  head: Position,
+  { extend }: { extend: boolean }
+): VimSelectionGoal {
+  return {
+    type: "modelColumn",
+    column: extend ? head.column + 1 : head.column,
+  };
 }
 
-function modelColumnForGoal(editor: VimEditorCapabilities, row: number, goal: VimSelectionGoal): number {
+function modelColumnForGoal(
+  editor: VimEditorCapabilities,
+  row: number,
+  goal: VimSelectionGoal
+): number {
   const maxColumn = Math.max(0, editor.lineLength(row) - 1);
   switch (goal.type) {
     case "endOfLine":
       return maxColumn;
     case "modelColumn":
-    case "viewColumn":
       return Math.min(goal.column, maxColumn);
+    case "viewColumn":
+      // View-column goals are 1-based VSCode view coordinates; convert to the
+      // 0-based model column (approximate under soft wraps/folds).
+      return Math.max(0, Math.min(goal.column - 1, maxColumn));
   }
 }
 
-function offsetOfPosition(editor: VimEditorCapabilities, pos: Position): number {
+function offsetOfPosition(
+  editor: VimEditorCapabilities,
+  pos: Position
+): number {
   let offset = 0;
   for (let row = 0; row < pos.row; row++) offset += editor.lineLength(row) + 1;
   return offset + pos.column;

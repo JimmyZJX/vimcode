@@ -1,0 +1,17 @@
+{"Put":{"state":"ˇabc def\nghi jkl"}}
+{"Key":"v"}
+{"Key":"l"}
+{"Key":"/"}
+{"Key":"j"}
+{"Key":"k"}
+{"Key":"escape"}
+{"Key":"d"}
+{"Get":{"state":"ˇc def\nghi jkl","mode":"Normal"}}
+{"Put":{"state":"ˇabc def\nghi jkl"}}
+{"Key":"V"}
+{"Key":"/"}
+{"Key":"j"}
+{"Key":"k"}
+{"Key":"escape"}
+{"Key":"d"}
+{"Get":{"state":"ˇghi jkl","mode":"Normal"}}

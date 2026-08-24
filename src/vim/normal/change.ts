@@ -6,7 +6,7 @@
 //   switch to insert mode; Zed has richer recording, indentation, and selection fixups.
 
 import { VimEditorCapabilities, keepUndoTransactionOpen } from "../editor.js";
-import type { OperatorTarget, RowRange } from "../operator_target.js";
+import type { ResolvedTarget, RowRange } from "../operator_target.js";
 import { RegisterName, Registers } from "../registers.js";
 import { deleteTargets } from "./delete.js";
 
@@ -17,7 +17,7 @@ export function applyChange(
   editor: VimEditorCapabilities,
   registers: Registers,
   registerName: RegisterName | undefined,
-  target: OperatorTarget
+  target: ResolvedTarget
 ): boolean {
   switch (target.kind) {
     case "charwise": {
@@ -68,6 +68,7 @@ export function changeLineRange(
     selectionsAfter.push({ type: "charwise" as const, anchor: { row: startRow, column: indent.length }, head: { row: startRow, column: indent.length } });
   }
 
+  editor.applyEdits(edits, selectionsAfter, keepUndoTransactionOpen());
   if (copied.length > 0) {
     registers.writeDelete(
       registerName,
@@ -76,7 +77,6 @@ export function changeLineRange(
       copied.map(text => ({ text, kind: "linewise" }))
     );
   }
-  editor.applyEdits(edits, selectionsAfter, keepUndoTransactionOpen());
   return true;
 }
 

@@ -14,6 +14,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorContributionInstantiation, ServicesAccessor, registerEditorContribution } from '../../../browser/editorExtensions.js';
+import { ICodeEditorService } from '../../../browser/services/codeEditorService.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { defaultVimHandleKeys } from '../common/config.js';
 import { VimController } from './vimController.js';
@@ -175,6 +176,17 @@ registerVimListKeybindings();
 registerVimCompletionKeybindings();
 registerVimNotebookKeybindings();
 
+// A VSCodeVim `vim.statusBarColors.*` entry: a background color string, or a
+// `[background, foreground]` pair.
+function statusBarColorSchema(description: string, defaultValue: [string, string]): IConfigurationPropertySchema {
+	return {
+		type: ['string', 'array'],
+		default: defaultValue,
+		scope: ConfigurationScope.APPLICATION,
+		description,
+	};
+}
+
 const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> = {
 	'vim.enabled': {
 		type: 'boolean',
@@ -200,6 +212,12 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.useCtrlKeys', "Enable Vim Ctrl key commands that override common VS Code operations."),
 	},
+	'vim.hlsearch': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.hlsearch', "Keep search matches highlighted after the search ends, until ':noh' clears them."),
+	},
 	'vim.debugUndo': {
 		type: 'boolean',
 		default: false,
@@ -219,15 +237,77 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.timeout', "Timeout in milliseconds for remapped key sequences."),
 	},
+	'vim.textwidth': {
+		type: 'number',
+		default: 0,
+		minimum: 0,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.textwidth', "Line width used by the gq/gw format operators ('textwidth'). 0 uses the first editor.rulers column when one is set, and 79 otherwise (Vim's 'textwidth'=0 fallback)."),
+	},
 	'vim.visualMultilineInsert': {
 		type: 'boolean',
-		default: false,
+		default: true,
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.visualMultilineInsert', "Use VSCodeVim-compatible multi-cursor insertion for I/A in Visual and Visual Line modes."),
 	},
-	'vim.easymotion': {
+	'vim.insertModeCtrlVAsPaste': {
+		type: 'boolean',
+		default: true,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.insertModeCtrlVAsPaste', "Use VS Code's native paste command for Ctrl+V in Insert mode instead of Vim literal insertion."),
+	},
+	'vim.highlightedyank.enable': {
 		type: 'boolean',
 		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.enable', "Enable highlighting when yanking."),
+	},
+	'vim.highlightedyank.color': {
+		type: 'string',
+		default: 'rgba(250, 240, 170, 0.5)',
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.color', "Background color of yanked text. The color must not be opaque so as not to hide underlying decorations."),
+	},
+	'vim.highlightedyank.textColor': {
+		type: 'string',
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.textColor', "Foreground color of yanked text."),
+	},
+	'vim.highlightedyank.duration': {
+		type: 'number',
+		default: 200,
+		minimum: 1,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.highlightedyank.duration', "Duration in milliseconds of the yank highlight."),
+	},
+	'vim.statusBarColorControl': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.statusBarColorControl', "Allow vimcode to change the status bar color based on the current Vim mode."),
+	},
+	// VSCodeVim `vim.statusBarColors.*`: either a background color string or a
+	// `[background, foreground]` pair. Defaults match VSCodeVim exactly
+	// (including the odd 5-digit `#00000` Replace default).
+	'vim.statusBarColors.normal': statusBarColorSchema(nls.localize('vim.statusBarColors.normal', "Status bar color when in Normal mode."), ['#005f5f', '#ffffff']),
+	'vim.statusBarColors.insert': statusBarColorSchema(nls.localize('vim.statusBarColors.insert', "Status bar color when in Insert mode."), ['#5f0000', '#ffffff']),
+	'vim.statusBarColors.visual': statusBarColorSchema(nls.localize('vim.statusBarColors.visual', "Status bar color when in Visual mode."), ['#5f00af', '#ffffff']),
+	'vim.statusBarColors.visualline': statusBarColorSchema(nls.localize('vim.statusBarColors.visualline', "Status bar color when in VisualLine mode."), ['#005f87', '#ffffff']),
+	'vim.statusBarColors.visualblock': statusBarColorSchema(nls.localize('vim.statusBarColors.visualblock', "Status bar color when in VisualBlock mode."), ['#86592d', '#ffffff']),
+	'vim.statusBarColors.replace': statusBarColorSchema(nls.localize('vim.statusBarColors.replace', "Status bar color when in Replace mode."), ['#00000', '#ffffff']),
+	'vim.statusBarColors.commandlineinprogress': statusBarColorSchema(nls.localize('vim.statusBarColors.commandlineinprogress', "Status bar color when in CommandLineInProgress mode."), ['#007acc', '#ffffff']),
+	'vim.statusBarColors.searchinprogressmode': statusBarColorSchema(nls.localize('vim.statusBarColors.searchinprogressmode', "Status bar color when in SearchInProgress mode."), ['#007acc', '#ffffff']),
+	'vim.replaceWithRegister': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.replaceWithRegister', "Enable VSCodeVim ReplaceWithRegister (`gr{motion}` / `grr` / visual `gr`) instead of the `gr` LSP bindings."),
+	},
+	'vim.easymotion': {
+		type: 'boolean',
+		// Deliberate divergence from VSCodeVim (default false); see
+		// [defaultVimConfiguration.easymotion].
+		default: true,
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.easymotion', "Enable VSCodeVim-compatible EasyMotion commands."),
 	},
@@ -258,13 +338,15 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 	'vim.visualModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.visualModeKeyBindingsNonRecursive', "Non-recursive key remappings in Visual modes.")),
 	'vim.operatorPendingModeKeyBindings': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindings', "Recursive key remappings in Operator-pending mode.")),
 	'vim.operatorPendingModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindingsNonRecursive', "Non-recursive key remappings in Operator-pending mode.")),
+	'vim.commandLineModeKeyBindings': remappingSchema(nls.localize('vim.commandLineModeKeyBindings', "Recursive key remappings in the ':' command line and '/' search prompts.")),
+	'vim.commandLineModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.commandLineModeKeyBindingsNonRecursive', "Non-recursive key remappings in the ':' command line and '/' search prompts.")),
 };
 
 function vimcodeConfigurationProperties(): Record<string, IConfigurationPropertySchema> {
 	return Object.fromEntries(Object.entries(vimConfigurationProperties).map(([key, schema]) => [key.replace(/^vim\./, 'vimcode.'), schema]));
 }
 
-function readCompatibilityConfigValue(configurationService: IConfigurationService, key: string): unknown {
+export function readCompatibilityConfigValue(configurationService: IConfigurationService, key: string): unknown {
 	const vimcodeValue = readConfiguredConfigValue(configurationService, `vimcode.${key}`);
 	return vimcodeValue !== undefined ? vimcodeValue : configurationService.getValue<unknown>(`vim.${key}`);
 }
@@ -336,9 +418,10 @@ class VimContribution extends VimController implements IEditorContribution {
 		@IExtensionManagementService extensionManagementService: IExtensionManagementService,
 		@IGlobalExtensionEnablementService extensionEnablementService: IGlobalExtensionEnablementService,
 		@INotificationService notificationService: INotificationService,
-		@ILogService logService: ILogService
+		@ILogService logService: ILogService,
+		@ICodeEditorService codeEditorService: ICodeEditorService
 	) {
-		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, extensionEnablementService, notificationService, logService);
+		super(editor, contextKeyService, clipboardService, commandService, configurationService, keybindingService, extensionManagementService, extensionEnablementService, notificationService, logService, codeEditorService);
 	}
 }
 

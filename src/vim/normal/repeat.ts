@@ -1,13 +1,80 @@
 // Zed reference:
 // - commit: e727080af232cec481bafb2d080585091c3f5db7
 // - source: crates/vim/src/normal/repeat.rs and repeat/macro state in `state::VimGlobals`
-// - translated concepts: record and replay the last repeatable action, including a first
-//   `RecordedSelection`-style visual action shape, plus first named macro replay
-// - intentional differences: key-based actions are still stored as small key sequences;
-//   visual actions are modeled explicitly only for the actions currently implemented.
+// - translated concepts: record and replay the last change for `.`, including a
+//   `RecordedSelection`-style visual action shape, plus named macro record/replay
+// - intentional differences: dot-repeat and macros are both key-based — the
+//   recorded keys are replayed back through the dispatcher (Vim's redo/record
+//   buffers are likewise char buffers). Visual actions are modeled explicitly
+//   only for the actions currently implemented.
 
 import { RegisterName } from "../registers.js";
 import { IndentDirection } from "./indent.js";
+
+// A single recorded keystroke for dot-repeat / macros. Recording is key-based
+// (Vim's redo/record buffers are character buffers). The tag records *which
+// dispatch path produced the key*, so replay can route each entry without
+// re-deriving the mode it was recorded in:
+// - [shortcut]: a key Vim dispatched (motion, operator, mode change, escape).
+//   Replayed by feeding it back through [onKey].
+// - [typed]: a character VSCode typed (or a `backspace`) while Vim let the key
+//   pass through in insert/replace mode. Replayed through the VSCode default
+//   handler ([editor.replayInsertKey]) so the exact native edit (auto-indent,
+//   auto-close, …) is reproduced.
+export type RecordedKey =
+  | { kind: "shortcut"; key: string }
+  | { kind: "typed"; key: string };
+
+export function shortcutKey(key: string): RecordedKey {
+  return { kind: "shortcut", key };
+}
+
+export function typedKey(key: string): RecordedKey {
+  return { kind: "typed", key };
+}
+
+type ReplayResult = void | Promise<void>;
+
+function isPromiseLike(value: ReplayResult): value is Promise<void> {
+  return value !== undefined && typeof (value as Promise<void>).then === "function";
+}
+
+function runSequentially<T>(
+  values: readonly T[],
+  run: (value: T) => ReplayResult,
+  shouldStop: () => boolean = () => false,
+  index = 0
+): ReplayResult {
+  for (let current = index; current < values.length; current++) {
+    if (shouldStop()) return;
+    const result = run(values[current]);
+    if (isPromiseLike(result)) {
+      return result.then(() => runSequentially(values, run, shouldStop, current + 1));
+    }
+  }
+}
+
+function finishReplay(result: ReplayResult, cleanup: () => void): ReplayResult {
+  if (isPromiseLike(result)) return result.finally(cleanup);
+  cleanup();
+}
+
+function runReplayWithCleanup(run: () => ReplayResult, cleanup: () => void): ReplayResult {
+  try {
+    return finishReplay(run(), cleanup);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+function isShortcutKey(entry: RecordedKey | undefined, key: string): boolean {
+  return entry?.kind === "shortcut" && entry.key === key;
+}
+
+function recordedKeyText(entry: RecordedKey | undefined): string | undefined {
+  return entry?.kind === "shortcut" ? entry.key : undefined;
+}
 
 export type RecordedSelection =
   | { type: "none" }
@@ -16,19 +83,26 @@ export type RecordedSelection =
   | { type: "visualBlock"; rows: number; side: "start" | "end" };
 
 export type VisualRepeatAction =
-  | { type: "indent"; direction: IndentDirection }
+  | { type: "indent"; direction: IndentDirection; count?: number }
   | { type: "delete" }
-  | { type: "change"; insertedText: string };
+  | { type: "change"; insertedText: string }
+  | { type: "replaceWithRegister"; registerName?: RegisterName };
 
 export type RepeatAction =
-  | { type: "keys"; keys: readonly string[] }
+  | { type: "keys"; keys: readonly RecordedKey[] }
   | { type: "visual"; selection: RecordedSelection; action: VisualRepeatAction };
 
 export class RepeatState {
-  private current: string[] | undefined;
+  private current: RecordedKey[] | undefined;
   private last: RepeatAction | undefined;
   private replaying = false;
   private abortRequested = false;
+  // A visual change (`v…c`) cannot record its dot-repeat action until the
+  // inserted text is known (on insert-exit). The selection geometry is captured
+  // at change time and stashed here; [takePendingVisualChange] retrieves it when
+  // the insert session ends to build the `change` visual action. Callers guard
+  // on [isReplaying] before setting, like [recordVisualAction].
+  private pendingVisualChange: RecordedSelection | undefined;
 
   isReplaying(): boolean {
     return this.replaying;
@@ -41,16 +115,27 @@ export class RepeatState {
     if (this.replaying) this.abortRequested = true;
   }
 
-  maybeStart(key: string, { mode, pendingChord }: { mode: string; pendingChord: string }): void {
+  // Framework path: open a recording for any normal-mode chord. There is no
+  // start-key list — the command declares dot-repeatability via its effect, and
+  // [cancelCurrent] discards the recording when it turns out non-repeatable. The
+  // count/register keys are recorded literally as typed, so no seed is needed.
+  beginRecording(mode: string): void {
     if (this.current !== undefined || mode !== "normal") return;
-    if (isRepeatableStartKey(key)) this.current = [...pendingChord];
+    this.current = [];
   }
 
   recordKey(key: string): void {
-    this.current?.push(key);
+    this.current?.push(shortcutKey(key));
   }
 
-  recordCompleted(keys: readonly string[]): void {
+  // Record a passthrough character (VSCode typed it while Vim let the key pass
+  // through in insert/replace mode). Extends the in-flight change recording so
+  // `.` replays the insert via the default handler.
+  recordTyped(key: string): void {
+    this.current?.push(typedKey(key));
+  }
+
+  recordCompleted(keys: readonly RecordedKey[]): void {
     this.current = undefined;
     this.last = { type: "keys", keys: [...keys] };
   }
@@ -64,6 +149,20 @@ export class RepeatState {
     this.last = { type: "visual", selection, action };
   }
 
+  setPendingVisualChange(selection: RecordedSelection): void {
+    this.pendingVisualChange = selection;
+  }
+
+  takePendingVisualChange(): RecordedSelection | undefined {
+    const selection = this.pendingVisualChange;
+    this.pendingVisualChange = undefined;
+    return selection;
+  }
+
+  clearPendingVisualChange(): void {
+    this.pendingVisualChange = undefined;
+  }
+
   maybeFinish({ mode, isPending }: { mode: string; isPending: boolean }): void {
     if (this.current === undefined) return;
     if (mode === "normal" && !isPending) {
@@ -74,31 +173,35 @@ export class RepeatState {
 
   replay(
     count: number | undefined,
-    { runKey, runVisualAction, registerName }: { runKey: (key: string) => void; runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => void; registerName?: RegisterName }
-  ): void {
-    if (this.last === undefined) return;
+    { runKey, runVisualAction, registerName }: {
+      runKey: (entry: RecordedKey) => ReplayResult;
+      runVisualAction: (selection: RecordedSelection, action: VisualRepeatAction) => ReplayResult;
+      registerName?: RegisterName;
+    }
+  ): ReplayResult {
+    const last = this.last;
+    if (last === undefined) return;
     this.replaying = true;
-    try {
-      switch (this.last.type) {
-        case "keys": {
-          const countedKeys = count === undefined ? this.last.keys : keysWithCountOverride(this.last.keys, count);
-          const registerKeys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
-          const keys = advanceNumberedPasteRepeat(registerKeys);
-          for (const key of keys) {
-            if (this.abortRequested) break;
-            runKey(key);
-          }
-          if (count !== undefined || keys !== this.last.keys) this.last = { type: "keys", keys: [...keys] };
-          break;
-        }
-        case "visual":
-          runVisualAction(this.last.selection, this.last.action);
-          break;
-      }
-    } finally {
+    const cleanup = () => {
       this.replaying = false;
       this.abortRequested = false;
-    }
+    };
+    return runReplayWithCleanup(() => {
+      switch (last.type) {
+        case "keys": {
+          const countedKeys = count === undefined ? last.keys : keysWithCountOverride(last.keys, count);
+          const registerKeys = registerName === undefined ? countedKeys : keysWithRegisterOverride(countedKeys, registerName);
+          const keys = advanceNumberedPasteRepeat(registerKeys);
+          const result = runSequentially(keys, runKey, () => this.abortRequested);
+          const updateLast = () => {
+            if (count !== undefined || keys !== last.keys) this.last = { type: "keys", keys: [...keys] };
+          };
+          return isPromiseLike(result) ? result.then(updateLast) : updateLast();
+        }
+        case "visual":
+          return runVisualAction(last.selection, last.action);
+      }
+    }, cleanup);
   }
 }
 
@@ -107,10 +210,16 @@ export type MacroRecordingStatus = {
   keys: readonly string[];
 };
 
+// Named macros (`q{reg}…q`, `@{reg}`, `@@`, `Q`). Like Vim's record buffer, a
+// recording register accumulates every key typed while it is active and stores
+// them as a key sequence; replay feeds those keys back through the dispatcher
+// (the owner's [runKey], i.e. [onKey]) — the same mechanism `.` uses. Unlike
+// dot-repeat, a macro is a verbatim transcript (counts, motions, mistakes), so
+// keys are recorded directly rather than seeded from the pending chord.
 export class MacroState {
   private recordingRegister: string | undefined;
-  private current: string[] = [];
-  private readonly recorded = new Map<string, readonly string[]>();
+  private currentKeys: RecordedKey[] = [];
+  private readonly recorded = new Map<string, readonly RecordedKey[]>();
   private lastRecordedRegister: string | undefined;
   private lastReplayRegister: string | undefined;
   private replaying = false;
@@ -126,121 +235,134 @@ export class MacroState {
   recordingStatus(): MacroRecordingStatus | undefined {
     return this.recordingRegister === undefined
       ? undefined
-      : { register: this.recordingRegister, keys: [...this.current] };
+      : { register: this.recordingRegister, keys: this.currentKeys.map(entry => entry.key) };
   }
 
   startRecording(key: string): void {
     this.recordingRegister = key;
-    this.current = [];
+    this.currentKeys = [];
   }
 
   recordKey(key: string): void {
-    if (this.recordingRegister !== undefined && !this.replaying) this.current.push(key);
+    if (this.recordingRegister !== undefined && !this.replaying) this.currentKeys.push(shortcutKey(key));
   }
 
-  stopRecording(): boolean {
+  // Record a passthrough character into the active macro (see
+  // [RepeatState.recordTyped]); replayed via the VSCode default handler.
+  recordTyped(key: string): void {
+    if (this.recordingRegister !== undefined && !this.replaying) this.currentKeys.push(typedKey(key));
+  }
+
+  stopRecording(): { register: string; keys: readonly RecordedKey[] } | undefined {
     const register = this.recordingRegister;
-    if (register === undefined) return false;
+    if (register === undefined) return undefined;
     this.recordingRegister = undefined;
-    this.recorded.set(register, this.current);
+    const keys = this.currentKeys;
+    this.recorded.set(register, keys);
     this.lastRecordedRegister = register;
-    this.current = [];
-    return true;
+    this.currentKeys = [];
+    return { register, keys };
   }
 
-  replayRegisterKey(key: string, count: number, runKey: (key: string) => void): void {
+  replayRegisterKey(
+    key: string,
+    count: number,
+    runKey: (entry: RecordedKey) => ReplayResult,
+    replayCommandLine: (count: number) => ReplayResult
+  ): ReplayResult {
     const register = key === "@" ? this.lastReplayRegister : key;
     if (register === undefined) return;
-    this.replay(register, count, runKey);
+    // Vim `@:` (`:h @:`): replay the last command-line rather than recorded
+    // keys; a following `@@` repeats the command line again. Execution lives
+    // with the owner ([replayCommandLine]); the replaying flag still
+    // suppresses recording, like a key replay, so a `:normal` inside the
+    // repeated command does not re-record its keys. [lastReplayRegister] is
+    // deliberately set before we know whether a command line exists: Neovim's
+    // `do_execreg` updates `execreg_lastc` before its empty-command-line
+    // check, so after a failing `@:` (E30) a following `@@` retries `:` and
+    // errors again rather than re-running the previously replayed register
+    // (Neovim-verified).
+    if (register === ":") {
+      this.lastReplayRegister = register;
+      this.replaying = true;
+      return runReplayWithCleanup(() => replayCommandLine(count), () => {
+        this.replaying = false;
+      });
+    }
+    return this.replay(register, count, runKey);
   }
 
-  replayLast(count: number, runKey: (key: string) => void): void {
+  replayLast(count: number, runKey: (entry: RecordedKey) => ReplayResult): ReplayResult {
     const register = this.lastRecordedRegister;
     if (register === undefined) return;
-    this.replay(register, count, runKey);
+    return this.replay(register, count, runKey);
   }
 
-  private replay(register: string, count: number, runKey: (key: string) => void): void {
+  private replay(register: string, count: number, runKey: (entry: RecordedKey) => ReplayResult): ReplayResult {
     const keys = this.recorded.get(register);
     if (keys === undefined) return;
     this.lastReplayRegister = register;
     this.replaying = true;
-    try {
-      for (let index = 0; index < count; index++) {
-        for (const key of keys) runKey(key);
-      }
-    } finally {
+    const runCount = (index: number): ReplayResult => {
+      if (index >= count) return;
+      const result = runSequentially(keys, runKey);
+      return isPromiseLike(result) ? result.then(() => runCount(index + 1)) : runCount(index + 1);
+    };
+    return runReplayWithCleanup(() => runCount(0), () => {
       this.replaying = false;
-    }
+    });
   }
 }
 
-function isRepeatableStartKey(key: string): boolean {
-  return key === "x"
-    || key === "p"
-    || key === "P"
-    || key === "d"
-    || key === "c"
-    || key === "r"
-    || key === "R"
-    || key === "~"
-    || key === "g"
-    || key === "ctrl-a"
-    || key === "ctrl-x"
-    || key === "o"
-    || key === "O"
-    || key === "i"
-    || key === "a"
-    || key === "I"
-    || key === "A"
-    || key === "v"
-    || key === "V"
-    || key === "ctrl-v";
+function keysWithRegisterOverride(keys: readonly RecordedKey[], registerName: RegisterName): readonly RecordedKey[] {
+  const { index: afterCount } = consumeCount(keys, 0);
+  if (isShortcutKey(keys[afterCount], '"')) return keys;
+  return [...keys.slice(0, afterCount), shortcutKey('"'), shortcutKey(registerName), ...keys.slice(afterCount)];
 }
 
-function keysWithRegisterOverride(keys: readonly string[], registerName: RegisterName): readonly string[] {
+function advanceNumberedPasteRepeat(keys: readonly RecordedKey[]): readonly RecordedKey[] {
   const { index: afterCount } = consumeCount(keys, 0);
-  if (keys[afterCount] === '"') return keys;
-  return [...keys.slice(0, afterCount), '"', registerName, ...keys.slice(afterCount)];
-}
-
-function advanceNumberedPasteRepeat(keys: readonly string[]): readonly string[] {
-  const { index: afterCount } = consumeCount(keys, 0);
-  if (keys[afterCount] !== '"') return keys;
-  const registerName = keys[afterCount + 1];
-  const command = keys[afterCount + 2];
-  if (!/^\d$/.test(registerName) || (command !== "p" && command !== "P")) return keys;
+  if (!isShortcutKey(keys[afterCount], '"')) return keys;
+  const registerName = recordedKeyText(keys[afterCount + 1]);
+  const command = recordedKeyText(keys[afterCount + 2]);
+  if (registerName === undefined || !/^\d$/.test(registerName) || (command !== "p" && command !== "P")) return keys;
   const nextRegister = String(Math.min(9, Number(registerName) + 1));
-  return [...keys.slice(0, afterCount + 1), nextRegister, ...keys.slice(afterCount + 2)];
+  return [...keys.slice(0, afterCount + 1), shortcutKey(nextRegister), ...keys.slice(afterCount + 2)];
 }
 
-function keysWithCountOverride(keys: readonly string[], count: number): readonly string[] {
+function keysWithCountOverride(keys: readonly RecordedKey[], count: number): readonly RecordedKey[] {
   const { index: afterPrefix } = consumeCount(keys, 0);
-  const firstCommandKey = keys[afterPrefix];
-  if (firstCommandKey === undefined) return keys;
+  const firstCommand = keys[afterPrefix];
+  const firstCommandKey = recordedKeyText(firstCommand);
+  if (firstCommand === undefined || firstCommandKey === undefined) return keys;
 
   if (firstCommandKey === "ctrl-a" || firstCommandKey === "ctrl-x") {
-    return withCountPrefix([firstCommandKey, ...keys.slice(afterPrefix + 1)], count);
+    return withCountPrefix([firstCommand, ...keys.slice(afterPrefix + 1)], count);
   }
 
   if (isOperatorKey(firstCommandKey)) {
     const { index: afterMotionCount } = consumeCount(keys, afterPrefix + 1);
     const motionKey = keys[afterMotionCount];
     if (motionKey === undefined) return withCountPrefix(keys.slice(afterPrefix), count);
-    return withCountPrefix([firstCommandKey, motionKey, ...keys.slice(afterMotionCount + 1)], count);
+    return withCountPrefix([firstCommand, motionKey, ...keys.slice(afterMotionCount + 1)], count);
   }
 
   return withCountPrefix(keys.slice(afterPrefix), count);
 }
 
-function consumeCount(keys: readonly string[], start: number): { index: number } {
+function consumeCount(keys: readonly RecordedKey[], start: number): { index: number } {
   let index = start;
-  while (index < keys.length && /^\d$/.test(keys[index])) index++;
+  while (index < keys.length && isDigitShortcut(keys[index])) index++;
   return { index };
 }
 
-function withCountPrefix(keys: readonly string[], count: number): readonly string[] {
-  return count === 1 ? keys : [...String(count), ...keys];
+function isDigitShortcut(entry: RecordedKey | undefined): boolean {
+  const text = recordedKeyText(entry);
+  return text !== undefined && /^\d$/.test(text);
+}
+
+function withCountPrefix(keys: readonly RecordedKey[], count: number): readonly RecordedKey[] {
+  return count === 1 ? keys : [...[...String(count)].map(shortcutKey), ...keys];
 }
 
 function isOperatorKey(key: string): boolean {

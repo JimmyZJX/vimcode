@@ -33,20 +33,20 @@ export type VimSelection =
   | { type: "linewise"; anchorLine: number; anchorColumn?: number; headLine: number; cursor?: Position; goal?: VimSelectionGoal }
   | { type: "blockwise"; anchor: Position; head: Position; cursor?: Position; goal?: VimSelectionGoal };
 
-export type VimDialect = "vim" | "helix";
-
-// Zed: `state::Mode`. We keep the same conceptual modes
-// but add an explicit `dialect` field so Vim and Helix can share core primitives.
+// Zed: `state::Mode`. Keep Helix's normal/select modes explicit so key
+// dispatch can distinguish Vim normal from Helix normal without pairing a
+// separate dialect field with a shared kind.
 export type VimMode =
-  | { dialect: VimDialect; kind: "normal" }
-  | { dialect: VimDialect; kind: "insert" }
-  | { dialect: VimDialect; kind: "replace" }
-  | { dialect: VimDialect; kind: "search" }
-  | { dialect: VimDialect; kind: "command" }
-  | { dialect: VimDialect; kind: "visual" }
-  | { dialect: VimDialect; kind: "visualLine" }
-  | { dialect: VimDialect; kind: "visualBlock" }
-  | { dialect: "helix"; kind: "select" };
+  | "normal"
+  | "insert"
+  | "replace"
+  | "search"
+  | "command"
+  | "visual"
+  | "visualLine"
+  | "visualBlock"
+  | "helixNormal"
+  | "helixSelect";
 
 // Zed: `state::Operator`. This first slice only carries
 // the operator variants needed by the basic vertical slice.
@@ -75,8 +75,23 @@ export type KeyResult = "handled" | "not-handled";
     never escape [Vim.onKey]. */
 export type KeyDispatchResult = KeyResult | "native";
 
-export function isVisualModeKind(kind: VimMode["kind"]): kind is "visual" | "visualLine" | "visualBlock" {
-  return kind === "visual" || kind === "visualLine" || kind === "visualBlock";
+export function isVisualModeKind(mode: VimMode): mode is "visual" | "visualLine" | "visualBlock" | "helixSelect" {
+  return mode === "visual" || mode === "visualLine" || mode === "visualBlock" || mode === "helixSelect";
+}
+
+export function isNormalMode(mode: VimMode): mode is "normal" | "helixNormal" {
+  return mode === "normal" || mode === "helixNormal";
+}
+
+export function vimModeName(mode: VimMode): string {
+  switch (mode) {
+    case "helixNormal":
+      return "helix:normal";
+    case "helixSelect":
+      return "helix:select";
+    default:
+      return `vim:${mode}`;
+  }
 }
 
 export function position(row: number, column: number): Position {

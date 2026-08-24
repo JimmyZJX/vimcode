@@ -1,0 +1,93 @@
+{"Put":{"state":"one ˇtwo three"}}
+{"Key":"y"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"g"}
+{"Key":"p"}
+{"Get":{"state":"one ttwoˇwo three","mode":"Normal"}}
+{"Put":{"state":"one ˇtwo three"}}
+{"Key":"y"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"g"}
+{"Key":"P"}
+{"Get":{"state":"one twoˇtwo three","mode":"Normal"}}
+{"Put":{"state":"ˇaaa\nbbb"}}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"g"}
+{"Key":"p"}
+{"Get":{"state":"aaa\naaa\nˇbbb","mode":"Normal"}}
+{"Put":{"state":"ˇaaa\nbbb"}}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"g"}
+{"Key":"P"}
+{"Get":{"state":"aaa\nˇaaa\nbbb","mode":"Normal"}}
+{"Put":{"state":"ˇaaa\nbbb"}}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"2"}
+{"Key":"g"}
+{"Key":"p"}
+{"Get":{"state":"aaa\naaa\naaa\nˇbbb","mode":"Normal"}}
+{"Put":{"state":"    ˇind\nbbb"}}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"g"}
+{"Key":"p"}
+{"Get":{"state":"    ind\n    ind\nˇbbb","mode":"Normal"}}
+{"Put":{"state":"  src\n        ˇtgt"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"j"}
+{"Key":"]"}
+{"Key":"p"}
+{"Get":{"state":"  src\n        tgt\n        ˇsrc","mode":"Normal"}}
+{"Put":{"state":"  src\n        ˇtgt"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"j"}
+{"Key":"["}
+{"Key":"p"}
+{"Get":{"state":"  src\n        ˇsrc\n        tgt","mode":"Normal"}}
+{"Put":{"state":"  src\n        ˇtgt"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"j"}
+{"Key":"]"}
+{"Key":"P"}
+{"Get":{"state":"  src\n        ˇsrc\n        tgt","mode":"Normal"}}
+{"Put":{"state":"  a\n    b\n      ˇtgt"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"y"}
+{"Key":"2"}
+{"Key":"y"}
+{"Key":"2"}
+{"Key":"j"}
+{"Key":"]"}
+{"Key":"p"}
+{"Get":{"state":"  a\n    b\n      tgt\n      ˇa\n        b","mode":"Normal"}}
+{"Put":{"state":"one ˇtwo three"}}
+{"Key":"y"}
+{"Key":"i"}
+{"Key":"w"}
+{"Key":"]"}
+{"Key":"p"}
+{"Get":{"state":"one ttwˇowo three","mode":"Normal"}}
+{"Put":{"state":"        src\nˇtgt"}}
+{"Key":"g"}
+{"Key":"g"}
+{"Key":"y"}
+{"Key":"y"}
+{"Key":"j"}
+{"Key":"]"}
+{"Key":"p"}
+{"Get":{"state":"        src\ntgt\nˇsrc","mode":"Normal"}}

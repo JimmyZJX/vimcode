@@ -1,0 +1,57 @@
+{"Put":{"state":"ˇ()"}}
+{"Key":"d"}
+{"Key":"%"}
+{"Get":{"state":"ˇ","mode":"Normal"}}
+{"Put":{"state":"ˇ(abc) x"}}
+{"Key":"d"}
+{"Key":"%"}
+{"ReadRegister":{"name":"\"","value":"(abc)"}}
+{"Get":{"state":"ˇ x","mode":"Normal"}}
+{"Put":{"state":"(abcˇ) x"}}
+{"Key":"d"}
+{"Key":"%"}
+{"ReadRegister":{"name":"\"","value":"(abc)"}}
+{"Get":{"state":"ˇ x","mode":"Normal"}}
+{"Put":{"state":"aˇb (c) d"}}
+{"Key":"d"}
+{"Key":"%"}
+{"Get":{"state":"aˇ d","mode":"Normal"}}
+{"Put":{"state":"ˇ(abc) x"}}
+{"Key":"d"}
+{"Key":"v"}
+{"Key":"%"}
+{"Get":{"state":"ˇ x","mode":"Normal"}}
+{"Put":{"state":"(abcˇ) x"}}
+{"Key":"d"}
+{"Key":"v"}
+{"Key":"%"}
+{"Get":{"state":"ˇ x","mode":"Normal"}}
+{"Put":{"state":"ˇ{\nfoo\n} x"}}
+{"Key":"d"}
+{"Key":"%"}
+{"Get":{"state":"ˇ x","mode":"Normal"}}
+{"Put":{"state":"x = ˇ(abc)\nnext"}}
+{"Key":"d"}
+{"Key":"%"}
+{"Get":{"state":"x =ˇ \nnext","mode":"Normal"}}
+{"Put":{"state":"aˇbc"}}
+{"Key":"d"}
+{"Key":"%"}
+{"ReadRegister":{"name":"\"","value":"b"}}
+{"Get":{"state":"aˇc","mode":"Normal"}}
+{"Put":{"state":"ˇ\nfoo"}}
+{"Key":"d"}
+{"Key":"%"}
+{"Get":{"state":"ˇfoo","mode":"Normal"}}
+{"Put":{"state":"ˇ(abc) x"}}
+{"Key":"c"}
+{"Key":"%"}
+{"Key":"X"}
+{"Key":"escape"}
+{"Get":{"state":"ˇX x","mode":"Normal"}}
+{"Put":{"state":"ˇ(abc) x"}}
+{"Key":"y"}
+{"Key":"%"}
+{"Key":"P"}
+{"ReadRegister":{"name":"\"","value":"(abc)"}}
+{"Get":{"state":"(abcˇ)(abc) x","mode":"Normal"}}

@@ -1,0 +1,151 @@
+{"Exec":{"command":"set textwidth=20"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"aaa bbb ccc ddd eee\nˇfff ggg","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"g"}
+{"Key":"q"}
+{"Get":{"state":"aaa bbb ccc ddd eee\nˇfff ggg","mode":"Normal"}}
+{"Put":{"state":"ˇshort one\nshort two tail"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"j"}
+{"Get":{"state":"short one short two\nˇtail","mode":"Normal"}}
+{"Put":{"state":"ˇp1 w1 w2 w3 w4 w5 w6 w7\n\npar2 words here"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"i"}
+{"Key":"p"}
+{"Get":{"state":"p1 w1 w2 w3 w4 w5 w6\nˇw7\n\npar2 words here","mode":"Normal"}}
+{"Put":{"state":"ˇp1 w1 w2 w3 w4 w5 w6 w7\n\npar2 words here"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"}"}
+{"Get":{"state":"p1 w1 w2 w3 w4 w5 w6\nw7\nˇ\npar2 words here","mode":"Normal"}}
+{"Put":{"state":"ˇ// aaa bbb ccc ddd eee"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"// aaa bbb ccc ddd\nˇ// eee","mode":"Normal"}}
+{"Put":{"state":"ˇ// aaa bbb\n// ccc ddd eee fff"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"j"}
+{"Get":{"state":"// aaa bbb ccc ddd\nˇ// eee fff","mode":"Normal"}}
+{"Put":{"state":"ˇ# aaa bbb ccc ddd eee"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"# aaa bbb ccc ddd\nˇ# eee","mode":"Normal"}}
+{"Put":{"state":"ˇ    aaa bbb ccc ddd eee"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"    aaa bbb ccc ddd\n    ˇeee","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg"}}
+{"Key":"g"}
+{"Key":"w"}
+{"Key":"w"}
+{"Get":{"state":"ˇaaa bbb ccc ddd eee\nfff ggg","mode":"Normal"}}
+{"Put":{"state":"aaa bbb ˇccc ddd eee fff ggg"}}
+{"Key":"g"}
+{"Key":"w"}
+{"Key":"w"}
+{"Get":{"state":"aaa bbb ˇccc ddd eee\nfff ggg","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff\nggg hhh"}}
+{"Key":"V"}
+{"Key":"j"}
+{"Key":"g"}
+{"Key":"q"}
+{"Get":{"state":"aaa bbb ccc ddd eee\nˇfff ggg hhh","mode":"Normal"}}
+{"Put":{"state":"ˇsupercalifragilisticexpialidocious word more"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"supercalifragilisticexpialidocious\nˇword more","mode":"Normal"}}
+{"Put":{"state":"ˇaaa  bbb   ccc ddd eee"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"aaa  bbb   ccc ddd\nˇeee","mode":"Normal"}}
+{"Put":{"state":"ˇ// comment aaa bbb ccc\nplain ddd eee fff"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"2"}
+{"Key":"j"}
+{"Get":{"state":"// comment aaa bbb\n// ccc\nˇplain ddd eee fff","mode":"Normal"}}
+{"Put":{"state":"ˇ\nfoo"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"ˇ\nfoo","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb.\nccc ddd"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"j"}
+{"Get":{"state":"ˇaaa bbb. ccc ddd","mode":"Normal"}}
+{"Put":{"state":"ˇline one aaa bbb ccc\nline two ddd eee fff"}}
+{"Key":"2"}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"line one aaa bbb ccc\nˇline two ddd eee fff","mode":"Normal"}}
+{"Put":{"state":"ˇtab\tsep words go here now"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Get":{"state":"tab\tsep words go\nˇhere now","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Key":"u"}
+{"Get":{"state":"ˇaaa bbb ccc ddd eee fff ggg","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff\nggg hhh"}}
+{"Key":"V"}
+{"Key":"j"}
+{"Key":"g"}
+{"Key":"w"}
+{"Get":{"state":"aaa bbb ccc ddd eee\nfff ˇggg hhh","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg\n\nhhh iii jjj kkk lll mmm nnn"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"q"}
+{"Key":"2"}
+{"Key":"j"}
+{"Key":"."}
+{"Get":{"state":"aaa bbb ccc ddd eee\nfff ggg\n\nhhh iii jjj kkk lll\nˇmmm nnn","mode":"Normal"}}
+{"Put":{"state":"www xxx ˇyyy zzz\nmore words here now"}}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"i"}
+{"Key":"p"}
+{"Get":{"state":"www xxx yyy zzz more\nˇwords here now","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg\nlast line"}}
+{"Key":"V"}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"v"}
+{"Key":"k"}
+{"Key":"d"}
+{"Get":{"state":"ˇff ggg\nlast line","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg\nlast line"}}
+{"Key":"V"}
+{"Key":"g"}
+{"Key":"w"}
+{"Key":"v"}
+{"Key":"j"}
+{"Key":"d"}
+{"Get":{"state":"ˇff ggg\nlast line","mode":"Normal"}}
+{"Put":{"state":"ˇaaa bbb ccc ddd eee fff ggg\nlast line"}}
+{"Key":"V"}
+{"Key":"g"}
+{"Key":"q"}
+{"Key":"g"}
+{"Key":"v"}
+{"Key":"d"}
+{"Get":{"state":"ˇfff ggg\nlast line","mode":"Normal"}}

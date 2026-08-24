@@ -101,7 +101,7 @@ function minorSingleCharacterSelection(
   selections: readonly VimSelection[],
   mode: VimMode
 ): Extract<VimSelection, { type: "charwise" }> | undefined {
-  if (mode.kind !== "normal" || selections.length !== 1) return undefined;
+  if ((mode !== "normal" && mode !== "helixNormal") || selections.length !== 1) return undefined;
   const selection = selections[0];
   if (selection?.type !== "charwise") return undefined;
   const range = rangeOfSelection(selection);
