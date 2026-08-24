@@ -1,0 +1,5 @@
+{"Put":{"state":"ˇone two three"}}
+{"Key":"v"}
+{"Key":"w"}
+{"Key":"d"}
+{"Get":{"state":"ˇwo three","mode":"normal"}}

@@ -1,0 +1,15 @@
+{"Put":{"state":"ˇone two three"}}
+{"Key":"v"}
+{"Key":"f"}
+{"Key":"t"}
+{"Get":{"state":"«one tˇ»wo three","mode":"Visual"}}
+{"Put":{"state":"ˇone two three"}}
+{"Key":"v"}
+{"Key":"t"}
+{"Key":"t"}
+{"Get":{"state":"«one ˇ»two three","mode":"Visual"}}
+{"Put":{"state":"one two threˇe"}}
+{"Key":"v"}
+{"Key":"shift-f"}
+{"Key":"t"}
+{"Get":{"state":"one two «ˇthree»","mode":"Visual"}}

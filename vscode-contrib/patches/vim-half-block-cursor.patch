@@ -1,0 +1,175 @@
+diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts b/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
+index f4e4f95e86c..2d84cbe9b6e 100644
+--- a/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
++++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
+@@ -224,7 +224,7 @@ export class ViewCursor {
+ 					: range.width)
+ 		);
+ 
+-		if (this._cursorStyle === TextEditorCursorStyle.Block) {
++		if (this._cursorStyle === TextEditorCursorStyle.Block || this._cursorStyle === TextEditorCursorStyle.HalfBlock) {
+ 			textContent = nextGrapheme;
+ 			textContentClassName = this._getTokenClassName(position);
+ 		}
+diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css
+index 5549376d99d..585c57b13f1 100644
+--- a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css
++++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.css
+@@ -39,6 +39,13 @@
+ 	background: transparent !important;
+ }
+ 
++/* -- half-block-style (vimcode) -- */
++/* The clip inset (and so the visible cursor height) is driven per editor by
++   the Vim contribution through this custom property. */
++.monaco-editor .cursors-layer.cursor-half-block-style > .cursor {
++	clip-path: inset(var(--vimcode-pending-cursor-inset, 50%) 0 0 0);
++}
++
+ @keyframes monaco-cursor-smooth {
+ 	0%,
+ 	20% {
+diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
+index d3fd3861bb2..4cf42b4efa0 100644
+--- a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
++++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
+@@ -307,6 +307,9 @@ export class ViewCursors extends ViewPart {
+ 			case TextEditorCursorStyle.UnderlineThin:
+ 				result += ' cursor-underline-thin-style';
+ 				break;
++			case TextEditorCursorStyle.HalfBlock:
++				result += ' cursor-half-block-style';
++				break;
+ 			default:
+ 				result += ' cursor-line-style';
+ 		}
+diff --git a/src/vs/editor/common/config/editorOptions.ts b/src/vs/editor/common/config/editorOptions.ts
+index 3ac3c8e5122..ae901e9f1b6 100644
+--- a/src/vs/editor/common/config/editorOptions.ts
++++ b/src/vs/editor/common/config/editorOptions.ts
+@@ -260,7 +260,7 @@ export interface IEditorOptions {
+ 	 * Control the cursor style in insert mode.
+ 	 * Defaults to 'line'.
+ 	 */
+-	cursorStyle?: 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin';
++	cursorStyle?: 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin' | 'half-block';
+ 	/**
+ 	 * Control the cursor style in overtype mode.
+ 	 * Defaults to 'block'.
+@@ -1622,13 +1622,18 @@ export enum TextEditorCursorStyle {
+ 	/**
+ 	 * As a thin horizontal line (sitting under a character).
+ 	 */
+-	UnderlineThin = 6
++	UnderlineThin = 6,
++	/**
++	 * As a block covering the lower half of a character (vimcode: Vim's
++	 * operator-pending `hor50` guicursor shape).
++	 */
++	HalfBlock = 7
+ }
+ 
+ /**
+  * @internal
+  */
+-export function cursorStyleToString(cursorStyle: TextEditorCursorStyle): 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin' {
++export function cursorStyleToString(cursorStyle: TextEditorCursorStyle): 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin' | 'half-block' {
+ 	switch (cursorStyle) {
+ 		case TextEditorCursorStyle.Line: return 'line';
+ 		case TextEditorCursorStyle.Block: return 'block';
+@@ -1636,13 +1641,14 @@ export function cursorStyleToString(cursorStyle: TextEditorCursorStyle): 'line'
+ 		case TextEditorCursorStyle.LineThin: return 'line-thin';
+ 		case TextEditorCursorStyle.BlockOutline: return 'block-outline';
+ 		case TextEditorCursorStyle.UnderlineThin: return 'underline-thin';
++		case TextEditorCursorStyle.HalfBlock: return 'half-block';
+ 	}
+ }
+ 
+ /**
+  * @internal
+  */
+-export function cursorStyleFromString(cursorStyle: 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin'): TextEditorCursorStyle {
++export function cursorStyleFromString(cursorStyle: 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin' | 'half-block'): TextEditorCursorStyle {
+ 	switch (cursorStyle) {
+ 		case 'line': return TextEditorCursorStyle.Line;
+ 		case 'block': return TextEditorCursorStyle.Block;
+@@ -1650,6 +1656,7 @@ export function cursorStyleFromString(cursorStyle: 'line' | 'block' | 'underline
+ 		case 'line-thin': return TextEditorCursorStyle.LineThin;
+ 		case 'block-outline': return TextEditorCursorStyle.BlockOutline;
+ 		case 'underline-thin': return TextEditorCursorStyle.UnderlineThin;
++		case 'half-block': return TextEditorCursorStyle.HalfBlock;
+ 	}
+ }
+ 
+@@ -6191,7 +6198,7 @@ export const EditorOptions = {
+ 	cursorStyle: register(new EditorEnumOption(
+ 		EditorOption.cursorStyle, 'cursorStyle',
+ 		TextEditorCursorStyle.Line, 'line',
+-		['line', 'block', 'underline', 'line-thin', 'block-outline', 'underline-thin'],
++		['line', 'block', 'underline', 'line-thin', 'block-outline', 'underline-thin', 'half-block'],
+ 		cursorStyleFromString,
+ 		{ description: nls.localize('cursorStyle', "Controls the cursor style in insert input mode.") }
+ 	)),
+diff --git a/src/vs/editor/common/standalone/standaloneEnums.ts b/src/vs/editor/common/standalone/standaloneEnums.ts
+index cb0db8b268d..0501b1b8cd7 100644
+--- a/src/vs/editor/common/standalone/standaloneEnums.ts
++++ b/src/vs/editor/common/standalone/standaloneEnums.ts
+@@ -980,7 +980,12 @@ export enum TextEditorCursorStyle {
+ 	/**
+ 	 * As a thin horizontal line (sitting under a character).
+ 	 */
+-	UnderlineThin = 6
++	UnderlineThin = 6,
++	/**
++	 * As a block covering the lower half of a character (vimcode: Vim's
++	 * operator-pending `hor50` guicursor shape).
++	 */
++	HalfBlock = 7
+ }
+ 
+ /**
+diff --git a/src/vs/monaco.d.ts b/src/vs/monaco.d.ts
+index 5b0047e74a3..479ed6d6741 100644
+--- a/src/vs/monaco.d.ts
++++ b/src/vs/monaco.d.ts
+@@ -3415,7 +3415,7 @@ declare namespace monaco.editor {
+ 		 * Control the cursor style in insert mode.
+ 		 * Defaults to 'line'.
+ 		 */
+-		cursorStyle?: 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin';
++		cursorStyle?: 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin' | 'half-block';
+ 		/**
+ 		 * Control the cursor style in overtype mode.
+ 		 * Defaults to 'block'.
+@@ -4227,7 +4227,12 @@ declare namespace monaco.editor {
+ 		/**
+ 		 * As a thin horizontal line (sitting under a character).
+ 		 */
+-		UnderlineThin = 6
++		UnderlineThin = 6,
++		/**
++		 * As a block covering the lower half of a character (vimcode: Vim's
++		 * operator-pending `hor50` guicursor shape).
++		 */
++		HalfBlock = 7
+ 	}
+ 
+ 	/**
+diff --git a/src/vscode-dts/vscode.d.ts b/src/vscode-dts/vscode.d.ts
+index e5cff6649f7..3b83025335a 100644
+--- a/src/vscode-dts/vscode.d.ts
++++ b/src/vscode-dts/vscode.d.ts
+@@ -659,7 +659,12 @@ declare module 'vscode' {
+ 		/**
+ 		 * Render the cursor as a thin horizontal line.
+ 		 */
+-		UnderlineThin = 6
++		UnderlineThin = 6,
++		/**
++		 * Render the cursor as a block covering the lower half of a character
++		 * (vimcode: Vim's operator-pending `hor50` guicursor shape).
++		 */
++		HalfBlock = 7
+ 	}
+ 
+ 	/**

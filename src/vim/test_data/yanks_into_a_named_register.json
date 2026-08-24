@@ -1,0 +1,7 @@
+{"Put":{"state":"ˇone two"}}
+{"Key":"\""}
+{"Key":"a"}
+{"Key":"y"}
+{"Key":"w"}
+{"ReadRegister":{"name":"a","value":"one "}}
+{"Get":{"state":"ˇone two","mode":"normal"}}

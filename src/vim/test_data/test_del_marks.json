@@ -1,0 +1,12 @@
+// DISABLED: fixture has no Put/Get entries (uses :delmarks state assertions); harness cannot replay it.
+{"Put":{"state":"ˇa\nb\na\nb\na\n"}}
+{"Key":"m"}
+{"Key":"a"}
+{"Key":":"}
+{"Key":"d"}
+{"Key":"e"}
+{"Key":"l"}
+{"Key":"m"}
+{"Key":"space"}
+{"Key":"a"}
+{"Key":"enter"}

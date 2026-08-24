@@ -1,114 +1,85 @@
-import { Editor, Pos } from "../../editorInterface.js";
-import {
-  ChordKeymap,
-  DelayedAction,
-  DynamicChordMenu,
-  emptyEnv,
-  Env,
-  KeyChordMenu,
-  simpleKeys,
-  testKeys,
-} from "../common.js";
-import { getLineWhitePrefix } from "../lineUtil.js";
-import { fixCursorPosition } from "../modeUtil.js";
-import { deletes } from "./cutDelete.js";
+// Zed reference:
+// - commit: e727080af232cec481bafb2d080585091c3f5db7
+// - source: crates/vim/src/normal/change.rs
+// - translated concepts: change by motion and change current line
+// - intentional differences: this first slice reuses delete behavior and lets the caller
+//   switch to insert mode; Zed has richer recording, indentation, and selection fixups.
 
-function paste(mode: "before" | "after"): DelayedAction<Pos, Pos> {
-  return (k) =>
-    k(
-      async (editor: Editor, env: Env, p: Pos) => {
-        const registerText = await env.globalState.registers.getText(editor);
-        return { p, registerText };
-      },
-      (editor: Editor, _env: Env, { p, registerText }) => {
-        if (registerText === undefined) {
-          return { l: p.l, c: p.c };
-        }
-        if (registerText.isFullLine) {
-          if (mode === "before") {
-            const lineStart = { l: p.l, c: 0 };
-            editor.editText(
-              { anchor: lineStart, active: lineStart },
-              registerText.content + "\n"
-            );
-            return { l: p.l, c: getLineWhitePrefix(editor, p.l).length };
-          } else {
-            // after
-            const lineLen = editor.getLineLength(p.l);
-            editor.editText(
-              {
-                anchor: { l: p.l, c: lineLen },
-                active: { l: p.l, c: lineLen },
-              },
-              "\n" + registerText.content
-            );
-            return {
-              l: p.l + 1,
-              c: getLineWhitePrefix(editor, p.l + 1).length,
-            };
-          }
-        } else {
-          const pos = mode === "before" ? p : fixCursorPosition(editor, p, { mode: 'insert', offset: 1 });
-          const content = registerText.content;
-          editor.editText({ anchor: pos, active: pos }, content);
-          const lineOffset = (content.match(/\n/g) || "").length;
-          const col =
-            lineOffset === 0
-              ? p.c + content.length + (mode === "before" ? 0 : 1)
-              : content.length - content.lastIndexOf("\n") - 1;
-          return { l: p.l + lineOffset, c: col };
-        }
-      }
-    );
+import { VimEditorCapabilities, keepUndoTransactionOpen } from "../editor.js";
+import type { OperatorTarget, RowRange } from "../operator_target.js";
+import { RegisterName, Registers } from "../registers.js";
+import { deleteTargets } from "./delete.js";
+
+// Zed: `normal::change::Vim::change_motion` / `change_object`; one application
+// for every change target source (motion, line, object, visual). Returns
+// whether the editor should enter insert mode.
+export function applyChange(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  target: OperatorTarget
+): boolean {
+  switch (target.kind) {
+    case "charwise": {
+      // Vim: change deletes the range and leaves the cursor at its start,
+      // entering insert there (`:h c`) — including ranges a successful motion
+      // left empty (`cb` onto an empty line). Cancelled targets (`cap` on a
+      // trailing blank line, a failed motion) keep the cursor and suppress
+      // insert-mode entry.
+      const targets = target.targets.map(charwiseTarget =>
+        charwiseTarget.cancelled === true
+          ? charwiseTarget
+          : { ...charwiseTarget, cursor: charwiseTarget.cursor ?? charwiseTarget.range.start });
+      deleteTargets(editor, registers, registerName, targets, (_editor, range) => range.start, keepUndoTransactionOpen());
+      return target.targets.some(({ cancelled }) => cancelled !== true);
+    }
+    case "linewise":
+      return changeLineRange(editor, registers, registerName, target.rows);
+  }
 }
 
-export const changes: ChordKeymap<Pos, Pos> = {
-  ...deletes,
-  p: { type: "delayed", delayed: paste("after") },
-  P: { type: "delayed", delayed: paste("before") },
-  r: {
-    type: "menu",
-    menu: new DynamicChordMenu((_editor, _env, { key, input: _ }) => {
-      if (key.length > 1) return undefined;
-      return {
-        type: "action",
-        action: (editor, _env, p) => {
-          const line = editor.getLine(p.l);
-          if (p.c < line.length) {
-            editor.editText(
-              { anchor: p, active: { l: p.l, c: p.c + 1 } },
-              key
-            );
-          }
-          return { l: p.l, c: p.c };
-        },
-      };
-    }),
-  },
-};
+export function changeLineRange(
+  editor: VimEditorCapabilities,
+  registers: Registers,
+  registerName: RegisterName | undefined,
+  ranges: readonly RowRange[]
+): boolean {
+  if (ranges.length === 0) return false;
 
-export const changesCursorNeutral: ChordKeymap<void, void> = {
-  ...simpleKeys({
-    u: (editor, _env, _void) => editor.real_undo(),
-    "C-r": (editor, _env, _void) => editor.real_redo(),
-  }),
-};
+  const edits = [];
+  const copied: string[] = [];
+  const selectionsAfter = [];
 
-export async function testChangeKeys(
-  editor: Editor,
-  keys: string[],
-  env?: Env
-): Promise<void> {
-  await testKeys({
-    editor,
-    keys,
-    chords: new KeyChordMenu(changes),
-    getInput: () => editor.selections[0].active,
-    onOutput: (pos) => {
-      editor.cursor = { type: "block" };
-      const p = fixCursorPosition(editor, pos, { mode: 'normal' });
-      editor.selections = [{ anchor: p, active: p }];
-    },
-    env: env ?? emptyEnv(),
-  });
+  for (const rangeInfo of ranges) {
+    const startRow = rangeInfo.startRow;
+    const endRow = rangeInfo.endRow;
+    const lines: string[] = [];
+    for (let row = startRow; row <= endRow; row++) lines.push(editor.line(row));
+    copied.push(`${lines.join("\n")}\n`);
+    const range = endRow + 1 < editor.lineCount()
+      ? { start: { row: startRow, column: 0 }, end: { row: endRow + 1, column: 0 } }
+      : { start: { row: startRow, column: 0 }, end: { row: endRow, column: editor.lineLength(endRow) } };
+    const indent = indentation(editor.line(startRow));
+    const deletingWholeDocument = startRow === 0 && endRow === editor.lineCount() - 1;
+    const replacement = deletingWholeDocument
+      ? ""
+      : endRow + 1 < editor.lineCount() ? `${indent}\n` : indent;
+    edits.push({ range, text: replacement });
+    selectionsAfter.push({ type: "charwise" as const, anchor: { row: startRow, column: indent.length }, head: { row: startRow, column: indent.length } });
+  }
+
+  if (copied.length > 0) {
+    registers.writeDelete(
+      registerName,
+      copied.join(""),
+      "linewise",
+      copied.map(text => ({ text, kind: "linewise" }))
+    );
+  }
+  editor.applyEdits(edits, selectionsAfter, keepUndoTransactionOpen());
+  return true;
+}
+
+function indentation(line: string): string {
+  return line.slice(0, line.search(/\S/) < 0 ? 0 : line.search(/\S/));
 }

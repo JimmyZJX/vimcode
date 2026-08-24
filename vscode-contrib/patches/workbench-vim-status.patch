@@ -1,0 +1,6 @@
+diff --git a/src/vs/workbench/workbench.common.main.ts b/src/vs/workbench/workbench.common.main.ts
+--- a/src/vs/workbench/workbench.common.main.ts
++++ b/src/vs/workbench/workbench.common.main.ts
+@@ -1,1 +1,2 @@
+ import './contrib/codeEditor/browser/editorFeatures.js';
++import './contrib/vim/browser/vimStatus.js';

@@ -1,0 +1,197 @@
+diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts b/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
+index f4e4f95..7734b61 100644
+--- a/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
++++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursor.ts
+@@ -53,6 +53,7 @@ export class ViewCursor {
+ 	private _isVisible: boolean;
+ 
+ 	private _position: Position;
++	private _renderPosition: Position | null;
+ 	private _pluralityClass: string;
+ 
+ 	private _lastRenderedContent: string;
+@@ -80,6 +81,7 @@ export class ViewCursor {
+ 		this._domNode.setDisplay('none');
+ 
+ 		this._position = new Position(1, 1);
++		this._renderPosition = null;
+ 		this._pluralityClass = '';
+ 		this.setPlurality(plurality);
+ 
+@@ -139,22 +141,23 @@ export class ViewCursor {
+ 		return true;
+ 	}
+ 
+-	public onCursorPositionChanged(position: Position, pauseAnimation: boolean): boolean {
++	public onCursorPositionChanged(position: Position, pauseAnimation: boolean, renderPosition: Position | undefined = undefined): boolean {
+ 		if (pauseAnimation) {
+ 			this._domNode.domNode.style.transitionProperty = 'none';
+ 		} else {
+ 			this._domNode.domNode.style.transitionProperty = '';
+ 		}
+ 		this._position = position;
++		this._renderPosition = renderPosition ?? null;
+ 		return true;
+ 	}
+ 
+ 	/**
+-	 * If `this._position` is inside a grapheme, returns the position where the grapheme starts.
++	 * If the render cursor position is inside a grapheme, returns the position where the grapheme starts.
+ 	 * Also returns the next grapheme.
+ 	 */
+ 	private _getGraphemeAwarePosition(): [Position, string] {
+-		const { lineNumber, column } = this._position;
++		const { lineNumber, column } = this._renderPosition ?? this._position;
+ 		const lineContent = this._context.viewModel.getLineContent(lineNumber);
+ 		const [startOffset, endOffset] = strings.getCharContainingOffset(lineContent, column - 1);
+ 		return [new Position(lineNumber, startOffset + 1), lineContent.substring(startOffset, endOffset)];
+@@ -274,7 +277,7 @@ export class ViewCursor {
+ 
+ 		return {
+ 			domNode: this._domNode.domNode,
+-			position: this._position,
++			position: this._renderPosition ?? this._position,
+ 			contentLeft: this._renderData.left,
+ 			height: this._renderData.height,
+ 			width: 2
+diff --git a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
+index d3fd386..0da151e 100644
+--- a/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
++++ b/src/vs/editor/browser/viewParts/viewCursors/viewCursors.ts
+@@ -10,6 +10,7 @@ import { ViewPart } from '../../view/viewPart.js';
+ import { IViewCursorRenderData, ViewCursor, CursorPlurality } from './viewCursor.js';
+ import { TextEditorCursorBlinkingStyle, TextEditorCursorStyle, EditorOption } from '../../../common/config/editorOptions.js';
+ import { Position } from '../../../common/core/position.js';
++import { Selection, SelectionDirection } from '../../../common/core/selection.js';
+ import {
+ 	editorCursorBackground, editorCursorForeground,
+ 	editorMultiCursorPrimaryForeground, editorMultiCursorPrimaryBackground,
+@@ -127,13 +128,13 @@ export class ViewCursors extends ViewPart {
+ 		}
+ 		return true;
+ 	}
+-	private _onCursorPositionChanged(position: Position, secondaryPositions: Position[], reason: CursorChangeReason): void {
+-		const pauseAnimation = (
++	private _onCursorPositionChanged(position: Position, secondaryPositions: Position[], reason: CursorChangeReason, forcePauseAnimation = false, renderPosition: Position | undefined = undefined, secondaryRenderPositions: Position[] | undefined = undefined): void {
++		const pauseAnimation = forcePauseAnimation || (
+ 			this._secondaryCursors.length !== secondaryPositions.length
+ 			|| (this._cursorSmoothCaretAnimation === 'explicit' && reason !== CursorChangeReason.Explicit)
+ 		);
+ 		this._primaryCursor.setPlurality(secondaryPositions.length ? CursorPlurality.MultiPrimary : CursorPlurality.Single);
+-		this._primaryCursor.onCursorPositionChanged(position, pauseAnimation);
++		this._primaryCursor.onCursorPositionChanged(position, pauseAnimation, renderPosition);
+ 		this._updateBlinking();
+ 
+ 		if (this._secondaryCursors.length < secondaryPositions.length) {
+@@ -154,7 +155,7 @@ export class ViewCursors extends ViewPart {
+ 		}
+ 
+ 		for (let i = 0; i < secondaryPositions.length; i++) {
+-			this._secondaryCursors[i].onCursorPositionChanged(secondaryPositions[i], pauseAnimation);
++			this._secondaryCursors[i].onCursorPositionChanged(secondaryPositions[i], pauseAnimation, secondaryRenderPositions?.[i]);
+ 		}
+ 
+ 	}
+@@ -163,7 +164,10 @@ export class ViewCursors extends ViewPart {
+ 		for (let i = 0, len = e.selections.length; i < len; i++) {
+ 			positions[i] = e.selections[i].getPosition();
+ 		}
+-		this._onCursorPositionChanged(positions[0], positions.slice(1), e.reason);
++		const renderPositions = e.cursorPositions ?? (this._domNode.domNode.closest('.vim-character-mode-enabled') !== null
++			? e.selections.map(selection => this._vimRenderCursorPosition(selection))
++			: undefined);
++		this._onCursorPositionChanged(positions[0], positions.slice(1), e.reason, e.cursorPositions !== undefined, renderPositions?.[0], renderPositions?.slice(1));
+ 
+ 		const selectionIsEmpty = e.selections[0].isEmpty();
+ 		if (this._selectionIsEmpty !== selectionIsEmpty) {
+@@ -173,6 +177,15 @@ export class ViewCursors extends ViewPart {
+ 
+ 		return true;
+ 	}
++	private _vimRenderCursorPosition(selection: Selection): Position {
++		if (!selection.isEmpty()
++			&& selection.getDirection() === SelectionDirection.LTR
++			&& selection.positionColumn > 1) {
++			return new Position(selection.positionLineNumber, selection.positionColumn - 1);
++		}
++		return selection.getPosition();
++	}
++
+ 	public override onDecorationsChanged(e: viewEvents.ViewDecorationsChangedEvent): boolean {
+ 		// true for inline decorations that can end up relayouting text
+ 		return true;
+diff --git a/src/vs/editor/common/cursor/cursor.ts b/src/vs/editor/common/cursor/cursor.ts
+index c1eb592..5bc9fdc 100644
+--- a/src/vs/editor/common/cursor/cursor.ts
++++ b/src/vs/editor/common/cursor/cursor.ts
+@@ -402,15 +402,16 @@ export class CursorsController extends Disposable {
+ 
+ 	private _emitStateChangedIfNecessary(eventsCollector: ViewModelEventsCollector, source: string | null | undefined, reason: CursorChangeReason, oldState: CursorModelState | null, reachedMaxCursorCount: boolean): boolean {
+ 		const newState = CursorModelState.from(this._model, this);
+-		if (newState.equals(oldState)) {
++		const selections = this._cursors.getSelections();
++		const viewCursorPositions = this._getViewCursorPositionsFromSource(source, selections.length);
++		if (newState.equals(oldState) && viewCursorPositions === undefined) {
+ 			return false;
+ 		}
+ 
+-		const selections = this._cursors.getSelections();
+ 		const viewSelections = this._cursors.getViewSelections();
+ 
+ 		// Let the view get the event first.
+-		eventsCollector.emitViewEvent(new ViewCursorStateChangedEvent(viewSelections, selections, reason));
++		eventsCollector.emitViewEvent(new ViewCursorStateChangedEvent(viewSelections, selections, reason, viewCursorPositions));
+ 
+ 		// Only after the view has been notified, let the rest of the world know...
+ 		if (!oldState
+@@ -425,6 +426,28 @@ export class CursorsController extends Disposable {
+ 		return true;
+ 	}
+ 
++	private _getViewCursorPositionsFromSource(source: string | null | undefined, selectionCount: number): Position[] | undefined {
++		const prefix = 'vim.cursorPositions:';
++		if (!source?.startsWith(prefix)) {
++			return undefined;
++		}
++		const rawPositions = source.slice(prefix.length).split(';').filter(Boolean);
++		if (rawPositions.length !== selectionCount) {
++			return undefined;
++		}
++		const result: Position[] = [];
++		for (const rawPosition of rawPositions) {
++			const [rawLineNumber, rawColumn] = rawPosition.split(',');
++			const lineNumber = Number(rawLineNumber);
++			const column = Number(rawColumn);
++			if (!Number.isFinite(lineNumber) || !Number.isFinite(column)) {
++				return undefined;
++			}
++			result.push(this._coordinatesConverter.convertModelPositionToViewPosition(new Position(lineNumber, column)));
++		}
++		return result;
++	}
++
+ 	// -----------------------------------------------------------------------------------------------------------
+ 	// ----- handlers beyond this point
+ 
+diff --git a/src/vs/editor/common/viewEvents.ts b/src/vs/editor/common/viewEvents.ts
+index ce10765..c32bb0a 100644
+--- a/src/vs/editor/common/viewEvents.ts
++++ b/src/vs/editor/common/viewEvents.ts
+@@ -5,6 +5,7 @@
+ 
+ import { ScrollEvent } from '../../base/common/scrollable.js';
+ import { ConfigurationChangedEvent, EditorOption } from './config/editorOptions.js';
++import { Position } from './core/position.js';
+ import { Range } from './core/range.js';
+ import { Selection } from './core/selection.js';
+ import { CursorChangeReason } from './cursorEvents.js';
+@@ -65,7 +66,8 @@ export class ViewCursorStateChangedEvent {
+ 	constructor(
+ 		public readonly selections: Selection[],
+ 		public readonly modelSelections: Selection[],
+-		public readonly reason: CursorChangeReason
++		public readonly reason: CursorChangeReason,
++		public readonly cursorPositions: Position[] | undefined = undefined
+ 	) { }
+ }
+ 

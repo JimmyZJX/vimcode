@@ -1,0 +1,6 @@
+{"Put":{"state":"The ˇquick brown"}}
+{"Key":"y"}
+{"Key":"s"}
+{"Key":"$"}
+{"Key":"}"}
+{"Get":{"state":"The ˇ{quick brown}","mode":"Normal"}}

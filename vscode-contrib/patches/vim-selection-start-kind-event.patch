@@ -1,0 +1,202 @@
+diff --git a/src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts b/src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts
+index 174eea2..db46d57 100644
+--- a/src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts
++++ b/src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts
+@@ -1848,7 +1848,8 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
+ 						oldSelections: e.oldSelections,
+ 						oldModelVersionId: e.oldModelVersionId,
+ 						source: e.source,
+-						reason: e.reason
++						reason: e.reason,
++						selectionStartKind: e.selectionStartKind
+ 					};
+ 					this._onDidChangeCursorSelection.fire(e2);
+ 
+diff --git a/src/vs/editor/common/cursor/cursor.ts b/src/vs/editor/common/cursor/cursor.ts
+index 5bc9fdc..074066d 100644
+--- a/src/vs/editor/common/cursor/cursor.ts
++++ b/src/vs/editor/common/cursor/cursor.ts
+@@ -10,6 +10,7 @@ import { CursorConfiguration, CursorState, EditOperationResult, EditOperationTyp
+ import { CursorContext } from './cursorContext.js';
+ import { DeleteOperations } from './cursorDeleteOperations.js';
+ import { CursorChangeReason } from '../cursorEvents.js';
++import { CursorSelectionStartKind } from '../cursorEvents.js';
+ import { CompositionOutcome, TypeOperations } from './cursorTypeOperations.js';
+ import { BaseTypeWithAutoClosingCommand } from './cursorTypeEditOperations.js';
+ import { Position } from '../core/position.js';
+@@ -420,7 +421,16 @@ export class CursorsController extends Disposable {
+ 		) {
+ 			const oldSelections = oldState ? oldState.cursorState.map(s => s.modelState.selection) : null;
+ 			const oldModelVersionId = oldState ? oldState.modelVersionId : 0;
+-			eventsCollector.emitOutgoingEvent(new CursorStateChangedEvent(oldSelections, selections, oldModelVersionId, newState.modelVersionId, source || 'keyboard', reason, reachedMaxCursorCount));
++			eventsCollector.emitOutgoingEvent(new CursorStateChangedEvent(
++				oldSelections,
++				selections,
++				oldModelVersionId,
++				newState.modelVersionId,
++				source || 'keyboard',
++				reason,
++				reachedMaxCursorCount,
++				selectionStartKindFromCursorState(newState.cursorState[0])
++			));
+ 		}
+ 
+ 		return true;
+@@ -694,6 +704,21 @@ class CursorModelState {
+ 	}
+ }
+ 
++function selectionStartKindFromCursorState(cursorState: CursorState | undefined): CursorSelectionStartKind | undefined {
++	switch (cursorState?.modelState.selectionStartKind) {
++		case 0:
++			return CursorSelectionStartKind.Simple;
++		case 1:
++			return CursorSelectionStartKind.Word;
++		case 2:
++			return CursorSelectionStartKind.Line;
++		case undefined:
++			return undefined;
++		default:
++			return undefined;
++	}
++}
++
+ class AutoClosedAction {
+ 
+ 	public static getAllAutoClosedCharacters(autoClosedActions: AutoClosedAction[]): Range[] {
+diff --git a/src/vs/editor/common/cursorEvents.ts b/src/vs/editor/common/cursorEvents.ts
+index e3b58c3..0c5afba 100644
+--- a/src/vs/editor/common/cursorEvents.ts
++++ b/src/vs/editor/common/cursorEvents.ts
+@@ -39,6 +39,16 @@ export const enum CursorChangeReason {
+ 	 */
+ 	Redo = 6,
+ }
++
++/**
++ * The kind of selection start VSCode is tracking for the primary cursor.
++ */
++export const enum CursorSelectionStartKind {
++	Simple = 0,
++	Word = 1,
++	Line = 2
++}
++
+ /**
+  * An event describing that the cursor position has changed.
+  */
+@@ -92,4 +102,11 @@ export interface ICursorSelectionChangedEvent {
+ 	 * Reason.
+ 	 */
+ 	readonly reason: CursorChangeReason;
++	/**
++	 * The kind of selection start VSCode is tracking for the primary cursor
++	 * (`Simple`, `Word`, or `Line`). vimcode uses this to distinguish ordinary
++	 * mouse character-cell drags from double-click word selections without
++	 * changing [source].
++	 */
++	readonly selectionStartKind?: CursorSelectionStartKind;
+ }
+diff --git a/src/vs/editor/common/standalone/standaloneEnums.ts b/src/vs/editor/common/standalone/standaloneEnums.ts
+index 06ab3f4..7e96688 100644
+--- a/src/vs/editor/common/standalone/standaloneEnums.ts
++++ b/src/vs/editor/common/standalone/standaloneEnums.ts
+@@ -130,6 +130,12 @@ export enum CursorChangeReason {
+ 	Redo = 6
+ }
+ 
++export enum CursorSelectionStartKind {
++	Simple = 0,
++	Word = 1,
++	Line = 2
++}
++
+ /**
+  * The default end of line to use when instantiating models.
+  */
+diff --git a/src/vs/editor/common/viewModelEventDispatcher.ts b/src/vs/editor/common/viewModelEventDispatcher.ts
+index 8fb67db..eeea016 100644
+--- a/src/vs/editor/common/viewModelEventDispatcher.ts
++++ b/src/vs/editor/common/viewModelEventDispatcher.ts
+@@ -10,6 +10,7 @@ import { Emitter } from '../../base/common/event.js';
+ import { Selection } from './core/selection.js';
+ import { Disposable } from '../../base/common/lifecycle.js';
+ import { CursorChangeReason } from './cursorEvents.js';
++import type { CursorSelectionStartKind } from './cursorEvents.js';
+ import { ModelLineHeightChangedEvent as OriginalModelLineHeightChangedEvent, ModelFontChangedEvent as OriginalModelFontChangedEvent, IModelContentChangedEvent, IModelDecorationsChangedEvent, IModelLanguageChangedEvent, IModelLanguageConfigurationChangedEvent, IModelOptionsChangedEvent, IModelTokensChangedEvent } from './textModelEvents.js';
+ 
+ export class ViewModelEventDispatcher extends Disposable {
+@@ -395,8 +396,9 @@ export class CursorStateChangedEvent {
+ 	public readonly source: string;
+ 	public readonly reason: CursorChangeReason;
+ 	public readonly reachedMaxCursorCount: boolean;
++	public readonly selectionStartKind: CursorSelectionStartKind | undefined;
+ 
+-	constructor(oldSelections: Selection[] | null, selections: Selection[], oldModelVersionId: number, modelVersionId: number, source: string, reason: CursorChangeReason, reachedMaxCursorCount: boolean) {
++	constructor(oldSelections: Selection[] | null, selections: Selection[], oldModelVersionId: number, modelVersionId: number, source: string, reason: CursorChangeReason, reachedMaxCursorCount: boolean, selectionStartKind?: CursorSelectionStartKind) {
+ 		this.oldSelections = oldSelections;
+ 		this.selections = selections;
+ 		this.oldModelVersionId = oldModelVersionId;
+@@ -404,6 +406,7 @@ export class CursorStateChangedEvent {
+ 		this.source = source;
+ 		this.reason = reason;
+ 		this.reachedMaxCursorCount = reachedMaxCursorCount;
++		this.selectionStartKind = selectionStartKind;
+ 	}
+ 
+ 	private static _selectionsAreEqual(a: Selection[] | null, b: Selection[] | null): boolean {
+@@ -438,7 +441,7 @@ export class CursorStateChangedEvent {
+ 			return null;
+ 		}
+ 		return new CursorStateChangedEvent(
+-			this.oldSelections, other.selections, this.oldModelVersionId, other.modelVersionId, other.source, other.reason, this.reachedMaxCursorCount || other.reachedMaxCursorCount
++			this.oldSelections, other.selections, this.oldModelVersionId, other.modelVersionId, other.source, other.reason, this.reachedMaxCursorCount || other.reachedMaxCursorCount, other.selectionStartKind ?? this.selectionStartKind
+ 		);
+ 	}
+ }
+diff --git a/src/vs/editor/standalone/browser/standaloneEditor.ts b/src/vs/editor/standalone/browser/standaloneEditor.ts
+index cdf1f40..11531cc 100644
+--- a/src/vs/editor/standalone/browser/standaloneEditor.ts
++++ b/src/vs/editor/standalone/browser/standaloneEditor.ts
+@@ -572,6 +572,7 @@ export function createMonacoEditorAPI(): typeof monaco.editor {
+ 		AccessibilitySupport: standaloneEnums.AccessibilitySupport,
+ 		ContentWidgetPositionPreference: standaloneEnums.ContentWidgetPositionPreference,
+ 		CursorChangeReason: standaloneEnums.CursorChangeReason,
++		CursorSelectionStartKind: standaloneEnums.CursorSelectionStartKind,
+ 		DefaultEndOfLine: standaloneEnums.DefaultEndOfLine,
+ 		EditorAutoIndentStrategy: standaloneEnums.EditorAutoIndentStrategy,
+ 		EditorOption: standaloneEnums.EditorOption,
+diff --git a/src/vs/monaco.d.ts b/src/vs/monaco.d.ts
+index 76c3a18..0f9f6e9 100644
+--- a/src/vs/monaco.d.ts
++++ b/src/vs/monaco.d.ts
+@@ -3106,6 +3106,15 @@ declare namespace monaco.editor {
+ 		Redo = 6
+ 	}
+ 
++	/**
++	 * The kind of selection start VSCode is tracking for the primary cursor.
++	 */
++	export enum CursorSelectionStartKind {
++		Simple = 0,
++		Word = 1,
++		Line = 2
++	}
++
+ 	/**
+ 	 * An event describing that the cursor position has changed.
+ 	 */
+@@ -3160,6 +3169,13 @@ declare namespace monaco.editor {
+ 		 * Reason.
+ 		 */
+ 		readonly reason: CursorChangeReason;
++		/**
++		 * The kind of selection start VSCode is tracking for the primary cursor
++		 * (`Simple`, `Word`, or `Line`). vimcode uses this to distinguish ordinary
++		 * mouse character-cell drags from double-click word selections without
++		 * changing [source].
++		 */
++		readonly selectionStartKind?: CursorSelectionStartKind;
+ 	}
+ 
+ 	export enum AccessibilitySupport {

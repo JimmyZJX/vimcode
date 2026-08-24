@@ -1,0 +1,5 @@
+{"Put":{"state":"ˇalpha\nbeta"}}
+{"Key":"o"}
+{"Key":"x"}
+{"Key":"<escape>"}
+{"Get":{"state":"alpha\nˇx\nbeta","mode":"normal"}}

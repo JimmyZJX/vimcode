@@ -1,0 +1,16 @@
+{"Put":{"state":"ˇhello"}}
+{"Key":"r"}
+{"Key":"-"}
+{"Get":{"state":"ˇ-ello","mode":"Normal"}}
+{"Put":{"state":"ˇhello"}}
+{"Key":"3"}
+{"Key":"r"}
+{"Key":"-"}
+{"Get":{"state":"--ˇ-lo","mode":"Normal"}}
+{"Put":{"state":"ˇhello"}}
+{"Key":"r"}
+{"Key":"-"}
+{"Key":"2"}
+{"Key":"l"}
+{"Key":"."}
+{"Get":{"state":"-eˇ-lo","mode":"Normal"}}

@@ -1,0 +1,244 @@
+diff --git a/src/vs/editor/browser/controller/mouseHandler.ts b/src/vs/editor/browser/controller/mouseHandler.ts
+index 4ad4ca9..e57e3f2 100644
+--- a/src/vs/editor/browser/controller/mouseHandler.ts
++++ b/src/vs/editor/browser/controller/mouseHandler.ts
+@@ -470,7 +470,7 @@ class MouseDownOperation extends Disposable {
+ 			&& !this._isActive // the mouse is not down yet
+ 			&& !this._currentSelection.isEmpty() // we don't drag single cursor
+ 			&& (position.type === MouseTargetType.CONTENT_TEXT) // single click on text
+-			&& position.position && this._currentSelection.containsPosition(position.position) // single click on a selection
++			&& position.position && this._containsPositionForDragAndDrop(position.position) // single click on a selection
+ 		) {
+ 			this._mouseState.isDragAndDrop = true;
+ 			this._isActive = true;
+@@ -641,6 +641,7 @@ class MouseDownOperation extends Disposable {
+ 		this._viewController.dispatchMouse({
+ 			position: position.position,
+ 			mouseColumn: position.mouseColumn,
++			vimCharacterSelect: this._isVimCharacterModeEnabled(),
+ 			startedOnLineNumbers: this._mouseState.startedOnLineNumbers,
+ 			revealType,
+ 
+@@ -657,6 +658,29 @@ class MouseDownOperation extends Disposable {
+ 			onInjectedText: position.type === MouseTargetType.CONTENT_TEXT && position.detail.injectedText !== null
+ 		});
+ 	}
++
++	/**
++	 * vimcode: in Vim block-cursor mode, hit testing floors mouse positions to the
++	 * start of the character cell under the pointer, and selection-mode dispatch
++	 * extends selections by whole cells (see CursorMoveCommands.moveTo).
++	 */
++	private _isVimCharacterModeEnabled(): boolean {
++		return this._viewHelper.viewDomNode.closest('.vim-character-mode-enabled') !== null;
++	}
++
++	private _containsPositionForDragAndDrop(position: Position): boolean {
++		if (!this._isVimCharacterModeEnabled()) {
++			return this._currentSelection.containsPosition(position);
++		}
++
++		// vimcode: VSCode ranges include both edges, but Vim charwise selections
++		// lower to half-open native ranges. Exclude the end boundary so clicking
++		// the character cell just to the right of a forward visual selection starts
++		// a new selection instead of a drag-and-drop move.
++		const start = this._currentSelection.getStartPosition();
++		const end = this._currentSelection.getEndPosition();
++		return start.isBeforeOrEqual(position) && position.isBefore(end);
++	}
+ }
+ 
+ class MouseDownState {
+diff --git a/src/vs/editor/browser/controller/mouseTarget.ts b/src/vs/editor/browser/controller/mouseTarget.ts
+index 8256f6b..23159ad 100644
+--- a/src/vs/editor/browser/controller/mouseTarget.ts
++++ b/src/vs/editor/browser/controller/mouseTarget.ts
+@@ -871,6 +871,11 @@ export class MouseTargetFactory {
+ 		return (chars + 1);
+ 	}
+ 
++	/** vimcode: whether the editor is in Vim block-cursor (character cell) mode. */
++	private static _isVimCharacterMode(ctx: HitTestContext): boolean {
++		return ctx.viewDomNode.closest('.vim-character-mode-enabled') !== null;
++	}
++
+ 	private static createMouseTargetFromHitTestPosition(ctx: HitTestContext, request: HitTestRequest, spanNode: HTMLElement, pos: Position, injectedText: InjectedText | null): IMouseTarget {
+ 		const lineNumber = pos.lineNumber;
+ 		const column = pos.column;
+@@ -934,8 +939,13 @@ export class MouseTargetFactory {
+ 				const prevDelta = Math.abs(prev.offset - request.mouseContentHorizontalOffset);
+ 				const nextDelta = Math.abs(curr.offset - request.mouseContentHorizontalOffset);
+ 
++				// vimcode: a Vim block cursor lives on a character cell, not between
++				// characters. Floor the hit position to the start of the cell under the
++				// pointer instead of snapping to the nearest caret boundary, so every
++				// mouse consumer (click, drag, drag-and-drop target, word/line select)
++				// shares the same cell-based position.
+ 				pos = (
+-					prevDelta < nextDelta
++					MouseTargetFactory._isVimCharacterMode(ctx) || prevDelta < nextDelta
+ 						? new Position(lineNumber, prev.column)
+ 						: new Position(lineNumber, curr.column)
+ 				);
+diff --git a/src/vs/editor/browser/coreCommands.ts b/src/vs/editor/browser/coreCommands.ts
+index 9331eea..f29bc13 100644
+--- a/src/vs/editor/browser/coreCommands.ts
++++ b/src/vs/editor/browser/coreCommands.ts
+@@ -374,6 +374,8 @@ export namespace CoreNavigationCommands {
+ 	export interface MoveCommandOptions extends BaseCommandOptions {
+ 		position: IPosition;
+ 		viewPosition?: IPosition;
++		/** vimcode: extend mouse selections by whole character cells (Vim block-cursor mode). */
++		vimCharacterSelect?: boolean;
+ 		revealType: NavigationCommandRevealType;
+ 	}
+ 
+@@ -395,7 +397,7 @@ export namespace CoreNavigationCommands {
+ 				args.source,
+ 				CursorChangeReason.Explicit,
+ 				[
+-					CursorMoveCommands.moveTo(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.viewPosition)
++					CursorMoveCommands.moveTo(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.viewPosition, args.vimCharacterSelect)
+ 				]
+ 			);
+ 			if (cursorStateChanged && args.revealType !== NavigationCommandRevealType.None) {
+diff --git a/src/vs/editor/browser/view/viewController.ts b/src/vs/editor/browser/view/viewController.ts
+index cd312c9..fa1d82d 100644
+--- a/src/vs/editor/browser/view/viewController.ts
++++ b/src/vs/editor/browser/view/viewController.ts
+@@ -23,6 +23,8 @@ export interface IMouseDispatchData {
+ 	 * Desired mouse column (e.g. when position.column gets clamped to text length -- clicking after text on a line).
+ 	 */
+ 	mouseColumn: number;
++	/** vimcode: extend mouse selections by whole character cells (Vim block-cursor mode). */
++	vimCharacterSelect?: boolean;
+ 	revealType: NavigationCommandRevealType;
+ 	startedOnLineNumbers: boolean;
+ 
+@@ -275,32 +277,33 @@ export class ViewController {
+ 						if (columnSelection) {
+ 							this._columnSelect(data.position, data.mouseColumn, true);
+ 						} else {
+-							this._moveToSelect(data.position, data.revealType);
++							this._moveToSelect(data.position, data.revealType, data.vimCharacterSelect);
+ 						}
+ 					}
+ 				} else {
+-					this.moveTo(data.position, data.revealType);
++					this.moveTo(data.position, data.revealType, data.vimCharacterSelect);
+ 				}
+ 			}
+ 		}
+ 	}
+ 
+-	private _usualArgs(viewPosition: Position, revealType: NavigationCommandRevealType): CoreNavigationCommands.MoveCommandOptions {
++	private _usualArgs(viewPosition: Position, revealType: NavigationCommandRevealType, vimCharacterSelect?: boolean): CoreNavigationCommands.MoveCommandOptions {
+ 		viewPosition = this._validateViewColumn(viewPosition);
+ 		return {
+ 			source: 'mouse',
+ 			position: this._convertViewToModelPosition(viewPosition),
+ 			viewPosition,
++			vimCharacterSelect,
+ 			revealType
+ 		};
+ 	}
+ 
+-	public moveTo(viewPosition: Position, revealType: NavigationCommandRevealType): void {
+-		CoreNavigationCommands.MoveTo.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType));
++	public moveTo(viewPosition: Position, revealType: NavigationCommandRevealType, vimCharacterSelect?: boolean): void {
++		CoreNavigationCommands.MoveTo.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType, vimCharacterSelect));
+ 	}
+ 
+-	private _moveToSelect(viewPosition: Position, revealType: NavigationCommandRevealType): void {
+-		CoreNavigationCommands.MoveToSelect.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType));
++	private _moveToSelect(viewPosition: Position, revealType: NavigationCommandRevealType, vimCharacterSelect?: boolean): void {
++		CoreNavigationCommands.MoveToSelect.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType, vimCharacterSelect));
+ 	}
+ 
+ 	private _columnSelect(viewPosition: Position, mouseColumn: number, doColumnSelect: boolean): void {
+diff --git a/src/vs/editor/common/cursor/cursorMoveCommands.ts b/src/vs/editor/common/cursor/cursorMoveCommands.ts
+index a447e3a..8c03d41 100644
+--- a/src/vs/editor/common/cursor/cursorMoveCommands.ts
++++ b/src/vs/editor/common/cursor/cursorMoveCommands.ts
+@@ -252,7 +252,7 @@ export class CursorMoveCommands {
+ 		));
+ 	}
+ 
+-	public static moveTo(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, _viewPosition: IPosition | undefined): PartialCursorState {
++	public static moveTo(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, _viewPosition: IPosition | undefined, vimCharacterSelect?: boolean): PartialCursorState {
+ 		if (inSelectionMode) {
+ 			if (cursor.modelState.selectionStartKind === SelectionStartKind.Word) {
+ 				return this.word(viewModel, cursor, inSelectionMode, _position);
+@@ -260,6 +260,9 @@ export class CursorMoveCommands {
+ 			if (cursor.modelState.selectionStartKind === SelectionStartKind.Line) {
+ 				return this.line(viewModel, cursor, inSelectionMode, _position, _viewPosition);
+ 			}
++			if (vimCharacterSelect) {
++				return this._vimCharacterSelect(viewModel, cursor, _position);
++			}
+ 		}
+ 		const position = viewModel.model.validatePosition(_position);
+ 		const viewPosition = (
+@@ -270,6 +273,62 @@ export class CursorMoveCommands {
+ 		return CursorState.fromViewState(cursor.viewState.move(inSelectionMode, viewPosition.lineNumber, viewPosition.column, 0));
+ 	}
+ 
++	/**
++	 * vimcode: extend the selection by whole character cells so a Vim visual mouse
++	 * selection always includes both the anchor cell and the cell under the
++	 * pointer. Hit testing already floors the mouse position to the start of the
++	 * pointed-at cell; mirror the native word/line selection model by widening the
++	 * selection start to its cell and putting the active end on the far side of
++	 * the target cell when extending forward.
++	 */
++	private static _vimCharacterSelect(viewModel: IViewModel, cursor: CursorState, _position: IPosition): PartialCursorState {
++		const model = viewModel.model;
++		const position = this._vimCharacterCellStart(model, model.validatePosition(_position));
++		const selectionStart = this._vimCharacterSelectionStart(model, cursor.modelState);
++		const activePosition = position.isBefore(selectionStart.getStartPosition())
++			? position
++			: this._vimCharacterCellEnd(model, position);
++		return CursorState.fromModelState(new SingleCursorState(selectionStart, SelectionStartKind.Simple, 0, activePosition, 0));
++	}
++
++	/** vimcode: clamp a boundary at the end of a non-empty line onto the start of its last character cell, like the Vim cursor. */
++	private static _vimCharacterCellStart(model: ICursorSimpleModel, position: Position): Position {
++		if (position.column < model.getLineMaxColumn(position.lineNumber)
++			|| position.column === model.getLineMinColumn(position.lineNumber)) {
++			return position;
++		}
++		// Stays on the same line because the column is above the line minimum.
++		return MoveOperations.leftPosition(model, position);
++	}
++
++	/** vimcode: the boundary after the character cell starting at [position], clamped to the end of the line. */
++	private static _vimCharacterCellEnd(model: ICursorSimpleModel, position: Position): Position {
++		if (position.column >= model.getLineMaxColumn(position.lineNumber)) {
++			return position;
++		}
++		return MoveOperations.rightPosition(model, position.lineNumber, position.column);
++	}
++
++	/**
++	 * vimcode: the anchor of a Vim character-cell selection is the cell under the
++	 * mouse-down position. When the anchor range was collapsed by an external
++	 * selection replay (e.g. the Vim write-back during a drag), recover the cell
++	 * direction-aware: an empty anchor boundary is the start of the anchor cell
++	 * for forward selections and fresh mouse-downs, and the end of the anchor
++	 * cell for backward selections.
++	 */
++	private static _vimCharacterSelectionStart(model: ICursorSimpleModel, modelState: SingleCursorState): Range {
++		if (!modelState.selectionStart.isEmpty()) {
++			return modelState.selectionStart;
++		}
++		const anchor = modelState.selectionStart.getStartPosition();
++		if (modelState.position.isBefore(anchor)) {
++			return Range.fromPositions(MoveOperations.leftPosition(model, anchor), anchor);
++		}
++		const start = this._vimCharacterCellStart(model, anchor);
++		return Range.fromPositions(start, this._vimCharacterCellEnd(model, start));
++	}
++
+ 	public static simpleMove(viewModel: IViewModel, cursors: CursorState[], direction: CursorMove.SimpleMoveDirection, inSelectionMode: boolean, value: number, unit: CursorMove.Unit): PartialCursorState[] | null {
+ 		switch (direction) {
+ 			case CursorMove.Direction.Left: {

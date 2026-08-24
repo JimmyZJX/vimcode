@@ -1,0 +1,11 @@
+// DISABLED: `ctrl-o`/`ctrl-i` jump list; model-level jump list not implemented (host navigation is used).
+{"Put":{"state":"helˇlo world."}}
+{"Key":"i"}
+{"Key":"ctrl-o"}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"w"}
+{"Get":{"state":"ˇ world.","mode":"Insert"}}
+{"Key":"ctrl-o"}
+{"Key":"p"}
+{"Get":{"state":" helloˇworld.","mode":"Insert"}}

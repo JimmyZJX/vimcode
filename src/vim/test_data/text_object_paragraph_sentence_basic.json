@@ -1,0 +1,15 @@
+{"Put":{"state":"ˇalpha\nbeta"}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"p"}
+{"Get":{"state":"ˇ","mode":"Normal"}}
+{"Put":{"state":"one. ˇtwo! three."}}
+{"Key":"d"}
+{"Key":"i"}
+{"Key":"s"}
+{"Get":{"state":"one. ˇ three.","mode":"Normal"}}
+{"Put":{"state":"one. ˇtwo! three."}}
+{"Key":"c"}
+{"Key":"i"}
+{"Key":"s"}
+{"Get":{"state":"one. ˇ three.","mode":"Insert"}}

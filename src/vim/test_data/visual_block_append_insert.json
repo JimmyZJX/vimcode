@@ -1,0 +1,16 @@
+{"Put":{"state":"ˇabc\ndef\nghi"}}
+{"Key":"ctrl-v"}
+{"Key":"down"}
+{"Key":"down"}
+{"Key":"shift-a"}
+{"Key":"X"}
+{"Key":"escape"}
+{"Get":{"state":"aˇXbc\ndXef\ngXhi","mode":"Normal"}}
+{"Put":{"state":"aˇbc\nde\nfghi"}}
+{"Key":"ctrl-v"}
+{"Key":"down"}
+{"Key":"down"}
+{"Key":"shift-a"}
+{"Key":"X"}
+{"Key":"escape"}
+{"Get":{"state":"abˇXc\ndeX\nfgXhi","mode":"Normal"}}
