@@ -41,6 +41,8 @@ export function createRemaps(configuration: VimConfiguration): Remaps {
       .concat(normalizeRemappings(configuration.leader, configuration.visualModeKeyBindingsNonRecursive, false)),
     operatorPending: normalizeRemappings(configuration.leader, configuration.operatorPendingModeKeyBindings, true)
       .concat(normalizeRemappings(configuration.leader, configuration.operatorPendingModeKeyBindingsNonRecursive, false)),
+    commandLine: normalizeRemappings(configuration.leader, configuration.commandLineModeKeyBindings, true)
+      .concat(normalizeRemappings(configuration.leader, configuration.commandLineModeKeyBindingsNonRecursive, false)),
   };
   return { configuration, mappingsByMode };
 }

@@ -15,6 +15,7 @@ import {
   handler,
   invalid,
   isEscapeKey,
+  isPromptCancelKey,
   unhandled,
 } from "./key_handler.js";
 import type { Motion } from "./motion.js";
@@ -62,8 +63,9 @@ export function searchModeHandler(
   ) {
     return unhandled();
   }
-  // Escape cancels via the owner's escape handling.
-  if (isEscapeKey(key)) return unhandled();
+  // Escape (and its `c_CTRL-C` prompt-cancel synonym) cancels via the owner's
+  // escape handling.
+  if (isPromptCancelKey(key)) return unhandled();
   if (key === "enter") {
     // A `/`?` started from visual mode extends the live selection to the match
     // and returns to that visual kind; from normal mode it moves the cursor and

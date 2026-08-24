@@ -64,6 +64,51 @@ describe("command mode via framework (clean contexts)", () => {
     expect(editor.getText()).toBe("abc\ndef\nghi");
   });
 
+  it("ctrl-c cancels the command line like escape (c_CTRL-C)", () => {
+    const editor = new InMemoryVimEditor("abc\ndef\nghi");
+    const vim = new Vim(editor);
+    runKeys(vim, [":", "d"]);
+    expect(vim.modeName).toBe("vim:command");
+    runKeys(vim, ["ctrl-c"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("abc\ndef\nghi");
+  });
+
+  it("ctrl-c cancels the search prompt like escape", () => {
+    const editor = new InMemoryVimEditor("abc\ndef\nghi");
+    const vim = new Vim(editor);
+    runKeys(vim, ["/", "d"]);
+    expect(vim.modeName).toBe("vim:search");
+    runKeys(vim, ["ctrl-c"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(head(editor)).toEqual({ row: 0, column: 0 });
+  });
+
+  it("commandLineModeKeyBindings remap keys in both prompts", () => {
+    const editor = new InMemoryVimEditor("abc\ndef\nghi");
+    const vim = new Vim(editor, {
+      commandLineModeKeyBindingsNonRecursive: [{ before: ["<C-g>"], after: ["<Esc>"] }],
+    });
+    runKeys(vim, [":", "d", "ctrl-g"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("abc\ndef\nghi");
+    runKeys(vim, ["/", "d", "ctrl-g"]);
+    expect(vim.modeName).toBe("vim:normal");
+  });
+
+  it("commandLineModeKeyBindings do not fire outside the prompts", () => {
+    const editor = new InMemoryVimEditor("abc\ndef");
+    const vim = new Vim(editor, {
+      commandLineModeKeyBindingsNonRecursive: [{ before: ["j"], after: ["<Esc>"] }],
+    });
+    // Normal-mode `j` still moves down; in the prompt it is remapped to escape.
+    runKeys(vim, ["j"]);
+    expect(head(editor)).toEqual({ row: 1, column: 0 });
+    runKeys(vim, [":", "j"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("abc\ndef");
+  });
+
   it("backspace edits the command line", () => {
     const editor = new InMemoryVimEditor("a\nb\nc\nd");
     const vim = new Vim(editor);

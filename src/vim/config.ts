@@ -6,7 +6,7 @@
 
 import type { VimMode } from "./state.js";
 
-export type VimRemapMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock" | "operatorPending";
+export type VimRemapMode = "normal" | "insert" | "visual" | "visualLine" | "visualBlock" | "operatorPending" | "commandLine";
 
 export type VimCommandMapping = string | { command: string; args?: unknown | unknown[] };
 export type WhenEvaluator = (when: string | undefined) => boolean;
@@ -35,6 +35,8 @@ export type VimConfiguration = {
   visualModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
   operatorPendingModeKeyBindings: readonly VimKeyRemapping[];
   operatorPendingModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
+  commandLineModeKeyBindings: readonly VimKeyRemapping[];
+  commandLineModeKeyBindingsNonRecursive: readonly VimKeyRemapping[];
   handleKeys: Readonly<Record<string, boolean>>;
   useCtrlKeys: boolean;
   useSystemClipboard: boolean;
@@ -66,6 +68,8 @@ export const defaultVimConfiguration: VimConfiguration = {
   visualModeKeyBindingsNonRecursive: [],
   operatorPendingModeKeyBindings: [],
   operatorPendingModeKeyBindingsNonRecursive: [],
+  commandLineModeKeyBindings: [],
+  commandLineModeKeyBindingsNonRecursive: [],
   handleKeys: defaultVimHandleKeys,
   useCtrlKeys: true,
   useSystemClipboard: false,
@@ -152,12 +156,15 @@ export function remapModeForVimMode(mode: VimMode, { operatorPending }: { operat
       return "visualLine";
     case "visualBlock":
       return "visualBlock";
+    // VSCodeVim: `commandLineModeKeyBindings*` apply to both the `:` command
+    // line and the `/`?` search prompt.
+    case "search":
+    case "command":
+      return "commandLine";
     case "normal":
     case "helixNormal":
     case "helixSelect":
     case "replace":
-    case "search":
-    case "command":
       return "normal";
   }
 }

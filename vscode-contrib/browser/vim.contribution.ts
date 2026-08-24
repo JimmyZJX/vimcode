@@ -332,6 +332,8 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 	'vim.visualModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.visualModeKeyBindingsNonRecursive', "Non-recursive key remappings in Visual modes.")),
 	'vim.operatorPendingModeKeyBindings': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindings', "Recursive key remappings in Operator-pending mode.")),
 	'vim.operatorPendingModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.operatorPendingModeKeyBindingsNonRecursive', "Non-recursive key remappings in Operator-pending mode.")),
+	'vim.commandLineModeKeyBindings': remappingSchema(nls.localize('vim.commandLineModeKeyBindings', "Recursive key remappings in the ':' command line and '/' search prompts.")),
+	'vim.commandLineModeKeyBindingsNonRecursive': remappingSchema(nls.localize('vim.commandLineModeKeyBindingsNonRecursive', "Non-recursive key remappings in the ':' command line and '/' search prompts.")),
 };
 
 function vimcodeConfigurationProperties(): Record<string, IConfigurationPropertySchema> {

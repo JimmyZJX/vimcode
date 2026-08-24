@@ -9,7 +9,7 @@
 
 import { commandRegisterToRead } from "./command.js";
 import type { HandleResult, HandlerState } from "./key_handler.js";
-import { effect, isEscapeKey, unhandled } from "./key_handler.js";
+import { effect, isPromptCancelKey, unhandled } from "./key_handler.js";
 import { historyNavigationKey } from "./prompt_history.js";
 
 // `:` enters command mode. Like the `/`?` search prompt the effect only targets
@@ -28,14 +28,15 @@ export function commandPromptHandler(key: string, _state: HandlerState): HandleR
 // `:normal`/`:g` command that re-enters the key pipeline runs its keys
 // synchronously (like the legacy path). [SingleLineEditor] keys move the
 // cursor and edit around it; `<Up>`/`<Down>`/`<C-p>`/`<C-n>` recall history.
-// Escape is declined so the owner cancels the prompt. Every other key is
+// Escape (and its `c_CTRL-C` prompt-cancel synonym) is declined so the owner
+// cancels the prompt. Every other key is
 // *swallowed* — an open prompt owns the keyboard; forwarding stray keys to the
 // host (or a later mode) turns typos into editor actions — and reported so the
 // host can show a warning.
 export function commandModeHandler(key: string, state: HandlerState): HandleResult<void> {
   const command = state.activeCommand;
   if (command === undefined) return unhandled();
-  if (isEscapeKey(key)) return unhandled();
+  if (isPromptCancelKey(key)) return unhandled();
   if (key === "enter") {
     const editor = state.editor;
     const registerToRead = editor === undefined

@@ -461,6 +461,8 @@ export class VimController extends Disposable {
 			visualModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'visualModeKeyBindingsNonRecursive')),
 			operatorPendingModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'operatorPendingModeKeyBindings')),
 			operatorPendingModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'operatorPendingModeKeyBindingsNonRecursive')),
+			commandLineModeKeyBindings: readRemaps(layeredConfigValueFromSources(configSources, 'commandLineModeKeyBindings')),
+			commandLineModeKeyBindingsNonRecursive: readRemaps(layeredConfigValueFromSources(configSources, 'commandLineModeKeyBindingsNonRecursive')),
 		};
 	}
 

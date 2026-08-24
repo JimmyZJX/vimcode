@@ -232,7 +232,7 @@ Migration priorities and backlog:
    - `vim.useCtrlKeys`: imported configs often map keys such as `<C-h>`, `<C-j>`, `<C-k>`, and `<C-l>`. Ctrl-key interception should be mapping-aware and compatible with `vim.handleKeys`.
    - Remaps with both `after` and `commands`: VSCodeVim executes `after` first, then `commands`; keep this ordering compatible.
    - Recursive mapping edge cases: VSCodeVim has guards for RHS starting with LHS, recursive map depth, and force-stop behavior. Track these even if the patched synchronous architecture can keep the implementation simpler.
-   - Command-line mode mappings: VSCodeVim supports `vim.commandLineModeKeyBindings*`; `vimcode` currently handles `:` input as a pending command string rather than a full command-line mode.
+   - Command-line mode mappings: `vim.commandLineModeKeyBindings` / `vim.commandLineModeKeyBindingsNonRecursive` are supported and apply in both the `:` command line and the `/`?` search prompt (the remap layer runs before the prompt grammar, so unmapped query input stays literal). `ctrl-c` cancels both prompts like escape by default (`c_CTRL-C`).
    - Key notation parity: expand toward VSCodeVim `Notation.NormalizeKey`, including `<Del>`, `<Insert>`, shifted/control variants, and exact arrow/control notation behavior.
    - `<Plug>` and plugin default mappings: VSCodeVim uses plug mappings for plugins such as Surround and EasyMotion. Model these when plugin compatibility work begins.
    - Ambiguous mappings without timeout: we probably do not want VSCodeVim's timeout machinery, but need a deliberate policy for mappings such as `a -> ...` and `ab -> ...` so users understand and can resolve differences.

@@ -430,6 +430,13 @@ export function isEscapeKey(key: string): boolean {
   return key === "escape" || key === "<escape>" || key === "ctrl-[";
 }
 
+// Vim `c_CTRL-C`: in the `/`?` and `:` prompts CTRL-C abandons the prompt like
+// Escape. Kept separate from [isEscapeKey] because ctrl-c is not an escape
+// synonym everywhere (`v_CTRL-C` yanks the selection, for example).
+export function isPromptCancelKey(key: string): boolean {
+  return isEscapeKey(key) || key === "ctrl-c";
+}
+
 function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
   return (
     value !== null &&

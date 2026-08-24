@@ -15,7 +15,7 @@ import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMu
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, insertTextForKey, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { enterNormalMode, insertText } from "./insert.js";
-import { initialHandlerState, isEscapeKey, unhandled } from "./key_handler.js";
+import { initialHandlerState, isEscapeKey, isPromptCancelKey, unhandled } from "./key_handler.js";
 import type { HandleResult, Handler, HandlerEnv, HandlerState, QueuedRunResult } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { Motion } from "./motion.js";
@@ -602,6 +602,10 @@ export class Vim {
     // Unclaimed keys follow the terminal-fallback policy (see [dispatchKey]).
     // Escape is the one cross-mode command still dispatched owner-side.
     if (isEscapeKey(key)) return this.shouldHandleEscapeKey() ? "owned" : null;
+    // Vim `c_CTRL-C`: the `/`?`/`:` prompts own ctrl-c as a cancel key. The
+    // prompt grammars decline it (like escape) so the owner-side escape
+    // handling below dismisses the prompt.
+    if (key === "ctrl-c" && this.isPromptMode()) return "owned";
     if (this.modeState === "normal" || this.isVisualMode()) {
       // An unbound key rings the bell: Vim owns it so the host does not act on
       // it. Unbound ctrl chords stay native unless they are gated-in builtins.
@@ -927,15 +931,23 @@ export class Vim {
   // through to the legacy dispatcher (see [dispatchThroughPipeline]). Ported
   // handlers are added here; the remap handler has highest priority.
   private executorHandlers(state: HandlerState): readonly HandlerEnv<void>[] {
-    // Per-mode root handlers. `search` is the first non-normal mode the executor
-    // owns; it has no remap layer (a `/`?` query is literal input). Modes the
-    // framework does not own yet (insert/replace/visual) fall through the normal
-    // handlers, which decline outside normal context.
+    // Per-mode root handlers. The `/`?`/`:` prompts consult the remap layer
+    // first, but only `commandLine` mappings apply there (see
+    // [remapModeForVimMode]) so query input stays literal unless the user
+    // explicitly bound a key. Modes the framework does not own yet
+    // (insert/replace/visual) fall through the normal handlers, which decline
+    // outside normal context.
     if (state.mode === "search" && this.activeSearch !== undefined) {
-      return [{ handler: this.searchRootHandler(), state }];
+      return [
+        { handler: this.remapRootHandler(), state },
+        { handler: this.searchRootHandler(), state },
+      ];
     }
     if (state.mode === "command" && this.activeCommand !== undefined) {
-      return [{ handler: this.commandRootHandler(), state }];
+      return [
+        { handler: this.remapRootHandler(), state },
+        { handler: this.commandRootHandler(), state },
+      ];
     }
     if (isVisualModeKind(state.mode)) {
       return [
@@ -1376,10 +1388,11 @@ export class Vim {
         return "handled";
       }
       // Framework `/`?` prompt: a key the search grammar declined that is not
-      // escape (e.g. `ctrl-a`, function keys) is not ours — let the host handle
-      // it without disturbing the prompt or recording it. Escape falls through to
-      // the legacy escape handling below, which cancels the prompt.
-      if (this.activeSearch !== undefined && !isEscapeKey(key)) return "native";
+      // a prompt-cancel key (e.g. `ctrl-a`, function keys) is not ours — let the
+      // host handle it without disturbing the prompt or recording it. Escape and
+      // ctrl-c fall through to the escape handling below, which cancels the
+      // prompt.
+      if (this.activeSearch !== undefined && !isPromptCancelKey(key)) return "native";
       // Clear the executor's now-stale continuation *before* running the
       // terminal fallback: escape handling can re-enter the executor, which
       // would otherwise be misrouted into the leftover continuation.
@@ -1565,7 +1578,9 @@ export class Vim {
     try {
       if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.maybeFinish({ mode: this.modeState, isPending: this.isPending() });
 
-      if (isEscapeKey(key)) {
+      // Vim `c_CTRL-C`: in the `/`?`/`:` prompts ctrl-c cancels like escape
+      // (recorded as `<escape>` so macro/`.` replays reproduce the cancel).
+      if (isEscapeKey(key) || (key === "ctrl-c" && this.isPromptMode())) {
         if (!this.shouldHandleEscapeKey()) return "native";
         this.recordEscapeKey();
         this.handleEscapeKey();
@@ -1778,12 +1793,16 @@ export class Vim {
     }
   }
 
+  private isPromptMode(): boolean {
+    return this.modeState === "search" || this.modeState === "command";
+  }
+
   private handleEscapeKey(): void {
     // Escaping a prompt: [dismissPromptSession] (via the clear below) chooses
     // the successor mode itself — a visual-origin search returns to the visual
     // kind with the selection intact, like Neovim. Stop there: falling through
     // would treat the restored visual mode as the thing being escaped.
-    const wasPrompt = this.modeState === "search" || this.modeState === "command";
+    const wasPrompt = this.isPromptMode();
     this.clearPendingStateForEscape();
     if (wasPrompt) return;
     if (this.isVisualMode()) {
