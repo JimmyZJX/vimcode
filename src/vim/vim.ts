@@ -820,7 +820,12 @@ export class Vim {
         this.setPendingSearchStatus(undefined);
         this.globalState.search.recordHistory(session.search);
         this.globalState.search.clearPending(this.editor, session.search, { restoreViewport: closeSearchHighlights });
-        if (closeSearchHighlights) this.editor.clearSearchHighlights();
+        if (closeSearchHighlights) {
+          this.editor.clearSearchHighlights();
+          // Vim 'hlsearch': aborting a prompt restores the previous pattern's
+          // highlight (the incsearch preview replaced it while typing).
+          if (this.configuration.hlsearch) this.globalState.search.reapplyLastHighlight(this.editor);
+        }
         if (isVisualModeKind(session.origin) && this.visualMode.currentMode() !== undefined) {
           this.setMode(session.origin);
         } else {
@@ -1017,6 +1022,7 @@ export class Vim {
         mode: "search",
         editor: this.editor,
         registers: this.registers,
+        configuration: this.configuration,
         search: this.globalState.search,
         activeSearch: this.activeSearch,
         searchOrigin: this.searchOriginMode,

@@ -212,6 +212,12 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.useCtrlKeys', "Enable Vim Ctrl key commands that override common VS Code operations."),
 	},
+	'vim.hlsearch': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.hlsearch', "Keep search matches highlighted after the search ends, until ':noh' clears them."),
+	},
 	'vim.debugUndo': {
 		type: 'boolean',
 		default: false,

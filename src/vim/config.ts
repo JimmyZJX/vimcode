@@ -40,6 +40,10 @@ export type VimConfiguration = {
   handleKeys: Readonly<Record<string, boolean>>;
   useCtrlKeys: boolean;
   useSystemClipboard: boolean;
+  // Vim 'hlsearch': keep search matches highlighted after the search motion
+  // lands, until `:noh` clears them. Off by default: highlights are torn down
+  // as soon as the search completes.
+  hlsearch: boolean;
   timeout: number;
   visualMultilineInsert: boolean;
   insertModeCtrlVAsPaste: boolean;
@@ -73,6 +77,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   handleKeys: defaultVimHandleKeys,
   useCtrlKeys: true,
   useSystemClipboard: false,
+  hlsearch: false,
   timeout: 1000,
   visualMultilineInsert: true,
   insertModeCtrlVAsPaste: true,

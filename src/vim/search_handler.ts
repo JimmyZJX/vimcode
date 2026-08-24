@@ -28,6 +28,14 @@ import type { Registers } from "./registers.js";
 import { isVisualModeKind, rangeOfSelection, selectionHead } from "./state.js";
 import type { VimMode } from "./state.js";
 
+// Vim 'hlsearch': when enabled, completed searches leave their matches
+// highlighted (until `:noh` clears them). The default tears the highlight down
+// as soon as the search motion lands, which is the pre-hlsearch behavior.
+function clearHighlightsUnlessPersistent(state: HandlerState, editor: VimEditorCapabilities): void {
+  if (state.configuration?.hlsearch === true) return;
+  editor.clearSearchHighlights();
+}
+
 // `/` and `?`: enter `search` mode. The effect targets the mode; the owner's
 // mode transition starts the incremental prompt (it owns the editable query),
 // and [searchModeHandler] then drives input. Not a buffer change.
@@ -79,7 +87,7 @@ export function searchModeHandler(
         if (motion !== undefined && !reportSearchMotionStatus(state, editor, motion)) {
           visual?.applyMotion(motion, 1);
         }
-        editor.clearSearchHighlights();
+        clearHighlightsUnlessPersistent(state, editor);
       });
     }
     return effect("normal", () => {
@@ -93,7 +101,7 @@ export function searchModeHandler(
           position: applyMotion(editor, selectionHead(selection), motion, 1),
         }))
       );
-      editor.clearSearchHighlights();
+      clearHighlightsUnlessPersistent(state, editor);
     });
   }
   // A query/edit key: update the prompt + incsearch preview, stay in search
@@ -207,6 +215,7 @@ function searchOperandWaiter(
         // A missing match aborts the operator; make the abort loud (E486).
         reportSearchMotionStatus(state, editor, motion, { countOnMatch: false });
       }),
+      state,
       editor
     );
   };
@@ -285,10 +294,12 @@ function withSearchCommit(
 }
 
 // Clear the match highlights after the operator runs, matching the legacy
-// search-completion path. The operator's effect is wrapped so the mode and
-// dot-repeatability it declared are preserved.
+// search-completion path ('hlsearch' keeps them instead). The operator's
+// effect is wrapped so the mode and dot-repeatability it declared are
+// preserved.
 function withClearHighlights(
   result: HandleResult<void>,
+  state: HandlerState,
   editor: VimEditorCapabilities
 ): HandleResult<void> {
   if (result.type !== "run" || result.action.type !== "effect") return result;
@@ -300,7 +311,7 @@ function withClearHighlights(
       ...action,
       run: () => {
         const value = innerRun();
-        editor.clearSearchHighlights();
+        clearHighlightsUnlessPersistent(state, editor);
         return value;
       },
     },
@@ -394,7 +405,7 @@ export function visualSearchUnderCursorHandler(
           position: applyMotion(editor, selectionHead(selection), motion, count),
         }))
       );
-      editor.clearSearchHighlights();
+      clearHighlightsUnlessPersistent(state, editor);
     },
     () => target,
     { dotRepeatable: false }
@@ -482,7 +493,16 @@ function searchNavigation(
           ),
         }))
       );
-      if (clearHighlights) editor.clearSearchHighlights();
+      if (state.configuration?.hlsearch === true) {
+        // Vim 'hlsearch': `n`/`N` re-light the pattern after a `:noh` (`:noh`
+        // only suspends the highlight until the next search command). For
+        // `*`/`#` this repeats the [setLast] update, which is harmless.
+        if (motion.type === "searchForward" || motion.type === "searchBackward") {
+          editor.updateSearch(motion.query, motion.type === "searchBackward" ? "backward" : "forward", motion.options);
+        }
+      } else if (clearHighlights) {
+        editor.clearSearchHighlights();
+      }
     },
     { dotRepeatable: false }
   );

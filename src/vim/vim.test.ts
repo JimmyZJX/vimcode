@@ -3663,6 +3663,58 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.clearSearchHighlightsCount).toBe(1);
   });
 
+  it("hlsearch keeps highlights after the search until :noh clears them", () => {
+    const editor = new SearchTrackingEditor("one two\nthree\ntwo");
+    const vim = new Vim(editor, { hlsearch: true });
+
+    runKeys(vim, ["/", "t", "w", "o", "enter"]);
+    expect(head(editor)).toEqual({ row: 0, column: 4 });
+    expect(editor.clearSearchHighlightsCount).toBe(0);
+    expect(editor.searchUpdates[editor.searchUpdates.length - 1]?.query).toBe("two");
+
+    runKeys(vim, [":", "n", "o", "h", "enter"]);
+    expect(editor.clearSearchHighlightsCount).toBe(1);
+  });
+
+  it("hlsearch: n re-lights the pattern after :noh", () => {
+    const editor = new SearchTrackingEditor("one two\nthree\ntwo");
+    const vim = new Vim(editor, { hlsearch: true });
+
+    runKeys(vim, ["/", "t", "w", "o", "enter"]);
+    runKeys(vim, [":", "n", "o", "h", "enter"]);
+    editor.searchUpdates = [];
+
+    runKeys(vim, ["n"]);
+    expect(head(editor)).toEqual({ row: 2, column: 0 });
+    expect(editor.searchUpdates).toEqual([{ query: "two", reveal: undefined }]);
+  });
+
+  it("hlsearch keeps highlights after * and restores them when a prompt is aborted", () => {
+    const editor = new SearchTrackingEditor("two one\ntwo");
+    const vim = new Vim(editor, { hlsearch: true });
+
+    runKeys(vim, ["*"]);
+    expect(editor.clearSearchHighlightsCount).toBe(0);
+
+    // Aborting a new `/` prompt tears down its incsearch preview but restores
+    // the previous pattern's persistent highlight.
+    editor.searchUpdates = [];
+    runKeys(vim, ["/", "o", "n", "<escape>"]);
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.searchUpdates[editor.searchUpdates.length - 1]?.query).toBe("two");
+  });
+
+  it("without hlsearch, search highlights are cleared once the motion lands", () => {
+    const editor = new SearchTrackingEditor("one two\nthree\ntwo");
+    const vim = new Vim(editor);
+
+    runKeys(vim, ["/", "t", "w", "o", "enter"]);
+    expect(editor.clearSearchHighlightsCount).toBe(1);
+
+    runKeys(vim, ["*"]);
+    expect(editor.clearSearchHighlightsCount).toBe(2);
+  });
+
   it("supports smart-case search", () => {
     const lowerCaseSearchEditor = new InMemoryVimEditor("foo FOO foo");
     const lowerCaseSearchVim = new Vim(lowerCaseSearchEditor);

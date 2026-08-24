@@ -431,6 +431,7 @@ export class VimController extends Disposable {
 		const configSources = [vimConfig, vimcodeConfig];
 		const useCtrlKeys = this.readCompatibilityConfigValue('useCtrlKeys');
 		const useSystemClipboard = this.readCompatibilityConfigValue('useSystemClipboard');
+		const hlsearch = this.readCompatibilityConfigValue('hlsearch');
 		const timeout = this.readCompatibilityConfigValue('timeout');
 		const textwidth = this.readCompatibilityConfigValue('textwidth');
 		const visualMultilineInsert = this.readCompatibilityConfigValue('visualMultilineInsert');
@@ -444,6 +445,7 @@ export class VimController extends Disposable {
 			leader: typeof leader === 'string' ? leader : undefined,
 			useCtrlKeys: typeof useCtrlKeys === 'boolean' ? useCtrlKeys : undefined,
 			useSystemClipboard: typeof useSystemClipboard === 'boolean' ? useSystemClipboard : undefined,
+			hlsearch: typeof hlsearch === 'boolean' ? hlsearch : undefined,
 			timeout: typeof timeout === 'number' ? timeout : undefined,
 			textwidth: typeof textwidth === 'number' ? textwidth : undefined,
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean' ? visualMultilineInsert : undefined,

@@ -274,6 +274,14 @@ export class SearchState {
     return this.last?.query;
   }
 
+  // Vim 'hlsearch': re-establish the last pattern's match highlight without
+  // touching [last] or the search register (used when an aborted prompt's
+  // incsearch preview replaced the persistent highlight).
+  reapplyLastHighlight(editor: VimEditorCapabilities): void {
+    if (this.last === undefined) return;
+    editor.updateSearch(this.last.query, this.last.backwards ? "backward" : "forward", this.last.options);
+  }
+
   // An explicit `:g`/`:s` pattern becomes the last search pattern — `n`
   // follows it (forward, no offset) and `@/` holds it — but unlike a `/`
   // search it does NOT touch the visible search highlight: the pattern of an
