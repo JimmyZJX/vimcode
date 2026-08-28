@@ -9,7 +9,7 @@ import { Position as VSCodePosition } from '../../../common/core/position.js';
 import { IRange, Range } from '../../../common/core/range.js';
 import { Selection } from '../../../common/core/selection.js';
 import { IDecorationOptions, IEditorDecorationsCollection, ScrollType } from '../../../common/editorCommon.js';
-import { IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, InjectedTextCursorStops, PositionAffinity } from '../../../common/model.js';
+import { EndOfLinePreference, IIdentifiedSingleEditOperation, IModelDeltaDecoration, ITextModel, InjectedTextCursorStops, PositionAffinity } from '../../../common/model.js';
 import { EditSources } from '../../../common/textModelEditSource.js';
 import { CommonFindController } from '../../find/browser/findController.js';
 import { FindModelBoundToEditorModel } from '../../find/browser/findModel.js';
@@ -147,11 +147,17 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 	}
 
 	getText(range?: TextRange): string {
+		// The Vim core requires 1-character `\n` line separators (see
+		// [VimEditorCapabilities.getText]): its position<->offset conversions
+		// count `lineLength(row) + 1` per line, so returning a CRLF document
+		// verbatim would shift every computed offset by one per preceding line
+		// (e.g. `iw` selecting the wrong span). Inserted text flows back through
+		// `pushEditOperations`, which normalizes `\n` to the buffer EOL.
 		const model = this.model();
 		if (!range) {
-			return model.getValue();
+			return model.getValue(EndOfLinePreference.LF);
 		}
-		return model.getValueInRange(toRange(range));
+		return model.getValueInRange(toRange(range), EndOfLinePreference.LF);
 	}
 
 	documentVersion(): number {
