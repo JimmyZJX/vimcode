@@ -3190,16 +3190,35 @@ describe("Zed-inspired Vim core smoke tests", () => {
       .toBe("line0\nline2\nline3\nline4\nline5\nline6\nline7\nline8");
   });
 
-  it("extends visual-line mode with ctrl-d", () => {
-    const editor = new InMemoryVimEditor("one\ntwo\nthree\nfour\nfive\nsix");
+  it.each([
+    { page: "ctrl-d", startRow: 0, pageRow: 6, motion: "j", rows: [7, 8, 9] },
+    { page: "ctrl-u", startRow: 11, pageRow: 5, motion: "k", rows: [4, 3, 2] },
+  ])("keeps the visual-line cursor and head together after $page", ({ page, startRow, pageRow, motion, rows }) => {
+    const editor = new InMemoryVimEditor(Array(12).fill("alpha beta").join("\n"));
+    editor.setSelections([charwiseSelection({ row: startRow, column: 2 })]);
     const vim = new Vim(editor);
+    const expectSelection = (row: number, column: number) => {
+      expect(vim.modeName).toBe("vim:visualLine");
+      expect(editor.getSelections()).toEqual([
+        expect.objectContaining({
+          type: "linewise", anchorLine: startRow, anchorColumn: 2,
+          headLine: row, cursor: { row, column },
+        }),
+      ]);
+    };
 
-    runKeys(vim, ["V", "ctrl-d"]);
-
-    expect(vim.modeName).toBe("vim:visualLine");
-    expect(editor.getSelections()).toEqual([
-      { type: "linewise", anchorLine: 0, anchorColumn: 0, headLine: 3, cursor: { row: 3, column: 0 }, goal: { type: "modelColumn", column: 0 } },
-    ]);
+    runKeys(vim, ["V", page]);
+    expectSelection(pageRow, 2);
+    for (const row of rows) {
+      runKeys(vim, [motion]);
+      expectSelection(row, 2);
+    }
+    runKeys(vim, ["G"]);
+    expectSelection(11, 2);
+    runKeys(vim, ["l"]);
+    expectSelection(11, 3);
+    runKeys(vim, ["<escape>"]);
+    expect(head(editor)).toEqual({ row: 11, column: 3 });
   });
 
   it("supports horizontal motions in visual-line mode", () => {

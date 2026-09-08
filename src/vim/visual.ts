@@ -88,7 +88,6 @@ type LinewiseVisualState = {
   anchorColumn: number;
   headLine: number;
   headColumn: number;
-  cursor?: Position;
   goal?: VimSelectionGoal;
 };
 
@@ -957,7 +956,6 @@ export class VisualMode {
           anchorColumn: selection.anchorColumn ?? 0,
           headLine: selection.headLine,
           headColumn: selection.cursor?.column ?? 0,
-          cursor: selection.cursor,
           goal: selection.goal,
         };
         return;
@@ -1246,7 +1244,6 @@ function otherEndState(state: VisualState, { rowAware }: { rowAware: boolean }):
         anchorColumn: state.headColumn,
         headLine: state.anchorLine,
         headColumn: state.anchorColumn,
-        cursor: undefined,
       };
     case "blockwise":
       return rowAware ? flipBlockOtherEndRowAware(state) : flipBlockOtherEnd(state);
@@ -1293,7 +1290,7 @@ function cloneVisualState(state: VisualState): VisualState {
     case "charwise":
       return { ...state, anchor: { ...state.anchor }, head: { ...state.head }, goal: cloneGoal(state.goal) };
     case "linewise":
-      return { ...state, cursor: state.cursor === undefined ? undefined : { ...state.cursor }, goal: cloneGoal(state.goal) };
+      return { ...state, goal: cloneGoal(state.goal) };
     case "blockwise":
       return { ...state, anchor: { ...state.anchor }, head: { ...state.head }, goal: cloneGoal(state.goal) };
   }
@@ -1376,7 +1373,6 @@ function paragraphLinewiseStateForRange(state: VisualState, range: TextRange): L
     anchorColumn,
     headLine: range.end.row,
     headColumn: 0,
-    cursor: { row: range.end.row, column: 0 },
   };
 }
 
@@ -1620,7 +1616,6 @@ function visualExitPosition(editor: VimEditorCapabilities, state: VisualState): 
 }
 
 function linewiseCursor(editor: VimEditorCapabilities, state: LinewiseVisualState): Position {
-  if (state.cursor !== undefined) return state.cursor;
   const row = state.headLine;
   return { row, column: Math.min(state.headColumn, Math.max(0, editor.lineLength(row) - 1)) };
 }
