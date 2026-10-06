@@ -153,7 +153,10 @@ export type NormalizedRemapping = {
 export function remapModeForVimMode(mode: VimMode, { operatorPending }: { operatorPending: boolean }): VimRemapMode {
   if (operatorPending) return "operatorPending";
   switch (mode) {
+    // Vim `:imap` and VSCodeVim `insertModeKeyBindings` cover both Insert and
+    // Replace mode.
     case "insert":
+    case "replace":
       return "insert";
     case "visual":
       return "visual";
@@ -169,7 +172,6 @@ export function remapModeForVimMode(mode: VimMode, { operatorPending }: { operat
     case "normal":
     case "helixNormal":
     case "helixSelect":
-    case "replace":
       return "normal";
   }
 }

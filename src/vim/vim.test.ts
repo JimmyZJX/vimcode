@@ -1330,6 +1330,19 @@ describe("Zed-inspired Vim core smoke tests", () => {
     expect(editor.getText()).toBe("one");
   });
 
+  it("applies insert remaps, not normal remaps, in replace mode", () => {
+    const editor = new InMemoryVimEditor("abcd");
+    const vim = new Vim(editor, {
+      normalModeKeyBindingsNonRecursive: [{ before: ["x"], after: ["d", "d"] }],
+      insertModeKeyBindingsNonRecursive: [{ before: ["j", "j"], after: ["<Esc>"] }],
+    });
+
+    runKeys(vim, ["R", "x", "j", "j"]);
+
+    expect(vim.modeName).toBe("vim:normal");
+    expect(editor.getText()).toBe("xbcd");
+  });
+
   it("shows pending insert remap text before the timeout finishes", () => {
     const editor = new InMemoryVimEditor("one");
     const vim = new Vim(editor, {
