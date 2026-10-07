@@ -14,7 +14,8 @@ import { nextGraphemeBoundary } from "./grapheme.js";
 import { collapseSelectionsToNormalCursors, collapseToPrimaryNormalCursor, hasMultipleCursorsOrSelection, reconcileCursorState } from "./editor_state_sync.js";
 import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, insertTextForKey, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
-import { enterNormalMode, insertText } from "./insert.js";
+import { InsertRepeatChunk, enterNormalMode, insertText } from "./insert.js";
+import { InsertEdit, applyInsertEdit, walkPosition } from "./native_insert_edit.js";
 import { initialHandlerState, isEscapeKey, isPromptCancelKey, unhandled } from "./key_handler.js";
 import type { HandleResult, Handler, HandlerEnv, HandlerState, QueuedRunResult } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
@@ -252,7 +253,10 @@ export class Vim {
     return this.session.mode === "command" ? this.session.command : undefined;
   }
   private insertRepeatCount = 1;
-  private insertRepeatText = "";
+  private readonly insertRepeatChunk = new InsertRepeatChunk();
+  // The chunk before the latest live passthrough key, restored when the host
+  // reports that key's native effect ([recordNativeInsertEdit]) in its place.
+  private insertRepeatChunkBeforeTyped: ReturnType<InsertRepeatChunk["snapshot"]> | undefined;
   // Zed: `Vim::replacements` — what replace mode overwrote, for backspace.
   private replaceModeReplacements: ReplacedText[] = [];
   private insertRepeatSeparator = "";
@@ -1236,7 +1240,7 @@ export class Vim {
           this.enterTemporaryNormalMode();
         },
         appendInsertSessionText: text => {
-          this.insertRepeatText += text;
+          this.insertRepeatChunk.insert(text);
         },
       });
     };
@@ -1258,7 +1262,7 @@ export class Vim {
         editor: this.editor,
         applyReplaceText: text => {
           this.replaceModeReplacements.push(...replaceModeText(this.editor, text, 1, this.insertEditOptions()));
-          this.insertRepeatText += text;
+          this.insertRepeatChunk.insert(text);
         },
         undoReplace: () => {
           this.undoReplace();
@@ -1744,6 +1748,10 @@ export class Vim {
     entry: RecordedKey,
     context: VimExecutionContext | undefined
   ): QueuedRunResult<void> {
+    if (entry.kind === "edit") {
+      this.replayInsertEdit(entry.edit);
+      return;
+    }
     // Replayed keys use ordinary plans, but with native passthrough suppressed:
     // the host did not physically type this key, so Vim reproduces typed edits.
     // Awaiting each plan keeps macro/dot order correct across async register reads.
@@ -1758,6 +1766,34 @@ export class Vim {
     }
     const plan = this.handleKey(entry.key);
     if (plan !== null) return plan.run({ executionContext: context, replay: true });
+  }
+
+  // Apply a recorded native insert-mode effect ([RecordedKey] "edit"). It
+  // belongs to the insert session the preceding replayed keys opened; if they
+  // did not (an aborted replay), there is nothing to apply it to.
+  private replayInsertEdit(edit: InsertEdit): void {
+    if (this.modeState !== "insert" && this.modeState !== "replace") return;
+    applyInsertEdit(this.editor, edit, this.insertEditOptions());
+    this.insertRepeatChunk.applyEdit(edit);
+    this.modelState.changeList.record(this.editor, { insertMode: true });
+  }
+
+  /** Record what a key the host handled natively in insert/replace mode did to
+      the buffer (see [InsertEdit] and [diffInsertEdit]), for dot-repeat,
+      macros, and count repeats. [supersedesTyped]: Vim recorded the key as a
+      passthrough `typed` entry ([KeyPlan.passthrough]), which the effect
+      replaces. The host must call this in key order: after the key's own plan
+      ran and before the next key's. */
+  recordNativeInsertEdit(key: string, edit: InsertEdit, { supersedesTyped }: { supersedesTyped: boolean }): void {
+    const snapshotBeforeTyped = this.insertRepeatChunkBeforeTyped;
+    this.insertRepeatChunkBeforeTyped = undefined;
+    if (this.modeState !== "insert" && this.modeState !== "replace") return;
+    if (this.globalState.repeat.isReplaying() || this.globalState.macro.isReplaying()) return;
+    if (supersedesTyped && snapshotBeforeTyped !== undefined) this.insertRepeatChunk.restore(snapshotBeforeTyped);
+    this.insertRepeatChunk.applyEdit(edit);
+    this.globalState.repeat.recordInsertEdit(key, edit, { supersedesTyped });
+    this.globalState.macro.recordInsertEdit(key, edit, { supersedesTyped });
+    this.modelState.changeList.record(this.editor, { insertMode: true });
   }
 
   // Handle one passthrough insert character, both when freshly typed (via
@@ -1775,12 +1811,13 @@ export class Vim {
     // any other non-text whitelist key (cursor movement, word delete) starts a
     // new chunk, like Vim, where moving in insert restarts the repeated text.
     const text = insertTextForKey(key);
+    this.insertRepeatChunkBeforeTyped = passthrough ? this.insertRepeatChunk.snapshot() : undefined;
     if (text !== undefined) {
-      this.insertRepeatText += text;
+      this.insertRepeatChunk.insert(text);
     } else if (key === "backspace") {
-      this.insertRepeatText = this.insertRepeatText.slice(0, -1);
+      this.insertRepeatChunk.deleteBackward();
     } else {
-      this.insertRepeatText = "";
+      this.insertRepeatChunk.reset();
     }
     if (!this.globalState.repeat.isReplaying()) this.globalState.repeat.recordTyped(key);
     if (!this.globalState.repeat.isReplaying() && !this.globalState.macro.isReplaying()) {
@@ -2030,7 +2067,7 @@ export class Vim {
     } else {
       this.editor.setSelections([charwiseSelection(start)]);
     }
-    this.insertRepeatText = this.insertRepeatText.slice(0, -1);
+    this.insertRepeatChunk.deleteBackward();
   }
 
   private enterReplaceMode({ count, separator }: { count: number; separator: string }): void {
@@ -2063,7 +2100,7 @@ export class Vim {
 
   private startInsertOrReplaceSession({ count, separator }: { count: number; separator: string }): void {
     this.insertRepeatCount = count;
-    this.insertRepeatText = "";
+    this.insertRepeatChunk.reset();
     this.insertRepeatSeparator = separator;
   }
 
@@ -2072,17 +2109,24 @@ export class Vim {
     this.modelState.marks.setBuiltinMark("^", this.modelState.lastInsertPosition);
     const pendingVisualChange = this.globalState.repeat.takePendingVisualChange();
     if (pendingVisualChange !== undefined && !this.globalState.repeat.isReplaying()) {
-      this.globalState.repeat.recordVisualAction(pendingVisualChange, { type: "change", insertedText: this.insertRepeatText });
+      this.globalState.repeat.recordVisualAction(pendingVisualChange, { type: "change", insertedText: this.insertRepeatChunk.text });
     }
     // The keys typed during the insert session were already logged into the
     // dot-repeat and macro buffers as they flowed through [dispatchKey]; the
     // terminating `<escape>` is logged by [recordEscapeKey]. So `.`/macro replay
     // re-runs `cwhello<escape>` verbatim — no separate insert-text recording.
-    if (this.insertRepeatCount <= 1 || this.insertRepeatText.length === 0) {
+    if (this.insertRepeatCount <= 1 || this.insertRepeatChunk.text.length === 0) {
       this.clearInsertOrReplaceSession();
       return;
     }
-    const repeatedText = Array.from({ length: this.insertRepeatCount - 1 }, () => `${this.insertRepeatSeparator}${this.insertRepeatText}`).join("");
+    const repeatedText = Array.from({ length: this.insertRepeatCount - 1 }, () => `${this.insertRepeatSeparator}${this.insertRepeatChunk.text}`).join("");
+    // The copies follow the whole chunk, including text the session left after
+    // the cursor (auto-closed `(|)`).
+    const tail = this.insertRepeatChunk.tailLength;
+    if (tail > 0) {
+      this.editor.setSelections(this.editor.getSelections().map(selection =>
+        charwiseSelection(walkPosition(this.editor, selectionHead(selection), tail))));
+    }
     if (mode === "replace") replaceModeText(this.editor, repeatedText, 1, this.insertEditOptions());
     else insertText(this.editor, repeatedText, this.insertEditOptions());
     this.modelState.lastInsertPosition = selectionHead(this.editor.getSelections()[0]);
@@ -2091,7 +2135,7 @@ export class Vim {
 
   private clearInsertOrReplaceSession(): void {
     this.insertRepeatCount = 1;
-    this.insertRepeatText = "";
+    this.insertRepeatChunk.reset();
     this.insertRepeatSeparator = "";
   }
 

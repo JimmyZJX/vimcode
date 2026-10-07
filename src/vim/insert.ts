@@ -7,6 +7,7 @@
 
 import { ApplyEditsOptions, VimEditorCapabilities, normalCursorPosition } from "./editor.js";
 import { charClass } from "./motion.js";
+import type { InsertEdit } from "./native_insert_edit.js";
 import {
   Position,
   TextEdit,
@@ -180,4 +181,65 @@ export function positionAfterInsertedText(start: Position, text: string): Positi
     row: start.row + lines.length - 1,
     column: lines[lines.length - 1].length,
   };
+}
+
+// The text of the current insert session that a count repeats (`3ix<esc>`) and
+// a visual change replays, with the cursor's place in it: an edit observed from
+// the host can leave the cursor inside the text it inserted (auto-close `(`
+// gives `(|)`), and later typing lands there. Moving the cursor elsewhere
+// starts a new chunk, like Vim, where moving in insert mode restarts the
+// repeated text.
+export class InsertRepeatChunk {
+  private value = "";
+  // Characters of [value] after the cursor.
+  private tail = 0;
+
+  get text(): string {
+    return this.value;
+  }
+
+  // Characters of the chunk after the cursor (`)` of an auto-closed `(|)`).
+  get tailLength(): number {
+    return this.tail;
+  }
+
+  insert(text: string): void {
+    const cursor = this.value.length - this.tail;
+    this.value = this.value.slice(0, cursor) + text + this.value.slice(cursor);
+  }
+
+  deleteBackward(): void {
+    const cursor = this.value.length - this.tail;
+    if (cursor === 0) return;
+    // One UTF-16 unit, matching the typed path's historical behavior.
+    this.value = this.value.slice(0, cursor - 1) + this.value.slice(cursor);
+  }
+
+  // Mirror a host-observed edit; one that reaches outside the chunk or leaves
+  // a selection restarts it.
+  applyEdit(edit: InsertEdit): void {
+    const cursor = this.value.length - this.tail;
+    const start = cursor + edit.from;
+    const end = cursor + edit.to;
+    if (start < 0 || end > this.value.length || edit.anchor !== edit.head || edit.head < 0 || edit.head > edit.text.length) {
+      this.reset();
+      return;
+    }
+    this.value = this.value.slice(0, start) + edit.text + this.value.slice(end);
+    this.tail = this.value.length - (start + edit.head);
+  }
+
+  reset(): void {
+    this.value = "";
+    this.tail = 0;
+  }
+
+  snapshot(): { value: string; tail: number } {
+    return { value: this.value, tail: this.tail };
+  }
+
+  restore(snapshot: { value: string; tail: number }): void {
+    this.value = snapshot.value;
+    this.tail = snapshot.tail;
+  }
 }

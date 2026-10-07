@@ -5,9 +5,11 @@
 //   `RecordedSelection`-style visual action shape, plus named macro record/replay
 // - intentional differences: dot-repeat and macros are both key-based — the
 //   recorded keys are replayed back through the dispatcher (Vim's redo/record
-//   buffers are likewise char buffers). Visual actions are modeled explicitly
-//   only for the actions currently implemented.
+//   buffers are likewise char buffers) — except insert-mode input VSCode
+//   handled natively, recorded as its observed buffer effect. Visual actions
+//   are modeled explicitly only for the actions currently implemented.
 
+import type { InsertEdit } from "../native_insert_edit.js";
 import { RegisterName } from "../registers.js";
 import { IndentDirection } from "./indent.js";
 
@@ -21,9 +23,15 @@ import { IndentDirection } from "./indent.js";
 //   pass through in insert/replace mode. Replayed through the VSCode default
 //   handler ([editor.replayInsertKey]) so the exact native edit (auto-indent,
 //   auto-close, …) is reproduced.
+// - [edit]: what a key VSCode handled natively in insert/replace mode did to
+//   the buffer, observed by the host (see [InsertEdit]). It supersedes the
+//   key's [typed] entry, if any, because the native effect depends on editor
+//   state that replay cannot reproduce (snippets, suggestions). Replayed by
+//   applying the edit; [key] is kept for display only.
 export type RecordedKey =
   | { kind: "shortcut"; key: string }
-  | { kind: "typed"; key: string };
+  | { kind: "typed"; key: string }
+  | { kind: "edit"; key: string; edit: InsertEdit };
 
 export function shortcutKey(key: string): RecordedKey {
   return { kind: "shortcut", key };
@@ -31,6 +39,14 @@ export function shortcutKey(key: string): RecordedKey {
 
 export function typedKey(key: string): RecordedKey {
   return { kind: "typed", key };
+}
+
+// Append the edit entry [entry], or, when [supersedesTyped], replace the
+// trailing `typed` entry for the same key with it.
+function recordInsertEditInto(keys: RecordedKey[], entry: RecordedKey & { kind: "edit" }, supersedesTyped: boolean): void {
+  const last = keys[keys.length - 1];
+  if (supersedesTyped && last?.kind === "typed" && last.key === entry.key) keys[keys.length - 1] = entry;
+  else keys.push(entry);
 }
 
 type ReplayResult = void | Promise<void>;
@@ -133,6 +149,11 @@ export class RepeatState {
   // `.` replays the insert via the default handler.
   recordTyped(key: string): void {
     this.current?.push(typedKey(key));
+  }
+
+  // Record a native key's observed effect (see [RecordedKey] "edit").
+  recordInsertEdit(key: string, edit: InsertEdit, { supersedesTyped }: { supersedesTyped: boolean }): void {
+    if (this.current !== undefined) recordInsertEditInto(this.current, { kind: "edit", key, edit }, supersedesTyped);
   }
 
   recordCompleted(keys: readonly RecordedKey[]): void {
@@ -251,6 +272,13 @@ export class MacroState {
   // [RepeatState.recordTyped]); replayed via the VSCode default handler.
   recordTyped(key: string): void {
     if (this.recordingRegister !== undefined && !this.replaying) this.currentKeys.push(typedKey(key));
+  }
+
+  // See [RepeatState.recordInsertEdit].
+  recordInsertEdit(key: string, edit: InsertEdit, { supersedesTyped }: { supersedesTyped: boolean }): void {
+    if (this.recordingRegister !== undefined && !this.replaying) {
+      recordInsertEditInto(this.currentKeys, { kind: "edit", key, edit }, supersedesTyped);
+    }
   }
 
   stopRecording(): { register: string; keys: readonly RecordedKey[] } | undefined {

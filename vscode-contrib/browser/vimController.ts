@@ -12,6 +12,7 @@ import type { ContextKeyExpression, IContextKeyServiceTarget } from '../../../..
 import { IExtensionManagementService, IGlobalExtensionEnablementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
+import type { ResolutionResult } from '../../../../platform/keybinding/common/keybindingResolver.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import type { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -26,6 +27,7 @@ import { RemapTimeoutKey, VimCommandMapping, VimConfiguration, VimKeyRemapping, 
 import type { VimSystemClipboard } from '../common/registers.js';
 import { Vim, VimGlobalState, VimModelState, VimStatus } from '../common/vim.js';
 import type { EditorSyncResult, KeyPlan } from '../common/vim.js';
+import { NativeInsertEditCapture } from './nativeInsertEditCapture.js';
 import { VSCodeVimClipboard } from './vscodeClipboard.js';
 import { installVSCodeGraphemeProvider } from './vscodeGrapheme.js';
 import { VSCodeVimEditor, VimEasyMotionLabelDecorationTypeKey, YankHighlightOptions } from './vscodeVimEditor.js';
@@ -165,6 +167,7 @@ export class VimController extends Disposable {
 	private readonly vimEditor: VSCodeVimEditor;
 	private readonly vim: Vim;
 	private readonly asyncKeyQueue = new AsyncKeyQueue();
+	private nativeInsertCapture: NativeInsertEditCapture | undefined;
 	private vimContexts: VimContextKeys | undefined = undefined;
 	private enabled = false;
 	private remapTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -302,6 +305,8 @@ export class VimController extends Disposable {
 	}
 
 	override dispose(): void {
+		this.nativeInsertCapture?.dispose();
+		this.nativeInsertCapture = undefined;
 		this.clearRemapTimeout();
 		this.vimEditor.flushUndoTransaction();
 		this.vimEditor.dispose();
@@ -380,6 +385,8 @@ export class VimController extends Disposable {
 		} else {
 			this.editor.getContainerDomNode().classList.remove('vim-character-mode-enabled');
 			if (wasEnabled) {
+				this.nativeInsertCapture?.dispose();
+				this.nativeInsertCapture = undefined;
 				this.vimEditor.flushUndoTransaction();
 				this.restoreNativeCursorAppearance();
 			}
@@ -535,21 +542,30 @@ export class VimController extends Disposable {
 		if (!this.enabled || !this.hasModel()) {
 			return;
 		}
+		// The previous native key's effect is complete once the next key arrives.
+		this.finishNativeInsertCapture();
 		const key = keyFromEvent(event);
 		const whenEvaluator = (when: string | undefined) => this.evaluateWhen(when, event.target);
+		let resolved: ResolutionResult | undefined;
+		const resolveNativeKeybinding = () => resolved ??= this.keybindingService.softDispatch(event, event.target);
 		// When Vim is waiting for the rest of a command (`g`, `d`, a register name,
 		// search input, a pending remap, ...), the next key belongs to Vim. Otherwise
 		// user/extension VSCode keybindings get first refusal, and Vim only runs if it
 		// returns a concrete KeyPlan.
 		const vimPending = this.vim.status.pending;
-		if (!vimPending && this.shouldLetNativeKeybindingHandle(event)) {
+		if (!vimPending && this.shouldLetNativeKeybindingHandle(event, resolveNativeKeybinding)) {
+			this.startNativeInsertCapture(key, resolveNativeKeybinding, { supersedesTyped: false });
 			this.syncReadonlyModeAfterNativeKey();
 			return;
 		}
 		const keyPlan = key === undefined ? null : this.vim.handleKey(key, { whenEvaluator });
 		if (keyPlan === null) {
+			this.startNativeInsertCapture(key, resolveNativeKeybinding, { supersedesTyped: false });
 			this.syncReadonlyModeAfterNativeKey();
 			return;
+		}
+		if (keyPlan.passthrough) {
+			this.startNativeInsertCapture(key, resolveNativeKeybinding, { supersedesTyped: true });
 		}
 
 		// A passthrough key (insert-mode typing/backspace) is handled natively by
@@ -601,12 +617,59 @@ export class VimController extends Disposable {
 		return this.whenExpressionCache.get(when);
 	}
 
-	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent): boolean {
-		const target = event.target;
+	// Insert/replace mode: watch what VSCode does for a key Vim lets it handle
+	// ([NativeInsertEditCapture]); [finishNativeInsertCapture] records it. Only
+	// when Vim has no queued work, so every edit in the window is the key's (a
+	// queued Vim job would edit the buffer mid-capture and abandon it anyway).
+	private startNativeInsertCapture(
+		key: string | undefined,
+		resolveNativeKeybinding: () => ResolutionResult,
+		{ supersedesTyped }: { supersedesTyped: boolean }
+	): void {
+		const mode = this.vim.mode;
+		if ((mode !== 'insert' && mode !== 'replace') || !this.asyncKeyQueue.isIdle() || this.keybindingService.inChordMode) {
+			return;
+		}
+		const resolved = resolveNativeKeybinding();
+		if (resolved.kind === ResultKind.MoreChordsNeeded || !this.editor.hasModel()) {
+			return;
+		}
+		this.nativeInsertCapture = NativeInsertEditCapture.open(this.editor, {
+			// Display only (macro status, `"qp`): an unnamed key (IME, AltGr) shows generically.
+			key: key ?? 'native',
+			commandId: resolved.kind === ResultKind.KbFound ? resolved.commandId ?? undefined : undefined,
+			supersedesTyped,
+			isVimEditing: () => this.vimEditor.isExecutingNativeCommand(),
+		});
+	}
+
+	private finishNativeInsertCapture(): void {
+		const capture = this.nativeInsertCapture;
+		if (capture === undefined) return;
+		this.nativeInsertCapture = undefined;
+		const result = capture.finish();
+		capture.dispose();
+		if (result === undefined) return;
+		// It must land after the key's own plan and before the next key's
+		// ([Vim.recordNativeInsertEdit]): directly when that plan already ran
+		// (the usual case, which also keeps the queue idle for the next capture),
+		// otherwise queued like a key.
+		const record = () => {
+			this.vim.recordNativeInsertEdit(result.key, result.edit, { supersedesTyped: result.supersedesTyped });
+			this.syncStatus();
+		};
+		if (this.asyncKeyQueue.isIdle()) {
+			record();
+		} else {
+			void this.asyncKeyQueue.enqueue(async () => record()).then(undefined, () => this.syncStatus());
+		}
+	}
+
+	private shouldLetNativeKeybindingHandle(event: IKeyboardEvent, resolveNativeKeybinding: () => ResolutionResult): boolean {
 		if (this.keybindingService.inChordMode) {
 			return true;
 		}
-		const result = this.keybindingService.softDispatch(event, target);
+		const result = resolveNativeKeybinding();
 		if (result.kind === ResultKind.NoMatchingKb) {
 			return false;
 		}
@@ -940,11 +1003,19 @@ export class VimController extends Disposable {
 
 class AsyncKeyQueue {
 	private tail: Promise<void> = Promise.resolve();
+	private pending = 0;
 
 	enqueue(task: () => Promise<void>): Promise<void> {
+		this.pending++;
 		const next = this.tail.then(task, task);
-		this.tail = next.then(undefined, () => undefined);
+		this.tail = next.then(undefined, () => undefined).finally(() => {
+			this.pending--;
+		});
 		return next;
+	}
+
+	isIdle(): boolean {
+		return this.pending === 0;
 	}
 }
 
