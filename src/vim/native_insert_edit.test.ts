@@ -100,6 +100,15 @@ describe("native insert edits in recordings", () => {
     expect(editor.getText()).toBe("a\nexpect()\nexpect()");
   });
 
+  it("dot-repeats the last change of a macro that contains a native edit", () => {
+    const editor = new InMemoryVimEditor("a");
+    const vim = new Vim(editor);
+    runKeys(vim, ["q", "q", "o", "e", "x", "p", "e"]);
+    nativeKey(editor, vim, "tab", snippet);
+    runKeys(vim, ["<escape>", "q", "@", "q", "."]);
+    expect(editor.getText()).toBe("a\nexpect()\nexpect()\nexpect()");
+  });
+
   it("replaces the typed entry of a passthrough key with its native effect", async () => {
     const editor = new InMemoryVimEditor("");
     const vim = new Vim(editor);

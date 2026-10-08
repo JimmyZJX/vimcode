@@ -1749,7 +1749,7 @@ export class Vim {
     context: VimExecutionContext | undefined
   ): QueuedRunResult<void> {
     if (entry.kind === "edit") {
-      this.replayInsertEdit(entry.edit);
+      this.replayInsertEdit(entry.key, entry.edit);
       return;
     }
     // Replayed keys use ordinary plans, but with native passthrough suppressed:
@@ -1770,10 +1770,15 @@ export class Vim {
 
   // Apply a recorded native insert-mode effect ([RecordedKey] "edit"). It
   // belongs to the insert session the preceding replayed keys opened; if they
-  // did not (an aborted replay), there is nothing to apply it to.
-  private replayInsertEdit(edit: InsertEdit): void {
+  // did not (an aborted replay), there is nothing to apply it to. Like a
+  // replayed typed key ([applyInsertTypedKey]), a macro replay records it for
+  // dot-repeat, so `.` after `@q` repeats the macro's last change in full.
+  private replayInsertEdit(key: string, edit: InsertEdit): void {
     if (this.modeState !== "insert" && this.modeState !== "replace") return;
     applyInsertEdit(this.editor, edit, this.insertEditOptions());
+    if (!this.globalState.repeat.isReplaying()) {
+      this.globalState.repeat.recordInsertEdit(key, edit, { supersedesTyped: false });
+    }
     this.insertRepeatChunk.applyEdit(edit);
     this.modelState.changeList.record(this.editor, { insertMode: true });
   }
