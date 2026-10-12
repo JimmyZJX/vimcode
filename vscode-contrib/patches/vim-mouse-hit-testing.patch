@@ -81,7 +81,7 @@ index 8256f6b..23159ad 100644
  						: new Position(lineNumber, curr.column)
  				);
 diff --git a/src/vs/editor/browser/coreCommands.ts b/src/vs/editor/browser/coreCommands.ts
-index 9331eea..f29bc13 100644
+index 9331eea48ff..9b7cccedb66 100644
 --- a/src/vs/editor/browser/coreCommands.ts
 +++ b/src/vs/editor/browser/coreCommands.ts
 @@ -374,6 +374,8 @@ export namespace CoreNavigationCommands {
@@ -102,11 +102,20 @@ index 9331eea..f29bc13 100644
  				]
  			);
  			if (cursorStateChanged && args.revealType !== NavigationCommandRevealType.None) {
+@@ -1646,7 +1648,7 @@ export namespace CoreNavigationCommands {
+ 				args.source,
+ 				CursorChangeReason.Explicit,
+ 				[
+-					CursorMoveCommands.word(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position)
++					CursorMoveCommands.word(viewModel, viewModel.getPrimaryCursorState(), this._inSelectionMode, args.position, args.vimCharacterSelect)
+ 				]
+ 			);
+ 			if (args.revealType !== NavigationCommandRevealType.None) {
 diff --git a/src/vs/editor/browser/view/viewController.ts b/src/vs/editor/browser/view/viewController.ts
-index cd312c9..fa1d82d 100644
+index 5acc299c8ef..62821d39e12 100644
 --- a/src/vs/editor/browser/view/viewController.ts
 +++ b/src/vs/editor/browser/view/viewController.ts
-@@ -23,6 +23,8 @@ export interface IMouseDispatchData {
+@@ -24,6 +24,8 @@ export interface IMouseDispatchData {
  	 * Desired mouse column (e.g. when position.column gets clamped to text length -- clicking after text on a line).
  	 */
  	mouseColumn: number;
@@ -115,7 +124,16 @@ index cd312c9..fa1d82d 100644
  	revealType: NavigationCommandRevealType;
  	startedOnLineNumbers: boolean;
  
-@@ -275,32 +277,33 @@ export class ViewController {
+@@ -262,7 +264,7 @@ export class ViewController {
+ 					this._lastCursorWordSelect(data.position, data.revealType);
+ 				} else {
+ 					if (data.inSelectionMode) {
+-						this._wordSelectDrag(data.position, data.revealType);
++						this._wordSelectDrag(data.position, data.revealType, data.vimCharacterSelect);
+ 					} else {
+ 						let selection: Selection | undefined;
+ 						if (options.get(EditorOption.doubleClickSelectsBlock)) {
+@@ -300,32 +302,33 @@ export class ViewController {
  						if (columnSelection) {
  							this._columnSelect(data.position, data.mouseColumn, true);
  						} else {
@@ -156,11 +174,35 @@ index cd312c9..fa1d82d 100644
  	}
  
  	private _columnSelect(viewPosition: Position, mouseColumn: number, doColumnSelect: boolean): void {
+@@ -357,8 +360,8 @@ export class ViewController {
+ 		CoreNavigationCommands.WordSelect.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType));
+ 	}
+ 
+-	private _wordSelectDrag(viewPosition: Position, revealType: NavigationCommandRevealType): void {
+-		CoreNavigationCommands.WordSelectDrag.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType));
++	private _wordSelectDrag(viewPosition: Position, revealType: NavigationCommandRevealType, vimCharacterSelect?: boolean): void {
++		CoreNavigationCommands.WordSelectDrag.runCoreEditorCommand(this.viewModel, this._usualArgs(viewPosition, revealType, vimCharacterSelect));
+ 	}
+ 
+ 	private _lastCursorWordSelect(viewPosition: Position, revealType: NavigationCommandRevealType): void {
 diff --git a/src/vs/editor/common/cursor/cursorMoveCommands.ts b/src/vs/editor/common/cursor/cursorMoveCommands.ts
-index a447e3a..8c03d41 100644
+index d3183d48af5..3371f18ada5 100644
 --- a/src/vs/editor/common/cursor/cursorMoveCommands.ts
 +++ b/src/vs/editor/common/cursor/cursorMoveCommands.ts
-@@ -252,7 +252,7 @@ export class CursorMoveCommands {
+@@ -233,8 +233,10 @@ export class CursorMoveCommands {
+ 		}
+ 	}
+ 
+-	public static word(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition): PartialCursorState {
+-		const position = viewModel.model.validatePosition(_position);
++	public static word(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, vimCharacterSelect?: boolean): PartialCursorState {
++		const position = inSelectionMode && vimCharacterSelect
++			? this._vimWordSelectPosition(viewModel.model, cursor.modelState, _position)
++			: viewModel.model.validatePosition(_position);
+ 		return CursorState.fromModelState(WordOperations.word(viewModel.cursorConfig, viewModel.model, cursor.modelState, inSelectionMode, position));
+ 	}
+ 
+@@ -252,14 +254,17 @@ export class CursorMoveCommands {
  		));
  	}
  
@@ -168,8 +210,9 @@ index a447e3a..8c03d41 100644
 +	public static moveTo(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, _viewPosition: IPosition | undefined, vimCharacterSelect?: boolean): PartialCursorState {
  		if (inSelectionMode) {
  			if (cursor.modelState.selectionStartKind === SelectionStartKind.Word) {
- 				return this.word(viewModel, cursor, inSelectionMode, _position);
-@@ -260,6 +260,9 @@ export class CursorMoveCommands {
+-				return this.word(viewModel, cursor, inSelectionMode, _position);
++				return this.word(viewModel, cursor, inSelectionMode, _position, vimCharacterSelect);
+ 			}
  			if (cursor.modelState.selectionStartKind === SelectionStartKind.Line) {
  				return this.line(viewModel, cursor, inSelectionMode, _position, _viewPosition);
  			}
@@ -179,7 +222,7 @@ index a447e3a..8c03d41 100644
  		}
  		const position = viewModel.model.validatePosition(_position);
  		const viewPosition = (
-@@ -270,6 +273,62 @@ export class CursorMoveCommands {
+@@ -270,6 +275,77 @@ export class CursorMoveCommands {
  		return CursorState.fromViewState(cursor.viewState.move(inSelectionMode, viewPosition.lineNumber, viewPosition.column, 0));
  	}
  
@@ -217,6 +260,21 @@ index a447e3a..8c03d41 100644
 +			return position;
 +		}
 +		return MoveOperations.rightPosition(model, position.lineNumber, position.column);
++	}
++
++	/**
++	 * vimcode: the position a word-selection drag extends to. Hit testing floors
++	 * the pointer to the start of its cell, which for the first cell of a word is
++	 * the boundary before the word, so a forward drag would stop short of the word
++	 * under the pointer. Extending forward, use the far side of the cell instead,
++	 * so the word containing the pointed-at cell is selected, like in Vim.
++	 */
++	private static _vimWordSelectPosition(model: ICursorSimpleModel, modelState: SingleCursorState, _position: IPosition): Position {
++		const position = this._vimCharacterCellStart(model, model.validatePosition(_position));
++		if (position.isBeforeOrEqual(modelState.selectionStart.getStartPosition())) {
++			return position;
++		}
++		return this._vimCharacterCellEnd(model, position);
 +	}
 +
 +	/**

@@ -768,12 +768,19 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			const head = selection.cursor ?? selectionHead(selection);
 			const modelPosition = new VSCodePosition(head.row + 1, head.column + 1);
 			const viewPosition = converter.convertModelPositionToViewPosition(modelPosition, PositionAffinity.None, false, direction === 'down');
+			// The head's display row, for converting between the two goal kinds: a
+			// model column is a view column offset from the row's first character.
+			const rowMinColumn = viewModel.getLineMinColumn(viewPosition.lineNumber);
+			const row: DisplayRow = {
+				minColumn: rowMinColumn,
+				startModelColumn: converter.convertViewPositionToModelPosition(new VSCodePosition(viewPosition.lineNumber, rowMinColumn)).column,
+			};
 			let goal: VimSelectionGoal;
 			let targetPosition: VimPosition;
 			if (displayLine) {
 				const rawViewLine = viewPosition.lineNumber + (direction === 'down' ? count : -count);
 				const viewLine = Math.max(1, Math.min(rawViewLine, viewModel.getLineCount()));
-				goal = viewGoalForSelection(selection.goal, viewPosition);
+				goal = viewGoalForSelection(selection.goal, viewPosition, row);
 				const viewColumn = normalViewLineColumnForGoal(goal, {
 					minColumn: viewModel.getLineMinColumn(viewLine),
 					maxColumn: viewModel.getLineMaxColumn(viewLine),
@@ -783,7 +790,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				const targetColumn = Math.max(1, Math.min(target.column, viewModel.model.getLineMaxColumn(targetLineNumber)));
 				targetPosition = { row: targetLineNumber - 1, column: targetColumn - 1 };
 			} else {
-				goal = modelGoalForSelection(selection.goal, head);
+				goal = modelGoalForSelection(selection.goal, head, row);
 				const targetLineNumber = foldedLineTarget(head.row + 1, direction, count, hiddenAreas, lineCount);
 				const maxColumn = Math.max(1, viewModel.model.getLineMaxColumn(targetLineNumber) - 1);
 				const targetColumn = modelColumnForGoal(goal, maxColumn);
@@ -1238,7 +1245,17 @@ function inclusiveVisualAnchor(
 		: selection.anchor;
 }
 
-function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: VSCodePosition): VimSelectionGoal {
+// A display (view) line holding the head: its first view column and the
+// 1-based model column of the character there.
+type DisplayRow = { minColumn: number; startModelColumn: number };
+
+// Vim keeps one horizontal goal, `curswant`: a column within the buffer line.
+// `gj`/`gk` move it by whole screen rows, keeping its screen column
+// (`nv_screengo`), so a `j`/`k` after `gj` aims for the column the cursor is at
+// now, not the one before `gj`. The two goal kinds are that goal measured from
+// the line start (model) or from the head's display row (view); converting
+// between them goes through the head's row.
+function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: VSCodePosition, row: DisplayRow): VimSelectionGoal {
 	if (goal?.type === 'endOfLine') {
 		return goal;
 	}
@@ -1246,17 +1263,17 @@ function viewGoalForSelection(goal: VimSelectionGoal | undefined, viewPosition: 
 		return goal;
 	}
 	if (goal?.type === 'modelColumn') {
-		return { type: 'viewColumn', column: goal.column + 1 };
+		return { type: 'viewColumn', column: Math.max(row.minColumn, row.minColumn + goal.column + 1 - row.startModelColumn) };
 	}
 	return { type: 'viewColumn', column: viewPosition.column };
 }
 
-function modelGoalForSelection(goal: VimSelectionGoal | undefined, head: VimPosition): VimSelectionGoal {
+function modelGoalForSelection(goal: VimSelectionGoal | undefined, head: VimPosition, row: DisplayRow): VimSelectionGoal {
 	if (goal?.type === 'endOfLine' || goal?.type === 'modelColumn') {
 		return goal;
 	}
 	if (goal?.type === 'viewColumn') {
-		return { type: 'modelColumn', column: Math.max(0, goal.column - 1) };
+		return { type: 'modelColumn', column: Math.max(0, row.startModelColumn - 1 + goal.column - row.minColumn) };
 	}
 	return { type: 'modelColumn', column: head.column };
 }
