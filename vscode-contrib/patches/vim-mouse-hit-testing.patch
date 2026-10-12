@@ -197,7 +197,7 @@ index d3183d48af5..3371f18ada5 100644
 -		const position = viewModel.model.validatePosition(_position);
 +	public static word(viewModel: IViewModel, cursor: CursorState, inSelectionMode: boolean, _position: IPosition, vimCharacterSelect?: boolean): PartialCursorState {
 +		const position = inSelectionMode && vimCharacterSelect
-+			? this._vimWordSelectPosition(viewModel.model, cursor.modelState, _position)
++			? this._vimWordSelectPosition(viewModel.model, cursor.modelState, viewModel.model.validatePosition(_position))
 +			: viewModel.model.validatePosition(_position);
  		return CursorState.fromModelState(WordOperations.word(viewModel.cursorConfig, viewModel.model, cursor.modelState, inSelectionMode, position));
  	}
@@ -269,12 +269,12 @@ index d3183d48af5..3371f18ada5 100644
 +	 * under the pointer. Extending forward, use the far side of the cell instead,
 +	 * so the word containing the pointed-at cell is selected, like in Vim.
 +	 */
-+	private static _vimWordSelectPosition(model: ICursorSimpleModel, modelState: SingleCursorState, _position: IPosition): Position {
-+		const position = this._vimCharacterCellStart(model, model.validatePosition(_position));
-+		if (position.isBeforeOrEqual(modelState.selectionStart.getStartPosition())) {
-+			return position;
++	private static _vimWordSelectPosition(model: ICursorSimpleModel, modelState: SingleCursorState, position: Position): Position {
++		const cell = this._vimCharacterCellStart(model, position);
++		if (cell.isBeforeOrEqual(modelState.selectionStart.getStartPosition())) {
++			return cell;
 +		}
-+		return this._vimCharacterCellEnd(model, position);
++		return this._vimCharacterCellEnd(model, cell);
 +	}
 +
 +	/**
