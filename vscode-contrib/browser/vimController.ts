@@ -40,6 +40,15 @@ const VimPendingContext = new RawContextKey<boolean>('vim.pending', false, true)
 const VimOperatorContext = new RawContextKey<string>('vim.operator', '', true);
 const VimChordContext = new RawContextKey<string>('vim.chord', '', true);
 
+/**
+ * The native Escape keybinding vimcode registers while Vim wants Esc (vim.contribution.ts).
+ * It exists so that keybinding resolution picks it over Escape bindings ranked below it,
+ * such as the modal editor's `workbench.action.closeModalEditor`, which the modal
+ * dispatches in the capture phase before the editor sees the key. Vim still handles
+ * the keydown itself: [shouldLetNativeKeybindingHandle] never yields to it.
+ */
+export const VimEscapeCommandId = 'vimcode.escape';
+
 const VimNativePassthroughCommands = new Set([
 	'selectNextSuggestion',
 	'selectPrevSuggestion',
@@ -680,6 +689,10 @@ export class VimController extends Disposable {
 			return false;
 		}
 		if (result.commandId === null || result.isBubble) {
+			return false;
+		}
+		if (result.commandId === VimEscapeCommandId) {
+			// Vim-aware, but it stands for Vim's own Esc ([VimEscapeCommandId]).
 			return false;
 		}
 		return this.hasMatchingUserOrExtensionKeybinding(event, result.commandId, false);

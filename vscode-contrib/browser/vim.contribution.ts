@@ -15,9 +15,10 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICodeEditor } from '../../../browser/editorBrowser.js';
 import { EditorContributionInstantiation, ServicesAccessor, registerEditorContribution } from '../../../browser/editorExtensions.js';
 import { ICodeEditorService } from '../../../browser/services/codeEditorService.js';
+import { EditorContextKeys } from '../../../common/editorContextKeys.js';
 import { IEditorContribution } from '../../../common/editorCommon.js';
 import { defaultVimHandleKeys } from '../common/config.js';
-import { VimController } from './vimController.js';
+import { VimController, VimEscapeCommandId } from './vimController.js';
 
 // List/tree widgets evaluate keybinding when-clauses against their own
 // context scope, which chains to the workbench root — never to any editor's
@@ -175,6 +176,43 @@ function registerVimNotebookKeybindings(): void {
 registerVimListKeybindings();
 registerVimCompletionKeybindings();
 registerVimNotebookKeybindings();
+
+// Esc while Vim wants it: any mode but (Helix) normal, or a pending command (`vim.mode`
+// then ends in `+`). The modal editor part dispatches Escape in the capture phase,
+// before the editor sees the key, whenever it resolves to
+// `workbench.action.closeModalEditor` (EditorContrib - 1 while an editor has focus), so
+// Esc in any modal editor (settings.json opened modal, say) closed it instead of leaving
+// insert mode or cancelling `d`. Ranking above it makes Escape
+// resolve here; Vim then handles the keydown as usual (vimController
+// shouldLetNativeKeybindingHandle does not yield to this command). The command itself
+// runs only if the key reaches the workbench dispatcher anyway, and gives Vim the Esc.
+// Normal mode with nothing pending leaves Escape to the modal and everything else.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: VimEscapeCommandId,
+			title: nls.localize2('vim.escape', "Escape to Vim Normal Mode"),
+			category: nls.localize2('vim.category', "Vim"),
+			f1: false,
+			keybinding: {
+				primary: KeyCode.Escape,
+				weight: KeybindingWeight.EditorContrib,
+				when: ContextKeyExpr.and(
+					VimCodeEnabledContext,
+					EditorContextKeys.editorTextFocus,
+					ContextKeyExpr.has('vim.active'),
+					ContextKeyExpr.notEquals('vim.mode', 'Normal'),
+					ContextKeyExpr.notEquals('vim.mode', 'HelixNormal'),
+				),
+			},
+		});
+	}
+
+	run(accessor: ServicesAccessor): Promise<void> | undefined {
+		const editor = accessor.get(ICodeEditorService).getFocusedCodeEditor();
+		return editor?.getContribution<VimController>(VimController.ID)?.runRemapCommand({ after: ['<Esc>'] }, 'vim.remap');
+	}
+});
 
 // A VSCodeVim `vim.statusBarColors.*` entry: a background color string, or a
 // `[background, foreground]` pair.
