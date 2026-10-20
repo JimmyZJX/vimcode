@@ -119,6 +119,12 @@ export class KeyExecutor {
    * the editor only after earlier effects have finished.
    */
   private readonly effectQueue: Array<() => QueuedRunResult<void>> = [];
+  /** Frames opened by [runNested], innermost last, and how many external
+      commands each one's effects are waiting on ([awaitExternal]). */
+  private readonly nestedFrames: { awaitingExternal: number; done: Promise<void> }[] = [];
+  private baseAwaitingExternal = 0;
+  /** Nonzero while [awaitExternal] is starting a command (inside [start]). */
+  private startingExternal = 0;
   /** True while [drainEffects] owns the queue (including across an async wait). */
   private draining = false;
   /** Resolves when the queue drains; replaced whenever draining (re)starts. */
@@ -249,6 +255,124 @@ export class KeyExecutor {
     } finally {
       this.effectQueue.unshift(...suspended);
     }
+  }
+
+  /** Whether an effect is waiting on an external command ([awaitExternal]);
+      a re-entrant call arriving now must go through [runNested]. */
+  isAwaitingExternal(): boolean {
+    return this.baseAwaitingExternal > 0 || this.nestedFrames.some(frame => frame.awaitingExternal > 0);
+  }
+
+  /** Start an external (native) command for an effect, e.g. one in a remap's
+      [commands], and wait for it. The command may call back into Vim
+      ([runNested]) while it runs — even synchronously from [start], which is
+      why this marks the wait before starting it. A returned promise resolves
+      only once the command has settled *and* every frame nested above this
+      one has closed, so the waiting effect never resumes underneath a nested
+      frame. */
+  awaitExternal(start: () => void | PromiseLike<void>): QueuedRunResult<void> {
+    const frame = this.nestedFrames[this.nestedFrames.length - 1];
+    const level = this.nestedFrames.length;
+    const adjust = (delta: number) => {
+      if (frame === undefined) this.baseAwaitingExternal += delta;
+      else frame.awaitingExternal += delta;
+    };
+    const framesAboveClosed = (): Promise<void> => {
+      const top = this.nestedFrames[this.nestedFrames.length - 1];
+      return this.nestedFrames.length > level && top !== undefined
+        ? top.done.then(framesAboveClosed)
+        : Promise.resolve();
+    };
+    adjust(1);
+    let command: void | PromiseLike<void>;
+    this.startingExternal++;
+    try {
+      command = start();
+    } catch (error) {
+      adjust(-1);
+      throw error;
+    } finally {
+      this.startingExternal--;
+    }
+    if (!isPromiseLike(command)) {
+      adjust(-1);
+      return;
+    }
+    return Promise.resolve(command).then(
+      () => framesAboveClosed().finally(() => adjust(-1)),
+      (error: unknown) => framesAboveClosed().finally(() => adjust(-1)).then(() => {
+        throw error;
+      })
+    );
+  }
+
+  /** Run [run] as a nested frame while an effect is waiting on an external
+      command ([awaitExternal]) that called back into Vim (a remap's
+      [commands] running `vimcode.remap`, directly or via `runCommands`).
+      Effects queued behind the waiting one are set aside, the nested work
+      drains on its own (asynchronous effects allowed) and is awaited, and the
+      set-aside effects then resume behind the still-waiting effect. Queueing
+      the nested work normally would deadlock: it would wait for the very
+      command that is waiting for it. Unlike [runReentrant], the nested work
+      may be asynchronous.
+
+      Frames form a stack: a new one opens only on top of a frame that is
+      waiting on a command. A call that arrives while the top frame is busy
+      instead (an unrelated `vim.remap` from a keybinding, say, which cannot
+      be told apart from a callback) waits for that frame to close first. */
+  runNested(run: () => QueuedRunResult<void>): QueuedRunResult<void> {
+    // A callback made synchronously while the command is being started: open
+    // the frame once the starting effect has returned, so the frame's swap is
+    // not visible to code still running in the waiting frame (e.g. its
+    // [whenIdle]).
+    if (this.startingExternal > 0) return Promise.resolve().then(() => this.runNested(run));
+    const top = this.nestedFrames[this.nestedFrames.length - 1];
+    const topAwaiting = top === undefined ? this.baseAwaitingExternal > 0 : top.awaitingExternal > 0;
+    if (!topAwaiting) {
+      if (top !== undefined) return top.done.then(() => this.runNested(run));
+      return run();
+    }
+    let closeFrame!: () => void;
+    const frame = { awaitingExternal: 0, done: new Promise<void>(resolve => { closeFrame = resolve; }) };
+    this.nestedFrames.push(frame);
+    const suspended = {
+      queue: this.effectQueue.splice(0),
+      draining: this.draining,
+      idle: this.idle,
+      resolveIdle: this.resolveIdle,
+      rejectIdle: this.rejectIdle,
+    };
+    this.draining = false;
+    this.idle = Promise.resolve();
+    this.resolveIdle = undefined;
+    this.rejectIdle = undefined;
+    const restore = () => {
+      this.effectQueue.length = 0;
+      this.effectQueue.push(...suspended.queue);
+      this.draining = suspended.draining;
+      this.idle = suspended.idle;
+      this.resolveIdle = suspended.resolveIdle;
+      this.rejectIdle = suspended.rejectIdle;
+      this.nestedFrames.pop();
+      closeFrame();
+    };
+    let result: QueuedRunResult<void>;
+    try {
+      result = run();
+    } catch (error) {
+      restore();
+      throw error;
+    }
+    if (!isPromiseLike(result) && !this.draining) {
+      restore();
+      return;
+    }
+    return Promise.resolve(result)
+      .then(() => this.idle)
+      .then(restore, (error: unknown) => {
+        restore();
+        throw error;
+      });
   }
 
   /** Drain effects queued by a deliberately re-entrant command such as

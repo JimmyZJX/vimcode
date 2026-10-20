@@ -623,10 +623,35 @@ export class Vim {
     return null;
   }
 
+  /** Whether a native command started by a remap's [commands] is running;
+      the host must then run `vimcode.remap` calls immediately rather than
+      queue them behind the key job that is waiting for that command. */
+  isAwaitingMappedCommand(): boolean {
+    return this.keyExecutor.isAwaitingExternal();
+  }
+
   executeExternalRemap(
     mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] },
     clipboard?: VimSystemClipboard
   ): QueuedRunResult<void> {
+    // A callback from a native command that a remap's [commands] is awaiting
+    // (a nested `vimcode.remap` entry, or one inside `runCommands`): the key
+    // executor is blocked on that command, so run as a nested frame. An
+    // unrelated call arriving meanwhile looks the same and is nested too.
+    if (this.isAwaitingMappedCommand()) {
+      return this.keyExecutor.runNested(() => this.executeExternalRemapNow(mapping, clipboard));
+    }
+    return this.executeExternalRemapNow(mapping, clipboard);
+  }
+
+  private executeExternalRemapNow(
+    mapping: { after?: readonly string[]; commands?: readonly VimCommandMapping[] },
+    clipboard: VimSystemClipboard | undefined
+  ): QueuedRunResult<void> {
+    // Selection events are suppressed while a native command runs, so a
+    // callback from one (e.g. after a fold in `runCommands`) may find the
+    // selection changed behind Vim's back; act on what the user sees.
+    this.adoptExternalSelectionChange();
     if (clipboard === undefined) {
       for (const key of mapping.after ?? []) {
         this.routeKeyThroughExecutor(normalizeKey(key, this.configuration.leader), {
@@ -634,11 +659,22 @@ export class Vim {
           whenEvaluator: alwaysActiveWhenEvaluator,
         });
       }
-      for (const command of mapping.commands ?? []) this.executeMappedCommand(command);
-      this.ensureNormalModeForReadonlyDocument();
-      return;
+      return finishQueued(
+        this.executeMappedCommandsInOrder(mapping.commands ?? []),
+        () => this.ensureNormalModeForReadonlyDocument()
+      );
     }
     return this.executeExternalRemapWithClipboard(mapping, clipboard);
+  }
+
+  /** Run [commands] one after another, waiting for each asynchronous one. */
+  private executeMappedCommandsInOrder(commands: readonly VimCommandMapping[], index = 0): QueuedRunResult<void> {
+    for (let next = index; next < commands.length; next++) {
+      const result = this.executeMappedCommand(commands[next]);
+      if (result !== undefined && typeof (result as Promise<void>).then === "function") {
+        return Promise.resolve(result).then(() => this.executeMappedCommandsInOrder(commands, next + 1));
+      }
+    }
   }
 
   private async executeExternalRemapWithClipboard(
@@ -2198,11 +2234,23 @@ export class Vim {
 
     const commandText = typeof command === "string" ? command : command.command;
     if (!commandText.startsWith(":")) {
-      this.editor.executeNativeCommand(
+      // Like VSCode's `runCommands`: each command completes before the
+      // mapping's next step, which may depend on its effect (a fold needs the
+      // selection the previous `vimcode.remap` made). Callbacks into Vim from
+      // the command while it runs are nested ([executeExternalRemap]).
+      const settle = () => this.adoptExternalSelectionChange();
+      const result = this.keyExecutor.awaitExternal(() => this.editor.executeNativeCommand(
         commandText,
         typeof command === "string" ? [] : commandArgs(command),
-        { preserveVisualSelection: this.isVisualMode() }
-      );
+        { awaitCompletion: true, preserveVisualSelection: this.isVisualMode() }
+      ));
+      if (result !== undefined && typeof (result as Promise<void>).then === "function") {
+        return finishResult(Promise.resolve(result).then(settle, (error: unknown) => {
+          settle();
+          throw error;
+        }));
+      }
+      settle();
       return finishResult(undefined);
     }
 
@@ -2221,6 +2269,17 @@ export class Vim {
     if (registerToRead === undefined) return finishResult(run());
     const refresh = this.registers.refreshSystemClipboardRegister(registerToRead.registerName);
     return refresh === undefined ? finishResult(run()) : refresh.then(run).then(finish);
+  }
+
+  // Adopt a selection change Vim did not see (the host suppresses selection
+  // events while a native command runs), e.g. a fold collapsing the visual
+  // selection. Unchanged selections are left alone so Vim-only selection state
+  // (linewise/blockwise visual, goal columns) survives. Insert/replace mode
+  // lets the editor own the cursor, as for any native selection change.
+  private adoptExternalSelectionChange(): void {
+    if (this.modeState === "insert" || this.modeState === "replace") return;
+    if (this.editor.selectionsChangedExternally?.() !== true) return;
+    this.syncFromEditorState({ canonicalizeVisualSelection: true });
   }
 
   private collapseToFirstCursor(): void {

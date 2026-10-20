@@ -286,7 +286,7 @@ export class VimController extends Disposable {
 		if (remap === undefined) {
 			throw new Error(`${commandId} requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]`);
 		}
-		const run = this.asyncKeyQueue.enqueue(async () => {
+		const runRemap = async () => {
 			const clipboard = new ClipboardTransaction(this.vimClipboard);
 			await clipboard.with(async () => {
 				await this.vim.executeExternalRemap(remap, clipboard);
@@ -297,7 +297,12 @@ export class VimController extends Disposable {
 			} else {
 				this.syncStatus();
 			}
-		});
+		};
+		// A native command from a remap's `commands` (a nested `vimcode.remap`,
+		// or one run by `runCommands`) is calling back while that remap's key
+		// job holds the queue waiting for it: run now, nested in that job
+		// ([Vim.executeExternalRemap]), instead of queueing behind it.
+		const run = this.vim.isAwaitingMappedCommand() ? runRemap() : this.asyncKeyQueue.enqueue(runRemap);
 		if (strict) {
 			return run.then(undefined, (error) => {
 				this.syncStatus();

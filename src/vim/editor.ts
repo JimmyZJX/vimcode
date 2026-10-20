@@ -51,6 +51,9 @@ export type ApplyEditsOptions = {
 };
 
 export type NativeCommandOptions = {
+  /** Restore Vim's visual selection once the command completes, unless the
+      command collapsed the selection (e.g. a fold): then Vim follows the
+      editor out of visual mode. */
   preserveVisualSelection?: boolean;
   syncSelectionAfter?: boolean;
   /** Selections to apply once the (asynchronous) native command completes —
@@ -77,6 +80,11 @@ export type NativeCommandOptions = {
       the callback's own work is done too. (The in-memory test host runs
       everything synchronously and does not await.) */
   onResolved?: () => void | Promise<void>;
+  /** Return the command's completion promise (it is not returned by
+      default) so the caller can sequence work after it. Used for the native
+      commands of a remap's [commands] list, which run one at a time like
+      VSCode's [runCommands]. */
+  awaitCompletion?: boolean;
 };
 
 export type VimUndoTransaction = {
@@ -196,6 +204,10 @@ export interface VimEditorCapabilities {
     options?: NativeCommandOptions
   ): void | Promise<void>;
   isExecutingNativeCommand?(): boolean;
+  /** Whether the editor's selections changed since Vim last set them, by
+      something Vim did not see (e.g. a native command, during which the
+      host suppresses selection events). Hosts that cannot tell may omit it. */
+  selectionsChangedExternally?(): boolean;
   revealPrimaryCursorIfOutsideViewport(): void;
   revealRange(range: TextRange): void;
   revealCurrentLine(target: HostRevealTarget): void;
@@ -350,6 +362,12 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
       the key pipeline while the save runs). */
   public readonly backgroundSyncNativeCommands: string[] = [];
   private inNativeCommandCallback = false;
+  /** Test hooks: native command implementations. A handler may return a
+      promise to model an asynchronous command; it is returned to callers that
+      pass [awaitCompletion]. */
+  public readonly nativeCommandHandlers = new Map<string, (args: readonly unknown[]) => void | Promise<void>>();
+  /** The selections as Vim last set them, for [selectionsChangedExternally]. */
+  private selectionsSetByVim: VimSelection[] = [];
 
   constructor(text = "") {
     this.lines = text.split("\n");
@@ -447,6 +465,7 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
           };
       }
     });
+    this.selectionsSetByVim = this.selections;
     if (this.pendingUndoSnapshot !== undefined) {
       this.pendingUndoSnapshot = {
         ...this.pendingUndoSnapshot,
@@ -775,8 +794,12 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
     command: string,
     args: readonly unknown[] = [],
     options: NativeCommandOptions = {}
-  ): void {
+  ): void | Promise<void> {
     this.nativeCommands.push({ command, args });
+    const handled = this.nativeCommandHandlers.get(command)?.(args);
+    if (handled !== undefined) {
+      return options.awaitCompletion === true ? handled : void handled.then(undefined, () => undefined);
+    }
     if (this.inNativeCommandCallback) this.chainedNativeCommands.push(command);
     if (options.backgroundSync === true) this.backgroundSyncNativeCommands.push(command);
     if (options.selectionsAfter !== undefined) {
@@ -795,6 +818,18 @@ export class InMemoryVimEditor implements VimEditorCapabilities {
         this.inNativeCommandCallback = wasInCallback;
       }
     }
+  }
+
+  /** Test hook: change the selections the way a native command or mouse
+      would, without Vim seeing it. */
+  setSelectionsExternally(selections: readonly VimSelection[]): void {
+    const setByVim = this.selectionsSetByVim;
+    this.setSelections(selections);
+    this.selectionsSetByVim = setByVim;
+  }
+
+  selectionsChangedExternally(): boolean {
+    return !selectionsEqual(this.selections, this.selectionsSetByVim);
   }
 
   revealPrimaryCursorIfOutsideViewport(): void {}

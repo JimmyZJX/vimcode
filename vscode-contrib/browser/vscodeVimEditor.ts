@@ -595,7 +595,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 				await options.onResolved?.();
 			} finally {
 				this.nativeCommandInProgressDepth = Math.max(0, this.nativeCommandInProgressDepth - 1);
-				if (selectionsToRestore !== undefined) {
+				if (selectionsToRestore !== undefined && !(this.editor.getSelections() ?? []).every(selection => selection.isEmpty())) {
 					this.setSelections(selectionsToRestore);
 				}
 				if (options.selectionsAfter !== undefined) {
@@ -610,7 +610,7 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 			void commandPromise.then(() => this.onBackgroundNativeCommandSync?.(), () => undefined);
 		}
 		void commandPromise.then(undefined, () => undefined);
-		return syncSelectionAfter ? commandPromise : undefined;
+		return syncSelectionAfter || options.awaitCompletion === true ? commandPromise : undefined;
 	}
 
 	async waitForNativeSelectionSync(): Promise<boolean> {
@@ -620,6 +620,17 @@ export class VSCodeVimEditor implements VimEditorCapabilities {
 		const pending = this.pendingNativeSelectionSyncs.splice(0);
 		await Promise.all(pending);
 		return true;
+	}
+
+	selectionsChangedExternally(): boolean {
+		const lastSetSelections = this.lastSetVSCodeSelections;
+		const lastSetVimSelections = this.lastSetVimSelections;
+		if (lastSetSelections === undefined || lastSetVimSelections === undefined) {
+			return true;
+		}
+		const selections = this.editor.getSelections() ?? [];
+		return selections.length !== lastSetSelections.length
+			|| !selections.every((selection, index) => this.selectionMatchesLastSet(selection, lastSetSelections[index], lastSetVimSelections[index]));
 	}
 
 	isExecutingNativeCommand(): boolean {

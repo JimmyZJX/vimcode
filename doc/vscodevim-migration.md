@@ -83,7 +83,12 @@ task queue). A strict `vimcode.remap` variant also exists for callers that
 target vimcode specifically: it raises when Vim is not enabled (and is not
 defined until Vim has been enabled once, so its presence also distinguishes
 vimcode from VSCodeVim) and propagates remap execution errors instead of
-swallowing them like `vim.remap` does. vimcode also provides
+swallowing them like `vim.remap` does. A mapping's `commands` run one at a
+time, like VS Code's `runCommands`: each native command completes before the
+next step, so a list such as `vimcode.remap` (select), a native command that
+acts on the selection, then `vimcode.remap` (`<escape>`) works, directly or
+wrapped in `runCommands`. Selection changes those commands make (a fold
+collapsing the selection) are adopted before the next step. vimcode also provides
 `vim.insertModeCtrlVAsPaste` (default true) to opt into VS Code's native
 Insert-mode `ctrl-v` paste without changing Visual Block `ctrl-v`.
 `vim.highlightedyank.{enable,color,textColor,duration}` match VSCodeVim
