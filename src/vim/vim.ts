@@ -2238,6 +2238,15 @@ export class Vim {
       // mapping's next step, which may depend on its effect (a fold needs the
       // selection the previous `vimcode.remap` made). Callbacks into Vim from
       // the command while it runs are nested ([executeExternalRemap]).
+      //
+      // This holds the key pipeline even for the last command in the list,
+      // e.g. a `workbench.action.files.save` mapping waits out format-on-save.
+      // Not waiting would reorder: keys typed right after the mapping are
+      // already queued, so the command's callbacks (a trailing
+      // `vimcode.remap <escape>`, everything inside a lone `runCommands`)
+      // would run after them, and later keys of a macro or recursive mapping
+      // depend on the command's effect too. A mapping that only saves can use
+      // `:w`, which saves in the background ([backgroundSync]).
       const settle = () => this.adoptExternalSelectionChange();
       const result = this.keyExecutor.awaitExternal(() => this.editor.executeNativeCommand(
         commandText,
