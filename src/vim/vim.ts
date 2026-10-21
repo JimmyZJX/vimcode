@@ -688,6 +688,15 @@ export class Vim {
     const undoTransaction = this.editor.beginUndoTransaction(this.editor.getSelections());
     try {
       await this.registers.withSystemClipboard(clipboard, async () => {
+        // The host calls a remap the way Vim calls a mapped native command,
+        // and the clipboard changes hands the same way ([executeMappedCommand]):
+        // take it over on entry (a native command run before it may have
+        // copied), hand it back on return (one run after it may paste). A
+        // `runCommands` sequencing `vimcode.remap` among native commands is
+        // never seen by [executeMappedCommand], so this is the only sync
+        // between its steps.
+        const synced = this.registers.syncSystemClipboard();
+        if (synced !== undefined) await synced;
         const previousContext = this.activeExecutionContext;
         this.activeExecutionContext = context;
         try {
@@ -701,6 +710,7 @@ export class Vim {
           this.ensureNormalModeForReadonlyDocument();
         } finally {
           this.activeExecutionContext = previousContext;
+          await this.registers.syncSystemClipboard();
         }
       });
     } catch (error) {

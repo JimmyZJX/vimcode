@@ -192,6 +192,12 @@ describe("remap commands with asynchronous native commands", () => {
       editor.nativeCommandHandlers.set("vimcode.remap", async args => {
         await vim.executeExternalRemap(args[0] as { after: string[] }, clipboard);
       });
+      editor.nativeCommandHandlers.set("runCommands", async args => {
+        for (const command of (args[0] as { commands: VimCommandMapping[] }).commands) {
+          const id = typeof command === "string" ? command : command.command;
+          await editor.executeNativeCommand(id, commandArgs(command), { awaitCompletion: true });
+        }
+      });
       // Like `workbench.action.terminal.paste`: reads the system clipboard.
       editor.nativeCommandHandlers.set("test.paste", async () => {
         await nextTask();
@@ -239,6 +245,40 @@ describe("remap commands with asynchronous native commands", () => {
 
       expect(editor.getText()).toBe("barfoo bar");
       expect(clipboard.system).toBe("bar");
+    });
+
+    // Inside `runCommands`, VSCode sequences the steps: only the nested
+    // remaps themselves can sync.
+    it("lets a native command in runCommands read what a nested remap yanked", async () => {
+      const { pasted, press } = setupClipboard({
+        commands: [{
+          command: "runCommands",
+          args: { commands: [{ command: "vimcode.remap", args: { after: ["y", "i", "w"] } }, "test.paste"] },
+        }],
+      });
+
+      await press();
+
+      expect(pasted).toEqual(["foo"]);
+    });
+
+    it("lets a nested remap in runCommands read what a native command copied", async () => {
+      const { editor, press } = setupClipboard({
+        commands: [{
+          command: "runCommands",
+          args: {
+            commands: [
+              { command: "vimcode.remap", args: { after: ["y", "i", "w"] } },
+              "test.copy",
+              { command: "vimcode.remap", args: { after: ["P"] } },
+            ],
+          },
+        }],
+      });
+
+      await press();
+
+      expect(editor.getText()).toBe("barfoo bar");
     });
   });
 
