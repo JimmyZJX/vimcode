@@ -155,6 +155,93 @@ describe("remap commands with asynchronous native commands", () => {
     expect(editor.getText()).toBe("foofoo bar");
   });
 
+  describe("syncs the clipboard transaction with the system clipboard around native commands", () => {
+    // Like the host's [ClipboardTransaction]: reads are cached and writes
+    // buffered until [sync] or the end of the key job.
+    class TransactionClipboard implements VimSystemClipboard {
+      private cached: string | undefined;
+      private pending: string | undefined;
+      constructor(public system: string) {}
+      async readText(): Promise<string> {
+        this.cached ??= this.system;
+        return this.cached;
+      }
+      writeText(text: string): void {
+        this.cached = text;
+        this.pending = text;
+      }
+      async sync(): Promise<void> {
+        this.cached = undefined;
+        if (this.pending !== undefined) this.system = this.pending;
+        this.pending = undefined;
+      }
+      flush(): void {
+        if (this.pending !== undefined) this.system = this.pending;
+        this.pending = undefined;
+      }
+    }
+
+    function setupClipboard(mapping: { after?: string[]; commands: VimCommandMapping[] }) {
+      const editor = new InMemoryVimEditor("foo bar");
+      const vim = new Vim(editor, {
+        useSystemClipboard: true,
+        normalModeKeyBindings: [{ before: ["z", "Y"], ...mapping }],
+      });
+      const clipboard = new TransactionClipboard("stale");
+      const pasted: string[] = [];
+      editor.nativeCommandHandlers.set("vimcode.remap", async args => {
+        await vim.executeExternalRemap(args[0] as { after: string[] }, clipboard);
+      });
+      // Like `workbench.action.terminal.paste`: reads the system clipboard.
+      editor.nativeCommandHandlers.set("test.paste", async () => {
+        await nextTask();
+        pasted.push(clipboard.system);
+      });
+      // Like `editor.action.clipboardCopyAction`: writes the system clipboard.
+      editor.nativeCommandHandlers.set("test.copy", async () => {
+        await nextTask();
+        clipboard.system = "bar";
+      });
+      const press = async () => {
+        for (const key of ["z", "Y"]) await vim.handleKey(key)?.run({ clipboard });
+        clipboard.flush();
+      };
+      return { editor, clipboard, pasted, press };
+    }
+
+    it("lets a native command read what a nested remap yanked", async () => {
+      const { pasted, press } = setupClipboard({
+        commands: [{ command: "vimcode.remap", args: { after: ["y", "i", "w"] } }, "test.paste"],
+      });
+
+      await press();
+
+      expect(pasted).toEqual(["foo"]);
+    });
+
+    it("lets a native command read what the mapping's own keys yanked", async () => {
+      const { pasted, press } = setupClipboard({ after: ["y", "i", "w"], commands: ["test.paste"] });
+
+      await press();
+
+      expect(pasted).toEqual(["foo"]);
+    });
+
+    it("lets later keys read what a native command copied", async () => {
+      // The yank makes the transaction's clipboard snapshot fresh; the copy
+      // must invalidate it.
+      const { editor, clipboard, press } = setupClipboard({
+        after: ["y", "i", "w"],
+        commands: ["test.copy", { command: "vimcode.remap", args: { after: ["P"] } }],
+      });
+
+      await press();
+
+      expect(editor.getText()).toBe("barfoo bar");
+      expect(clipboard.system).toBe("bar");
+    });
+  });
+
   it("runs a mapping's native command on each line of a ranged :normal", async () => {
     // `:normal` drains its keys' effects synchronously, so it cannot wait for
     // the mapping's asynchronous command.

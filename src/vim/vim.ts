@@ -2251,7 +2251,14 @@ export class Vim {
       // `:normal` and synchronous macro replay drain effects synchronously
       // ([KeyExecutor.drainReentrantEffects]) and cannot wait. There the
       // command is started and the keys carry on without it, as before
-      // mapped commands were awaited.
+      // mapped commands were awaited. Nor can it wait for the clipboard
+      // [syncSystemClipboard] below, so there the command may see a stale
+      // system clipboard.
+      //
+      // Around the command, the clipboard transaction syncs with the system
+      // clipboard: the command sees what earlier keys (or a nested remap
+      // sharing the transaction) yanked, and later keys see what the command
+      // copied.
       if (this.keyExecutor.isDrainingReentrantEffects()) {
         this.editor.executeNativeCommand(
           commandText,
@@ -2260,20 +2267,28 @@ export class Vim {
         );
         return finishResult(undefined);
       }
-      const settle = () => this.adoptExternalSelectionChange();
-      const result = this.keyExecutor.awaitExternal(() => this.editor.executeNativeCommand(
-        commandText,
-        typeof command === "string" ? [] : commandArgs(command),
-        { awaitCompletion: true, preserveVisualSelection: this.isVisualMode() }
-      ));
-      if (result !== undefined && typeof (result as Promise<void>).then === "function") {
-        return finishResult(Promise.resolve(result).then(settle, (error: unknown) => {
-          settle();
-          throw error;
-        }));
-      }
-      settle();
-      return finishResult(undefined);
+      const settle = (): void | Promise<void> => {
+        this.adoptExternalSelectionChange();
+        return this.registers.syncSystemClipboard();
+      };
+      const run = (): QueuedRunResult<void> => {
+        const result = this.keyExecutor.awaitExternal(() => this.editor.executeNativeCommand(
+          commandText,
+          typeof command === "string" ? [] : commandArgs(command),
+          { awaitCompletion: true, preserveVisualSelection: this.isVisualMode() }
+        ));
+        if (result !== undefined && typeof (result as Promise<void>).then === "function") {
+          return Promise.resolve(result).then(settle, async (error: unknown) => {
+            await settle();
+            throw error;
+          });
+        }
+        return settle();
+      };
+      // Synced before [awaitExternal]: the command has not started, so a
+      // remap arriving during the write is not one of its callbacks.
+      const synced = this.registers.syncSystemClipboard();
+      return finishResult(synced === undefined ? run() : synced.then(run));
     }
 
     const exCommand = commandText.slice(1);

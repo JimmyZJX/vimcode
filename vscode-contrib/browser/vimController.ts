@@ -736,7 +736,9 @@ export class VimController extends Disposable {
 	// flight (a callback from one of its mapped commands) joins that job's
 	// transaction instead of opening its own, so it sees the job's buffered
 	// writes (a nested `p` pastes what the job's keys just yanked) and its own
-	// writes are not overwritten when the job flushes.
+	// writes are not overwritten when the job flushes. Around each mapped
+	// native command the transaction syncs with the system clipboard
+	// ([ClipboardTransaction.sync]), so the command sees buffered writes.
 	private async withClipboardTransaction(
 		{ nested }: { nested: boolean },
 		task: (clipboard: ClipboardTransaction) => void | Promise<void>
@@ -1075,6 +1077,16 @@ class ClipboardTransaction implements VimSystemClipboard {
 	writeText(text: string): void {
 		this.contents = text;
 		this.pendingWrite = text;
+	}
+
+	sync(): void | Promise<void> {
+		this.contents = undefined;
+		const text = this.pendingWrite;
+		if (text === undefined) {
+			return;
+		}
+		this.pendingWrite = undefined;
+		return this.clipboard.writeTextAsync(text);
 	}
 
 	async with<T>(task: () => Promise<T>): Promise<T> {

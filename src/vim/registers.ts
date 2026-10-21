@@ -26,6 +26,12 @@ export type RegisterContent = {
 export interface VimSystemClipboard {
   readText(): Promise<string>;
   writeText(text: string): void;
+  /** Bring the system clipboard and this one into agreement around a native
+      command: write buffered text through (the command may read the system
+      clipboard, e.g. a terminal paste) and drop cached reads (it may write
+      it, e.g. a copy). Returns a promise only while a write is in flight. A
+      clipboard that neither buffers nor caches can omit it. */
+  sync?(): void | Promise<void>;
 }
 
 type LowercaseLetter =
@@ -73,6 +79,16 @@ export class Registers {
 
   setUseSystemClipboard(useSystemClipboard: boolean): void {
     this.useSystemClipboard = useSystemClipboard;
+  }
+
+  /** Hand the active clipboard to a native command, or take it back once the
+      command is done ([VimSystemClipboard.sync]). The command may change the
+      system clipboard, so the next system-clipboard register read refreshes. */
+  syncSystemClipboard(): void | Promise<void> {
+    const clipboard = this.activeClipboard;
+    if (clipboard === undefined) return;
+    this.activeClipboardFresh = false;
+    return clipboard.sync?.();
   }
 
   hasFreshActiveClipboard(): boolean {
