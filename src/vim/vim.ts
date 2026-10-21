@@ -2247,6 +2247,19 @@ export class Vim {
       // would run after them, and later keys of a macro or recursive mapping
       // depend on the command's effect too. A mapping that only saves can use
       // `:w`, which saves in the background ([backgroundSync]).
+      //
+      // `:normal` and synchronous macro replay drain effects synchronously
+      // ([KeyExecutor.drainReentrantEffects]) and cannot wait. There the
+      // command is started and the keys carry on without it, as before
+      // mapped commands were awaited.
+      if (this.keyExecutor.isDrainingReentrantEffects()) {
+        this.editor.executeNativeCommand(
+          commandText,
+          typeof command === "string" ? [] : commandArgs(command),
+          { preserveVisualSelection: this.isVisualMode() }
+        );
+        return finishResult(undefined);
+      }
       const settle = () => this.adoptExternalSelectionChange();
       const result = this.keyExecutor.awaitExternal(() => this.editor.executeNativeCommand(
         commandText,

@@ -176,6 +176,9 @@ export class VimController extends Disposable {
 	private readonly vimEditor: VSCodeVimEditor;
 	private readonly vim: Vim;
 	private readonly asyncKeyQueue = new AsyncKeyQueue();
+	// The clipboard transaction of the key job or remap in flight; see
+	// [withClipboardTransaction].
+	private activeClipboardTransaction: ClipboardTransaction | undefined;
 	private nativeInsertCapture: NativeInsertEditCapture | undefined;
 	private vimContexts: VimContextKeys | undefined = undefined;
 	private enabled = false;
@@ -286,11 +289,9 @@ export class VimController extends Disposable {
 		if (remap === undefined) {
 			throw new Error(`${commandId} requires args with an optional 'after': string[] and/or 'commands': ({ command: string; args?: unknown | unknown[] } | string)[]`);
 		}
+		const nested = this.vim.isAwaitingMappedCommand();
 		const runRemap = async () => {
-			const clipboard = new ClipboardTransaction(this.vimClipboard);
-			await clipboard.with(async () => {
-				await this.vim.executeExternalRemap(remap, clipboard);
-			});
+			await this.withClipboardTransaction({ nested }, clipboard => this.vim.executeExternalRemap(remap, clipboard));
 			if (!this.vim.status.pending) {
 				this.vimEditor.revealPrimaryCursorIfOutsideViewport();
 				this.syncEditorState();
@@ -302,7 +303,7 @@ export class VimController extends Disposable {
 		// or one run by `runCommands`) is calling back while that remap's key
 		// job holds the queue waiting for it: run now, nested in that job
 		// ([Vim.executeExternalRemap]), instead of queueing behind it.
-		const run = this.vim.isAwaitingMappedCommand() ? runRemap() : this.asyncKeyQueue.enqueue(runRemap);
+		const run = nested ? runRemap() : this.asyncKeyQueue.enqueue(runRemap);
 		if (strict) {
 			return run.then(undefined, (error) => {
 				this.syncStatus();
@@ -730,11 +731,32 @@ export class VimController extends Disposable {
 		});
 	}
 
-	private async runVimKeyPlan(keyPlan: KeyPlan): Promise<void> {
+	// Run [task] in a clipboard transaction: system clipboard reads are cached
+	// and writes buffered until the task ends. A remap nested in the job in
+	// flight (a callback from one of its mapped commands) joins that job's
+	// transaction instead of opening its own, so it sees the job's buffered
+	// writes (a nested `p` pastes what the job's keys just yanked) and its own
+	// writes are not overwritten when the job flushes.
+	private async withClipboardTransaction(
+		{ nested }: { nested: boolean },
+		task: (clipboard: ClipboardTransaction) => void | Promise<void>
+	): Promise<void> {
+		const active = this.activeClipboardTransaction;
+		if (nested && active !== undefined) {
+			await task(active);
+			return;
+		}
 		const clipboard = new ClipboardTransaction(this.vimClipboard);
-		await clipboard.with(async () => {
-			await keyPlan.run({ clipboard });
-		});
+		this.activeClipboardTransaction = clipboard;
+		try {
+			await clipboard.with(async () => task(clipboard));
+		} finally {
+			this.activeClipboardTransaction = active;
+		}
+	}
+
+	private async runVimKeyPlan(keyPlan: KeyPlan): Promise<void> {
+		await this.withClipboardTransaction({ nested: false }, clipboard => keyPlan.run({ clipboard }));
 		if (await this.vimEditor.waitForNativeSelectionSync()) {
 			this.vimEditor.invalidateCachedSelections();
 			// Same policy as [handleCursorSelectionChanged]: while insert/replace

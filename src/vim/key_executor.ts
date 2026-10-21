@@ -123,6 +123,7 @@ export class KeyExecutor {
       commands each one's effects are waiting on ([awaitExternal]). */
   private readonly nestedFrames: { awaitingExternal: number; done: Promise<void> }[] = [];
   private baseAwaitingExternal = 0;
+  private reentrantDrainDepth = 0;
   /** Nonzero while [awaitExternal] is starting a command (inside [start]). */
   private startingExternal = 0;
   /** True while [drainEffects] owns the queue (including across an async wait). */
@@ -380,14 +381,25 @@ export class KeyExecutor {
       effects must remain synchronous; encountering async work is an invariant
       violation rather than silently reordering subsequent keys/rows. */
   drainReentrantEffects(): void {
-    while (this.effectQueue.length > 0) {
-      const run = this.effectQueue.shift();
-      if (run === undefined) return;
-      const result = run();
-      if (isPromiseLike(result)) {
-        throw new Error("re-entrant key execution produced an asynchronous effect");
+    this.reentrantDrainDepth++;
+    try {
+      while (this.effectQueue.length > 0) {
+        const run = this.effectQueue.shift();
+        if (run === undefined) return;
+        const result = run();
+        if (isPromiseLike(result)) {
+          throw new Error("re-entrant key execution produced an asynchronous effect");
+        }
       }
+    } finally {
+      this.reentrantDrainDepth--;
     }
+  }
+
+  /** Whether effects are being drained by [drainReentrantEffects], which
+      cannot wait: an effect must then complete synchronously. */
+  isDrainingReentrantEffects(): boolean {
+    return this.reentrantDrainDepth > 0;
   }
 
   /**

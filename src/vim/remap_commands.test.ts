@@ -123,6 +123,55 @@ describe("remap commands with asynchronous native commands", () => {
     expect(selectionHead(editor.getSelections()[0])).toEqual({ row: 2, column: 0 });
   });
 
+  it("lets a nested remap sharing the key job's clipboard transaction paste its yank", async () => {
+    // The host hands a nested `vimcode.remap` the transaction of the key job it
+    // runs in: that job's yank is still buffered there, not on the OS clipboard.
+    class BufferedClipboard implements VimSystemClipboard {
+      pending: string | undefined;
+      constructor(private readonly osText: string) {}
+      async readText(): Promise<string> {
+        return this.pending ?? this.osText;
+      }
+      writeText(text: string): void {
+        this.pending = text;
+      }
+    }
+    const editor = new InMemoryVimEditor("foo bar");
+    const vim = new Vim(editor, {
+      useSystemClipboard: true,
+      normalModeKeyBindings: [{
+        before: ["z", "Y"],
+        after: ["y", "i", "w"],
+        commands: [{ command: "vimcode.remap", args: { after: ["P"] } }],
+      }],
+    });
+    const clipboard = new BufferedClipboard("stale");
+    editor.nativeCommandHandlers.set("vimcode.remap", async args => {
+      await vim.executeExternalRemap(args[0] as { after: string[] }, clipboard);
+    });
+
+    for (const key of ["z", "Y"]) await vim.handleKey(key)?.run({ clipboard });
+
+    expect(editor.getText()).toBe("foofoo bar");
+  });
+
+  it("runs a mapping's native command on each line of a ranged :normal", async () => {
+    // `:normal` drains its keys' effects synchronously, so it cannot wait for
+    // the mapping's asynchronous command.
+    const editor = new InMemoryVimEditor("one\ntwo\nthree\nfour");
+    const vim = new Vim(editor, { normalModeKeyBindings: [{ before: ["z", "c"], commands: ["test.comment"] }] });
+    const rows: number[] = [];
+    editor.nativeCommandHandlers.set("test.comment", async () => {
+      rows.push(selectionHead(editor.getSelections()[0]).row);
+    });
+
+    for (const key of [":", "1", ",", "3", "n", "o", "r", "m", " ", "z", "c", "enter"]) {
+      await vim.handleKey(key)?.run();
+    }
+
+    expect(rows).toEqual([0, 1, 2]);
+  });
+
   it("runs keys typed after the mapping once its commands finish", async () => {
     const { editor, log, press } = setup(foldEnclosingParens, { clipboard: true });
 
