@@ -1,0 +1,35 @@
+{"Put":{"state":"(* AAAAA\nˇ\n   BBBB\n*)"}}
+{"Key":"v"}
+{"Key":"a"}
+{"Key":"("}
+{"Get":{"state":"«(* AAAAA\n\n   BBBB\n*)ˇ»","mode":"Visual"}}
+{"Put":{"state":"(* AAAAA\nˇ\n   BBBB\n*)"}}
+{"Key":"v"}
+{"Key":"i"}
+{"Key":"("}
+{"Get":{"state":"(«* AAAAA\n\n   BBBB\n*ˇ»)","mode":"Visual"}}
+{"Put":{"state":"(* AAAAA\nˇ\n   BBBB\n*)"}}
+{"Key":"shift-v"}
+{"Key":"a"}
+{"Key":"("}
+{"Get":{"state":"«(* AAAAA\n\n   BBBB\n*)ˇ»","mode":"Visual"}}
+{"Put":{"state":"(* AAAAA\nˇ\n   BBBB\n*)"}}
+{"Key":"ctrl-v"}
+{"Key":"a"}
+{"Key":"("}
+{"Get":{"state":"«(* AAAAA\n\n   BBBB\n*)ˇ»","mode":"Visual"}}
+{"Put":{"state":"<a>\nx\nˇ\ny\n</a>"}}
+{"Key":"v"}
+{"Key":"a"}
+{"Key":"t"}
+{"Get":{"state":"«<a>\nx\n\ny\n</a>ˇ»","mode":"Visual"}}
+{"Put":{"state":"(a)\nˇ\nb"}}
+{"Key":"v"}
+{"Key":"a"}
+{"Key":"("}
+{"Get":{"state":"(a)\nˇ\nb","mode":"Visual"}}
+{"Put":{"state":"\"q\nˇ\nr\""}}
+{"Key":"v"}
+{"Key":"a"}
+{"Key":"\""}
+{"Get":{"state":"\"q\nˇ\nr\"","mode":"Visual"}}

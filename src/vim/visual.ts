@@ -543,10 +543,14 @@ export class VisualMode {
     }
 
     // Linewise objects (paragraph, indent, entire) handle blank cursor lines
-    // themselves; other objects fail on an empty line.
+    // themselves, and bracket and tag pairs are found across lines, so `va(`
+    // on a blank line inside a multi-line comment selects it like in Vim.
+    // Other objects fail on an empty line.
     const linewiseObject = object.type === "paragraph" || object.type === "indent" || object.type === "entire";
+    const multilinePair = object.type === "tag" || (object.type === "surround" && object.open !== object.close);
     const states = state.kind === "charwise" ? currentCharwiseVisualStates(this.editor, state) : [state];
-    if (states.some(state => !linewiseObject && this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
+    if (!linewiseObject && !multilinePair
+      && states.some(state => this.editor.lineLength(visualObjectPosition(this.editor, state).row) === 0)) {
       this.syncEditorSelection();
       return handled();
     }
