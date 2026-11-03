@@ -11,6 +11,7 @@ import type { HostCommand, HostDirection, HostFoldCommand, HostRevealTarget, Vim
 import { cloneHandlerState, effect, handler, invalid, unhandled } from "./key_handler.js";
 import type { HandleResult, Handler, HandlerState } from "./key_handler.js";
 import { applyMotion, bracketMotion } from "./motion.js";
+import type { Motion } from "./motion.js";
 import { paste } from "./normal/paste.js";
 import { applyMotionResults } from "./motion_handler.js";
 import { charwiseSelection, isVisualModeKind, selectionHead } from "./state.js";
@@ -98,7 +99,8 @@ function pageSpecForKey(key: string): PageSpec | undefined {
 // Pages (`ctrl-d`/`ctrl-u` half, `ctrl-f`/`ctrl-b`/`pagedown`/`pageup` full):
 // move by a page. In visual mode the selection extends and the visual state
 // re-adopts the host selection (`adoptSelectionFromHost`), so e.g. `V<ctrl-d>`
-// grows the linewise selection. Not a buffer change.
+// grows the linewise selection. With 'startofline' the head then moves to the
+// line's first non-blank. Not a buffer change.
 export function pageHandler(key: string, state: HandlerState): HandleResult<void> {
   const spec = pageSpecForKey(key);
   if (spec === undefined) return unhandled();
@@ -113,6 +115,18 @@ export function pageHandler(key: string, state: HandlerState): HandleResult<void
       const selections = editor.moveByPages(spec.direction, count, { halfPage: spec.halfPage, extend });
       if (selections !== undefined) editor.setSelections(selections);
       if (extend) visual?.adoptSelectionFromHost();
+      // Vim 'startofline': land on the line's first non-blank.
+      if (state.configuration?.startofline === true) {
+        const motion: Motion = { type: "startOfLineDownward" };
+        if (extend) {
+          visual?.applyMotion(motion, 1);
+        } else {
+          applyMotionResults(
+            editor,
+            editor.getSelections().map(selection => ({ position: applyMotion(editor, selectionHead(selection), motion, 1) }))
+          );
+        }
+      }
     },
     { dotRepeatable: false }
   );

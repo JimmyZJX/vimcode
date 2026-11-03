@@ -456,6 +456,7 @@ export class VimController extends Disposable {
 		const hlsearch = this.readCompatibilityConfigValue('hlsearch');
 		const timeout = this.readCompatibilityConfigValue('timeout');
 		const textwidth = this.readCompatibilityConfigValue('textwidth');
+		const startofline = this.readCompatibilityConfigValue('startofline');
 		const visualMultilineInsert = this.readCompatibilityConfigValue('visualMultilineInsert');
 		const insertModeCtrlVAsPaste = this.readCompatibilityConfigValue('insertModeCtrlVAsPaste');
 		const replaceWithRegister = this.readCompatibilityConfigValue('replaceWithRegister');
@@ -470,6 +471,7 @@ export class VimController extends Disposable {
 			hlsearch: typeof hlsearch === 'boolean' ? hlsearch : undefined,
 			timeout: typeof timeout === 'number' ? timeout : undefined,
 			textwidth: typeof textwidth === 'number' ? textwidth : undefined,
+			startofline: typeof startofline === 'boolean' ? startofline : undefined,
 			visualMultilineInsert: typeof visualMultilineInsert === 'boolean' ? visualMultilineInsert : undefined,
 			insertModeCtrlVAsPaste: typeof insertModeCtrlVAsPaste === 'boolean' ? insertModeCtrlVAsPaste : undefined,
 			replaceWithRegister: typeof replaceWithRegister === 'boolean' ? replaceWithRegister : undefined,

@@ -437,6 +437,12 @@ export function isPromptCancelKey(key: string): boolean {
   return isEscapeKey(key) || key === "ctrl-c";
 }
 
+// Vim `c_<BS>`/`c_CTRL-H`: on an empty `/`?`/`:` line they abandon the prompt,
+// as escape does.
+export function abandonsEmptyPrompt(key: string, input: string): boolean {
+  return (key === "backspace" || key === "ctrl-h") && input === "";
+}
+
 function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
   return (
     value !== null &&

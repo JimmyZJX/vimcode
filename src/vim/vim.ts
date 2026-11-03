@@ -16,7 +16,7 @@ import type { CursorReconciliationOptions } from "./editor_state_sync.js";
 import { VimEditorCapabilities, insertTextForKey, keepUndoTransactionOpen, normalCursorPosition } from "./editor.js";
 import { InsertRepeatChunk, enterNormalMode, insertText } from "./insert.js";
 import { InsertEdit, applyInsertEdit, walkPosition } from "./native_insert_edit.js";
-import { initialHandlerState, isEscapeKey, isPromptCancelKey, unhandled } from "./key_handler.js";
+import { abandonsEmptyPrompt, initialHandlerState, isEscapeKey, isPromptCancelKey, unhandled } from "./key_handler.js";
 import type { HandleResult, Handler, HandlerEnv, HandlerState, QueuedRunResult } from "./key_handler.js";
 import { KeyExecutor } from "./key_executor.js";
 import { Motion } from "./motion.js";
@@ -394,6 +394,16 @@ export class Vim {
     return true;
   }
 
+  /** Drops a half-typed command (a count, a register, an operator). Unlike
+      escape, it keeps visual mode; an open `:` or `/` prompt is still
+      abandoned. For hosts that take a count typed into Vim for a command of
+      their own. */
+  clearPending(): void {
+    this.clearPendingGrammar({ closeSearchHighlights: false });
+    this.keyExecutor.reset(this.modeState);
+    this.showcmdKeys.length = 0;
+  }
+
   readRegister(name: RegisterName | undefined): string {
     return this.registers.read(name);
   }
@@ -440,6 +450,7 @@ export class Vim {
   }
 
   handleKey(key: string, { whenEvaluator = alwaysActiveWhenEvaluator }: { whenEvaluator?: WhenEvaluator } = {}): KeyPlan | null {
+    key = this.promptAbandonKey(key);
     // The remap-timeout pseudo-key never reaches the grammar ([dispatchTypedKey]
     // intercepts it); it is owned exactly while a remap chord is pending.
     if (key === RemapTimeoutKey) {
@@ -949,7 +960,15 @@ export class Vim {
   // `vim::Vim::action` and key contexts from `vim::Vim::extend_key_context`.
   // The VSCode patch calls this direct key entry point instead.
   onKey(key: string): KeyDispatchResult {
-    return this.dispatchTypedKey(key, { allowRemap: true, whenEvaluator: alwaysActiveWhenEvaluator });
+    return this.dispatchTypedKey(this.promptAbandonKey(key), { allowRemap: true, whenEvaluator: alwaysActiveWhenEvaluator });
+  }
+
+  // Backspace on an empty `/`?`/`:` line is escape ([abandonsEmptyPrompt]).
+  // The `d/` operand prompt is not a session prompt; [searchOperandWaiter]
+  // checks it itself.
+  private promptAbandonKey(key: string): string {
+    const value = this.activeCommand?.value() ?? this.activeSearch?.input.value();
+    return value !== undefined && abandonsEmptyPrompt(key, value) ? "<escape>" : key;
   }
 
   private dispatchTypedKey(key: string, { allowRemap, whenEvaluator, passthrough = false, preParsed }: { allowRemap: boolean; whenEvaluator: WhenEvaluator; passthrough?: boolean; preParsed?: PreParsedKey }): KeyDispatchResult {

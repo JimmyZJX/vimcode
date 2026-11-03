@@ -481,6 +481,8 @@ function executeCommandCore(editor: VimEditorCapabilities, rawCommand: string, o
     return;
   }
 
+  if (editor.executeHostExCommand?.(trimmedRest, range) === true) return;
+
   const vscodeCommand = parseVSCodeCommand(trimmedRest);
   if (vscodeCommand !== undefined) {
     editor.executeNativeCommand(vscodeCommand);

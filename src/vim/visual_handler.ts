@@ -13,7 +13,7 @@ import type { RepeatState } from "./normal/repeat.js";
 import type { RegisterName } from "./registers.js";
 import { bracketChordHandler, ctrlWHandler, nativeKeyHandler, pageHandler, scrollHandler, zChordHandler } from "./finite_chord_handlers.js";
 import type { FindApplier } from "./normal_mode_handler.js";
-import { configuredTextwidth, convertTargetForKey, digraphWaiter, editorGChordHandler, findHandler, gChordMotion, keyForInput, lineMotionForKey, repeatFindHandler, resolveMotion, restoreVisualSelectionHandler } from "./normal_mode_handler.js";
+import { configuredTextwidth, convertTargetForKey, digraphWaiter, editorGChordHandler, findHandler, gChordMotion, keyForInput, lineMotionForKey, repeatFindHandler, resolveMotion, restoreVisualSelectionHandler, withStartOfLine } from "./normal_mode_handler.js";
 import { prefixHandler } from "./prefix_handlers.js";
 import { commandPromptHandler } from "./command_handler.js";
 import { reportSearchMotionStatus, searchPromptHandler, searchSelectionHandler, visualSearchUnderCursorHandler } from "./search_handler.js";
@@ -339,7 +339,8 @@ function visualGContinuation(key: string, state: HandlerState): HandleResult<voi
   }
 
   // g-motions extend the live selection (`gg`/`gj`/`gk`/`g_`/`gM`/`ge`/`gE`).
-  const motion = gChordMotion(key);
+  const gMotion = gChordMotion(key);
+  const motion = gMotion === undefined ? undefined : withStartOfLine(gMotion, state);
   if (motion !== undefined) {
     const count = state.repeat;
     return effect(state.mode, () => visual.applyMotion(motion, count), { dotRepeatable: false });

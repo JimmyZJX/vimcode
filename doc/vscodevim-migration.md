@@ -113,6 +113,7 @@ are not read (no such modes in vimcode).
 |---|---|---|---|
 | `vim.useSystemClipboard` | default false | default **true** (VSCode-native feel) | migrated users get clipboard-as-unnamed unless set; decide one default for rollout |
 | `vim.easymotion` | default false | default **true** | with the default `\` leader the `<leader><leader>` prefix sits on an otherwise-unbound key, so enabling is free; avoids `<leader><leader>s` silently degrading into plain `s`. Users with a leader on a bound key (e.g. space) get chord-vs-motion timeout semantics on it unless they disable |
+| `vim.startofline` | default true | default **false** (Neovim) | `G`/`gg`/`H`/`M`/`L` and `CTRL-D`/`CTRL-U`/`CTRL-F`/`CTRL-B` keep the column unless set |
 | `vim.textwidth` | default 80 | 0 → first `editor.rulers` → 79 | `gq` width differs when unset; ruler detection is arguably better — document |
 | enable/disable | `vim.disableExtension` (default false) | `vim.enabled` (default false) | **inverted opt-in**; migration must set `vim.enabled` |
 

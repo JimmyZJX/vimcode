@@ -59,12 +59,14 @@ export type Motion =
   | { type: "lastNonWhitespace" }
   | { type: "middleOfLine" }
   | { type: "endOfLine" }
-  | { type: "startOfDocument" }
+  // [firstNonBlank]: land on the line's first non-blank (Vim 'startofline'), here
+  // and in [goToLine] and [windowLine].
+  | { type: "startOfDocument"; firstNonBlank?: boolean }
   | { type: "startOfFile" }
   | { type: "endOfDocument" }
   // Go to an absolute 1-based line, keeping the column (Vim `G`/`NG` with
   // 'nostartofline'). Count-agnostic: the target line is baked in by the caller.
-  | { type: "goToLine"; line: number }
+  | { type: "goToLine"; line: number; firstNonBlank?: boolean }
   // Go [count] lines down/up to the first non-blank character (Vim `+`/`<CR>`
   // and `-`). Count-aware: the row delta is [count] in [direction].
   | { type: "firstNonBlankLine"; direction: "down" | "up" }
@@ -84,7 +86,7 @@ export type Motion =
   | { type: "endOfParagraph" }
   | { type: "startOfParagraph" }
   | { type: "goToPercentage"; percent: number }
-  | { type: "windowLine"; target: "top" | "middle" | "bottom" }
+  | { type: "windowLine"; target: "top" | "middle" | "bottom"; firstNonBlank?: boolean }
   | { type: "forcedCharwise"; motion: Motion }
   | { type: "jump"; position: Position; line: boolean }
   | { type: "searchMatch"; range: TextRange }
@@ -403,12 +405,14 @@ export function applyMotionOnce(
     case "endOfLine":
       return endOfLine(editor, clipped.row);
     case "startOfDocument":
+      if (motion.firstNonBlank === true) return firstNonWhitespace(editor, 0);
       return normalCursorPosition(editor, { row: 0, column: clipped.column });
     case "startOfFile":
       return position(0, 0);
     case "endOfDocument":
       return endOfLine(editor, editor.lineCount() - 1);
     case "goToLine":
+      if (motion.firstNonBlank === true) return firstNonWhitespace(editor, Math.max(0, Math.min(motion.line - 1, editor.lineCount() - 1)));
       return normalCursorPosition(editor, {
         row: Math.max(0, Math.min(motion.line - 1, editor.lineCount() - 1)),
         column: clipped.column,
@@ -436,6 +440,7 @@ export function applyMotionOnce(
         : motion.target === "bottom"
           ? visible.bottom
           : Math.floor((visible.top + visible.bottom) / 2);
+      if (motion.firstNonBlank === true) return firstNonWhitespace(editor, row);
       return normalCursorPosition(editor, { row, column: clipped.column });
     }
     case "unmatchedForward":
@@ -545,6 +550,7 @@ export function applyMotionWithGoal(
   }
   if (motion.type === "startOfDocument") {
     const row = Math.max(0, Math.min(count - 1, editor.lineCount() - 1));
+    if (motion.firstNonBlank === true) return { position: firstNonWhitespace(editor, row) };
     return { position: normalCursorPosition(editor, { row, column: start.column }) };
   }
   if (motion.type === "startOfFile") {
@@ -582,6 +588,7 @@ export function applyMotionWithGoal(
           return Math.max(visible.bottom - (count - 1), visible.top);
       }
     })();
+    if (motion.firstNonBlank === true) return { position: firstNonWhitespace(editor, row) };
     const nextGoal = goal ?? { type: "modelColumn" as const, column: start.column };
     return {
       position: { row, column: modelColumnForGoal(editor, row, nextGoal, { allowEndOfLine }) },

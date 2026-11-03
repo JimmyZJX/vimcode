@@ -54,6 +54,10 @@ export type VimConfiguration = {
   // 'textwidth' for the `gq`/`gw` format operators; 0 formats to 79 columns
   // (Vim's fallback for 'textwidth'=0, capped screen width).
   textwidth: number;
+  // Vim 'startofline' (VSCodeVim `vim.startofline`): `G`, `gg`, `H`, `M`, `L`
+  // and the page keys (`ctrl-d`/`ctrl-u`/`ctrl-f`/`ctrl-b`) land on the line's
+  // first non-blank instead of keeping the column. Off by default, as in Neovim.
+  startofline: boolean;
 };
 
 export const defaultVimHandleKeys: Readonly<Record<string, boolean>> = {
@@ -92,6 +96,7 @@ export const defaultVimConfiguration: VimConfiguration = {
   easymotionKeys: "hklyuiopnm,qwertzxcvbasdgjf;",
   easymotionJumpToAnywhereRegex: "\\b[A-Za-z0-9]|[A-Za-z0-9]\\b|_.|#.|[a-z][A-Z]",
   textwidth: 0,
+  startofline: false,
 };
 
 export function layeredConfigValue(config: RawVimConfiguration, option: string): unknown {

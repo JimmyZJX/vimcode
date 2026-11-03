@@ -14,6 +14,7 @@ import {
   effect,
   handler,
   invalid,
+  abandonsEmptyPrompt,
   isEscapeKey,
   isPromptCancelKey,
   unhandled,
@@ -160,9 +161,10 @@ function searchOperandWaiter(
     const registers = state.registers;
     if (editor === undefined || search === undefined || registers === undefined)
       return invalid();
-    // Escape aborts the operator (no edit) and tears down the prompt preview.
-    // Vim: the aborted query still enters the search history.
-    if (isEscapeKey(key)) {
+    // Escape, or backspace on an empty query, aborts the operator (no edit)
+    // and tears down the prompt preview. Vim: the aborted query still enters
+    // the search history.
+    if (isEscapeKey(key) || abandonsEmptyPrompt(key, pending.input.value())) {
       return effect("normal", () => {
         state.setPendingSearchStatus?.(undefined);
         search.recordHistory(pending);

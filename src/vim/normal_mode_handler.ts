@@ -117,7 +117,7 @@ function gChordHandler(key: string, state: HandlerState): HandleResult<void> {
 function gContinuation(key: string, state: HandlerState): HandleResult<void> {
   // Motions: `gg`/`gj`/`gk`/`g_`/`gM`/`ge`/`gE`.
   const motion = gChordMotion(key);
-  if (motion !== undefined) return applyResolvedMotion(state, motion);
+  if (motion !== undefined) return applyResolvedMotion(state, withStartOfLine(motion, state));
 
   // Convert operators `gu`/`gU`/`g~`/`g?`: g-prefixed operators that take an
   // operand (`guiw`, `gUU`, `gugu`). They reuse the operator machinery; the `g`
@@ -646,7 +646,21 @@ export function resolveMotion(key: string, state: HandlerState): Motion | undefi
   // count is baked into the motion (idempotent) rather than applied as a repeat,
   // so it moves/extends correctly through the count-repeating visual path.
   if (key === "|") return { type: "goToColumn", column: state.repeat };
-  return motionForKey(key);
+  const motion = motionForKey(key);
+  return motion === undefined ? undefined : withStartOfLine(motion, state);
+}
+
+// Vim 'startofline': `G`, `gg`, `H`, `M` and `L` land on the first non-blank.
+export function withStartOfLine(motion: Motion, state: HandlerState): Motion {
+  if (state.configuration?.startofline !== true) return motion;
+  switch (motion.type) {
+    case "goToLine":
+    case "startOfDocument":
+    case "windowLine":
+      return { ...motion, firstNonBlank: true };
+    default:
+      return motion;
+  }
 }
 
 // Linewise motions that are kept out of [resolveMotion] (so the operator
@@ -661,7 +675,7 @@ export function lineMotionForKey(key: string, state: HandlerState): Motion | und
   switch (key) {
     case "G": {
       const lastLine = state.editor?.lineCount() ?? 1;
-      return { type: "goToLine", line: state.hasCount === true ? state.repeat : lastLine };
+      return withStartOfLine({ type: "goToLine", line: state.hasCount === true ? state.repeat : lastLine }, state);
     }
     case "+":
     case "enter":

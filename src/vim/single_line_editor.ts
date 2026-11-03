@@ -73,6 +73,7 @@ export class SingleLineEditor {
         this.insert(" ");
         return true;
       case "backspace":
+      case "ctrl-h":
         this.edit(lr => {
           lr.l = lr.l.slice(0, -1);
         });
@@ -87,6 +88,12 @@ export class SingleLineEditor {
       case "ctrl-backspace":
         this.edit(lr => {
           lr.l = lr.l.slice(0, findWordBoundary(lr.l, "left"));
+        });
+        return true;
+      // Vim `c_CTRL-U`: delete everything before the cursor.
+      case "ctrl-u":
+        this.edit(lr => {
+          lr.l = "";
         });
         return true;
       case "ctrl-delete":

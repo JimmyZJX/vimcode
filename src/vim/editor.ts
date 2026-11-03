@@ -4,7 +4,7 @@
 // - translated concepts: editor operations are mediated through a testable host interface
 // - intentional differences: VSCode and fake editors implement this capability interface directly
 
-import type { SubstitutePreview } from "./command.js";
+import type { LineRange, SubstitutePreview } from "./command.js";
 import { graphemeStart } from "./grapheme.js";
 import { LineTracker, TrackedLines } from "./line_tracker.js";
 import {
@@ -198,6 +198,14 @@ export interface VimEditorCapabilities {
   openLineNatively?(options: { above: boolean }): boolean;
 
   executeHostCommand(command: HostCommand): void;
+  /** An ex command line (after its range, without the [:]) the host may run
+      itself, before any built-in command: true when it did. Lets a host give
+      [:w], [:e file] and friends its own meaning, arguments included. [range]
+      is the typed range (0-based rows, both inclusive; [:'<,'>] from visual
+      mode included), undefined when none was typed, so a host can decline
+      [:1,3w] rather than run [:w] on the whole buffer. Hosts that have none
+      may omit it. */
+  executeHostExCommand?(command: string, range?: LineRange): boolean;
   executeNativeCommand(
     command: string,
     args?: readonly unknown[],

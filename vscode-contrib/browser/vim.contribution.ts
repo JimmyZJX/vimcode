@@ -282,6 +282,12 @@ const vimConfigurationProperties: Record<string, IConfigurationPropertySchema> =
 		scope: ConfigurationScope.APPLICATION,
 		description: nls.localize('vim.textwidth', "Line width used by the gq/gw format operators ('textwidth'). 0 uses the first editor.rulers column when one is set, and 79 otherwise (Vim's 'textwidth'=0 fallback)."),
 	},
+	'vim.startofline': {
+		type: 'boolean',
+		default: false,
+		scope: ConfigurationScope.APPLICATION,
+		description: nls.localize('vim.startofline', "Move G, gg, H, M, L, Ctrl+D, Ctrl+U, Ctrl+F and Ctrl+B to the first non-blank character of the line instead of keeping the column ('startofline')."),
+	},
 	'vim.visualMultilineInsert': {
 		type: 'boolean',
 		default: true,
