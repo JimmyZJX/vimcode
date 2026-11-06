@@ -434,6 +434,8 @@ export class VimController extends Disposable {
 		this.extensionManagementService.getInstalled().then(extensions => {
 			const vsCodeVim = extensions.find(extension => extension.identifier.id.toLowerCase() === 'vscodevim.vim');
 			if (vsCodeVim === undefined) return;
+			// Internal gallery replaces VSCodeVim with a shim that only turns vimcode on.
+			if ((vsCodeVim.manifest as { vimcodeMigrationShim?: unknown }).vimcodeMigrationShim === true) return;
 
 			const disabledExtensions = this.extensionEnablementService.getDisabledExtensions();
 			const vsCodeVimIsDisabled = disabledExtensions.some(extension => extension.id.toLowerCase() === vsCodeVim.identifier.id.toLowerCase());
